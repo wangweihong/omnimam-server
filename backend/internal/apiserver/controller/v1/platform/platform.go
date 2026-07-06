@@ -1,0 +1,408 @@
+package platform
+
+import (
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/wangweihong/gotoolbox/pkg/errors"
+
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	srvv1 "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"github.com/wangweihong/omnimam/backend/pkg/core"
+)
+
+type PlatformController struct {
+	srv srvv1.Service
+}
+
+func NewController(storeIns store.Factory) *PlatformController {
+	return &PlatformController{srv: srvv1.NewService(storeIns)}
+}
+
+func (pc *PlatformController) Me(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().Me(c)
+	})
+}
+
+func (pc *PlatformController) ListProviders(c *gin.Context) {
+	core.Run(c, &iapiserver.ProviderListRequest{}, func(r *iapiserver.ProviderListRequest) (any, error) {
+		return pc.srv.Platforms().ProviderList(c, r)
+	})
+}
+
+func (pc *PlatformController) CreateProvider(c *gin.Context) {
+	core.Run(c, &iapiserver.ProviderCreateRequest{}, func(r *iapiserver.ProviderCreateRequest) (any, error) {
+		return pc.srv.Platforms().ProviderCreate(c, r)
+	})
+}
+
+// ListProviderPresets returns built-in model service presets and dynamic API setting schemas.
+// It only returns public preset metadata and never returns user credentials or creates async tasks.
+func (pc *PlatformController) ListProviderPresets(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().ProviderPresetList(c)
+	})
+}
+
+// InstallProviderPreset creates or updates a disabled Provider from one preset key.
+// It initializes base endpoint metadata only; credentials are not written by this endpoint.
+func (pc *PlatformController) InstallProviderPreset(c *gin.Context) {
+	req := &iapiserver.ProviderPresetInstallRequest{PresetKey: c.Param("preset_key")}
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().ProviderPresetInstall(c, req.PresetKey)
+	})
+}
+
+func (pc *PlatformController) UpdateProvider(c *gin.Context) {
+	req := &iapiserver.ProviderUpdateRequest{ID: c.Param("provider_id")}
+	core.Run(c, req, func(r *iapiserver.ProviderUpdateRequest) (any, error) {
+		return pc.srv.Platforms().ProviderUpdate(c, req)
+	})
+
+}
+
+// DeleteProvider removes one provider and clears its related models and default model bindings.
+// It returns sanitized provider metadata only and never returns credentials.
+func (pc *PlatformController) DeleteProvider(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().ProviderDelete(c, c.Param("provider_id"))
+	})
+}
+
+// TestProvider checks a provider endpoint with optional unsaved API settings.
+// It returns only connection metadata and never persists credentials or invokes async tasks.
+func (pc *PlatformController) TestProvider(c *gin.Context) {
+	req := &iapiserver.ProviderTestRequest{ID: c.Param("provider_id")}
+	core.Run(c, req, func(r *iapiserver.ProviderTestRequest) (any, error) {
+		return pc.srv.Platforms().ProviderTest(c, r)
+	})
+}
+
+func (pc *PlatformController) ListProviderModels(c *gin.Context) {
+	req := &iapiserver.ProviderModelListRequest{ProviderID: c.Param("provider_id")}
+	core.Run(c, req, func(r *iapiserver.ProviderModelListRequest) (any, error) {
+		return pc.srv.Platforms().ProviderModelList(c, r)
+	})
+}
+
+func (pc *PlatformController) CreateProviderModel(c *gin.Context) {
+	req := &iapiserver.ProviderModelCreateRequest{ProviderID: c.Param("provider_id")}
+	core.Run(c, req, func(r *iapiserver.ProviderModelCreateRequest) (any, error) {
+		return pc.srv.Platforms().ProviderModelCreate(c, r)
+	})
+}
+
+func (pc *PlatformController) UpdateProviderModel(c *gin.Context) {
+	req := &iapiserver.ProviderModelUpdateRequest{
+		ID:         c.Param("model_id"),
+		ProviderID: c.Param("provider_id"),
+	}
+	core.Run(c, req, func(r *iapiserver.ProviderModelUpdateRequest) (any, error) {
+		return pc.srv.Platforms().ProviderModelUpdate(c, req)
+	})
+}
+
+// DeleteProviderModel 删除一个模型提供商下的模型，并清理相关默认模型绑定。
+// 该接口只删除模型元数据，不会返回或修改 provider credential，也不会返回 asset 原始内容。
+func (pc *PlatformController) DeleteProviderModel(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().ProviderModelDelete(c, c.Param("provider_id"), c.Param("model_id"))
+	})
+}
+
+// CheckProviderModelHealth 立即检测单个 provider model 的 metadata 连接状态。
+// 该接口会保存健康状态和原因，但不会触发真实模型生成或返回 provider credential。
+func (pc *PlatformController) CheckProviderModelHealth(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().ProviderModelHealthCheck(c, c.Param("provider_id"), c.Param("model_id"))
+	})
+}
+
+// SyncProviderModels imports remote OpenAI-compatible model metadata for one provider.
+// It updates provider model metadata only and does not return raw provider credentials.
+func (pc *PlatformController) SyncProviderModels(c *gin.Context) {
+	req := &iapiserver.ProviderModelSyncRequest{ProviderID: c.Param("provider_id")}
+	core.Run(c, req, func(r *iapiserver.ProviderModelSyncRequest) (any, error) {
+		return pc.srv.Platforms().ProviderModelSync(c, r)
+	})
+}
+
+func (pc *PlatformController) GetSystemLLMConfig(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().SystemLLMConfigList(c)
+	})
+}
+
+func (pc *PlatformController) PutSystemLLMConfig(c *gin.Context) {
+	core.Run(
+		c,
+		&iapiserver.SystemLLMConfigUpsertRequest{},
+		func(r *iapiserver.SystemLLMConfigUpsertRequest) (any, error) {
+			return pc.srv.Platforms().SystemLLMConfigUpsert(c, r)
+		},
+	)
+}
+
+func (pc *PlatformController) ListStorageBackends(c *gin.Context) {
+	core.Run(c, &iapiserver.StorageBackendListRequest{}, func(r *iapiserver.StorageBackendListRequest) (any, error) {
+		return pc.srv.Platforms().StorageBackendList(c, r)
+	})
+}
+
+func (pc *PlatformController) CreateStorageBackend(c *gin.Context) {
+	core.Run(
+		c,
+		&iapiserver.StorageBackendCreateRequest{},
+		func(r *iapiserver.StorageBackendCreateRequest) (any, error) {
+			return pc.srv.Platforms().StorageBackendCreate(c, r)
+		},
+	)
+}
+
+func (pc *PlatformController) UpdateStorageBackend(c *gin.Context) {
+	req := &iapiserver.StorageBackendUpdateRequest{ID: c.Param("backend_id")}
+	core.Run(c, req, func(r *iapiserver.StorageBackendUpdateRequest) (any, error) {
+		return pc.srv.Platforms().StorageBackendUpdate(c, req)
+	})
+
+}
+
+func (pc *PlatformController) UploadAsset(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	tags := splitTags(c.PostForm("tags"))
+	sourceType := c.PostForm("source_type")
+	ret, err := pc.srv.Platforms().AssetUpload(c, file, tags, sourceType)
+	core.WriteResponse(c, err, ret)
+}
+
+// InitAssetChunkUpload prepares a resumable upload under a checksum-scoped temp directory.
+func (pc *PlatformController) InitAssetChunkUpload(c *gin.Context) {
+	core.Run(
+		c,
+		&iapiserver.AssetChunkUploadInitRequest{},
+		func(r *iapiserver.AssetChunkUploadInitRequest) (any, error) {
+			return pc.srv.Platforms().AssetChunkUploadInit(c, r)
+		},
+	)
+}
+
+// UploadAssetChunk writes one chunk. It does not create an asset until complete is called.
+func (pc *PlatformController) UploadAssetChunk(c *gin.Context) {
+	index, err := strconv.Atoi(c.Param("index"))
+	if err != nil {
+		core.WriteResponse(c, errors.NewStatusF(code.ErrValidation, "invalid chunk index"), nil)
+		return
+	}
+	ret, err := pc.srv.Platforms().AssetChunkUploadPart(c, c.Param("checksum"), index, c.Request.Body)
+	core.WriteResponse(c, err, ret)
+}
+
+// CompleteAssetChunkUpload merges chunks, validates the final checksum, creates the asset, and removes temp chunks.
+func (pc *PlatformController) CompleteAssetChunkUpload(c *gin.Context) {
+	req := &iapiserver.AssetChunkUploadCompleteRequest{Checksum: c.Param("checksum")}
+	core.Run(c, req, func(r *iapiserver.AssetChunkUploadCompleteRequest) (any, error) {
+		return pc.srv.Platforms().AssetChunkUploadComplete(c, req)
+	})
+}
+
+// CancelAssetChunkUpload removes a checksum-scoped temporary chunk directory.
+func (pc *PlatformController) CancelAssetChunkUpload(c *gin.Context) {
+	ret, err := pc.srv.Platforms().AssetChunkUploadCancel(c, c.Param("checksum"))
+	core.WriteResponse(c, err, ret)
+}
+
+func (pc *PlatformController) ListAssets(c *gin.Context) {
+	core.Run(c, &iapiserver.AssetListRequest{}, func(r *iapiserver.AssetListRequest) (any, error) {
+		return pc.srv.Platforms().AssetList(c, r)
+	})
+}
+
+func (pc *PlatformController) SearchAssets(c *gin.Context) {
+	core.Run(c, &iapiserver.AssetSearchRequest{}, func(r *iapiserver.AssetSearchRequest) (any, error) {
+		return pc.srv.Platforms().AssetSearch(c, r)
+	})
+}
+
+func (pc *PlatformController) ParseAssetSearch(c *gin.Context) {
+	core.Run(c, &iapiserver.AssetSearchParseRequest{}, func(r *iapiserver.AssetSearchParseRequest) (any, error) {
+		return pc.srv.Platforms().AssetSearchParse(c, r)
+	})
+}
+
+func (pc *PlatformController) GetAsset(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().AssetGet(c, c.Param("asset_id"))
+	})
+}
+
+func (pc *PlatformController) UpdateAsset(c *gin.Context) {
+	req := &iapiserver.AssetUpdateRequest{ID: c.Param("asset_id")}
+	core.Run(c, req, func(r *iapiserver.AssetUpdateRequest) (any, error) {
+		return pc.srv.Platforms().AssetUpdate(c, req)
+	})
+}
+
+// DeleteAsset marks one asset as deleted. It keeps raw content and thumbnail
+// objects in storage, and the asset is hidden from default list/search results.
+func (pc *PlatformController) DeleteAsset(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().AssetDelete(c, c.Param("asset_id"))
+	})
+}
+
+func (pc *PlatformController) GetAssetContent(c *gin.Context) {
+	path, mimeType, err := pc.srv.Platforms().AssetContentPath(c, c.Param("asset_id"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	if mimeType != "" {
+		c.Header("Content-Type", mimeType)
+	}
+	c.File(path)
+}
+
+func (pc *PlatformController) GetAssetThumbnail(c *gin.Context) {
+	path, mimeType, err := pc.srv.Platforms().AssetThumbnailPath(c, c.Param("asset_id"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	if mimeType != "" {
+		c.Header("Content-Type", mimeType)
+	}
+	c.File(path)
+}
+
+func (pc *PlatformController) CreateAssetGroup(c *gin.Context) {
+	core.Run(c, &iapiserver.AssetGroupCreateRequest{}, func(r *iapiserver.AssetGroupCreateRequest) (any, error) {
+		return pc.srv.Platforms().AssetGroupCreate(c, r)
+	})
+}
+
+func (pc *PlatformController) ListTasks(c *gin.Context) {
+	core.Run(c, &iapiserver.TaskListRequest{}, func(r *iapiserver.TaskListRequest) (any, error) {
+		return pc.srv.Platforms().TaskList(c, r)
+	})
+}
+
+func (pc *PlatformController) CreateTask(c *gin.Context) {
+	core.Run(c, &iapiserver.TaskCreateRequest{}, func(r *iapiserver.TaskCreateRequest) (any, error) {
+		return pc.srv.Platforms().TaskCreate(c, r)
+	})
+}
+
+func (pc *PlatformController) GetTask(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
+	})
+}
+
+func (pc *PlatformController) CancelTask(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().TaskCancel(c, c.Param("task_id"))
+	})
+}
+
+func (pc *PlatformController) TaskEvents(c *gin.Context) {
+	task, err := pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": []any{task}})
+}
+
+func (pc *PlatformController) RunCanvas(c *gin.Context) {
+	req := &iapiserver.TaskCreateRequest{
+		Name:  "canvas-run",
+		Type:  iapiserver.TaskTypeCanvasRun,
+		Queue: "default",
+		Input: map[string]any{"canvas_id": c.Param("canvas_id")},
+	}
+	ret, err := pc.srv.Platforms().TaskCreate(c, req)
+	core.WriteResponse(c, err, ret)
+}
+
+// DownloadCanvasAssets streams selected asset contents as a zip archive.
+// It accepts asset IDs only, does not expose local paths, and skips no security checks.
+func (pc *PlatformController) DownloadCanvasAssets(c *gin.Context) {
+	req := &iapiserver.CanvasAssetDownloadRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	filename := strings.TrimSpace(req.Filename)
+	if filename == "" {
+		filename = "canvas-assets.zip"
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), ".zip") {
+		filename += ".zip"
+	}
+	c.Header("Content-Type", "application/zip")
+	c.Header("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(filename, `"`, `_`)+`"`)
+	if err := pc.srv.Platforms().CanvasAssetDownloadZip(c, req, c.Writer); err != nil {
+		core.WriteResponse(c, err, nil)
+	}
+}
+
+// RegisterCanvasOutput records an existing asset as a canvas output reference.
+// It returns metadata only and creates an async audit task.
+func (pc *PlatformController) RegisterCanvasOutput(c *gin.Context) {
+	core.Run(
+		c,
+		&iapiserver.CanvasAssetRegisterOutputRequest{},
+		func(r *iapiserver.CanvasAssetRegisterOutputRequest) (any, error) {
+			return pc.srv.Platforms().CanvasAssetRegisterOutput(c, r)
+		},
+	)
+}
+
+// RunCanvasNode creates a task for one canvas node execution.
+// Provider-specific execution is handled by workers through the task input.
+func (pc *PlatformController) RunCanvasNode(c *gin.Context) {
+	req := &iapiserver.CanvasNodeRunRequest{}
+	core.Run(c, req, func(r *iapiserver.CanvasNodeRunRequest) (any, error) {
+		return pc.srv.Platforms().CanvasNodeRun(c, c.Param("canvas_id"), c.Param("node_id"), r)
+	})
+}
+
+// GetCanvasRun returns the task backing a canvas or node run.
+func (pc *PlatformController) GetCanvasRun(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
+	})
+}
+
+// CancelCanvasRun cancels the task backing a canvas or node run.
+func (pc *PlatformController) CancelCanvasRun(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().TaskCancel(c, c.Param("task_id"))
+	})
+}
+
+func splitTags(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == '\n' || r == '\t'
+	})
+	tags := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			tags = append(tags, part)
+		}
+	}
+	return tags
+}

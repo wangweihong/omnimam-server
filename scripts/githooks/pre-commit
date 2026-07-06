@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+LC_ALL=C
+
+local_branch="$(git rev-parse --abbrev-ref HEAD)"
+
+RED='\033[00;31m'
+YELLOW='\033[00;33m' # yellow color code
+RESTORE='\033[0m'    # Text Reset means no color change
+valid_branch_regex="^(master|develop)$|(feature|release|hotfix)(\/[a-z0-9._-]+)+$|^HEAD$"
+
+message=$(cat <<EOF
+Branch names in this project must adhere to this contract: $valid_branch_regex.
+Your commit will be rejected. You should rename your branch to a valid name and try again.
+example:
+  feature/0.0.1/makefile
+  feature/makefile
+EOF
+)
+if [[ ! $local_branch =~ $valid_branch_regex ]]
+then
+    printf "${RED}There is something wrong with your branch name.\n"
+    printf "${YELLOW}local branch name is: ${local_branch}.\n"
+    printf "${RESTORE}\n"
+    echo "$message"
+    exit 1
+fi
+
+# avoid push to protected branch directly
+protected_branch="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+# a branch name where you want to prevent git push. In this case, it's "master"
+if [ -n "$protected_branch" ] && [ "$branch" = "$protected_branch" ]; then
+  echo "You can't commit directly to '"${branch}"' branch" # webstorm or intellij will show this as popup
+  exit 1 # if you remove this line then it won't block push but send message to group and on command line
+fi
+
+exit 0

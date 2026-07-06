@@ -1,0 +1,44 @@
+# Already included in default config of Docker image osixia/openldap:1.4.0.
+#
+# dn: dc=example,dc=org
+# objectClass: dcObject
+# objectClass: organization
+# o: Example Company
+# dc: example
+# 定义一个用户域
+dn: ou=People,dc=example,dc=org
+objectClass: organizationalUnit
+ou: People
+
+dn: cn=jane,ou=People,dc=example,dc=org  # 用户的唯一ID。 LDAP通过该ID来唯一标志
+objectClass: person # 用户对象类
+objectClass: inetOrgPerson
+sn: doe   # 用户姓，这些属性随便定义
+cn: jane  # 用户名
+mail: janedoe@example.com
+userpassword: foo
+
+dn: cn=john,ou=People,dc=example,dc=org
+objectClass: person
+objectClass: inetOrgPerson
+sn: doe
+cn: john
+mail: johndoe@example.com
+userpassword: bar
+
+# Group definitions.
+# 定义一个用户组域
+dn: ou=Groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: Groups
+
+dn: cn=admins,ou=Groups,dc=example,dc=org  # 用户组唯一ID
+objectClass: groupOfNames # 组对象类。通过这个字段来判断某个dn是用户，还是用户组
+cn: admins //用户组名
+member: cn=john,ou=People,dc=example,dc=org  # 该用户组内的成员（用户DN)
+member: cn=jane,ou=People,dc=example,dc=org
+
+dn: cn=developers,ou=Groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: developers
+member: cn=jane,ou=People,dc=example,dc=org

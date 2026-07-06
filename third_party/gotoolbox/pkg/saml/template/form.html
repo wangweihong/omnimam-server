@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SAML Response</title>
+</head>
+<body>
+<form id="samlForm" method="post" action="{{ .ActionURL }}">
+    <input type="hidden" name="SAMLResponse" value="{{ .SAMLResponse }}">
+    <noscript>
+        <p>JavaScript is disabled. Please click the Submit button below to continue.</p>
+        <input type="submit" value="Submit">
+    </noscript>
+</form>
+<script type="text/javascript">
+    document.getElementById("samlForm").submit();
+</script>
+</body>
+</html>

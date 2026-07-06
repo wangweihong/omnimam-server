@@ -1,0 +1,31 @@
+syntax = "proto3";
+package debug;
+
+// 注意: 新版本的protobuf要求go_package必须至少带有一个/
+// 可以是相对路径，或者是项目域名路径
+option go_package = "github.com/wangweihong/omnimam/backend/pkg/grpcproto/apis/debug";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+import "callstatus/callstatus.proto";
+
+service DebugService {
+    // panic test
+    rpc Panic (google.protobuf.Empty) returns (google.protobuf.Empty);
+    // sleep as specific time
+    rpc Sleep (SleepRequest) returns (google.protobuf.Empty);
+    //
+    rpc Example(ExampleRequest)returns (ExampleResponse);
+}
+
+message SleepRequest {
+    google.protobuf.Duration duration = 1;
+}
+
+message ExampleRequest {
+   bool success = 1;
+}
+
+message ExampleResponse {
+    callstatus.CallStatus CallStatus  = 1;
+}

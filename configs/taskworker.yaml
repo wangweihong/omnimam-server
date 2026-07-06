@@ -1,0 +1,67 @@
+# taskworker 全配置
+
+# 通用服务配置
+server:
+  mode: debug # server mode: release, debug, test，默认 release
+  healthz: false # taskworker 不安装 HTTP 路由，但需要保留公共配置结构
+  middlewares: context,requestid
+  runtime-debug: true
+  runtime-debug-dir: ${TASKWORKER_RUNTIME_DEBUG_OUTPUT_DIR}
+
+# taskworker 复用公共 Options 校验；当前进程不启动 HTTP server。
+insecure:
+  bind-address: ${TASKWORKER_INSECURE_BIND_ADDRESS}
+  bind-port: ${TASKWORKER_INSECURE_BIND_PORT}
+  required: true
+
+secure:
+  bind-address: ${TASKWORKER_SECURE_BIND_ADDRESS}
+  bind-port: ${TASKWORKER_SECURE_BIND_PORT}
+  required: false
+  tls:
+    cert-data:
+      cert:
+      key:
+    cert-key:
+      cert-file: ${TASKWORKER_SECURE_TLS_CERT_FILE}
+      private-key-file: ${TASKWORKER_SECURE_TLS_CERT_KEY}
+
+log:
+  name: taskworker
+  development: true
+  level: debug
+  format: console
+  enable-color: true
+  disable-caller: false
+  disable-stacktrace: false
+  output-paths: ${omnimam_LOG_DIR}/taskworker.log,stdout
+  error-output-paths: ${omnimam_LOG_DIR}/taskworker.error.log
+
+feature:
+  enable-metrics: false
+  profiling: false
+  profile-address: 127.0.0.1:6061
+  standalone-profiling: false
+
+database:
+  type: ${APISERVER_DATABASE_TYPE}
+  postgresql:
+    database: ${APISERVER_DATABASE_NAME}
+    host: ${APISERVER_POSTGRES_HOST}
+    port: ${APISERVER_POSTGRES_PORT}
+    username: ${APISERVER_POSTGRES_USER}
+    password: ${APISERVER_POSTGRES_PASSWORD}
+    log-mode: 1
+    max-connection-life-time: 10s
+    max-idle-connections: 100
+    max-open-connections: 100
+    start-alive: true
+  mysql:
+    database: ${APISERVER_DATABASE_NAME}
+    host: ${APISERVER_MYSQL_HOST}
+    username: ${APISERVER_MYSQL_USER}
+    password: ${APISERVER_MYSQL_PASSWORD}
+    max-connection-life-time: 10s
+    max-idle-connections: 100
+    max-open-connections: 100
+    log-mode: 1

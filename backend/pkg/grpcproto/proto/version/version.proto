@@ -1,0 +1,24 @@
+syntax = "proto3";
+package version;
+
+// 注意: 新版本的protobuf要求go_package必须至少带有一个/
+// 可以是相对路径，或者是项目域名路径
+option go_package = "github.com/wangweihong/omnimam/backend/pkg/grpcproto/apis/version";
+
+service VersionService {
+    // Return server version info
+    rpc Version (VersionRequest) returns (VersionResponse);
+}
+
+message VersionRequest {
+}
+
+message VersionResponse {
+  string GitVersion=1;
+  string GitCommit=2;
+  string GitTreeState=3;
+  string BuildDate=4;
+  string GoVersion=5;
+  string Compiler=6;
+  string Platform=7;
+}

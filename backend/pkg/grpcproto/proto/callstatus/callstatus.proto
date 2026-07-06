@@ -1,0 +1,14 @@
+syntax = "proto3";
+package callstatus;
+
+// 注意: 新版本的protobuf要求go_package必须至少带有一个/
+// 可以是相对路径，或者是项目域名路径
+option go_package = "github.com/wangweihong/omnimam/backend/pkg/grpcproto/apis/callstatus";
+
+
+message CallStatus {
+  int64 code = 1;
+  map <string,string>  message  = 2;
+  repeated string stack = 3;
+  string  description  = 4;
+}

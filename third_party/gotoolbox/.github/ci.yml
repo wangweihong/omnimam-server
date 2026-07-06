@@ -1,0 +1,53 @@
+name: EazycloudCI
+
+on:
+#  push:
+#    branchs:
+#      - '*'
+#    branches-ignore:
+#      - 'master'
+  pull_request:
+    types: [opened, reopened]
+
+jobs:
+
+  gotoolboxci:
+    name: Test with go ${{ matrix.go_version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    environment:
+      name: gotoolboxci
+
+    strategy:
+      matrix:
+        go_version: [1.20]
+        os: [ubuntu-latest]
+
+    steps:
+
+      - name: Set up Go ${{ matrix.go_version }}
+        uses: actions/setup-go@v2
+        with:
+          go-version: ${{ matrix.go_version }}
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v3
+
+      - name: Run go modules tidy
+        run: |
+          make tidy
+
+      - name: Check syntax and styling of go sources
+        run: |
+          make lint
+
+      - name: Run unit test and get test coverage
+        run: |
+          make cover
+
+      # generate test coverage file stored if workflows complete
+      - name: Collect Test Coverage File
+        uses: actions/upload-artifact@v1.0.0
+        with:
+          name: main-output
+          path: _output/coverage.out

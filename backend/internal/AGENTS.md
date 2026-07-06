@@ -1,0 +1,5 @@
+- 对外公共库放在 `/pkg`；项目内公共库放在 `/internal/pkg`。
+- 新增 string、map、slice、set、convert、concurrency、wait、httpcli、validation 等通用 helper/function 前，必须先查复用：读取 `third_party/gotoolbox/README*`；README 不存在时，从 `third_party/gotoolbox/pkg/**` 的包目录、源码、测试和示例采集包列表，并查看对应包导出函数。
+- 只有确认 `github.com/wangweihong/gotoolbox`、仓库 `/pkg`、`backend/pkg`、`backend/internal/pkg` 都没有合适公共函数后，才允许新增本地 helper；必须先判断能否做成可复用通用泛型函数，避免只服务单个业务场景。
+- 新增 HTTP client 请求、外部 API 调用封装、provider 或 gateway 调用时，必须优先使用 `github.com/wangweihong/gotoolbox` 的 `httpcli` 包；只有 `httpcli` 不能满足明确需求时，才允许使用标准库或其他 HTTP client，并在实现前说明原因和 trade-off。
+- 新增 public 或 internal library code 必须补单元测试；library unit test 沿用当前项目 GoConvey 约定，使用 `github.com/smartystreets/goconvey/convey` 的 dot import。

@@ -1,0 +1,3 @@
+[submodule "third_party/gotoolbox"]
+	path = third_party/gotoolbox
+	url = git@github.com:wangweihong/gotoolbox.git

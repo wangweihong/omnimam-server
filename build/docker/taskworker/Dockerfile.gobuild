@@ -1,0 +1,43 @@
+ARG GOLANG_IMAGE=golang:1.26
+ARG BASE_IMAGE=registry.cn-hangzhou.aliyuncs.com/eazycloud/ubuntu:24.04
+
+FROM --platform=$TARGETPLATFORM $GOLANG_IMAGE AS builder
+ARG TARGETPLATFORM
+ARG GO_BUILDFLAGS
+ARG GO_PROXY
+
+WORKDIR /gobuild
+ENV GOPROXY=$GO_PROXY
+COPY . .
+RUN CGO_ENABLED=0 go build $GO_BUILDFLAGS -o ./_output/platforms/$TARGETPLATFORM/__COMMAND__ ./cmd/__COMMAND__
+
+FROM --platform=$TARGETPLATFORM $BASE_IMAGE
+ARG TARGETPLATFORM
+ARG BASE_IMAGE
+ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
+ARG CA_CERTIFICATES_VERSION=20260601~24.04.1
+
+WORKDIR /opt/omnimam
+RUN mkdir -p /var/log/omnimam && \
+    mkdir -p /etc/omnimam
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ `echo $BASE_IMAGE | grep -q -E "ubuntu|debian" && echo 1 || echo 0` -eq 1 ]; then \
+        set -eux; \
+        if ! find /var/lib/apt/lists -type f | grep -q .; then apt-get update; fi; \
+        apt-get install -y --no-install-recommends \
+            ffmpeg="${FFMPEG_VERSION}" \
+            ca-certificates="${CA_CERTIFICATES_VERSION}"; \
+    fi
+
+RUN if [ `echo $BASE_IMAGE | grep -q -E "ubuntu" && echo 1 || echo 0` -eq 1 ]; then \
+        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+        echo "Asia/Shanghai" > /etc/timezone; \
+    fi
+
+COPY --from=builder /gobuild/_output/platforms/$TARGETPLATFORM/__COMMAND__ /opt/omnimam/bin/
+COPY --from=builder /gobuild/_output/configs/__COMMAND__.yaml /etc/omnimam/
+
+ENTRYPOINT ["/opt/omnimam/bin/__COMMAND__"]
+CMD ["-c", "/etc/omnimam/__COMMAND__.yaml"]
