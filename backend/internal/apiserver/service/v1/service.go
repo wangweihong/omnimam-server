@@ -8,6 +8,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/setting"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
@@ -19,6 +20,7 @@ type Service interface {
 	Prompts() prompt.PromptSrv
 	Canvases() canvas.CanvasSrv
 	Platforms() platform.PlatformSrv
+	TaskCenters() taskcenter.TaskCenterSrv
 	AIChat() aichat.AIChatSrv
 }
 
@@ -55,6 +57,10 @@ func (s *service) Canvases() canvas.CanvasSrv {
 
 func (s *service) Platforms() platform.PlatformSrv {
 	return platform.NewService(s.store)
+}
+
+func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
+	return taskcenter.NewService(s.store)
 }
 
 func (s *service) AIChat() aichat.AIChatSrv {

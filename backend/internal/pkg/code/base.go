@@ -307,3 +307,51 @@ const (
 	// @EN Frontend export assembly failed.
 	ErrAIChatExportFailed int = 110219
 )
+
+// task-center: SSOT scoped business errors.
+const (
+	// @HTTP 200
+	// @CN 任务定义不合法。
+	// @EN Task definition is invalid.
+	ErrTaskDefinitionInvalid int = 140200
+
+	// @HTTP 200
+	// @CN DAGFlowTask 存在环形依赖。
+	// @EN DAGFlowTask contains a cyclic dependency.
+	ErrTaskDAGCycleDetected int = 140201
+
+	// @HTTP 200
+	// @CN 任务运行不存在或当前用户不可见。
+	// @EN Task run does not exist or is not visible to the current user.
+	ErrTaskRunNotFound int = 140400
+
+	// @HTTP 200
+	// @CN 任务当前状态不允许执行该操作。
+	// @EN Current task run status does not allow this operation.
+	ErrTaskRunStateBlocked int = 140401
+
+	// @HTTP 200
+	// @CN 任务重试策略不合法。
+	// @EN Task retry policy is invalid.
+	ErrTaskRetryPolicyInvalid int = 140402
+
+	// @HTTP 200
+	// @CN Worker 不存在、不可用或能力不匹配。
+	// @EN Worker does not exist, is unavailable, or capability does not match.
+	ErrTaskWorkerNotAvailable int = 140600
+
+	// @HTTP 200
+	// @CN ExecutionLease 无效、已过期或不属于当前 Worker。
+	// @EN ExecutionLease is invalid, expired, or does not belong to current worker.
+	ErrTaskLeaseInvalid int = 140800
+
+	// @HTTP 200
+	// @CN 当前执行尝试不允许更新任务结果。
+	// @EN Current task attempt is not allowed to update task result.
+	ErrTaskAttemptUpdateRejected int = 141000
+
+	// @HTTP 200
+	// @CN 当前用户缺少任务中心操作权限。
+	// @EN Current user does not have task center permission.
+	ErrTaskPermissionDenied int = 141200
+)

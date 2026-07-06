@@ -300,6 +300,27 @@ type TaskStore interface {
 	Claim(ctx context.Context, queue, worker string, limit int, lease time.Duration) ([]*iapiserver.Task, error)
 }
 
+type TaskCenterStore interface {
+	ListDefinitions(ctx context.Context, req *iapiserver.TaskDefinitionListRequest) ([]*iapiserver.TaskDefinition, int64, error)
+	GetDefinition(ctx context.Context, definitionType, id string) (*iapiserver.TaskDefinition, error)
+	AddDefinition(ctx context.Context, data *iapiserver.TaskDefinition) (*iapiserver.TaskDefinition, error)
+	ListRuns(ctx context.Context, req *iapiserver.TaskRunListRequest) ([]*iapiserver.TaskRun, int64, error)
+	GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error)
+	AddRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
+	UpdateRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
+	SoftDeleteRun(ctx context.Context, id string) error
+	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
+	RegisterWorker(ctx context.Context, data *iapiserver.Worker) (*iapiserver.Worker, error)
+	HeartbeatWorker(ctx context.Context, req *iapiserver.WorkerHeartbeatRequest) (*iapiserver.Worker, error)
+	ClaimRun(ctx context.Context, req *iapiserver.ClaimTaskRunRequest) (*iapiserver.ClaimTaskRunResponse, error)
+	UpdateProgress(ctx context.Context, req *iapiserver.ProgressUpdateRequest) (*iapiserver.TaskRun, error)
+	CompleteRun(ctx context.Context, req *iapiserver.TaskRunCompleteRequest) (*iapiserver.TaskRun, error)
+	FailRun(ctx context.Context, req *iapiserver.TaskRunFailRequest) (*iapiserver.TaskRun, error)
+	RenewLease(ctx context.Context, req *iapiserver.LeaseRenewRequest) (*iapiserver.ExecutionLease, error)
+	Health(ctx context.Context) (*iapiserver.TaskCenterHealth, error)
+	AddEvent(ctx context.Context, data *iapiserver.TaskRunEvent) (*iapiserver.TaskRunEvent, error)
+}
+
 type FeatureFlagStore interface {
 	List(ctx context.Context) ([]*iapiserver.FeatureFlag, error)
 	Upsert(ctx context.Context, data *iapiserver.FeatureFlag) (*iapiserver.FeatureFlag, error)

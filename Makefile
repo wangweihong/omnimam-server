@@ -70,7 +70,7 @@ image:
 	@$(MAKE) image.build
 
 .PHONY: compose
-compose: image frontend.image
+compose: image
 	@OMNIMAM_IMAGE_TAG=$(VERSION)-$(shell $(GO) env GOHOSTARCH) \
 		OMNIMAM_FRONTEND_IMAGE_TAG=$(FRONTEND_VERSION) \
 		OMNIMAM_REGISTRY_PREFIX=$(REGISTRY_PREFIX) \

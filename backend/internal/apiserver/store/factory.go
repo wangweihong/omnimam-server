@@ -42,6 +42,7 @@ type Factory interface {
 	AssetGroupMembers() AssetGroupMemberStore
 	AssetRelations() AssetRelationStore
 	Tasks() TaskStore
+	TaskCenters() TaskCenterStore
 	FeatureFlags() FeatureFlagStore
 	Roles() RoleStore
 	Permissions() PermissionStore

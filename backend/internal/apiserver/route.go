@@ -11,6 +11,7 @@ import (
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
+	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
@@ -42,11 +43,44 @@ func InstallApis(g *gin.Engine) *gin.Engine {
 			installAssetApis(v1, storeIns)
 			installPromptApis(v1, storeIns)
 			installCanvasApis(v1, storeIns)
+			installTaskCenterApis(v1, storeIns)
 			installAIChatApis(v1, storeIns)
 		}
 	}
 
 	return g
+}
+
+func installTaskCenterApis(rg *gin.RouterGroup, storeIns store.Factory) {
+	taskCenterController := taskcenterctrl.NewController(storeIns)
+	rg.GET("/task-definitions", taskCenterController.ListTaskDefinitions)
+	rg.POST("/atomic-tasks", taskCenterController.CreateAtomicTask)
+	rg.POST("/task-groups", taskCenterController.CreateTaskGroup)
+	rg.POST("/dag-flow-tasks", taskCenterController.CreateDAGFlowTask)
+
+	taskRuns := rg.Group("/task-runs")
+	{
+		taskRuns.GET("", taskCenterController.ListTaskRuns)
+		taskRuns.POST("", taskCenterController.CreateTaskRun)
+		taskRuns.GET("/:run_id", taskCenterController.GetTaskRun)
+		taskRuns.DELETE("/:run_id", taskCenterController.DeleteTaskRun)
+		taskRuns.GET("/:run_id/attempts", taskCenterController.ListTaskAttempts)
+		taskRuns.POST("/:run_id/cancel", taskCenterController.CancelTaskRun)
+		taskRuns.POST("/:run_id/retry", taskCenterController.RetryTaskRun)
+		taskRuns.POST("/:run_id/progress", taskCenterController.UpdateTaskRunProgress)
+		taskRuns.POST("/:run_id/complete", taskCenterController.CompleteTaskRun)
+		taskRuns.POST("/:run_id/fail", taskCenterController.FailTaskRun)
+	}
+
+	workers := rg.Group("/workers")
+	{
+		workers.POST("", taskCenterController.RegisterWorker)
+		workers.POST("/:worker_id/heartbeat", taskCenterController.HeartbeatWorker)
+		workers.POST("/:worker_id/claim", taskCenterController.ClaimTaskRun)
+	}
+
+	rg.POST("/leases/:lease_id/renew", taskCenterController.RenewExecutionLease)
+	rg.GET("/task-center/health", taskCenterController.GetTaskCenterHealth)
 }
 
 func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {

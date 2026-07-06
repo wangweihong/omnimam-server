@@ -504,6 +504,7 @@ func (f *testFactory) AssetGroups() store.AssetGroupStore             { return n
 func (f *testFactory) AssetGroupMembers() store.AssetGroupMemberStore { return nil }
 func (f *testFactory) AssetRelations() store.AssetRelationStore       { return nil }
 func (f *testFactory) Tasks() store.TaskStore                         { return nil }
+func (f *testFactory) TaskCenters() store.TaskCenterStore             { return nil }
 func (f *testFactory) FeatureFlags() store.FeatureFlagStore           { return nil }
 func (f *testFactory) Roles() store.RoleStore                         { return nil }
 func (f *testFactory) Permissions() store.PermissionStore             { return nil }

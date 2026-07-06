@@ -1,3 +1,6 @@
 [submodule "third_party/gotoolbox"]
 	path = third_party/gotoolbox
 	url = git@github.com:wangweihong/gotoolbox.git
+[submodule "ssot"]
+	path = ssot
+	url = https://github.com/wangweihong/omnimam-spec.git

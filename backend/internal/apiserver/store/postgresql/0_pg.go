@@ -17,6 +17,12 @@ var (
 	once              sync.Once
 )
 
+const taskCenterActiveLeaseIndexSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_execution_leases_active_run
+ON task_execution_leases(run_id)
+WHERE status IN ('ACTIVE', 'RENEWED')
+`
+
 // GetPostgresSQLFactoryOr create postgresql factory with the given config.
 func GetPostgresSQLFactoryOr(opts *genericoptions.PostgresSQLOptions) (store.Factory, error) {
 	if opts == nil && postgresqlFactory == nil {
@@ -59,7 +65,14 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
+	if err := ds.ensureTaskCenterScheme(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (ds *datastore) ensureTaskCenterScheme() error {
+	return ds.db.Exec(taskCenterActiveLeaseIndexSQL).Error
 }
 
 func (ds *datastore) Users() store.UserStore {
@@ -173,6 +186,10 @@ func (ds *datastore) AssetRelations() store.AssetRelationStore {
 
 func (ds *datastore) Tasks() store.TaskStore {
 	return newTask(ds)
+}
+
+func (ds *datastore) TaskCenters() store.TaskCenterStore {
+	return newTaskCenter(ds)
 }
 
 func (ds *datastore) FeatureFlags() store.FeatureFlagStore {

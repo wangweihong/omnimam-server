@@ -173,15 +173,6 @@ services:
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
 
-  frontend:
-    image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/frontend:${OMNIMAM_FRONTEND_IMAGE_TAG:-latest}
-    container_name: omnimam-frontend
-    restart: unless-stopped
-    depends_on:
-      apiserver:
-        condition: service_started
-    ports:
-      - "${OMNIMAM_FRONTEND_PORT:-9990}:80"
 
 volumes:
   omnimam_postgres_data:
