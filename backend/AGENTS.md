@@ -41,7 +41,7 @@
 - 修复 bug 时允许并要求用注释解释修改原因、防回归点、兼容性或历史背景；禁止解释基础语法或复述代码字面意思。
 - 注释必须优先解释设计意图、业务原因、约束来源、兼容性背景；避免冗余堆叠，单行注释放在代码上方，行尾注释只允许极短对齐注记，平均每 50 行不超过 3 条，复杂算法例外。
 - 新增或修改 HTTP API、service/store/provider adapter/worker task interface 时，必须补充中文功能注释，说明用途、主要 input/output、关键 side effect 或 async behavior。
-- `apis/iaiserver` 结构体字段必须补充功能注释；Public API 注释需说明 permission 或 `FeatureFlag` 影响，以及 endpoint 是否返回原始 asset content、metadata/thumbnail，或是否创建 async `Task`。
+- `backend/apis/iapiserver/meta_*.go` 元数据结构体字段和 `backend/apis/iapiserver/request_*.go` 请求参数结构体字段必须补充中文功能注释，说明字段业务含义、适用场景、主要约束、枚举/默认值/权限或 `FeatureFlag` 影响；禁止只复述字段名。Public API 注释需说明 permission 或 `FeatureFlag` 影响，以及 endpoint 是否返回原始 asset content、metadata/thumbnail，或是否创建 async `Task`。
 - Internal helper function 不要求长注释，但 exported interface method 和 controller endpoint 必须有清晰功能说明。
 
 ## 公共函数复用

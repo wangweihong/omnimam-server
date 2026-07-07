@@ -62,7 +62,7 @@ SSOT_VERSION.commit 必须与 ssot submodule 当前 commit 一致。
 当任务涉及后端实现、API、数据库、migration、错误码、权限、事件、任务调度、provider/runtime 适配时，必须读取：
 
 ```text
-.codex/skills/omnimam-server-backend/SKILL.md
+skills/omnimam-server-backend/SKILL.md
 ```
 
 并同时遵循：
