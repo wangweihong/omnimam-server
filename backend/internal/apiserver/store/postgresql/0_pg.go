@@ -184,10 +184,6 @@ func (ds *datastore) AssetRelations() store.AssetRelationStore {
 	return newAssetRelation(ds)
 }
 
-func (ds *datastore) Tasks() store.TaskStore {
-	return newTask(ds)
-}
-
 func (ds *datastore) TaskCenters() store.TaskCenterStore {
 	return newTaskCenter(ds)
 }

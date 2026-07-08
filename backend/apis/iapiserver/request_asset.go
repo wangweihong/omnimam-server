@@ -378,7 +378,7 @@ type (
 
 	CanvasWorkflowPackageExportResponse struct {
 		Package CanvasWorkflowPackage `json:"package"`
-		Task    *Task                 `json:"task,omitempty"`
+		TaskRun *TaskRun              `json:"task_run,omitempty"`
 	}
 
 	CanvasWorkflowPackageImportRequest struct {
@@ -386,8 +386,8 @@ type (
 	}
 
 	CanvasWorkflowPackageImportResponse struct {
-		Canvas *Canvas `json:"canvas"`
-		Task   *Task   `json:"task,omitempty"`
+		Canvas  *Canvas  `json:"canvas"`
+		TaskRun *TaskRun `json:"task_run,omitempty"`
 	}
 
 	CanvasAssetDownloadItem struct {
@@ -409,8 +409,8 @@ type (
 	}
 
 	CanvasAssetRegisterOutputResponse struct {
-		Asset *AssetRecord `json:"asset"`
-		Task  *Task        `json:"task,omitempty"`
+		Asset   *AssetRecord `json:"asset"`
+		TaskRun *TaskRun     `json:"task_run,omitempty"`
 	}
 
 	CanvasNodeRunRequest struct {
@@ -419,7 +419,7 @@ type (
 	}
 
 	CanvasRunResponse struct {
-		Task *Task `json:"task"`
+		TaskRun *TaskRun `json:"task_run"`
 	}
 
 	CanvasTouchResponse struct {

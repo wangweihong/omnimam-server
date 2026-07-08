@@ -23,142 +23,200 @@ type (
 type (
 	ProviderListRequest struct {
 		imachinery.BasicQueryParam
-		Type    string `json:"type"    form:"type"`
-		Enabled *bool  `json:"enabled" form:"enabled"`
+		// OwnerUserID 由服务端上下文注入，客户端不能直接指定。
+		OwnerUserID string `json:"-"            form:"-"`
+		// Type 按 provider_type 过滤 provider 列表。
+		Type string `json:"provider_type" form:"provider_type"`
+		// Enabled 过滤启用或禁用的 provider，空值表示不过滤。
+		Enabled *bool `json:"enabled"      form:"enabled"`
 	}
 
 	ProviderListResponse struct {
-		imachinery.ListRet
-		Providers []*Provider `json:"providers"`
+		// Total 返回当前查询条件下的 provider 总数。
+		Total int64 `json:"total"`
+		// Items 返回当前页 provider，不包含 API key 明文。
+		Items []*Provider `json:"items"`
 	}
 
 	ProviderCreateRequest struct {
-		Name          string         `json:"name"           binding:"required"`
-		Type          string         `json:"type"           binding:"required"`
-		Enabled       *bool          `json:"enabled"`
-		BaseURL       string         `json:"base_url"`
-		AuthType      string         `json:"auth_type"`
-		CredentialRef string         `json:"credential_ref"`
-		PresetKey     string         `json:"preset_key"`
-		Config        map[string]any `json:"config"`
+		// Name 是 provider 展示名称。
+		Name string `json:"name"           binding:"required"`
+		// Type 表示 provider 协议类型，当前 S2 使用 openai-compatible。
+		Type string `json:"provider_type"   binding:"required"`
+		// Enabled 控制 provider 创建后是否立即可用，空值使用服务端默认。
+		Enabled *bool `json:"enabled"`
+		// BaseURL 是 provider API 入口地址。
+		BaseURL string `json:"api_base_url"     binding:"required"`
+		// AuthType 表示鉴权方式，当前实现使用 api_key。
+		AuthType string `json:"auth_type"       binding:"required"`
+		// CredentialRef 引用凭据存储中的 API key，不接收明文密钥。
+		CredentialRef string `json:"api_key_ref"`
+		// PresetKey 是旧 preset 导入入口的内部参数，不属于 S2 请求体。
+		PresetKey string `json:"-"`
+		// Config 保存 provider 额外连接配置。
+		Config map[string]any `json:"extra_config"`
+		// Description 保存 provider 说明文本。
+		Description string `json:"description"`
 	}
 
 	ProviderUpdateRequest struct {
-		ID            string  `json:"id"`
-		Name          *string `json:"name"`
-		Type          *string `json:"type"`
-		Enabled       *bool   `json:"enabled"`
-		BaseURL       *string `json:"base_url"`
-		AuthType      *string `json:"auth_type"`
-		CredentialRef *string `json:"credential_ref"`
-	}
-
-	ProviderPresetListResponse struct {
-		Presets []*ProviderPreset `json:"presets"`
-	}
-
-	ProviderPresetInstallRequest struct {
-		PresetKey string `json:"preset_key"`
-	}
-
-	ProviderPreset struct {
-		Key               string                  `json:"key"`
-		Name              string                  `json:"name"`
-		Type              string                  `json:"type"`
-		BaseURL           string                  `json:"base_url"`
-		AuthType          string                  `json:"auth_type"`
-		Icon              string                  `json:"icon"`
-		APISettingsSchema []ProviderAPISetting    `json:"api_settings_schema"`
-		ModelTypeRules    []ProviderModelTypeRule `json:"model_type_rules"`
-	}
-
-	ProviderAPISetting struct {
-		Key         string `json:"key"`
-		Label       string `json:"label"`
-		Description string `json:"description"`
-		Type        string `json:"type"`
-		Default     any    `json:"default"`
+		// ID 指定要更新的 provider，由路径参数写入。
+		ID string `json:"id"`
+		// Name 更新 provider 展示名称，空指针表示不修改。
+		Name *string `json:"name"`
+		// Type 更新 provider 协议类型，空指针表示不修改。
+		Type *string `json:"provider_type"`
+		// Enabled 更新 provider 可用状态，空指针表示不修改。
+		Enabled *bool `json:"enabled"`
+		// BaseURL 更新 provider API 入口地址，空指针表示不修改。
+		BaseURL *string `json:"api_base_url"`
+		// AuthType 更新鉴权方式，空指针表示不修改。
+		AuthType *string `json:"auth_type"`
+		// CredentialRef 更新凭据引用，空指针表示不修改。
+		CredentialRef *string `json:"api_key_ref"`
+		// Config 更新 provider 额外连接配置，空指针表示不修改。
+		Config *map[string]any `json:"extra_config"`
+		// Description 更新 provider 描述，空指针表示不修改。
+		Description *string `json:"description"`
 	}
 
 	ProviderModelTypeRule struct {
-		Contains     []string `json:"contains"`
-		ModelTypes   []string `json:"model_types"`
-		GroupName    string   `json:"group_name"`
-		EndpointType string   `json:"endpoint_type"`
+		// Contains 保存匹配上游模型名的关键字集合。
+		Contains []string `json:"contains"`
+		// ModelTypes 是匹配成功后归类出的模型类型。
+		ModelTypes []string `json:"model_types"`
+		// GroupName 是模型选项展示分组。
+		GroupName string `json:"group_name"`
+		// EndpointType 是 provider 同步时推导的内部端点类型。
+		EndpointType string `json:"endpoint_type"`
 	}
 
 	// ProviderTestRequest tests a provider connection with optional unsaved form overrides.
 	// It only validates metadata/API reachability and does not persist credentials or create tasks.
 	ProviderTestRequest struct {
-		ID            string `json:"id"`
-		BaseURL       string `json:"base_url"`
-		AuthType      string `json:"auth_type"`
-		CredentialRef string `json:"credential_ref"`
+		// ID 指定已保存的 provider；为空时使用请求中的临时配置做检测。
+		ID string `json:"id"`
+		// BaseURL 是未保存配置的临时 API 入口地址。
+		BaseURL string `json:"api_base_url"`
+		// AuthType 是未保存配置的临时鉴权方式。
+		AuthType string `json:"auth_type"`
+		// CredentialRef 是未保存配置的临时凭据引用。
+		CredentialRef string `json:"api_key_ref"`
 	}
 
 	ProviderTestResponse struct {
-		OK        bool   `json:"ok"`
-		Message   string `json:"message"`
-		LatencyMS int64  `json:"latency_ms"`
+		// TargetType 表示检测目标是 provider 还是 provider model。
+		TargetType string `json:"target_type"`
+		// ProviderID 返回检测关联的 provider ID。
+		ProviderID string `json:"provider_id"`
+		// ModelID 返回检测关联的 provider model ID，provider 级检测可为空。
+		ModelID string `json:"model_id,omitempty"`
+		// Success 表示连接检测是否成功。
+		Success bool `json:"success"`
+		// HealthStatus 返回检测后的健康状态。
+		HealthStatus string `json:"health_status"`
+		// Message 返回检测结果说明或失败原因。
+		Message string `json:"message"`
+		// CheckedAt 记录检测发生时间。
+		CheckedAt imachinery.Time `json:"checked_at"`
 	}
 
 	ProviderModelListRequest struct {
 		imachinery.BasicQueryParam
+		// OwnerUserID 由服务端上下文注入，客户端不能直接指定。
+		OwnerUserID string `json:"-"          form:"-"`
+		// ProviderID 过滤某个 provider 下的模型。
 		ProviderID string `json:"provider_id" form:"provider_id"`
-		Enabled    *bool  `json:"enabled"     form:"enabled"`
+		// Enabled 过滤启用或禁用的模型，空值表示不过滤。
+		Enabled *bool `json:"enabled"     form:"enabled"`
+		// Capability 过滤具备某项业务能力的模型。
 		Capability string `json:"capability"  form:"capability"`
+		// Usage 按默认模型用途过滤可选模型。
+		Usage string `json:"usage"       form:"usage"`
 	}
 
 	ProviderModelListResponse struct {
-		imachinery.ListRet
-		Models []*ProviderModel `json:"models"`
+		// Total 返回当前查询条件下的模型总数。
+		Total int64 `json:"total"`
+		// Items 返回 provider model 列表，包含健康状态但不包含凭据。
+		Items []*ProviderModel `json:"items"`
 	}
 
 	ProviderModelCreateRequest struct {
-		ProviderID    string         `json:"provider_id"`
-		Name          string         `json:"name"           binding:"required"`
-		Model         string         `json:"model"          binding:"required"`
-		EndpointType  string         `json:"endpoint_type"`
-		GroupName     string         `json:"group_name"`
-		Capabilities  []string       `json:"capabilities"`
-		ModelTypes    []string       `json:"model_types"`
-		Enabled       *bool          `json:"enabled"`
-		DefaultParams map[string]any `json:"default_params"`
-		Pricing       map[string]any `json:"pricing"`
+		// ProviderID 指定模型所属 provider。
+		ProviderID string `json:"provider_id"`
+		// Name 是模型展示名，对外字段为 display_name。
+		Name string `json:"display_name"    binding:"required"`
+		// Model 是上游 provider 的真实模型标识。
+		Model string `json:"model"          binding:"required"`
+		// EndpointType 是旧同步逻辑内部字段，不属于 S2 请求体。
+		EndpointType string `json:"-"`
+		// GroupName 是模型选项展示分组。
+		GroupName string `json:"group"`
+		// Capabilities 声明模型支持的业务能力。
+		Capabilities []string `json:"capabilities"`
+		// ModelTypes 是旧同步逻辑内部分类结果，不属于 S2 请求体。
+		ModelTypes []string `json:"-"`
+		// StreamSupported 表示模型是否支持流式输出，空值使用默认 true。
+		StreamSupported *bool `json:"stream_supported"`
+		// Enabled 控制模型创建后是否可选，空值使用服务端默认。
+		Enabled *bool `json:"enabled"`
+		// DefaultParams 是旧草稿字段，当前 S2 不接收。
+		DefaultParams map[string]any `json:"-"`
+		// Pricing 是旧草稿字段，当前 S2 不接收。
+		Pricing map[string]any `json:"-"`
 	}
 
 	ProviderModelUpdateRequest struct {
-		ID            string          `json:"id"`
-		ProviderID    string          `json:"provider_id"`
-		Name          *string         `json:"name"`
-		Model         *string         `json:"model"`
-		EndpointType  *string         `json:"endpoint_type"`
-		GroupName     *string         `json:"group_name"`
-		Capabilities  *[]string       `json:"capabilities"`
-		ModelTypes    *[]string       `json:"model_types"`
-		Enabled       *bool           `json:"enabled"`
-		DefaultParams *map[string]any `json:"default_params"`
-		Pricing       *map[string]any `json:"pricing"`
+		// ID 指定要更新的 provider model，由路径参数写入。
+		ID string `json:"id"`
+		// ProviderID 指定模型所属 provider，通常由路径或查询上下文确定。
+		ProviderID string `json:"provider_id"`
+		// Name 更新模型展示名，空指针表示不修改。
+		Name *string `json:"display_name"`
+		// Model 更新上游 provider 的真实模型标识，空指针表示不修改。
+		Model *string `json:"model"`
+		// EndpointType 是旧同步逻辑内部字段，当前不接收。
+		EndpointType *string `json:"-"`
+		// GroupName 更新模型选项展示分组，空指针表示不修改。
+		GroupName *string `json:"group"`
+		// Capabilities 更新模型能力集合，空指针表示不修改。
+		Capabilities *[]string `json:"capabilities"`
+		// ModelTypes 是旧同步逻辑内部字段，当前不接收。
+		ModelTypes *[]string `json:"-"`
+		// StreamSupported 更新流式输出能力，空指针表示不修改。
+		StreamSupported *bool `json:"stream_supported"`
+		// Enabled 更新模型可用状态，空指针表示不修改。
+		Enabled *bool `json:"enabled"`
+		// DefaultParams 是旧草稿字段，当前不接收。
+		DefaultParams *map[string]any `json:"-"`
+		// Pricing 是旧草稿字段，当前不接收。
+		Pricing *map[string]any `json:"-"`
 	}
 
 	// ProviderModelSyncRequest imports remote OpenAI-compatible model metadata into ProviderModel rows.
 	// It creates or updates model metadata only; it never invokes a model generation task.
 	ProviderModelSyncRequest struct {
+		// ProviderID 指定需要同步远端模型列表的 provider。
 		ProviderID string `json:"provider_id"`
 	}
 
 	ProviderModelSyncResponse struct {
-		Models  []*ProviderModel `json:"models"`
-		Created int              `json:"created"`
-		Updated int              `json:"updated"`
-		Skipped int              `json:"skipped"`
+		// Total 返回本次同步扫描到的远端模型数量。
+		Total int `json:"total"`
+		// Created 返回本次新增的 provider model 数量。
+		Created int `json:"created"`
+		// Updated 返回本次更新的 provider model 数量。
+		Updated int `json:"updated"`
+		// Skipped 返回因规则或重复而跳过的模型数量。
+		Skipped int `json:"skipped"`
+		// Models 在 S2 允许时返回本次创建或更新后的模型列表。
+		Models []*ProviderModel `json:"models,omitempty"`
 	}
 
 	// ProviderModelHealthCheckResponse 返回单个模型的最新连接健康状态。
 	// 该接口只执行模型 metadata 检测，不触发模型生成任务。
-	ProviderModelHealthCheckResponse struct {
-		Model *ProviderModel `json:"model"`
-	}
+	ProviderModelHealthCheckResponse = ProviderTestResponse
 )
 
 func (r *ProviderUpdateRequest) Validate() error {
@@ -168,19 +226,40 @@ func (r *ProviderUpdateRequest) Validate() error {
 
 type (
 	SystemLLMConfigListResponse struct {
+		// Configs 返回当前用户所有用途的默认模型配置。
 		Configs []*SystemLLMConfig `json:"configs"`
 	}
 
 	SystemLLMConfigUpsertRequest struct {
+		// Configs 批量保存默认模型配置，当前请求会按 usage 覆盖。
 		Configs []*SystemLLMConfigSpec `json:"configs" binding:"required"`
 	}
 
 	SystemLLMConfigSpec struct {
-		Purpose    string `json:"purpose"     binding:"required"`
+		// Purpose 对应 S2 usage，表示 chat、translation 等业务用途。
+		Purpose string `json:"purpose"     binding:"required"`
+		// ProviderID 指定默认模型所属 provider。
 		ProviderID string `json:"provider_id" binding:"required"`
-		ModelID    string `json:"model_id"`
-		Model      string `json:"model"`
-		Enabled    *bool  `json:"enabled"`
+		// ModelID 指定默认模型配置选中的 provider model。
+		ModelID string `json:"model_id"`
+		// Model 是旧草稿兼容字段，S2 默认模型配置以 model_id 为准。
+		Model string `json:"model"`
+		// Enabled 是旧草稿兼容字段，当前以配置记录存在表示启用。
+		Enabled *bool `json:"enabled"`
+	}
+
+	DefaultModelSaveRequest struct {
+		// ProviderID 指定默认模型所属 provider。
+		ProviderID string `json:"provider_id" binding:"required"`
+		// ModelID 指定某个 usage 的默认 provider model。
+		ModelID string `json:"model_id"    binding:"required"`
+	}
+
+	ModelOptionListResponse struct {
+		// Total 返回可选模型总数。
+		Total int64 `json:"total"`
+		// Items 返回可选 provider model 列表，按健康状态和启用状态过滤。
+		Items []*ProviderModel `json:"items"`
 	}
 )
 
@@ -250,8 +329,8 @@ type (
 	}
 
 	AssetSearchParseResponse struct {
-		Query  AssetListRequest `json:"query"`
-		TaskID string           `json:"task_id,omitempty"`
+		Query     AssetListRequest `json:"query"`
+		TaskRunID string           `json:"task_run_id,omitempty"`
 	}
 
 	AssetListResponse struct {
@@ -266,8 +345,8 @@ type (
 	}
 
 	AssetUploadResponse struct {
-		Asset *AssetRecord `json:"asset"`
-		Tasks []*Task      `json:"tasks"`
+		Asset    *AssetRecord `json:"asset"`
+		TaskRuns []*TaskRun   `json:"task_runs,omitempty"`
 	}
 
 	AssetChunkUploadInitRequest struct {
@@ -363,30 +442,4 @@ type (
 	}
 )
 
-type (
-	TaskCreateRequest struct {
-		Name           string         `json:"name"`
-		Type           string         `json:"type"            binding:"required"`
-		Priority       int            `json:"priority"`
-		Queue          string         `json:"queue"`
-		Input          map[string]any `json:"input"`
-		MaxAttempts    int            `json:"max_attempts"`
-		IdempotencyKey string         `json:"idempotency_key"`
-	}
-
-	TaskListRequest struct {
-		imachinery.BasicQueryParam
-		Type   string `json:"type"   form:"type"`
-		Status string `json:"status" form:"status"`
-		Queue  string `json:"queue"  form:"queue"`
-	}
-
-	TaskListResponse struct {
-		imachinery.ListRet
-		Tasks []*Task `json:"tasks"`
-	}
-
-	TaskCancelResponse struct {
-		Task *Task `json:"task"`
-	}
-)
+type ()

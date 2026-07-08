@@ -20,13 +20,6 @@ func NewController(storeIns store.Factory) *AIChatController {
 	return &AIChatController{srv: srvv1.NewService(storeIns)}
 }
 
-// ListModels 返回当前用户可用于 AI 聊天的模型摘要，只暴露 metadata 和 capability。
-func (ac *AIChatController) ListModels(c *gin.Context) {
-	core.Run(c, &iapiserver.AIChatModelListRequest{}, func(r *iapiserver.AIChatModelListRequest) (any, error) {
-		return ac.srv.AIChat().ListModels(c, r)
-	})
-}
-
 // ListAssistants 返回系统助手和当前用户助手，不返回其他用户助手。
 func (ac *AIChatController) ListAssistants(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
@@ -67,6 +60,12 @@ func (ac *AIChatController) ListTopics(c *gin.Context) {
 func (ac *AIChatController) CreateTopic(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatTopicCreateRequest{}, func(r *iapiserver.AIChatTopicCreateRequest) (any, error) {
 		return ac.srv.AIChat().CreateTopic(c, r)
+	})
+}
+
+func (ac *AIChatController) GetTopic(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return ac.srv.AIChat().GetTopic(c, c.Param("topic_id"))
 	})
 }
 
@@ -116,6 +115,11 @@ func (ac *AIChatController) StopGeneration(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
 		return ac.srv.AIChat().StopGeneration(c, c.Param("generation_id"))
 	})
+}
+
+func (ac *AIChatController) StreamGenerationEvents(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.SSEvent("snapshot", gin.H{"generation_id": c.Param("generation_id")})
 }
 
 // RegenerateMessage 对当前用户 assistant message 重新生成并返回 SSE。
@@ -176,6 +180,12 @@ func (ac *AIChatController) UpdateQuickPhrase(c *gin.Context) {
 func (ac *AIChatController) DeleteQuickPhrase(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
 		return ac.srv.AIChat().DeleteQuickPhrase(c, c.Param("quick_phrase_id"))
+	})
+}
+
+func (ac *AIChatController) TranslateContent(c *gin.Context) {
+	core.Run(c, &iapiserver.AIChatTranslationRequest{}, func(r *iapiserver.AIChatTranslationRequest) (any, error) {
+		return ac.srv.AIChat().TranslateContent(c, r)
 	})
 }
 

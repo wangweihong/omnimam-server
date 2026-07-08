@@ -11,6 +11,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type providerStore struct{ ds *datastore }
@@ -24,16 +26,23 @@ func (s *providerStore) List(
 	var items []*iapiserver.Provider
 	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
+		q = q.Where("deleted_at = ''")
+		if req.OwnerUserID != "" {
+			q = q.Where("owner_user_id = ?", req.OwnerUserID)
+		}
 		if req.Type != "" {
-			q = q.Where("type = ?", req.Type)
+			q = q.Where("provider_type = ?", req.Type)
 		}
 		if req.Enabled != nil {
 			q = q.Where("enabled = ?", *req.Enabled)
 		}
 		return q
 	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.Provider{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
+	query := modelManagementQuery(ctx, s.ds.db.Model(&iapiserver.Provider{}), req.BasicQueryParam, filter)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	if err := modelManagementPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	return items, total, nil
@@ -41,7 +50,7 @@ func (s *providerStore) List(
 
 func (s *providerStore) Get(ctx context.Context, id string) (*iapiserver.Provider, error) {
 	var item iapiserver.Provider
-	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at = ''", id).First(&item).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return &item, nil
@@ -50,9 +59,11 @@ func (s *providerStore) Get(ctx context.Context, id string) (*iapiserver.Provide
 func (s *providerStore) Add(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if CheckExists(tx, &iapiserver.Provider{}, map[string]any{
-			"name": data.Name,
+			"owner_user_id": data.OwnerUserID,
+			"name":          data.Name,
+			"deleted_at":    "",
 		}) {
-			return errors.Errorf("exists  name with '%v'", data.Name)
+			return errors.NewStatusF(code.ErrModelProviderNameDuplicated, "provider name %s already exists", data.Name)
 		}
 
 		if err := tx.Create(data).Error; err != nil {
@@ -68,8 +79,9 @@ func (s *providerStore) Update(ctx context.Context, data *iapiserver.Provider) (
 	updated := &iapiserver.Provider{}
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 
-		if GetByName(tx, updated, data.Name) && updated.ID != data.ID {
-			return errors.Errorf("exists provider name '%v' with id '%v'", data.Name, data.ID)
+		if err := tx.Where("owner_user_id = ? AND name = ? AND deleted_at = ''", data.OwnerUserID, data.Name).
+			First(updated).Error; err == nil && updated.ID != data.ID {
+			return errors.NewStatusF(code.ErrModelProviderNameDuplicated, "provider name %s already exists", data.Name)
 		}
 		// 3. 执行更新，并返回新数据（或使用 Returning）
 		if err := tx.Model(&data).Select("*").Updates(data).Error; err != nil {
@@ -84,9 +96,9 @@ func (s *providerStore) Update(ctx context.Context, data *iapiserver.Provider) (
 }
 
 func (s *providerStore) Delete(ctx context.Context, id string) error {
-	return errors.WithStack(
-		s.ds.db.WithContext(ctx).Where("id = ?", id).Delete(&iapiserver.Provider{}).Error,
-	)
+	return errors.WithStack(s.ds.db.WithContext(ctx).Model(&iapiserver.Provider{}).
+		Where("id = ?", id).
+		Update("deleted_at", time.Now().UTC().Format(time.RFC3339)).Error)
 }
 
 type providerModelStore struct{ ds *datastore }
@@ -100,6 +112,10 @@ func (s *providerModelStore) List(
 	var items []*iapiserver.ProviderModel
 	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
+		q = q.Where("deleted_at = ''")
+		if req.OwnerUserID != "" {
+			q = q.Where("owner_user_id = ?", req.OwnerUserID)
+		}
 		if req.ProviderID != "" {
 			q = q.Where("provider_id = ?", req.ProviderID)
 		}
@@ -107,20 +123,76 @@ func (s *providerModelStore) List(
 			q = q.Where("enabled = ?", *req.Enabled)
 		}
 		if req.Capability != "" {
-			q = q.Where("capabilities LIKE ?", "%"+req.Capability+"%")
+			q = q.Where("capabilities_json LIKE ?", "%"+req.Capability+"%")
 		}
 		return q
 	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.ProviderModel{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
+	query := modelManagementQuery(ctx, s.ds.db.Model(&iapiserver.ProviderModel{}), req.BasicQueryParam, filter)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	if err := modelManagementPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	return items, total, nil
 }
 
+func modelManagementQuery(
+	ctx context.Context,
+	db *gorm.DB,
+	params imachinery.BasicQueryParam,
+	resourceSpecificFilter func(*gorm.DB) *gorm.DB,
+) *gorm.DB {
+	query := db.WithContext(ctx)
+	if params.Keyword != "" {
+		keyword := "%" + params.Keyword + "%"
+		query = query.Where("name LIKE ? OR description LIKE ?", keyword, keyword)
+	}
+	if resourceSpecificFilter != nil {
+		query = resourceSpecificFilter(query)
+	}
+	if params.CreatedAfter != 0 {
+		query = query.Where("created_at >= ?", time.Unix(params.CreatedAfter, 0))
+	}
+	if params.CreatedBefore != 0 {
+		query = query.Where("created_at <= ?", time.Unix(params.CreatedBefore, 0))
+	}
+	query = query.Order(modelManagementOrder(params.SortField, params.SortOrder))
+	return query
+}
+
+func modelManagementPaginate(query *gorm.DB, pageNum, pageSize int) *gorm.DB {
+	if pageNum <= 0 || pageSize <= 0 {
+		return query
+	}
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+	return query.Offset((pageNum - 1) * pageSize).Limit(pageSize)
+}
+
+func modelManagementOrder(sortField, sortOrder string) clause.OrderByColumn {
+	columns := map[string]string{
+		"id":         "id",
+		"name":       "name",
+		"createdAt":  "created_at",
+		"created_at": "created_at",
+		"updatedAt":  "updated_at",
+		"updated_at": "updated_at",
+	}
+	column := columns[sortField]
+	if column == "" {
+		column = "created_at"
+	}
+	return clause.OrderByColumn{
+		Column: clause.Column{Name: column},
+		Desc:   strings.ToLower(sortOrder) != "asc",
+	}
+}
+
 func (s *providerModelStore) Get(ctx context.Context, id string) (*iapiserver.ProviderModel, error) {
 	var item iapiserver.ProviderModel
-	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at = ''", id).First(&item).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return &item, nil
@@ -147,16 +219,18 @@ func (s *providerModelStore) Update(
 }
 
 func (s *providerModelStore) Delete(ctx context.Context, providerID, id string) error {
-	return errors.WithStack(
-		s.ds.db.WithContext(ctx).
-			Where("provider_id = ? AND id = ?", providerID, id).
-			Delete(&iapiserver.ProviderModel{}).Error,
-	)
+	query := s.ds.db.WithContext(ctx).Model(&iapiserver.ProviderModel{}).Where("id = ?", id)
+	if providerID != "" {
+		query = query.Where("provider_id = ?", providerID)
+	}
+	return errors.WithStack(query.Update("deleted_at", time.Now().UTC().Format(time.RFC3339)).Error)
 }
 
 func (s *providerModelStore) DeleteByProviderID(ctx context.Context, providerID string) error {
 	return errors.WithStack(
-		s.ds.db.WithContext(ctx).Where("provider_id = ?", providerID).Delete(&iapiserver.ProviderModel{}).Error,
+		s.ds.db.WithContext(ctx).Model(&iapiserver.ProviderModel{}).
+			Where("provider_id = ?", providerID).
+			Update("deleted_at", time.Now().UTC().Format(time.RFC3339)).Error,
 	)
 }
 
@@ -192,7 +266,7 @@ func newSystemLLMConfig(ds *datastore) *systemLLMConfigStore {
 
 func (s *systemLLMConfigStore) List(ctx context.Context) ([]*iapiserver.SystemLLMConfig, error) {
 	var items []*iapiserver.SystemLLMConfig
-	if err := s.ds.db.WithContext(ctx).Order("purpose ASC").Find(&items).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Order("usage ASC").Find(&items).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return items, nil
@@ -203,13 +277,13 @@ func (s *systemLLMConfigStore) Upsert(
 	data *iapiserver.SystemLLMConfig,
 ) (*iapiserver.SystemLLMConfig, error) {
 	var existing iapiserver.SystemLLMConfig
-	err := s.ds.db.WithContext(ctx).Where("purpose = ?", data.Purpose).First(&existing).Error
+	err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND usage = ?", data.OwnerUserID, data.Purpose).
+		First(&existing).Error
 	if err == nil {
 		existing.Name = data.Name
 		existing.ProviderID = data.ProviderID
 		existing.ModelID = data.ModelID
-		existing.Model = data.Model
-		existing.Enabled = data.Enabled
 		if err := s.ds.db.WithContext(ctx).Save(&existing).Error; err != nil {
 			return nil, errors.WithStack(err)
 		}
@@ -619,125 +693,6 @@ func (s *assetRelationStore) DeleteByAsset(ctx context.Context, assetID string) 
 		return errors.WithStack(err)
 	}
 	return nil
-}
-
-type taskStore struct{ ds *datastore }
-
-func newTask(ds *datastore) *taskStore { return &taskStore{ds: ds} }
-
-func (s *taskStore) List(ctx context.Context, req *iapiserver.TaskListRequest) ([]*iapiserver.Task, int64, error) {
-	var items []*iapiserver.Task
-	var total int64
-	filter := func(q *gorm.DB) *gorm.DB {
-		if req.Type != "" {
-			q = q.Where("type = ?", req.Type)
-		}
-		if req.Status != "" {
-			q = q.Where("status = ?", req.Status)
-		}
-		if req.Queue != "" {
-			q = q.Where("queue = ?", req.Queue)
-		}
-		return q
-	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.Task{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
-}
-
-func (s *taskStore) Get(ctx context.Context, id string) (*iapiserver.Task, error) {
-	var item iapiserver.Task
-	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &item, nil
-}
-
-func (s *taskStore) Add(ctx context.Context, data *iapiserver.Task) (*iapiserver.Task, error) {
-	if data.Status == "" {
-		data.Status = iapiserver.TaskStatusPending
-	}
-	if data.Queue == "" {
-		data.Queue = "default"
-	}
-	if data.MaxAttempts == 0 {
-		data.MaxAttempts = 3
-	}
-	if data.Name == "" {
-		data.Name = strings.ReplaceAll(data.Type, ".", "-")
-	}
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-func (s *taskStore) Update(ctx context.Context, data *iapiserver.Task) (*iapiserver.Task, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-func (s *taskStore) Cancel(ctx context.Context, id string) (*iapiserver.Task, error) {
-	task, err := s.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if task.Status == iapiserver.TaskStatusSucceeded || task.Status == iapiserver.TaskStatusFailed {
-		return task, nil
-	}
-	task.Status = iapiserver.TaskStatusCanceled
-	task.LockOwner = ""
-	task.LockedUntil = time.Time{}
-	return s.Update(ctx, task)
-}
-
-func (s *taskStore) Claim(
-	ctx context.Context,
-	queue, worker string,
-	limit int,
-	lease time.Duration,
-) ([]*iapiserver.Task, error) {
-	if queue == "" {
-		queue = "default"
-	}
-	if limit <= 0 {
-		limit = 1
-	}
-	now := time.Now()
-	var tasks []*iapiserver.Task
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("queue = ? AND attempts < max_attempts", queue).
-			Where(
-				"status = ? OR (status = ? AND locked_until < ?)",
-				iapiserver.TaskStatusPending,
-				iapiserver.TaskStatusRunning,
-				now,
-			).
-			Order("priority DESC, created_at ASC").
-			Limit(limit).
-			Find(&tasks).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		for _, task := range tasks {
-			task.Status = iapiserver.TaskStatusRunning
-			task.LockOwner = worker
-			task.LockedUntil = now.Add(lease)
-			task.Attempts++
-			if err := tx.Save(task).Error; err != nil {
-				return errors.WithStack(err)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return tasks, nil
 }
 
 type featureFlagStore struct{ ds *datastore }

@@ -19,66 +19,14 @@ type aiChatStore struct{ ds *datastore }
 
 func newAIChat(ds *datastore) *aiChatStore { return &aiChatStore{ds: ds} }
 
-func (s *aiChatStore) ListModels(
-	ctx context.Context,
-	ownerUserID string,
-	req *iapiserver.AIChatModelListRequest,
-) ([]*iapiserver.AIChatModel, int64, error) {
-	var items []*iapiserver.AIChatModel
-	var total int64
-	filter := func(q *gorm.DB) *gorm.DB {
-		q = q.Where("owner_user_id = ?", ownerUserID)
-		if req.Provider != "" {
-			q = q.Where("provider = ?", req.Provider)
-		}
-		if req.Enabled != nil {
-			q = q.Where("enabled = ?", *req.Enabled)
-		}
-		if req.Capability != "" {
-			q = q.Where("capabilities::text LIKE ?", "%"+req.Capability+"%")
-		}
-		return q
-	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.AIChatModel{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
-}
-
-func (s *aiChatStore) GetModel(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatModel, error) {
-	var item iapiserver.AIChatModel
-	err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND id = ?", ownerUserID, id).
-		First(&item).Error
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &item, nil
-}
-
-func (s *aiChatStore) GetDefaultTranslationModel(
-	ctx context.Context,
-	ownerUserID string,
-) (*iapiserver.AIChatModel, error) {
-	var item iapiserver.AIChatModel
-	err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND is_default_translation = ?", ownerUserID, true).
-		First(&item).Error
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &item, nil
-}
-
 func (s *aiChatStore) ListAssistants(
 	ctx context.Context,
 	ownerUserID string,
 ) ([]*iapiserver.AIChatAssistant, error) {
 	var items []*iapiserver.AIChatAssistant
 	if err := s.ds.db.WithContext(ctx).
-		Where("deleted_at IS NULL AND (system = ? OR owner_user_id = ?)", true, ownerUserID).
-		Order("system DESC, created_at ASC").
+		Where("deleted_at = '' AND (is_system = ? OR owner_user_id = ?)", true, ownerUserID).
+		Order("is_system DESC, created_at ASC").
 		Find(&items).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -91,7 +39,7 @@ func (s *aiChatStore) GetAssistant(
 ) (*iapiserver.AIChatAssistant, error) {
 	var item iapiserver.AIChatAssistant
 	err := s.ds.db.WithContext(ctx).
-		Where("id = ? AND deleted_at IS NULL AND (system = ? OR owner_user_id = ?)", id, true, ownerUserID).
+		Where("id = ? AND deleted_at = '' AND (is_system = ? OR owner_user_id = ?)", id, true, ownerUserID).
 		First(&item).Error
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -127,12 +75,12 @@ func (s *aiChatStore) UpdateAssistant(
 	var updated iapiserver.AIChatAssistant
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND deleted_at IS NULL AND (system = ? OR owner_user_id = ?)", data.ID, true, ownerUserID).
+			Where("id = ? AND deleted_at = '' AND (is_system = ? OR owner_user_id = ?)", data.ID, true, ownerUserID).
 			First(&updated).Error; err != nil {
 			return err
 		}
 		if updated.System && data.Name != "" && data.Name != updated.Name {
-			return errors.NewStatusF(code.ErrAIChatSystemAssistantProtected, "system assistant name cannot be changed")
+			return errors.NewStatusF(code.ErrAIChatSystemAssistantProtected, "is_system assistant name cannot be changed")
 		}
 		if !updated.System && data.Name != "" && data.Name != updated.Name {
 			if err := ensureAssistantNameAvailable(tx, ownerUserID, data.Name, data.ID); err != nil {
@@ -160,16 +108,16 @@ func (s *aiChatStore) UpdateAssistant(
 }
 
 func (s *aiChatStore) DeleteAssistant(ctx context.Context, ownerUserID, id string) error {
-	now := time.Now()
+	now := time.Now().UTC().Format(time.RFC3339)
 	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var item iapiserver.AIChatAssistant
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND deleted_at IS NULL AND (system = ? OR owner_user_id = ?)", id, true, ownerUserID).
+			Where("id = ? AND deleted_at = '' AND (is_system = ? OR owner_user_id = ?)", id, true, ownerUserID).
 			First(&item).Error; err != nil {
 			return err
 		}
 		if item.System {
-			return errors.NewStatusF(code.ErrAIChatSystemAssistantProtected, "system assistant cannot be deleted")
+			return errors.NewStatusF(code.ErrAIChatSystemAssistantProtected, "is_system assistant cannot be deleted")
 		}
 		return tx.Model(&item).Update("deleted_at", now).Error
 	}))
@@ -183,7 +131,7 @@ func (s *aiChatStore) ListTopics(
 	var items []*iapiserver.AIChatTopic
 	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
-		q = q.Where("owner_user_id = ? AND deleted_at IS NULL", ownerUserID)
+		q = q.Where("owner_user_id = ? AND deleted_at = ?", ownerUserID, "")
 		if req.Q != "" {
 			q = q.Where("title LIKE ?", "%"+req.Q+"%")
 		}
@@ -192,9 +140,18 @@ func (s *aiChatStore) ListTopics(
 		}
 		return q
 	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.AIChatTopic{}), filter).
-		Order("pinned DESC, last_active_at DESC")
-	if err := query.Find(&items).Count(&total).Error; err != nil {
+	query := filter(s.ds.db.WithContext(ctx).Model(&iapiserver.AIChatTopic{}))
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	query = query.Order("pinned DESC, last_active_at DESC")
+	if req.PageNum > 0 && req.PageSize > 0 {
+		if req.PageSize > 1000 {
+			req.PageSize = 1000
+		}
+		query = query.Offset((req.PageNum - 1) * req.PageSize).Limit(req.PageSize)
+	}
+	if err := query.Find(&items).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	return items, total, nil
@@ -203,7 +160,7 @@ func (s *aiChatStore) ListTopics(
 func (s *aiChatStore) GetTopic(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatTopic, error) {
 	var item iapiserver.AIChatTopic
 	err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, id).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, id, "").
 		First(&item).Error
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -234,7 +191,7 @@ func (s *aiChatStore) UpdateTopic(
 	var item iapiserver.AIChatTopic
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, data.ID).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, data.ID, "").
 			First(&item).Error; err != nil {
 			return err
 		}
@@ -253,11 +210,11 @@ func (s *aiChatStore) UpdateTopic(
 }
 
 func (s *aiChatStore) DeleteTopic(ctx context.Context, ownerUserID, id string) error {
-	now := time.Now()
+	now := time.Now().UTC().Format(time.RFC3339)
 	return errors.WithStack(
 		s.ds.db.WithContext(ctx).
 			Model(&iapiserver.AIChatTopic{}).
-			Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, id).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, id, "").
 			Update("deleted_at", now).Error,
 	)
 }
@@ -273,7 +230,7 @@ func (s *aiChatStore) BranchTopic(ctx context.Context, ownerUserID, messageID st
 			return errors.NewStatusF(code.ErrAIChatBranchSourceMissing, "branch source must be an assistant message")
 		}
 		var topic iapiserver.AIChatTopic
-		if err := tx.Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, source.TopicID).
+		if err := tx.Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, source.TopicID, "").
 			First(&topic).Error; err != nil {
 			return err
 		}
@@ -313,9 +270,6 @@ func (s *aiChatStore) ListMessages(
 		Find(&items).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if err := s.loadAttachments(ctx, ownerUserID, items); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
@@ -325,9 +279,6 @@ func (s *aiChatStore) GetMessage(ctx context.Context, ownerUserID, id string) (*
 		Where("owner_user_id = ? AND id = ?", ownerUserID, id).
 		First(&item).Error; err != nil {
 		return nil, errors.WithStack(err)
-	}
-	if err := s.loadAttachments(ctx, ownerUserID, []*iapiserver.AIChatMessage{&item}); err != nil {
-		return nil, err
 	}
 	return &item, nil
 }
@@ -353,11 +304,9 @@ func (s *aiChatStore) CreateMessageGeneration(
 			Content:         req.Content,
 			Status:          iapiserver.AIChatStatusDone,
 			ClientMessageID: req.ClientMessageID,
+			AttachmentIcons: attachmentIcons(req.Images),
 		}
 		if err := tx.Create(userMsg).Error; err != nil {
-			return err
-		}
-		if err := createAttachmentMetadata(tx, ownerUserID, userMsg.ID, req.Images); err != nil {
 			return err
 		}
 		assistantMsg := &iapiserver.AIChatMessage{
@@ -414,7 +363,7 @@ func (s *aiChatStore) CreateEditRegenerateGeneration(
 ) (*store.AIChatGenerationBundle, error) {
 	var topic iapiserver.AIChatTopic
 	if err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, source.TopicID).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, source.TopicID, "").
 		First(&topic).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -455,8 +404,8 @@ func (s *aiChatStore) CompleteGeneration(
 			return err
 		}
 		return tx.Model(&generation).Updates(map[string]any{
-			"status":       iapiserver.AIChatStatusDone,
-			"completed_at": now,
+			"status":      iapiserver.AIChatStatusDone,
+			"finished_at": now,
 		}).Error
 	})
 	return &generation, errors.WithStack(err)
@@ -478,7 +427,7 @@ func (s *aiChatStore) FailGeneration(ctx context.Context, ownerUserID, generatio
 		now := time.Now()
 		return tx.Model(&generation).Updates(map[string]any{
 			"status":        iapiserver.AIChatStatusFailed,
-			"completed_at":  now,
+			"finished_at":   now,
 			"error_code":    errorCode,
 			"error_message": errorMessage,
 		}).Error
@@ -506,10 +455,10 @@ func (s *aiChatStore) StopGeneration(
 			return err
 		}
 		generation.Status = iapiserver.AIChatStatusInterrupted
-		generation.StoppedAt = &now
+		generation.CompletedAt = &now
 		return tx.Model(&generation).Updates(map[string]any{
-			"status":     generation.Status,
-			"stopped_at": now,
+			"status":      generation.Status,
+			"finished_at": now,
 		}).Error
 	})
 	return &generation, errors.WithStack(err)
@@ -522,7 +471,7 @@ func (s *aiChatStore) ListQuickPhrases(
 ) ([]*iapiserver.AIChatQuickPhrase, error) {
 	var items []*iapiserver.AIChatQuickPhrase
 	query := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND deleted_at IS NULL", ownerUserID)
+		Where("owner_user_id = ? AND deleted_at = ?", ownerUserID, "")
 	if req.Scope != "" {
 		query = query.Where("scope = ?", req.Scope)
 	}
@@ -544,7 +493,7 @@ func (s *aiChatStore) GetQuickPhrase(
 ) (*iapiserver.AIChatQuickPhrase, error) {
 	var item iapiserver.AIChatQuickPhrase
 	if err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, id).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, id, "").
 		First(&item).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -571,7 +520,7 @@ func (s *aiChatStore) UpdateQuickPhrase(
 	var item iapiserver.AIChatQuickPhrase
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, data.ID).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, data.ID, "").
 			First(&item).Error; err != nil {
 			return err
 		}
@@ -593,7 +542,7 @@ func (s *aiChatStore) DeleteQuickPhrase(ctx context.Context, ownerUserID, id str
 	return errors.WithStack(
 		s.ds.db.WithContext(ctx).
 			Model(&iapiserver.AIChatQuickPhrase{}).
-			Where("owner_user_id = ? AND id = ? AND deleted_at IS NULL", ownerUserID, id).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ?", ownerUserID, id, "").
 			Update("deleted_at", now).Error,
 	)
 }
@@ -608,41 +557,14 @@ func (s *aiChatStore) CreateTranslation(
 	return translation, nil
 }
 
-func (s *aiChatStore) loadAttachments(
-	ctx context.Context,
-	ownerUserID string,
-	messages []*iapiserver.AIChatMessage,
-) error {
-	if len(messages) == 0 {
-		return nil
-	}
-	ids := make([]string, 0, len(messages))
-	byID := make(map[string]*iapiserver.AIChatMessage, len(messages))
-	for _, message := range messages {
-		ids = append(ids, message.ID)
-		byID[message.ID] = message
-	}
-	var attachments []*iapiserver.AIChatMessageAttachment
-	if err := s.ds.db.WithContext(ctx).
-		Where("owner_user_id = ? AND message_id IN ?", ownerUserID, ids).
-		Find(&attachments).Error; err != nil {
-		return errors.WithStack(err)
-	}
-	for _, attachment := range attachments {
-		if msg := byID[attachment.MessageID]; msg != nil {
-			msg.Attachments = append(msg.Attachments, attachment)
-		}
-	}
-	return nil
-}
-
 func ensureAssistantNameAvailable(tx *gorm.DB, ownerUserID, name, exceptID string) error {
 	var existing iapiserver.AIChatAssistant
 	query := tx.Where(
-		"owner_user_id = ? AND name = ? AND system = ? AND deleted_at IS NULL",
+		"owner_user_id = ? AND name = ? AND is_system = ? AND deleted_at = ?",
 		ownerUserID,
 		name,
 		false,
+		"",
 	)
 	if exceptID != "" {
 		query = query.Where("id <> ?", exceptID)
@@ -685,28 +607,22 @@ func getMessageForUpdate(tx *gorm.DB, ownerUserID, messageID string) (*iapiserve
 	return &item, nil
 }
 
-func createAttachmentMetadata(
-	tx *gorm.DB,
-	ownerUserID string,
-	messageID string,
-	images []*iapiserver.AIChatImageAttachmentInput,
-) error {
-	for _, image := range images {
-		attachment := &iapiserver.AIChatMessageAttachment{
-			MessageID:   messageID,
-			OwnerUserID: ownerUserID,
-			Kind:        iapiserver.AIChatAttachmentKindImage,
-			MimeType:    image.MimeType,
-			FileName:    image.FileName,
-			SizeBytes:   image.SizeBytes,
-			DisplayMode: iapiserver.AIChatAttachmentDisplayIcon,
-			Stored:      false,
-		}
-		if err := tx.Create(attachment).Error; err != nil {
-			return err
-		}
+func attachmentIcons(images []*iapiserver.AIChatImageAttachmentInput) []string {
+	if len(images) == 0 {
+		return []string{}
 	}
-	return nil
+	icons := make([]string, 0, len(images))
+	for _, image := range images {
+		if image == nil {
+			continue
+		}
+		if image.ID != "" {
+			icons = append(icons, image.ID)
+			continue
+		}
+		icons = append(icons, image.MimeType)
+	}
+	return icons
 }
 
 func modelSnapshot(model *iapiserver.AIChatModel) map[string]any {
@@ -729,7 +645,7 @@ func assistantSnapshot(assistant *iapiserver.AIChatAssistant) map[string]any {
 	return map[string]any{
 		"id":                    assistant.ID,
 		"name":                  assistant.Name,
-		"system":                assistant.System,
+		"is_system":             assistant.System,
 		"system_prompt":         assistant.SystemPrompt,
 		"context_message_count": assistant.ContextMessageCount,
 	}

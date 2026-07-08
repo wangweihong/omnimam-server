@@ -2,10 +2,13 @@ package canvas
 
 import (
 	"context"
+	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/pkg/general"
 )
@@ -49,13 +52,13 @@ type CanvasSrv interface {
 		error,
 	)
 	// CanvasWorkflowPackageExport returns workflow JSON plus referenced asset metadata.
-	// It creates an async audit task and never embeds raw asset content.
+	// It creates a Task Center audit run and never embeds raw asset content.
 	CanvasWorkflowPackageExport(ctx context.Context, id string, req *iapiserver.CanvasWorkflowPackageExportRequest) (
 		*iapiserver.CanvasWorkflowPackageExportResponse,
 		error,
 	)
 	// CanvasWorkflowPackageImport merges workflow package JSON into an existing canvas.
-	// It creates an async audit task and does not run generation tasks.
+	// It creates a Task Center audit run and does not run generation tasks.
 	CanvasWorkflowPackageImport(ctx context.Context, id string, req *iapiserver.CanvasWorkflowPackageImportRequest) (
 		*iapiserver.CanvasWorkflowPackageImportResponse,
 		error,
@@ -72,6 +75,81 @@ type canvasService struct {
 
 func NewService(str store.Factory) *canvasService {
 	return &canvasService{store: str}
+}
+
+type taskRunSpec struct {
+	DefinitionID         string
+	Name                 string
+	Description          string
+	FunctionRef          string
+	RequiredCapabilities string
+	Input                map[string]any
+	Tags                 string
+}
+
+func (s *canvasService) createTaskRun(ctx context.Context, spec taskRunSpec) (*iapiserver.TaskRun, error) {
+	definition, err := s.ensureAtomicTaskDefinition(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	run := &iapiserver.TaskRun{
+		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:   definition.ID,
+		Status:         iapiserver.TaskRunStatusReady,
+		Input:          spec.Input,
+		MaxAttempts:    1,
+		ProjectID:      definition.ProjectID,
+		Namespace:      definition.Namespace,
+		Tags:           spec.Tags,
+		CreatedBy:      iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	run.Name = definition.Name + "-run"
+	created, err := s.store.TaskCenters().AddRun(ctx, run)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	event := &iapiserver.TaskRunEvent{
+		RunID:      created.ID,
+		EventType:  iapiserver.TaskCenterEventRunCreated,
+		ToStatus:   created.Status,
+		Payload:    map[string]any{"definition_id": created.DefinitionID},
+		OccurredAt: imachinery.NewTime(time.Now()),
+	}
+	event.Name = iapiserver.TaskCenterEventRunCreated
+	if _, err := s.store.TaskCenters().AddEvent(ctx, event); err != nil {
+		log.Errorf("record task run event failed: run_id=%s error=%v", created.ID, err)
+	}
+	return created, nil
+}
+
+func (s *canvasService) ensureAtomicTaskDefinition(
+	ctx context.Context,
+	spec taskRunSpec,
+) (*iapiserver.TaskDefinition, error) {
+	definition, err := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
+	if err == nil {
+		return definition, nil
+	}
+	definition = &iapiserver.TaskDefinition{
+		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
+		FunctionRef:          spec.FunctionRef,
+		RequiredCapabilities: spec.RequiredCapabilities,
+		ProjectID:            iapiserver.DefaultTaskCenterProjectID,
+		Namespace:            iapiserver.DefaultTaskCenterNamespace,
+		CreatedBy:            iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	definition.ID = spec.DefinitionID
+	definition.Name = spec.Name
+	definition.Description = spec.Description
+	created, createErr := s.store.TaskCenters().AddDefinition(ctx, definition)
+	if createErr == nil {
+		return created, nil
+	}
+	definition, getErr := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
+	if getErr != nil {
+		return nil, errors.WithStack(createErr)
+	}
+	return definition, nil
 }
 
 func (s *canvasService) ensureDefaultProject(ctx context.Context) error {
@@ -513,21 +591,21 @@ func (s *canvasService) CanvasWorkflowPackageExport(
 		}
 		assets = append(assets, &iapiserver.AssetRecord{Asset: asset})
 	}
-	task := &iapiserver.Task{
-		Type:        iapiserver.TaskTypeCanvasWorkflowPackageExport,
-		Status:      iapiserver.TaskStatusPending,
-		Queue:       "default",
-		Input:       map[string]any{"canvas_id": id, "asset_ids": req.AssetIDs, "filename": req.Filename},
-		MaxAttempts: 1,
-	}
-	task.Name = "canvas-workflow-package-export"
-	createdTask, err := s.store.Tasks().Add(ctx, task)
+	taskRun, err := s.createTaskRun(ctx, taskRunSpec{
+		DefinitionID:         "canvas-workflow-package-export",
+		Name:                 "canvas-workflow-package-export",
+		Description:          "Export a canvas workflow package.",
+		FunctionRef:          "canvas.workflow.package.export",
+		RequiredCapabilities: "canvas.workflow.package.export",
+		Input:                map[string]any{"canvas_id": id, "asset_ids": req.AssetIDs, "filename": req.Filename},
+		Tags:                 "canvas,workflow",
+	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return &iapiserver.CanvasWorkflowPackageExportResponse{
 		Package: iapiserver.CanvasWorkflowPackage{Workflow: workflow.Workflow, Assets: assets, Metadata: req.Metadata},
-		Task:    createdTask,
+		TaskRun: taskRun,
 	}, nil
 }
 
@@ -544,19 +622,19 @@ func (s *canvasService) CanvasWorkflowPackageImport(
 	if err != nil {
 		return nil, err
 	}
-	task := &iapiserver.Task{
-		Type:        iapiserver.TaskTypeCanvasWorkflowPackageImport,
-		Status:      iapiserver.TaskStatusPending,
-		Queue:       "default",
-		Input:       map[string]any{"canvas_id": id, "metadata": req.Package.Metadata},
-		MaxAttempts: 1,
-	}
-	task.Name = "canvas-workflow-package-import"
-	createdTask, err := s.store.Tasks().Add(ctx, task)
+	taskRun, err := s.createTaskRun(ctx, taskRunSpec{
+		DefinitionID:         "canvas-workflow-package-import",
+		Name:                 "canvas-workflow-package-import",
+		Description:          "Import a canvas workflow package.",
+		FunctionRef:          "canvas.workflow.package.import",
+		RequiredCapabilities: "canvas.workflow.package.import",
+		Input:                map[string]any{"canvas_id": id, "metadata": req.Package.Metadata},
+		Tags:                 "canvas,workflow",
+	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.CanvasWorkflowPackageImportResponse{Canvas: imported.Canvas, Task: createdTask}, nil
+	return &iapiserver.CanvasWorkflowPackageImportResponse{Canvas: imported.Canvas, TaskRun: taskRun}, nil
 }
 
 func (s *canvasService) CanvasTouch(ctx context.Context, id string) (*iapiserver.CanvasTouchResponse, error) {

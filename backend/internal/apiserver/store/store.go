@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
@@ -228,10 +227,6 @@ type AIChatGenerationBundle struct {
 }
 
 type AIChatStore interface {
-	ListModels(ctx context.Context, ownerUserID string, req *iapiserver.AIChatModelListRequest) ([]*iapiserver.AIChatModel, int64, error)
-	GetModel(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatModel, error)
-	GetDefaultTranslationModel(ctx context.Context, ownerUserID string) (*iapiserver.AIChatModel, error)
-
 	ListAssistants(ctx context.Context, ownerUserID string) ([]*iapiserver.AIChatAssistant, error)
 	GetAssistant(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatAssistant, error)
 	CreateAssistant(ctx context.Context, ownerUserID string, data *iapiserver.AIChatAssistant) (*iapiserver.AIChatAssistant, error)
@@ -289,15 +284,6 @@ type AssetRelationStore interface {
 	Add(ctx context.Context, data *iapiserver.AssetRelation) (*iapiserver.AssetRelation, error)
 	// DeleteByAsset removes derivation relations where the asset is either source or target.
 	DeleteByAsset(ctx context.Context, assetID string) error
-}
-
-type TaskStore interface {
-	List(ctx context.Context, req *iapiserver.TaskListRequest) ([]*iapiserver.Task, int64, error)
-	Get(ctx context.Context, id string) (*iapiserver.Task, error)
-	Add(ctx context.Context, data *iapiserver.Task) (*iapiserver.Task, error)
-	Update(ctx context.Context, data *iapiserver.Task) (*iapiserver.Task, error)
-	Cancel(ctx context.Context, id string) (*iapiserver.Task, error)
-	Claim(ctx context.Context, queue, worker string, limit int, lease time.Duration) ([]*iapiserver.Task, error)
 }
 
 type TaskCenterStore interface {

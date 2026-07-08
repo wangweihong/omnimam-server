@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/provider"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -16,12 +17,12 @@ import (
 )
 
 type AIChatSrv interface {
-	ListModels(ctx context.Context, req *iapiserver.AIChatModelListRequest) (*iapiserver.AIChatModelListResponse, error)
 	ListAssistants(ctx context.Context) (*iapiserver.AIChatAssistantListResponse, error)
 	CreateAssistant(ctx context.Context, req *iapiserver.AIChatAssistantUpsertRequest) (*iapiserver.AIChatAssistant, error)
 	UpdateAssistant(ctx context.Context, req *iapiserver.AIChatAssistantUpsertRequest) (*iapiserver.AIChatAssistant, error)
 	DeleteAssistant(ctx context.Context, id string) (*iapiserver.AIChatDeleteResponse, error)
 	ListTopics(ctx context.Context, req *iapiserver.AIChatTopicListRequest) (*iapiserver.AIChatTopicListResponse, error)
+	GetTopic(ctx context.Context, id string) (*iapiserver.AIChatTopic, error)
 	CreateTopic(ctx context.Context, req *iapiserver.AIChatTopicCreateRequest) (*iapiserver.AIChatTopic, error)
 	UpdateTopic(ctx context.Context, req *iapiserver.AIChatTopicUpdateRequest) (*iapiserver.AIChatTopic, error)
 	DeleteTopic(ctx context.Context, id string) (*iapiserver.AIChatDeleteResponse, error)
@@ -35,6 +36,7 @@ type AIChatSrv interface {
 	CreateQuickPhrase(ctx context.Context, req *iapiserver.AIChatQuickPhraseUpsertRequest) (*iapiserver.AIChatQuickPhrase, error)
 	UpdateQuickPhrase(ctx context.Context, req *iapiserver.AIChatQuickPhraseUpsertRequest) (*iapiserver.AIChatQuickPhrase, error)
 	DeleteQuickPhrase(ctx context.Context, id string) (*iapiserver.AIChatDeleteResponse, error)
+	TranslateContent(ctx context.Context, req *iapiserver.AIChatTranslationRequest) (*iapiserver.AIChatMessageTranslation, error)
 }
 
 type MessageCreateResult struct {
@@ -50,27 +52,6 @@ type aiChatService struct {
 
 func NewService(str store.Factory) AIChatSrv {
 	return &aiChatService{store: str}
-}
-
-func (s *aiChatService) ListModels(
-	ctx context.Context,
-	req *iapiserver.AIChatModelListRequest,
-) (*iapiserver.AIChatModelListResponse, error) {
-	userID, err := currentUserID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	items, total, err := s.store.AIChat().ListModels(ctx, userID, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if total == 0 {
-		items, total, err = s.listProviderBackedModels(ctx, userID, req)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return &iapiserver.AIChatModelListResponse{Total: total, Items: items}, nil
 }
 
 func (s *aiChatService) ListAssistants(ctx context.Context) (*iapiserver.AIChatAssistantListResponse, error) {
@@ -144,6 +125,18 @@ func (s *aiChatService) ListTopics(
 	return &iapiserver.AIChatTopicListResponse{Total: total, Items: items}, nil
 }
 
+func (s *aiChatService) GetTopic(ctx context.Context, id string) (*iapiserver.AIChatTopic, error) {
+	userID, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	topic, err := s.store.AIChat().GetTopic(ctx, userID, id)
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAIChatTopicNotFound, "topic not found")
+	}
+	return topic, nil
+}
+
 func (s *aiChatService) CreateTopic(
 	ctx context.Context,
 	req *iapiserver.AIChatTopicCreateRequest,
@@ -172,7 +165,9 @@ func (s *aiChatService) UpdateTopic(
 	if err != nil {
 		return nil, err
 	}
-	topic := &iapiserver.AIChatTopic{ID: req.ID}
+	topic := &iapiserver.AIChatTopic{
+		ObjectMeta: imachinery.ObjectMeta{ID: req.ID},
+	}
 	if req.Title != nil {
 		topic.Title = *req.Title
 	}
@@ -412,13 +407,46 @@ func (s *aiChatService) DeleteQuickPhrase(ctx context.Context, id string) (*iapi
 	return &iapiserver.AIChatDeleteResponse{Deleted: true}, nil
 }
 
+func (s *aiChatService) TranslateContent(
+	ctx context.Context,
+	req *iapiserver.AIChatTranslationRequest,
+) (*iapiserver.AIChatMessageTranslation, error) {
+	userID, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	model, err := s.defaultTranslationModel(ctx, userID)
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAIChatTranslationModelMissing, "translation model missing")
+	}
+	if !model.Enabled || isUnhealthyModel(model) {
+		return nil, errors.NewStatusF(code.ErrAIChatTranslationModelUnhealthy, "translation model unhealthy")
+	}
+	if req.MessageID != "" {
+		if _, err := s.store.AIChat().GetMessage(ctx, userID, req.MessageID); err != nil {
+			return nil, mapNotFound(err, code.ErrAIChatMessageNotFound, "message not found")
+		}
+	}
+	content, err := s.invokeProvider(ctx, model, req.Content)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.AIChat().CreateTranslation(ctx, &iapiserver.AIChatMessageTranslation{
+		MessageID:         req.MessageID,
+		OwnerUserID:       userID,
+		TargetLanguage:    req.TargetLanguage,
+		TranslatedContent: content,
+		ModelSnapshot:     map[string]any{"id": model.ID, "name": model.Name},
+	})
+}
+
 func (s *aiChatService) translate(
 	ctx context.Context,
 	userID string,
 	topic *iapiserver.AIChatTopic,
 	req *iapiserver.AIChatMessageCreateRequest,
 ) (*MessageCreateResult, error) {
-	model, err := s.store.AIChat().GetDefaultTranslationModel(ctx, userID)
+	model, err := s.defaultTranslationModel(ctx, userID)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatTranslationModelMissing, "translation model missing")
 	}
@@ -460,6 +488,19 @@ func (s *aiChatService) translate(
 		TranslatedContent: created.TranslatedContent,
 		ModelSnapshot:     created.ModelSnapshot,
 	}}, nil
+}
+
+func (s *aiChatService) defaultTranslationModel(ctx context.Context, ownerUserID string) (*iapiserver.AIChatModel, error) {
+	configs, err := s.store.SystemLLMConfigs().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, cfg := range configs {
+		if cfg.OwnerUserID == ownerUserID && cfg.Purpose == "translation" {
+			return s.getModel(ctx, ownerUserID, cfg.ModelID)
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 func (s *aiChatService) resolveModelAndAssistant(
@@ -541,13 +582,6 @@ func currentUserID(ctx context.Context) (string, error) {
 }
 
 func (s *aiChatService) getModel(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatModel, error) {
-	model, err := s.store.AIChat().GetModel(ctx, ownerUserID, id)
-	if err == nil {
-		return model, nil
-	}
-	if !stderrors.Is(errors.Cause(err), gorm.ErrRecordNotFound) {
-		return nil, err
-	}
 	providerModel, err := s.store.ProviderModels().Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -568,56 +602,12 @@ func (s *aiChatService) getModel(ctx context.Context, ownerUserID, id string) (*
 	return providerModelToAIChatModel(ownerUserID, provider, providerModel), nil
 }
 
-func (s *aiChatService) listProviderBackedModels(
-	ctx context.Context,
-	ownerUserID string,
-	req *iapiserver.AIChatModelListRequest,
-) ([]*iapiserver.AIChatModel, int64, error) {
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	if !enabled {
-		return []*iapiserver.AIChatModel{}, 0, nil
-	}
-	providerModels, _, err := s.store.ProviderModels().List(ctx, &iapiserver.ProviderModelListRequest{
-		Enabled:    &enabled,
-		Capability: req.Capability,
-	})
-	if err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	items := make([]*iapiserver.AIChatModel, 0, len(providerModels))
-	providers := map[string]*iapiserver.Provider{}
-	for _, providerModel := range providerModels {
-		provider, ok := providers[providerModel.ProviderID]
-		if !ok {
-			provider, err = s.store.Providers().Get(ctx, providerModel.ProviderID)
-			if err != nil {
-				if isRecordNotFound(err) {
-					continue
-				}
-				return nil, 0, err
-			}
-			providers[providerModel.ProviderID] = provider
-		}
-		if !provider.Enabled {
-			continue
-		}
-		if req.Provider != "" && provider.ID != req.Provider && provider.Name != req.Provider {
-			continue
-		}
-		items = append(items, providerModelToAIChatModel(ownerUserID, provider, providerModel))
-	}
-	return items, int64(len(items)), nil
-}
-
 func providerModelToAIChatModel(
 	ownerUserID string,
 	provider *iapiserver.Provider,
 	providerModel *iapiserver.ProviderModel,
 ) *iapiserver.AIChatModel {
-	name := providerModel.Name
+	name := providerModel.DisplayName
 	if name == "" {
 		name = providerModel.Model
 	}
@@ -673,7 +663,7 @@ func isRecordNotFound(err error) bool {
 
 func assistantFromRequest(req *iapiserver.AIChatAssistantUpsertRequest) *iapiserver.AIChatAssistant {
 	assistant := &iapiserver.AIChatAssistant{
-		Name:              req.Name,
+		ObjectMeta:        imachinery.ObjectMeta{Name: req.Name},
 		SuggestedModelID:  req.SuggestedModelID,
 		UseSuggestedModel: req.UseSuggestedModel,
 		SystemPrompt:      req.SystemPrompt,

@@ -31,7 +31,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 	"github.com/wangweihong/omnimam/backend/pkg/general"
 )
 
@@ -39,14 +41,11 @@ type PlatformSrv interface {
 	Me(ctx context.Context) (*iapiserver.MeResponse, error)
 
 	ProviderList(ctx context.Context, req *iapiserver.ProviderListRequest) (*iapiserver.ProviderListResponse, error)
+	ProviderGet(ctx context.Context, id string) (*iapiserver.Provider, error)
 	ProviderCreate(ctx context.Context, req *iapiserver.ProviderCreateRequest) (*iapiserver.Provider, error)
 	ProviderUpdate(ctx context.Context, req *iapiserver.ProviderUpdateRequest) (*iapiserver.Provider, error)
 	// ProviderDelete removes one provider together with its models and related default model bindings.
 	ProviderDelete(ctx context.Context, id string) (*iapiserver.Provider, error)
-	// ProviderPresetList returns built-in model service presets and their dynamic API setting schema.
-	ProviderPresetList(ctx context.Context) (*iapiserver.ProviderPresetListResponse, error)
-	// ProviderPresetInstall creates or updates one provider from a preset without writing credentials.
-	ProviderPresetInstall(ctx context.Context, presetKey string) (*iapiserver.Provider, error)
 	// ProviderTest checks OpenAI-compatible provider reachability using saved data plus optional overrides.
 	ProviderTest(ctx context.Context, req *iapiserver.ProviderTestRequest) (*iapiserver.ProviderTestResponse, error)
 	ProviderModelList(
@@ -75,6 +74,9 @@ type PlatformSrv interface {
 		ctx context.Context,
 		req *iapiserver.SystemLLMConfigUpsertRequest,
 	) (*iapiserver.SystemLLMConfigListResponse, error)
+	DefaultModelGet(ctx context.Context, usage string) (*iapiserver.SystemLLMConfig, error)
+	DefaultModelSave(ctx context.Context, usage string, req *iapiserver.DefaultModelSaveRequest) (*iapiserver.SystemLLMConfig, error)
+	ModelOptionList(ctx context.Context, req *iapiserver.ProviderModelListRequest) (*iapiserver.ModelOptionListResponse, error)
 
 	StorageBackendList(
 		ctx context.Context,
@@ -131,15 +133,8 @@ type PlatformSrv interface {
 		req *iapiserver.AssetGroupCreateRequest,
 	) (*iapiserver.AssetGroupCreateResponse, error)
 
-	TaskList(ctx context.Context, req *iapiserver.TaskListRequest) (*iapiserver.TaskListResponse, error)
-	TaskCreate(ctx context.Context, req *iapiserver.TaskCreateRequest) (*iapiserver.Task, error)
-	TaskGet(ctx context.Context, id string) (*iapiserver.Task, error)
-	TaskCancel(ctx context.Context, id string) (*iapiserver.TaskCancelResponse, error)
-	TaskClaim(ctx context.Context, queue, worker string, limit int, lease time.Duration) ([]*iapiserver.Task, error)
-	TaskUpdate(ctx context.Context, task *iapiserver.Task) (*iapiserver.Task, error)
-
 	// CanvasAssetRegisterOutput registers one generated asset as a canvas output reference.
-	// It returns asset metadata and creates an async audit task; raw content is not returned.
+	// It returns asset metadata and creates a Task Center audit run; raw content is not returned.
 	CanvasAssetRegisterOutput(
 		ctx context.Context,
 		req *iapiserver.CanvasAssetRegisterOutputRequest,
@@ -147,8 +142,8 @@ type PlatformSrv interface {
 	// CanvasAssetDownloadZip writes selected asset contents into a zip stream.
 	// It reads raw asset objects through StorageBackend and never exposes local paths.
 	CanvasAssetDownloadZip(ctx context.Context, req *iapiserver.CanvasAssetDownloadRequest, dst io.Writer) error
-	// CanvasNodeRun creates a task for one canvas node execution.
-	// Provider-specific work is handled later by workers through task input.
+	// CanvasNodeRun creates a Task Center run for one canvas node execution.
+	// Provider-specific work is handled later by task-center executors through run input.
 	CanvasNodeRun(
 		ctx context.Context,
 		canvasID, nodeID string,
@@ -157,7 +152,12 @@ type PlatformSrv interface {
 }
 
 type platformService struct {
-	store store.Factory
+	store      store.Factory
+	dispatcher taskRunDispatcher
+}
+
+type taskRunDispatcher interface {
+	DispatchAsync(ctx context.Context, runID string)
 }
 
 var (
@@ -215,7 +215,7 @@ func StartProviderModelHealthCheck(stopCh <-chan struct{}, storeIns store.Factor
 }
 
 func NewService(str store.Factory) *platformService {
-	return &platformService{store: str}
+	return &platformService{store: str, dispatcher: taskexecutor.NewDispatcher(str)}
 }
 
 func (s *platformService) Me(ctx context.Context) (*iapiserver.MeResponse, error) {
@@ -254,21 +254,45 @@ func (s *platformService) ProviderList(
 	ctx context.Context,
 	req *iapiserver.ProviderListRequest,
 ) (*iapiserver.ProviderListResponse, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.OwnerUserID = ownerUserID
 	items, total, err := s.store.Providers().List(ctx, req)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.ProviderListResponse{ListRet: imachinery.ListRet{Total: total}, Providers: items}, nil
+	return &iapiserver.ProviderListResponse{Total: total, Items: items}, nil
+}
+
+func (s *platformService) ProviderGet(ctx context.Context, id string) (*iapiserver.Provider, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := s.store.Providers().Get(ctx, id)
+	if err != nil {
+		return nil, errors.NewStatusF(code.ErrModelProviderNotFound, "model provider not found")
+	}
+	if provider.OwnerUserID != "" && provider.OwnerUserID != ownerUserID {
+		return nil, errors.NewStatusF(code.ErrModelProviderNotFound, "model provider not found")
+	}
+	return provider, nil
 }
 
 func (s *platformService) ProviderCreate(
 	ctx context.Context,
 	req *iapiserver.ProviderCreateRequest,
 ) (*iapiserver.Provider, error) {
-
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	provider := &iapiserver.Provider{
+		OwnerUserID:   ownerUserID,
 		Type:          req.Type,
-		Enabled:       false,
+		Enabled:       general.FallbackIfNil(req.Enabled, true),
 		BaseURL:       req.BaseURL,
 		AuthType:      req.AuthType,
 		CredentialRef: req.CredentialRef,
@@ -276,6 +300,10 @@ func (s *platformService) ProviderCreate(
 		Config:        req.Config,
 	}
 	provider.Name = req.Name
+	provider.Description = req.Description
+	if err := s.ensureProviderNameUnique(ctx, ownerUserID, provider.Name, ""); err != nil {
+		return nil, err
+	}
 	applyProviderPresetDefaults(provider)
 	if provider.AuthType == "" && provider.CredentialRef != "" {
 		provider.AuthType = iapiserver.ProviderAuthTypeAPIKey
@@ -302,10 +330,11 @@ func (s *platformService) ProviderUpdate(
 	provider.BaseURL = general.FallbackIfNil(req.BaseURL, provider.BaseURL)
 	provider.AuthType = general.FallbackIfNil(req.AuthType, provider.AuthType)
 	provider.CredentialRef = general.FallbackIfNil(req.CredentialRef, provider.CredentialRef)
-	provider.BaseURL = general.FallbackIfNil(req.BaseURL, provider.BaseURL)
-
-	log.Infof("ProviderUpdate: %+v", provider)
-	log.Infof("req: %+v", req)
+	provider.Config = general.FallbackIfNil(req.Config, provider.Config)
+	provider.Description = general.FallbackIfNil(req.Description, provider.Description)
+	if err := s.ensureProviderNameUnique(ctx, provider.OwnerUserID, provider.Name, provider.ID); err != nil {
+		return nil, err
+	}
 	updated, err := s.store.Providers().Update(ctx, provider)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -330,51 +359,6 @@ func (s *platformService) ProviderDelete(ctx context.Context, id string) (*iapis
 	return provider, nil
 }
 
-func (s *platformService) ProviderPresetList(ctx context.Context) (*iapiserver.ProviderPresetListResponse, error) {
-	return &iapiserver.ProviderPresetListResponse{Presets: providerPresets()}, nil
-}
-
-func (s *platformService) ProviderPresetInstall(ctx context.Context, presetKey string) (*iapiserver.Provider, error) {
-	preset := providerPresetByKey(presetKey)
-	if preset == nil {
-		return nil, errors.NewStatusF(code.ErrValidation, "provider preset %s not found", presetKey)
-	}
-	existing, _, err := s.store.Providers().List(ctx, &iapiserver.ProviderListRequest{})
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	for _, provider := range existing {
-		if provider.PresetKey == preset.Key {
-			provider.Name = preset.Name
-			provider.Type = preset.Type
-			provider.BaseURL = preset.BaseURL
-			provider.AuthType = preset.AuthType
-			if provider.Config == nil {
-				provider.Config = providerPresetConfigDefaults(preset)
-			}
-			updated, err := s.store.Providers().Update(ctx, provider)
-			if err != nil {
-				return nil, errors.WithStack(err)
-			}
-			return updated, nil
-		}
-	}
-	provider := &iapiserver.Provider{
-		Type:      preset.Type,
-		Enabled:   false,
-		BaseURL:   preset.BaseURL,
-		AuthType:  preset.AuthType,
-		PresetKey: preset.Key,
-		Config:    providerPresetConfigDefaults(preset),
-	}
-	provider.Name = preset.Name
-	created, err := s.store.Providers().Add(ctx, provider)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return created, nil
-}
-
 func (s *platformService) ProviderTest(
 	ctx context.Context,
 	req *iapiserver.ProviderTestRequest,
@@ -383,14 +367,16 @@ func (s *platformService) ProviderTest(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	started := time.Now()
 	if _, err := fetchOpenAICompatibleModels(ctx, provider); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return &iapiserver.ProviderTestResponse{
-		OK:        true,
-		Message:   "provider connection ok",
-		LatencyMS: time.Since(started).Milliseconds(),
+		TargetType:   "provider",
+		ProviderID:   provider.ID,
+		Success:      true,
+		HealthStatus: iapiserver.ProviderModelHealthHealthy,
+		Message:      "provider connection ok",
+		CheckedAt:    imachinery.NewTime(time.Now()),
 	}, nil
 }
 
@@ -398,17 +384,26 @@ func (s *platformService) ProviderModelList(
 	ctx context.Context,
 	req *iapiserver.ProviderModelListRequest,
 ) (*iapiserver.ProviderModelListResponse, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.OwnerUserID = ownerUserID
 	items, total, err := s.store.ProviderModels().List(ctx, req)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.ProviderModelListResponse{ListRet: imachinery.ListRet{Total: total}, Models: items}, nil
+	return &iapiserver.ProviderModelListResponse{Total: total, Items: items}, nil
 }
 
 func (s *platformService) ProviderModelCreate(
 	ctx context.Context,
 	req *iapiserver.ProviderModelCreateRequest,
 ) (*iapiserver.ProviderModel, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.ensureProviderModelUnique(ctx, req.ProviderID, req.Name, req.Model, ""); err != nil {
 		return nil, err
 	}
@@ -416,19 +411,22 @@ func (s *platformService) ProviderModelCreate(
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	streamSupported := true
+	if req.StreamSupported != nil {
+		streamSupported = *req.StreamSupported
+	}
 	model := &iapiserver.ProviderModel{
-		ProviderID:    req.ProviderID,
-		Model:         req.Model,
-		EndpointType:  req.EndpointType,
-		GroupName:     req.GroupName,
-		HealthStatus:  iapiserver.ProviderModelHealthUnknown,
-		Capabilities:  req.Capabilities,
-		ModelTypes:    req.ModelTypes,
-		Enabled:       enabled,
-		DefaultParams: req.DefaultParams,
-		Pricing:       req.Pricing,
+		ProviderID:      req.ProviderID,
+		OwnerUserID:     ownerUserID,
+		Model:           req.Model,
+		GroupName:       req.GroupName,
+		HealthStatus:    iapiserver.ProviderModelHealthUnknown,
+		Capabilities:    req.Capabilities,
+		StreamSupported: streamSupported,
+		Enabled:         enabled,
 	}
 	model.Name = req.Name
+	model.DisplayName = req.Name
 	return s.store.ProviderModels().Add(ctx, model)
 }
 
@@ -446,14 +444,12 @@ func (s *platformService) ProviderModelUpdate(
 		return nil, err
 	}
 	model.Name = nextName
+	model.DisplayName = nextName
 	model.Model = nextModel
-	model.EndpointType = general.FallbackIfNil(req.EndpointType, model.EndpointType)
 	model.GroupName = general.FallbackIfNil(req.GroupName, model.GroupName)
 	model.Capabilities = general.FallbackIfNil(req.Capabilities, model.Capabilities)
-	model.ModelTypes = general.FallbackIfNil(req.ModelTypes, model.ModelTypes)
+	model.StreamSupported = general.FallbackIfNil(req.StreamSupported, model.StreamSupported)
 	model.Enabled = general.FallbackIfNil(req.Enabled, model.Enabled)
-	model.DefaultParams = general.FallbackIfNil(req.DefaultParams, model.DefaultParams)
-	model.Pricing = general.FallbackIfNil(req.Pricing, model.Pricing)
 
 	return s.store.ProviderModels().Update(ctx, model)
 }
@@ -467,14 +463,23 @@ func (s *platformService) ProviderModelHealthCheck(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if model.ProviderID != providerID {
+	if providerID != "" && model.ProviderID != providerID {
 		return nil, errors.NewStatusF(code.ErrValidation, "provider model %s does not belong to provider %s", id, providerID)
 	}
 	checked, err := s.checkProviderModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.ProviderModelHealthCheckResponse{Model: checked}, nil
+	success := checked.HealthStatus == iapiserver.ProviderModelHealthHealthy
+	return &iapiserver.ProviderModelHealthCheckResponse{
+		TargetType:   "model",
+		ProviderID:   checked.ProviderID,
+		ModelID:      checked.ID,
+		Success:      success,
+		HealthStatus: checked.HealthStatus,
+		Message:      checked.HealthReason,
+		CheckedAt:    imachinery.NewTime(time.Now()),
+	}, nil
 }
 
 func (s *platformService) checkAllProviderModels(ctx context.Context) {
@@ -562,8 +567,11 @@ func (s *platformService) ProviderModelDelete(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if model.ProviderID != providerID {
+	if providerID != "" && model.ProviderID != providerID {
 		return nil, errors.NewStatusF(code.ErrValidation, "provider model %s does not belong to provider %s", id, providerID)
+	}
+	if providerID == "" {
+		providerID = model.ProviderID
 	}
 	if err := s.store.SystemLLMConfigs().DeleteByProviderModelID(ctx, providerID, id); err != nil {
 		return nil, errors.WithStack(err)
@@ -591,7 +599,7 @@ func (s *platformService) ProviderModelSync(
 		return nil, errors.WithStack(err)
 	}
 	existingByModel := map[string]*iapiserver.ProviderModel{}
-	for _, item := range existingResp.Models {
+	for _, item := range existingResp.Items {
 		existingByModel[item.Model] = item
 	}
 	created := 0
@@ -604,11 +612,12 @@ func (s *platformService) ProviderModelSync(
 		if existing := existingByModel[remote]; existing != nil {
 			nextCaps := appendCapability(existing.Capabilities, iapiserver.CapabilityLLMChat)
 			changed := applyPresetModelDefaults(provider, existing)
-			if existing.Name == remote && sets.NewString(existing.Capabilities...).Equal(sets.NewString(nextCaps...)) && !changed {
+			if existing.DisplayName == remote && sets.NewString(existing.Capabilities...).Equal(sets.NewString(nextCaps...)) && !changed {
 				skipped++
 				continue
 			}
 			existing.Name = remote
+			existing.DisplayName = remote
 			existing.Capabilities = nextCaps
 			if _, err := s.store.ProviderModels().Update(ctx, existing); err != nil {
 				return nil, errors.WithStack(err)
@@ -617,12 +626,14 @@ func (s *platformService) ProviderModelSync(
 			continue
 		}
 		model := &iapiserver.ProviderModel{
-			ProviderID:    provider.ID,
-			Model:         remote,
-			HealthStatus:  iapiserver.ProviderModelHealthUnknown,
-			Capabilities:  []string{iapiserver.CapabilityLLMChat},
-			Enabled:       true,
-			DefaultParams: map[string]any{},
+			ProviderID:      provider.ID,
+			OwnerUserID:     provider.OwnerUserID,
+			Model:           remote,
+			DisplayName:     remote,
+			HealthStatus:    iapiserver.ProviderModelHealthUnknown,
+			Capabilities:    []string{iapiserver.CapabilityLLMChat},
+			StreamSupported: true,
+			Enabled:         true,
 		}
 		model.Name = remote
 		applyPresetModelDefaults(provider, model)
@@ -636,7 +647,8 @@ func (s *platformService) ProviderModelSync(
 		return nil, errors.WithStack(err)
 	}
 	return &iapiserver.ProviderModelSyncResponse{
-		Models:  models.Models,
+		Total:   int(models.Total),
+		Models:  models.Items,
 		Created: created,
 		Updated: updated,
 		Skipped: skipped,
@@ -644,28 +656,40 @@ func (s *platformService) ProviderModelSync(
 }
 
 func (s *platformService) SystemLLMConfigList(ctx context.Context) (*iapiserver.SystemLLMConfigListResponse, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	configs, err := s.store.SystemLLMConfigs().List(ctx)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.SystemLLMConfigListResponse{Configs: configs}, nil
+	filtered := configs[:0]
+	for _, cfg := range configs {
+		if cfg.OwnerUserID == "" || cfg.OwnerUserID == ownerUserID {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return &iapiserver.SystemLLMConfigListResponse{Configs: filtered}, nil
 }
 
 func (s *platformService) SystemLLMConfigUpsert(
 	ctx context.Context,
 	req *iapiserver.SystemLLMConfigUpsertRequest,
 ) (*iapiserver.SystemLLMConfigListResponse, error) {
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, spec := range req.Configs {
-		enabled := true
-		if spec.Enabled != nil {
-			enabled = *spec.Enabled
+		if !isDefaultModelUsage(spec.Purpose) {
+			return nil, errors.NewStatusF(code.ErrDefaultModelInvalid, "default model usage %s is invalid", spec.Purpose)
 		}
 		cfg := &iapiserver.SystemLLMConfig{
-			Purpose:    spec.Purpose,
-			ProviderID: spec.ProviderID,
-			ModelID:    spec.ModelID,
-			Model:      spec.Model,
-			Enabled:    enabled,
+			OwnerUserID: ownerUserID,
+			Purpose:     spec.Purpose,
+			ProviderID:  spec.ProviderID,
+			ModelID:     spec.ModelID,
 		}
 		cfg.Name = spec.Purpose
 		if _, err := s.store.SystemLLMConfigs().Upsert(ctx, cfg); err != nil {
@@ -675,36 +699,131 @@ func (s *platformService) SystemLLMConfigUpsert(
 	return s.SystemLLMConfigList(ctx)
 }
 
-func providerPresets() []*iapiserver.ProviderPreset {
-	commonSettings := []iapiserver.ProviderAPISetting{
-		{Key: "array_message_content", Label: "支持数组格式的 message content", Type: "boolean", Default: true},
-		{Key: "developer_message", Label: "支持 Developer Message", Type: "boolean", Default: false},
-		{Key: "stream_options", Label: "支持 stream_options", Type: "boolean", Default: true},
-		{Key: "service_tier", Label: "支持 service_tier", Type: "boolean", Default: false},
-		{Key: "enable_thinking", Label: "支持 enable_thinking", Type: "boolean", Default: false},
-		{Key: "verbosity", Label: "支持 verbosity", Type: "boolean", Default: false},
+func (s *platformService) DefaultModelGet(ctx context.Context, usage string) (*iapiserver.SystemLLMConfig, error) {
+	if !isDefaultModelUsage(usage) {
+		return nil, errors.NewStatusF(code.ErrDefaultModelMissing, "default model usage %s is invalid", usage)
 	}
-	return []*iapiserver.ProviderPreset{
+	list, err := s.SystemLLMConfigList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, cfg := range list.Configs {
+		if cfg.Purpose == usage {
+			if model, err := s.store.ProviderModels().Get(ctx, cfg.ModelID); err == nil {
+				cfg.ModelDetail = model
+			}
+			return cfg, nil
+		}
+	}
+	return nil, errors.NewStatusF(code.ErrDefaultModelMissing, "default model %s is missing", usage)
+}
+
+func (s *platformService) DefaultModelSave(
+	ctx context.Context,
+	usage string,
+	req *iapiserver.DefaultModelSaveRequest,
+) (*iapiserver.SystemLLMConfig, error) {
+	if !isDefaultModelUsage(usage) {
+		return nil, errors.NewStatusF(code.ErrDefaultModelInvalid, "default model usage %s is invalid", usage)
+	}
+	ownerUserID, err := currentPlatformUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := s.ProviderGet(ctx, req.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	model, err := s.store.ProviderModels().Get(ctx, req.ModelID)
+	if err != nil || model.ProviderID != provider.ID || model.OwnerUserID != ownerUserID || !provider.Enabled || !model.Enabled ||
+		model.HealthStatus == iapiserver.ProviderModelHealthUnhealthy {
+		return nil, errors.NewStatusF(code.ErrDefaultModelInvalid, "default model candidate is invalid")
+	}
+	cfg := &iapiserver.SystemLLMConfig{
+		OwnerUserID: ownerUserID,
+		Purpose:     usage,
+		ProviderID:  provider.ID,
+		ModelID:     model.ID,
+		ModelDetail: model,
+	}
+	cfg.Name = usage
+	saved, err := s.store.SystemLLMConfigs().Upsert(ctx, cfg)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	saved.ModelDetail = model
+	return saved, nil
+}
+
+func (s *platformService) ModelOptionList(
+	ctx context.Context,
+	req *iapiserver.ProviderModelListRequest,
+) (*iapiserver.ModelOptionListResponse, error) {
+	enabled := true
+	req.Enabled = &enabled
+	if req.Capability == "" && req.Usage != "" {
+		req.Capability = capabilityForDefaultModelUsage(req.Usage)
+	}
+	resp, err := s.ProviderModelList(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	items := resp.Items[:0]
+	for _, item := range resp.Items {
+		if item.HealthStatus != iapiserver.ProviderModelHealthUnhealthy {
+			items = append(items, item)
+		}
+	}
+	return &iapiserver.ModelOptionListResponse{Total: int64(len(items)), Items: items}, nil
+}
+
+func capabilityForDefaultModelUsage(usage string) string {
+	switch usage {
+	case "assistant.default", "quick", "translation":
+		return iapiserver.CapabilityLLMChat
+	default:
+		return ""
+	}
+}
+
+type providerPreset struct {
+	Key            string
+	Name           string
+	Type           string
+	BaseURL        string
+	AuthType       string
+	ConfigDefaults map[string]any
+	ModelTypeRules []iapiserver.ProviderModelTypeRule
+}
+
+func providerPresets() []*providerPreset {
+	commonDefaults := map[string]any{
+		"array_message_content": true,
+		"developer_message":     false,
+		"stream_options":        true,
+		"service_tier":          false,
+		"enable_thinking":       false,
+		"verbosity":             false,
+	}
+	return []*providerPreset{
 		{
-			Key:               "deepseek",
-			Name:              "DeepSeek",
-			Type:              "",
-			BaseURL:           "https://api.deepseek.com",
-			AuthType:          iapiserver.ProviderAuthTypeAPIKey,
-			Icon:              "d",
-			APISettingsSchema: commonSettings,
+			Key:            "deepseek",
+			Name:           "DeepSeek",
+			Type:           "",
+			BaseURL:        "https://api.deepseek.com",
+			AuthType:       iapiserver.ProviderAuthTypeAPIKey,
+			ConfigDefaults: commonDefaults,
 			ModelTypeRules: []iapiserver.ProviderModelTypeRule{
 				{Contains: []string{"reasoner", "r1"}, ModelTypes: []string{"reasoning"}, GroupName: "deepseek", EndpointType: "chat"},
 			},
 		},
 		{
-			Key:               "qwen",
-			Name:              "通义千问",
-			Type:              iapiserver.ProviderTypeOpenAICompatible,
-			BaseURL:           "https://dashscope.aliyuncs.com/compatible-mode",
-			AuthType:          iapiserver.ProviderAuthTypeAPIKey,
-			Icon:              "q",
-			APISettingsSchema: commonSettings,
+			Key:            "qwen",
+			Name:           "通义千问",
+			Type:           iapiserver.ProviderTypeOpenAICompatible,
+			BaseURL:        "https://dashscope.aliyuncs.com/compatible-mode",
+			AuthType:       iapiserver.ProviderAuthTypeAPIKey,
+			ConfigDefaults: commonDefaults,
 			ModelTypeRules: []iapiserver.ProviderModelTypeRule{
 				{Contains: []string{"vl", "vision"}, ModelTypes: []string{"vision"}, GroupName: "qwen", EndpointType: "chat"},
 				{Contains: []string{"qwq", "reason", "thinking"}, ModelTypes: []string{"reasoning"}, GroupName: "qwen", EndpointType: "chat"},
@@ -712,13 +831,12 @@ func providerPresets() []*iapiserver.ProviderPreset {
 			},
 		},
 		{
-			Key:               "openrouter",
-			Name:              "OpenRouter",
-			Type:              iapiserver.ProviderTypeOpenAICompatible,
-			BaseURL:           "https://openrouter.ai/api",
-			AuthType:          iapiserver.ProviderAuthTypeAPIKey,
-			Icon:              "o",
-			APISettingsSchema: commonSettings,
+			Key:            "openrouter",
+			Name:           "OpenRouter",
+			Type:           iapiserver.ProviderTypeOpenAICompatible,
+			BaseURL:        "https://openrouter.ai/api",
+			AuthType:       iapiserver.ProviderAuthTypeAPIKey,
+			ConfigDefaults: commonDefaults,
 			ModelTypeRules: []iapiserver.ProviderModelTypeRule{
 				{Contains: []string{"vision", "vl"}, ModelTypes: []string{"vision"}, GroupName: "openrouter", EndpointType: "chat"},
 				{Contains: []string{"web", "search"}, ModelTypes: []string{"web"}, GroupName: "openrouter", EndpointType: "chat"},
@@ -726,13 +844,12 @@ func providerPresets() []*iapiserver.ProviderPreset {
 			},
 		},
 		{
-			Key:               "siliconflow",
-			Name:              "硅基流动",
-			Type:              iapiserver.ProviderTypeOpenAICompatible,
-			BaseURL:           "https://api.siliconflow.cn",
-			AuthType:          iapiserver.ProviderAuthTypeAPIKey,
-			Icon:              "s",
-			APISettingsSchema: commonSettings,
+			Key:            "siliconflow",
+			Name:           "硅基流动",
+			Type:           iapiserver.ProviderTypeOpenAICompatible,
+			BaseURL:        "https://api.siliconflow.cn",
+			AuthType:       iapiserver.ProviderAuthTypeAPIKey,
+			ConfigDefaults: commonDefaults,
 			ModelTypeRules: []iapiserver.ProviderModelTypeRule{
 				{Contains: []string{"vl", "vision"}, ModelTypes: []string{"vision"}, GroupName: "siliconflow", EndpointType: "chat"},
 				{Contains: []string{"rerank"}, ModelTypes: []string{"rerank"}, GroupName: "siliconflow", EndpointType: "rerank"},
@@ -742,7 +859,7 @@ func providerPresets() []*iapiserver.ProviderPreset {
 	}
 }
 
-func providerPresetByKey(key string) *iapiserver.ProviderPreset {
+func providerPresetByKey(key string) *providerPreset {
 	for _, preset := range providerPresets() {
 		if preset.Key == key {
 			return preset
@@ -751,13 +868,13 @@ func providerPresetByKey(key string) *iapiserver.ProviderPreset {
 	return nil
 }
 
-func providerPresetConfigDefaults(preset *iapiserver.ProviderPreset) map[string]any {
+func providerPresetConfigDefaults(preset *providerPreset) map[string]any {
 	config := map[string]any{}
 	if preset == nil {
 		return config
 	}
-	for _, setting := range preset.APISettingsSchema {
-		config[setting.Key] = setting.Default
+	for key, value := range preset.ConfigDefaults {
+		config[key] = value
 	}
 	return config
 }
@@ -1169,23 +1286,30 @@ func (s *platformService) createAssetFromReader(
 		}
 	}
 
-	probeTask, err := s.enqueueTask(ctx, iapiserver.TaskTypeAssetProbe, map[string]any{"asset_id": created.ID})
-	if err != nil {
-		return nil, err
-	}
-	thumbTask, err := s.enqueueTask(
-		ctx,
-		iapiserver.TaskTypeAssetThumbnail,
-		map[string]any{"asset_id": created.ID, "thumbnail_id": thumb.ID},
-	)
-	if err != nil {
-		return nil, err
+	var taskRuns []*iapiserver.TaskRun
+	if mediaType == iapiserver.AssetMediaTypeImage || mediaType == iapiserver.AssetMediaTypeVideo {
+		run, err := s.createTaskRun(ctx, taskRunSpec{
+			DefinitionID:         taskexecutor.AssetThumbnailDefinitionID,
+			Name:                 "asset-thumbnail-generate",
+			Description:          "Generate asset thumbnail from image or video content.",
+			FunctionRef:          taskexecutor.FunctionAssetThumbnailGenerate,
+			RequiredCapabilities: taskexecutor.CapabilityAssetThumbnail,
+			Input:                map[string]any{"asset_id": created.ID, "thumbnail_id": thumb.ID},
+			Tags:                 "asset,thumbnail",
+		})
+		if err != nil {
+			return nil, err
+		}
+		taskRuns = append(taskRuns, run)
+		if s.dispatcher != nil {
+			s.dispatcher.DispatchAsync(ctx, run.ID)
+		}
 	}
 	record, err := s.assetRecord(ctx, created)
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.AssetUploadResponse{Asset: record, Tasks: []*iapiserver.Task{probeTask, thumbTask}}, nil
+	return &iapiserver.AssetUploadResponse{Asset: record, TaskRuns: taskRuns}, nil
 }
 
 func (s *platformService) AssetChunkUploadInit(
@@ -1376,15 +1500,19 @@ func (s *platformService) AssetSearchParse(
 	req *iapiserver.AssetSearchParseRequest,
 ) (*iapiserver.AssetSearchParseResponse, error) {
 	query := parseNaturalAssetQuery(req.Text)
-	task, err := s.enqueueTask(
-		ctx,
-		iapiserver.TaskTypeQueryParse,
-		map[string]any{"text": req.Text, "fallback_query": query},
-	)
+	run, err := s.createTaskRun(ctx, taskRunSpec{
+		DefinitionID:         "asset-search-parse",
+		Name:                 "asset-search-parse",
+		Description:          "Parse a natural-language asset search query.",
+		FunctionRef:          "asset.search.parse",
+		RequiredCapabilities: "asset.search.parse",
+		Input:                map[string]any{"text": req.Text, "fallback_query": query},
+		Tags:                 "asset,search",
+	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.AssetSearchParseResponse{Query: query, TaskID: task.ID}, nil
+	return &iapiserver.AssetSearchParseResponse{Query: query, TaskRunID: run.ID}, nil
 }
 
 func (s *platformService) AssetGet(ctx context.Context, id string) (*iapiserver.AssetRecord, error) {
@@ -1508,58 +1636,6 @@ func (s *platformService) AssetGroupCreate(
 	return &iapiserver.AssetGroupCreateResponse{Group: created, Members: createdMembers}, nil
 }
 
-func (s *platformService) TaskList(
-	ctx context.Context,
-	req *iapiserver.TaskListRequest,
-) (*iapiserver.TaskListResponse, error) {
-	tasks, total, err := s.store.Tasks().List(ctx, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &iapiserver.TaskListResponse{ListRet: imachinery.ListRet{Total: total}, Tasks: tasks}, nil
-}
-
-func (s *platformService) TaskCreate(ctx context.Context, req *iapiserver.TaskCreateRequest) (*iapiserver.Task, error) {
-	task := &iapiserver.Task{
-		Type:           req.Type,
-		Priority:       req.Priority,
-		Queue:          req.Queue,
-		Input:          req.Input,
-		MaxAttempts:    req.MaxAttempts,
-		IdempotencyKey: req.IdempotencyKey,
-	}
-	task.Name = req.Name
-	if task.Name == "" {
-		task.Name = strings.ReplaceAll(req.Type, ".", "-")
-	}
-	return s.store.Tasks().Add(ctx, task)
-}
-
-func (s *platformService) TaskGet(ctx context.Context, id string) (*iapiserver.Task, error) {
-	return s.store.Tasks().Get(ctx, id)
-}
-
-func (s *platformService) TaskCancel(ctx context.Context, id string) (*iapiserver.TaskCancelResponse, error) {
-	task, err := s.store.Tasks().Cancel(ctx, id)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &iapiserver.TaskCancelResponse{Task: task}, nil
-}
-
-func (s *platformService) TaskClaim(
-	ctx context.Context,
-	queue, worker string,
-	limit int,
-	lease time.Duration,
-) ([]*iapiserver.Task, error) {
-	return s.store.Tasks().Claim(ctx, queue, worker, limit, lease)
-}
-
-func (s *platformService) TaskUpdate(ctx context.Context, task *iapiserver.Task) (*iapiserver.Task, error) {
-	return s.store.Tasks().Update(ctx, task)
-}
-
 func (s *platformService) CanvasAssetRegisterOutput(
 	ctx context.Context,
 	req *iapiserver.CanvasAssetRegisterOutputRequest,
@@ -1568,16 +1644,24 @@ func (s *platformService) CanvasAssetRegisterOutput(
 	if err != nil {
 		return nil, err
 	}
-	task, err := s.enqueueTask(ctx, iapiserver.TaskTypeCanvasOutputRegister, map[string]any{
-		"canvas_id": req.CanvasID,
-		"node_id":   req.NodeID,
-		"asset_id":  req.AssetID,
-		"metadata":  req.Metadata,
+	run, err := s.createTaskRun(ctx, taskRunSpec{
+		DefinitionID:         "canvas-output-register",
+		Name:                 "canvas-output-register",
+		Description:          "Register a canvas output asset reference.",
+		FunctionRef:          "canvas.output.register",
+		RequiredCapabilities: "canvas.output.register",
+		Input: map[string]any{
+			"canvas_id": req.CanvasID,
+			"node_id":   req.NodeID,
+			"asset_id":  req.AssetID,
+			"metadata":  req.Metadata,
+		},
+		Tags: "canvas,asset",
 	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.CanvasAssetRegisterOutputResponse{Asset: record, Task: task}, nil
+	return &iapiserver.CanvasAssetRegisterOutputResponse{Asset: record, TaskRun: run}, nil
 }
 
 func (s *platformService) CanvasAssetDownloadZip(
@@ -1627,22 +1711,25 @@ func (s *platformService) CanvasNodeRun(
 	canvasID, nodeID string,
 	req *iapiserver.CanvasNodeRunRequest,
 ) (*iapiserver.CanvasRunResponse, error) {
-	task, err := s.TaskCreate(ctx, &iapiserver.TaskCreateRequest{
-		Name:        "canvas-node-run",
-		Type:        canvasNodeTaskType(req.Node),
-		Queue:       "default",
-		MaxAttempts: 3,
+	functionRef := canvasNodeFunctionRef(req.Node)
+	run, err := s.createTaskRun(ctx, taskRunSpec{
+		DefinitionID:         safeTaskDefinitionID(functionRef),
+		Name:                 "canvas-node-run",
+		Description:          "Execute one canvas node through Task Center.",
+		FunctionRef:          functionRef,
+		RequiredCapabilities: functionRef,
 		Input: map[string]any{
 			"canvas_id": canvasID,
 			"node_id":   nodeID,
 			"node":      req.Node,
 			"settings":  req.Settings,
 		},
+		Tags: "canvas,node",
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.CanvasRunResponse{Task: task}, nil
+	return &iapiserver.CanvasRunResponse{TaskRun: run}, nil
 }
 
 func (s *platformService) ensureDefaultLocalBackend(ctx context.Context) (*iapiserver.StorageBackend, error) {
@@ -1728,20 +1815,83 @@ func (s *platformService) replaceAssetTags(
 	return s.store.AssetTags().Replace(ctx, assetID, tags, source)
 }
 
-func (s *platformService) enqueueTask(
-	ctx context.Context,
-	taskType string,
-	input map[string]any,
-) (*iapiserver.Task, error) {
-	task := &iapiserver.Task{
-		Type:        taskType,
-		Status:      iapiserver.TaskStatusPending,
-		Queue:       "default",
-		Input:       input,
-		MaxAttempts: 3,
+type taskRunSpec struct {
+	DefinitionID         string
+	Name                 string
+	Description          string
+	FunctionRef          string
+	RequiredCapabilities string
+	Input                map[string]any
+	Tags                 string
+}
+
+func (s *platformService) createTaskRun(ctx context.Context, spec taskRunSpec) (*iapiserver.TaskRun, error) {
+	definition, err := s.ensureAtomicTaskDefinition(ctx, spec)
+	if err != nil {
+		return nil, err
 	}
-	task.Name = strings.ReplaceAll(taskType, ".", "-")
-	return s.store.Tasks().Add(ctx, task)
+	run := &iapiserver.TaskRun{
+		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:   definition.ID,
+		Status:         iapiserver.TaskRunStatusReady,
+		Input:          spec.Input,
+		MaxAttempts:    1,
+		ProjectID:      definition.ProjectID,
+		Namespace:      definition.Namespace,
+		Tags:           spec.Tags,
+		CreatedBy:      iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	run.Name = definition.Name + "-run"
+	created, err := s.store.TaskCenters().AddRun(ctx, run)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	event := &iapiserver.TaskRunEvent{
+		RunID:      created.ID,
+		EventType:  iapiserver.TaskCenterEventRunCreated,
+		ToStatus:   created.Status,
+		Payload:    map[string]any{"definition_id": created.DefinitionID},
+		OccurredAt: imachinery.NewTime(time.Now()),
+	}
+	event.Name = iapiserver.TaskCenterEventRunCreated
+	if _, err := s.store.TaskCenters().AddEvent(ctx, event); err != nil {
+		log.Errorf("record task run event failed: run_id=%s error=%v", created.ID, err)
+	}
+	return created, nil
+}
+
+func (s *platformService) ensureAtomicTaskDefinition(
+	ctx context.Context,
+	spec taskRunSpec,
+) (*iapiserver.TaskDefinition, error) {
+	definition, err := s.store.TaskCenters().GetDefinition(
+		ctx,
+		iapiserver.TaskDefinitionTypeAtomic,
+		spec.DefinitionID,
+	)
+	if err == nil {
+		return definition, nil
+	}
+	definition = &iapiserver.TaskDefinition{
+		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
+		FunctionRef:          spec.FunctionRef,
+		RequiredCapabilities: spec.RequiredCapabilities,
+		ProjectID:            iapiserver.DefaultTaskCenterProjectID,
+		Namespace:            iapiserver.DefaultTaskCenterNamespace,
+		CreatedBy:            iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	definition.ID = spec.DefinitionID
+	definition.Name = spec.Name
+	definition.Description = spec.Description
+	created, createErr := s.store.TaskCenters().AddDefinition(ctx, definition)
+	if createErr == nil {
+		return created, nil
+	}
+	definition, getErr := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
+	if getErr != nil {
+		return nil, errors.WithStack(createErr)
+	}
+	return definition, nil
 }
 
 func defaultFeatureFlags() map[string]bool {
@@ -1770,9 +1920,14 @@ func defaultPermissions() []string {
 		"asset.group.create",
 		"provider.manage",
 		"storage.manage",
-		"task.create",
-		"task.read",
-		"task.cancel",
+		"MODEL_CONFIG_READ",
+		"MODEL_CONFIG_WRITE",
+		"MODEL_HEALTH_TEST",
+		"MODEL_DEFAULT_WRITE",
+		"task.definition.manage",
+		"task.run.operate",
+		"task.worker.protocol",
+		"task.operation.admin",
 		"canvas.read",
 		"canvas.write",
 		"canvas.execute",
@@ -1789,6 +1944,41 @@ func appendUnique(items []string, item string) []string {
 		return items
 	}
 	return append(items, item)
+}
+
+func (s *platformService) ensureProviderNameUnique(
+	ctx context.Context,
+	ownerUserID string,
+	name string,
+	excludeID string,
+) error {
+	items, _, err := s.store.Providers().List(ctx, &iapiserver.ProviderListRequest{OwnerUserID: ownerUserID})
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	for _, item := range items {
+		if item.Name == name && item.ID != excludeID {
+			return errors.NewStatusF(code.ErrModelProviderNameDuplicated, "provider name %s already exists", name)
+		}
+	}
+	return nil
+}
+
+func currentPlatformUserID(ctx context.Context) (string, error) {
+	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
+	if err != nil || user == nil || user.ID == "" {
+		return "system-admin", nil
+	}
+	return user.ID, nil
+}
+
+func isDefaultModelUsage(usage string) bool {
+	switch usage {
+	case "assistant.default", "quick", "translation":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeLocalRoot(root string) (string, error) {
@@ -1971,7 +2161,7 @@ func imageDimensions(path string) (int, int) {
 
 func thumbnailInitialStatus(mediaType string) string {
 	switch mediaType {
-	case iapiserver.AssetMediaTypeImage, iapiserver.AssetMediaTypeVideo, iapiserver.AssetMediaTypePDF:
+	case iapiserver.AssetMediaTypeImage, iapiserver.AssetMediaTypeVideo:
 		return iapiserver.ThumbnailStatusPending
 	default:
 		return iapiserver.ThumbnailStatusUnsupported
@@ -2071,7 +2261,7 @@ func addFileToZip(zw *zip.Writer, path string, name string) error {
 	return nil
 }
 
-func canvasNodeTaskType(node map[string]any) string {
+func canvasNodeFunctionRef(node map[string]any) string {
 	nodeType, _ := node["type"].(string)
 	switch nodeType {
 	case "llm", "smart-prompt":
@@ -2089,6 +2279,18 @@ func canvasNodeTaskType(node map[string]any) string {
 	case "ltxDirector":
 		return "canvas.node.ltx_director"
 	default:
-		return iapiserver.TaskTypeCanvasNodeRun
+		return "canvas.node.run"
 	}
+}
+
+func safeTaskDefinitionID(functionRef string) string {
+	id := strings.ToLower(strings.ReplaceAll(functionRef, ".", "-"))
+	id = strings.Trim(id, "-")
+	if id == "" {
+		return "task-run"
+	}
+	if len(id) <= 64 {
+		return id
+	}
+	return id[:64]
 }

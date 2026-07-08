@@ -31,10 +31,10 @@ Options:
   DEBUG            Whether to generate debug symbols. Default is 0.
   BINS             The binaries to build. Default is all of cmd.
                    This option is available when using: make build/build.multiarch
-                   Example: make build BINS="apiserver taskworker"
+                   Example: make build BINS="apiserver"
   IMAGES           Backend images to make. Default is all dir under build/docker/*.
                    This option is available when using: make image/image.multiarch/push/
-                   Example: make image.multiarch IMAGES="apiserver taskworker"
+                   Example: make image.multiarch IMAGES="apiserver"
   FRONTEND_IMAGE   Frontend image name. This option is available when using:
                    make frontend.image/frontend.image.push
                    Example: make frontend.image FRONTEND_VERSION=latest
@@ -42,7 +42,7 @@ Options:
                    Example: make push REGISTRY_PREFIX=harbor.registry.wang/exampled VERSION=v1.6.2
   PLATFORMS        The multiple platforms to build. Default is linux/amd64 and linux/arm64.
                    This option is available when using: make build.multiarch/image.build.multiarch/build.image.multiarch
-                   Example: make image.build.multiarch IMAGES="apiserver taskworker" PLATFORMS="linux/amd64 linux/arm64".
+                   Example: make image.build.multiarch IMAGES="apiserver" PLATFORMS="linux/amd64 linux/arm64".
                    Support PLATFORMS check `go tool dist list` shows.
   VERSION          The version information compiled into binaries.
                    The default is obtained from gsemver or git.

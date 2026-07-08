@@ -118,7 +118,7 @@ SPACE := $(EMPTY) $(EMPTY)
 
 # Specify components which need generate config from template
 ifeq ($(origin COMPONENTS),undefined)
-	COMPONENTS?= apiserver taskworker
+	COMPONENTS?= apiserver
 endif
 
 

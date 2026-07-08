@@ -137,7 +137,6 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.AssetGroup{},
 		&iapiserver.AssetGroupMember{},
 		&iapiserver.AssetRelation{},
-		&iapiserver.Task{},
 		&iapiserver.TaskDefinition{},
 		&iapiserver.TaskRun{},
 		&iapiserver.TaskAttempt{},
@@ -156,14 +155,12 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.FieldMapping{},
 
 		// ai chat
-		&iapiserver.AIChatModel{},
 		&iapiserver.AIChatAssistant{},
 		&iapiserver.AIChatTopic{},
 		&iapiserver.AIChatMessage{},
 		&iapiserver.AIChatGeneration{},
 		&iapiserver.AIChatQuickPhrase{},
 		&iapiserver.AIChatMessageTranslation{},
-		&iapiserver.AIChatMessageAttachment{},
 	); err != nil {
 		return errors.Wrap(err, "EnsureScheme fail")
 	}

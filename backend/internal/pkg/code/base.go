@@ -208,104 +208,128 @@ const (
 // ai chat: feature scoped business errors.
 const (
 	// @HTTP 200
-	// @CN 用户未登录或登录态失效。
-	// @EN User is not authenticated or the session is invalid.
-	ErrAIChatUnauthenticated int = 110200
+	// @CN 话题不存在或当前用户不可见。
+	// @EN Topic does not exist or is not visible to current user.
+	ErrAIChatTopicNotFound int = 110200
 
 	// @HTTP 200
-	// @CN 话题不存在或不属于当前用户。
-	// @EN Topic does not exist or does not belong to the current user.
-	ErrAIChatTopicNotFound int = 110201
+	// @CN 消息不存在或当前用户不可见。
+	// @EN Message does not exist or is not visible to current user.
+	ErrAIChatMessageNotFound int = 110400
 
 	// @HTTP 200
-	// @CN 消息不存在或不属于当前用户。
-	// @EN Message does not exist or does not belong to the current user.
-	ErrAIChatMessageNotFound int = 110202
+	// @CN 输入为空且没有图片附件。
+	// @EN Message input is empty and has no image attachment.
+	ErrAIChatMessageEmpty int = 110401
 
 	// @HTTP 200
-	// @CN 消息内容为空且未提供图片附件。
-	// @EN Message content is empty and no image attachment was provided.
-	ErrAIChatMessageEmpty int = 110203
+	// @CN 助手不存在或当前用户不可见。
+	// @EN Assistant does not exist or is not visible to current user.
+	ErrAIChatAssistantNotFound int = 110600
 
 	// @HTTP 200
-	// @CN 助手不存在或不可用于当前用户。
-	// @EN Assistant does not exist or is unavailable to the current user.
-	ErrAIChatAssistantNotFound int = 110204
+	// @CN 系统助手不可删除或修改受保护字段。
+	// @EN System assistant cannot be deleted or protected fields cannot be changed.
+	ErrAIChatAssistantSystemProtected int = 110601
 
 	// @HTTP 200
-	// @CN 模型不存在或不属于当前用户。
-	// @EN Model does not exist or does not belong to the current user.
-	ErrAIChatModelNotFound int = 110205
+	// @CN 快捷短语不合法或助手级短语缺少助手。
+	// @EN Quick phrase is invalid or assistant-scoped phrase misses assistant.
+	ErrAIChatQuickPhraseInvalid int = 110800
 
 	// @HTTP 200
-	// @CN 模型存在但未启用。
-	// @EN Model exists but is disabled.
-	ErrAIChatModelDisabled int = 110206
-
-	// @HTTP 200
-	// @CN 模型不支持当前操作所需能力。
-	// @EN Model does not support the capability required by this operation.
-	ErrAIChatModelCapabilityUnsupported int = 110207
-
-	// @HTTP 200
-	// @CN 模型配置有效但 provider 或运行时当前不可用。
-	// @EN Model configuration is valid but the provider or runtime is unavailable.
-	ErrAIChatModelUnavailable int = 110208
-
-	// @HTTP 200
-	// @CN 同一话题已有运行中的 generation。
+	// @CN 同一话题已有运行中的生成。
 	// @EN The topic already has an active generation.
-	ErrAIChatGenerationConflict int = 110209
+	ErrAIChatConcurrentGeneration int = 111000
 
 	// @HTTP 200
-	// @CN generation 不存在或不属于当前用户。
-	// @EN Generation does not exist or does not belong to the current user.
-	ErrAIChatGenerationNotFound int = 110210
-
-	// @HTTP 200
-	// @CN 分支来源消息不存在或不属于当前用户。
-	// @EN Branch source message does not exist or does not belong to the current user.
-	ErrAIChatBranchSourceMissing int = 110211
-
-	// @HTTP 200
-	// @CN 系统助手禁止删除或普通名称编辑。
-	// @EN System assistant cannot be deleted or renamed by normal editing.
-	ErrAIChatSystemAssistantProtected int = 110212
-
-	// @HTTP 200
-	// @CN 当前用户范围内助手名称重复。
-	// @EN Assistant name is duplicated in the current user scope.
-	ErrAIChatDuplicateAssistantName int = 110213
+	// @CN 生成运行不存在或当前用户不可见。
+	// @EN Generation run does not exist or is not visible to current user.
+	ErrAIChatGenerationNotFound int = 111001
 
 	// @HTTP 200
 	// @CN 当前用户未配置默认翻译模型。
-	// @EN Current user has no default translation model configured.
-	ErrAIChatTranslationModelMissing int = 110214
+	// @EN Current user has not configured a default translation model.
+	ErrAIChatTranslationModelMissing int = 111200
 
 	// @HTTP 200
-	// @CN 默认翻译模型不存在或不属于当前用户。
-	// @EN Default translation model does not exist or does not belong to the current user.
-	ErrAIChatTranslationModelNotFound int = 110215
+	// @CN 默认翻译模型不可用。
+	// @EN Default translation model is unavailable.
+	ErrAIChatTranslationModelUnhealthy int = 111201
 
 	// @HTTP 200
-	// @CN 默认翻译模型存在但未启用。
-	// @EN Default translation model exists but is disabled.
-	ErrAIChatTranslationModelDisabled int = 110216
+	// @CN 当前用户不能访问该聊天资源。
+	// @EN Current user cannot access this chat resource.
+	ErrAIChatAccessDenied int = 111400
+)
+
+// model-management: feature scoped business errors.
+const (
+	// @HTTP 200
+	// @CN 模型提供商不存在或当前用户不可见。
+	// @EN Model provider does not exist or is not visible to current user.
+	ErrModelProviderNotFound int = 120200
 
 	// @HTTP 200
-	// @CN 附件格式不支持或模型能力不支持。
-	// @EN Attachment format is unsupported or the model lacks the required capability.
-	ErrAIChatAttachmentUnsupported int = 110217
+	// @CN 当前用户范围内提供商名称重复。
+	// @EN Provider name is duplicated in current user scope.
+	ErrModelProviderNameDuplicated int = 120201
 
 	// @HTTP 200
-	// @CN 单张图片超过 5MB。
-	// @EN A single image exceeds 5MB.
-	ErrAIChatAttachmentTooLarge int = 110218
+	// @CN 模型提供商连接检测失败。
+	// @EN Model provider connection test failed.
+	ErrModelProviderTestFailed int = 120202
 
 	// @HTTP 200
-	// @CN 前端导出组装失败。
-	// @EN Frontend export assembly failed.
-	ErrAIChatExportFailed int = 110219
+	// @CN 模型不存在或当前用户不可见。
+	// @EN Provider model does not exist or is not visible to current user.
+	ErrProviderModelNotFound int = 120400
+
+	// @HTTP 200
+	// @CN 模型标识不能为空或不合法。
+	// @EN Model identifier is empty or invalid.
+	ErrProviderModelIdentifierInvalid int = 120401
+
+	// @HTTP 200
+	// @CN 同一提供商下模型标识或显示名重复。
+	// @EN Model identifier or display name is duplicated under the same provider.
+	ErrProviderModelDuplicated int = 120402
+
+	// @HTTP 200
+	// @CN 当前用户未配置指定用途的默认模型。
+	// @EN Current user has not configured a default model for the requested usage.
+	ErrDefaultModelMissing int = 120600
+
+	// @HTTP 200
+	// @CN 默认模型候选不可用。
+	// @EN Default model candidate is not available.
+	ErrDefaultModelInvalid int = 120601
+
+	// @HTTP 200
+	// @CN 模型健康检测失败。
+	// @EN Model health check failed.
+	ErrModelHealthCheckFailed int = 120800
+
+	// @HTTP 200
+	// @CN 当前用户无权访问该模型配置。
+	// @EN Current user is not allowed to access this model configuration.
+	ErrModelAccessDenied int = 121000
+)
+
+const (
+	ErrAIChatModelNotFound              = ErrProviderModelNotFound
+	ErrAIChatModelDisabled              = ErrDefaultModelInvalid
+	ErrAIChatModelCapabilityUnsupported = ErrDefaultModelInvalid
+	ErrAIChatModelUnavailable           = ErrAIChatTranslationModelUnhealthy
+	ErrAIChatGenerationConflict         = ErrAIChatConcurrentGeneration
+	ErrAIChatBranchSourceMissing        = ErrAIChatTopicNotFound
+	ErrAIChatSystemAssistantProtected   = ErrAIChatAssistantSystemProtected
+	ErrAIChatDuplicateAssistantName     = ErrAIChatQuickPhraseInvalid
+	ErrAIChatTranslationModelNotFound   = ErrAIChatTranslationModelMissing
+	ErrAIChatTranslationModelDisabled   = ErrAIChatTranslationModelUnhealthy
+	ErrAIChatAttachmentUnsupported      = ErrAIChatMessageEmpty
+	ErrAIChatAttachmentTooLarge         = ErrAIChatMessageEmpty
+	ErrAIChatExportFailed               = ErrAIChatAccessDenied
 )
 
 // application-platform: feature scoped business errors.

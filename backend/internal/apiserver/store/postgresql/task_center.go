@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	taskCenterCreatedAtColumn = "createdAt"
-	taskCenterUpdatedAtColumn = "updatedAt"
+	taskCenterCreatedAtColumn = "created_at"
+	taskCenterUpdatedAtColumn = "updated_at"
 )
 
 type taskCenterStore struct{ ds *datastore }
@@ -700,10 +700,10 @@ func taskCenterListQuery(
 		query = resourceSpecificFilter(query)
 	}
 	if params.CreatedAfter != 0 {
-		query = query.Where(`"createdAt" >= ?`, time.Unix(params.CreatedAfter, 0))
+		query = query.Where(`"created_at" >= ?`, time.Unix(params.CreatedAfter, 0))
 	}
 	if params.CreatedBefore != 0 {
-		query = query.Where(`"createdAt" <= ?`, time.Unix(params.CreatedBefore, 0))
+		query = query.Where(`"created_at" <= ?`, time.Unix(params.CreatedBefore, 0))
 	}
 	query = query.Order(taskCenterOrderBy(params))
 	if params.PageNum > 0 && params.PageSize > 0 {

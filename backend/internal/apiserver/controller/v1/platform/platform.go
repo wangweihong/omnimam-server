@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"net/http"
 	"strconv"
 	"strings"
 
@@ -41,20 +40,9 @@ func (pc *PlatformController) CreateProvider(c *gin.Context) {
 	})
 }
 
-// ListProviderPresets returns built-in model service presets and dynamic API setting schemas.
-// It only returns public preset metadata and never returns user credentials or creates async tasks.
-func (pc *PlatformController) ListProviderPresets(c *gin.Context) {
+func (pc *PlatformController) GetProvider(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().ProviderPresetList(c)
-	})
-}
-
-// InstallProviderPreset creates or updates a disabled Provider from one preset key.
-// It initializes base endpoint metadata only; credentials are not written by this endpoint.
-func (pc *PlatformController) InstallProviderPreset(c *gin.Context) {
-	req := &iapiserver.ProviderPresetInstallRequest{PresetKey: c.Param("preset_key")}
-	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().ProviderPresetInstall(c, req.PresetKey)
+		return pc.srv.Platforms().ProviderGet(c, c.Param("provider_id"))
 	})
 }
 
@@ -83,6 +71,12 @@ func (pc *PlatformController) TestProvider(c *gin.Context) {
 	})
 }
 
+func (pc *PlatformController) TestUnsavedProvider(c *gin.Context) {
+	core.Run(c, &iapiserver.ProviderTestRequest{}, func(r *iapiserver.ProviderTestRequest) (any, error) {
+		return pc.srv.Platforms().ProviderTest(c, r)
+	})
+}
+
 func (pc *PlatformController) ListProviderModels(c *gin.Context) {
 	req := &iapiserver.ProviderModelListRequest{ProviderID: c.Param("provider_id")}
 	core.Run(c, req, func(r *iapiserver.ProviderModelListRequest) (any, error) {
@@ -99,8 +93,7 @@ func (pc *PlatformController) CreateProviderModel(c *gin.Context) {
 
 func (pc *PlatformController) UpdateProviderModel(c *gin.Context) {
 	req := &iapiserver.ProviderModelUpdateRequest{
-		ID:         c.Param("model_id"),
-		ProviderID: c.Param("provider_id"),
+		ID: c.Param("model_id"),
 	}
 	core.Run(c, req, func(r *iapiserver.ProviderModelUpdateRequest) (any, error) {
 		return pc.srv.Platforms().ProviderModelUpdate(c, req)
@@ -111,7 +104,7 @@ func (pc *PlatformController) UpdateProviderModel(c *gin.Context) {
 // 该接口只删除模型元数据，不会返回或修改 provider credential，也不会返回 asset 原始内容。
 func (pc *PlatformController) DeleteProviderModel(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().ProviderModelDelete(c, c.Param("provider_id"), c.Param("model_id"))
+		return pc.srv.Platforms().ProviderModelDelete(c, "", c.Param("model_id"))
 	})
 }
 
@@ -119,7 +112,26 @@ func (pc *PlatformController) DeleteProviderModel(c *gin.Context) {
 // 该接口会保存健康状态和原因，但不会触发真实模型生成或返回 provider credential。
 func (pc *PlatformController) CheckProviderModelHealth(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().ProviderModelHealthCheck(c, c.Param("provider_id"), c.Param("model_id"))
+		return pc.srv.Platforms().ProviderModelHealthCheck(c, "", c.Param("model_id"))
+	})
+}
+
+func (pc *PlatformController) GetDefaultModel(c *gin.Context) {
+	core.Run(c, nil, func(_ any) (any, error) {
+		return pc.srv.Platforms().DefaultModelGet(c, c.Param("usage"))
+	})
+}
+
+func (pc *PlatformController) PutDefaultModel(c *gin.Context) {
+	req := &iapiserver.DefaultModelSaveRequest{}
+	core.Run(c, req, func(r *iapiserver.DefaultModelSaveRequest) (any, error) {
+		return pc.srv.Platforms().DefaultModelSave(c, c.Param("usage"), r)
+	})
+}
+
+func (pc *PlatformController) ListModelOptions(c *gin.Context) {
+	core.Run(c, &iapiserver.ProviderModelListRequest{}, func(r *iapiserver.ProviderModelListRequest) (any, error) {
+		return pc.srv.Platforms().ModelOptionList(c, r)
 	})
 }
 
@@ -289,48 +301,10 @@ func (pc *PlatformController) CreateAssetGroup(c *gin.Context) {
 	})
 }
 
-func (pc *PlatformController) ListTasks(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskListRequest{}, func(r *iapiserver.TaskListRequest) (any, error) {
-		return pc.srv.Platforms().TaskList(c, r)
-	})
-}
-
-func (pc *PlatformController) CreateTask(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskCreateRequest{}, func(r *iapiserver.TaskCreateRequest) (any, error) {
-		return pc.srv.Platforms().TaskCreate(c, r)
-	})
-}
-
-func (pc *PlatformController) GetTask(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
-	})
-}
-
-func (pc *PlatformController) CancelTask(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().TaskCancel(c, c.Param("task_id"))
-	})
-}
-
-func (pc *PlatformController) TaskEvents(c *gin.Context) {
-	task, err := pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
-	if err != nil {
-		core.WriteResponse(c, err, nil)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"events": []any{task}})
-}
-
 func (pc *PlatformController) RunCanvas(c *gin.Context) {
-	req := &iapiserver.TaskCreateRequest{
-		Name:  "canvas-run",
-		Type:  iapiserver.TaskTypeCanvasRun,
-		Queue: "default",
-		Input: map[string]any{"canvas_id": c.Param("canvas_id")},
-	}
-	ret, err := pc.srv.Platforms().TaskCreate(c, req)
-	core.WriteResponse(c, err, ret)
+	core.Run(c, &iapiserver.CanvasNodeRunRequest{}, func(r *iapiserver.CanvasNodeRunRequest) (any, error) {
+		return pc.srv.Platforms().CanvasNodeRun(c, c.Param("canvas_id"), "", r)
+	})
 }
 
 // DownloadCanvasAssets streams selected asset contents as a zip archive.
@@ -373,20 +347,6 @@ func (pc *PlatformController) RunCanvasNode(c *gin.Context) {
 	req := &iapiserver.CanvasNodeRunRequest{}
 	core.Run(c, req, func(r *iapiserver.CanvasNodeRunRequest) (any, error) {
 		return pc.srv.Platforms().CanvasNodeRun(c, c.Param("canvas_id"), c.Param("node_id"), r)
-	})
-}
-
-// GetCanvasRun returns the task backing a canvas or node run.
-func (pc *PlatformController) GetCanvasRun(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().TaskGet(c, c.Param("task_id"))
-	})
-}
-
-// CancelCanvasRun cancels the task backing a canvas or node run.
-func (pc *PlatformController) CancelCanvasRun(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return pc.srv.Platforms().TaskCancel(c, c.Param("task_id"))
 	})
 }
 

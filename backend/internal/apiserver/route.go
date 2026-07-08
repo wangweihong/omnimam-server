@@ -113,8 +113,6 @@ func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	aiChatController := aichatctrl.NewController(storeIns)
 	aiChat := rg.Group("/ai-chat")
 	{
-		aiChat.GET("/models", aiChatController.ListModels)
-
 		aiChat.GET("/assistants", aiChatController.ListAssistants)
 		aiChat.POST("/assistants", aiChatController.CreateAssistant)
 		aiChat.PATCH("/assistants/:assistant_id", aiChatController.UpdateAssistant)
@@ -122,20 +120,22 @@ func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
 
 		aiChat.GET("/topics", aiChatController.ListTopics)
 		aiChat.POST("/topics", aiChatController.CreateTopic)
+		aiChat.GET("/topics/:topic_id", aiChatController.GetTopic)
 		aiChat.PATCH("/topics/:topic_id", aiChatController.UpdateTopic)
 		aiChat.DELETE("/topics/:topic_id", aiChatController.DeleteTopic)
 		aiChat.GET("/topics/:topic_id/messages", aiChatController.ListMessages)
 		aiChat.POST("/topics/:topic_id/messages", aiChatController.CreateMessage)
 
 		aiChat.POST("/generations/:generation_id/stop", aiChatController.StopGeneration)
+		aiChat.GET("/generations/:generation_id/events", aiChatController.StreamGenerationEvents)
 		aiChat.POST("/messages/:message_id/regenerate", aiChatController.RegenerateMessage)
 		aiChat.POST("/messages/:message_id/edit-regenerate", aiChatController.EditRegenerateMessage)
-		aiChat.POST("/messages/:message_id/branch", aiChatController.BranchMessage)
 
 		aiChat.GET("/quick-phrases", aiChatController.ListQuickPhrases)
 		aiChat.POST("/quick-phrases", aiChatController.CreateQuickPhrase)
 		aiChat.PATCH("/quick-phrases/:quick_phrase_id", aiChatController.UpdateQuickPhrase)
 		aiChat.DELETE("/quick-phrases/:quick_phrase_id", aiChatController.DeleteQuickPhrase)
+		aiChat.POST("/translations", aiChatController.TranslateContent)
 	}
 }
 
@@ -143,27 +143,28 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	platformController := platformctrl.NewController(storeIns)
 
 	rg.GET("/me", platformController.Me)
-	rg.GET("/provider-presets", platformController.ListProviderPresets)
-	rg.POST("/provider-presets/:preset_key/install", platformController.InstallProviderPreset)
 
 	// 模型提供商
-	providers := rg.Group("/providers")
+	providers := rg.Group("/model-providers")
 	{
 		providers.GET("", platformController.ListProviders)
 		providers.POST("", platformController.CreateProvider)
+		providers.POST("/test", platformController.TestUnsavedProvider)
+		providers.GET("/:provider_id", platformController.GetProvider)
 		providers.PATCH("/:provider_id", platformController.UpdateProvider)
 		providers.DELETE("/:provider_id", platformController.DeleteProvider)
 		providers.POST("/:provider_id/test", platformController.TestProvider)
 		providers.GET("/:provider_id/models", platformController.ListProviderModels)
 		providers.POST("/:provider_id/models", platformController.CreateProviderModel)
 		providers.POST("/:provider_id/models/sync", platformController.SyncProviderModels)
-		providers.PATCH("/:provider_id/models/:model_id", platformController.UpdateProviderModel)
-		providers.POST("/:provider_id/models/:model_id/health-check", platformController.CheckProviderModelHealth)
-		providers.DELETE("/:provider_id/models/:model_id", platformController.DeleteProviderModel)
 	}
 
-	rg.GET("/system-llm-config", platformController.GetSystemLLMConfig)
-	rg.PUT("/system-llm-config", platformController.PutSystemLLMConfig)
+	rg.PATCH("/provider-models/:model_id", platformController.UpdateProviderModel)
+	rg.DELETE("/provider-models/:model_id", platformController.DeleteProviderModel)
+	rg.POST("/provider-models/:model_id/test", platformController.CheckProviderModelHealth)
+	rg.GET("/default-models/:usage", platformController.GetDefaultModel)
+	rg.PUT("/default-models/:usage", platformController.PutDefaultModel)
+	rg.GET("/model-options", platformController.ListModelOptions)
 
 	storage := rg.Group("/storage-backends")
 	{
@@ -198,18 +199,8 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
 		canvasAssets.POST("/register-output", platformController.RegisterCanvasOutput)
 	}
 
-	tasks := rg.Group("/tasks")
-	{
-		tasks.GET("", platformController.ListTasks)
-		tasks.POST("", platformController.CreateTask)
-		tasks.GET("/:task_id", platformController.GetTask)
-		tasks.POST("/:task_id/cancel", platformController.CancelTask)
-		tasks.GET("/:task_id/events", platformController.TaskEvents)
-	}
 	rg.POST("/canvases/:canvas_id/run", platformController.RunCanvas)
 	rg.POST("/canvases/:canvas_id/nodes/:node_id/run", platformController.RunCanvasNode)
-	rg.GET("/canvases/:canvas_id/runs/:task_id", platformController.GetCanvasRun)
-	rg.POST("/canvases/:canvas_id/runs/:task_id/cancel", platformController.CancelCanvasRun)
 }
 
 func installAuthApis(rg *gin.RouterGroup, storeIns store.Factory) {

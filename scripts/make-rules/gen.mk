@@ -11,14 +11,14 @@ gen.errcode: gen.errcode.code gen.errcode.doc
 
 .PHONY: gen.errcode.code
 gen.errcode.code: tools.verify.codegen
-	@echo "===========> Generating error code go source files to path:${ROOT_DIR}/internal/pkg/code"
-	@codegen -type=int ${ROOT_DIR}/internal/pkg/code
+	@echo "===========> Generating error code go source files to path:${ROOT_DIR}/backend/internal/pkg/code"
+	@codegen -type=int ${ROOT_DIR}/backend/internal/pkg/code
 
 .PHONY: gen.errcode.doc
 gen.errcode.doc: tools.verify.codegen
 	@echo "===========> Generating error code markdown documentation:${ROOT_DIR}/docs/guide/zh-CN/api/error_code_generated.md"
 	@codegen -type=int -doc \
-		-output ${ROOT_DIR}/docs/guide/zh-CN/api/error_code_generated.md ${ROOT_DIR}/internal/pkg/code
+		-output ${ROOT_DIR}/docs/guide/zh-CN/api/error_code_generated.md ${ROOT_DIR}/backend/internal/pkg/code
 
 .PHONY: gen.docgo.doc
 gen.docgo.doc:
@@ -51,8 +51,8 @@ gen.defaultconfigs: $(addprefix gen.defaultconfigs., $(COMPONENTS))
 
 .PHONY: gen.clean
 gen.clean:
-	@echo "===========> Clean gen files in wildcards '*_generated.go' in ${ROOT_DIR}/internal/pkg/code"
-	@find ${ROOT_DIR}/internal/pkg/code -type f -name '*_generated.go' -delete
+	@echo "===========> Clean gen files in wildcards '*_generated.go' in ${ROOT_DIR}/backend/internal/pkg/code"
+	@find ${ROOT_DIR}/backend/internal/pkg/code -type f -name '*_generated.go' -delete
 
 	
 .PHONY: gen.deepcopy

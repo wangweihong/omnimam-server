@@ -57,26 +57,27 @@
 | ErrGRPCClientDialError | 100703 | 500 | Dial to gRPC server error. | gRPC客户端连接失败 |
 | ErrGRPCClientInvokeServiceError | 100704 | 500 | Invoke gRPC server service function error. | gRPC客户端访问服务接口失败 |
 | ErrGRPCResponseDataParseError | 100705 | 500 | Decode data from gRPC service error. | 解析gRPC服务返回数据失败 |
-| ErrAIChatUnauthenticated | 110200 | 200 | User is not authenticated or the session is invalid. | 用户未登录或登录态失效。 |
-| ErrAIChatTopicNotFound | 110201 | 200 | Topic does not exist or does not belong to the current user. | 话题不存在或不属于当前用户。 |
-| ErrAIChatMessageNotFound | 110202 | 200 | Message does not exist or does not belong to the current user. | 消息不存在或不属于当前用户。 |
-| ErrAIChatMessageEmpty | 110203 | 200 | Message content is empty and no image attachment was provided. | 消息内容为空且未提供图片附件。 |
-| ErrAIChatAssistantNotFound | 110204 | 200 | Assistant does not exist or is unavailable to the current user. | 助手不存在或不可用于当前用户。 |
-| ErrAIChatModelNotFound | 110205 | 200 | Model does not exist or does not belong to the current user. | 模型不存在或不属于当前用户。 |
-| ErrAIChatModelDisabled | 110206 | 200 | Model exists but is disabled. | 模型存在但未启用。 |
-| ErrAIChatModelCapabilityUnsupported | 110207 | 200 | Model does not support the capability required by this operation. | 模型不支持当前操作所需能力。 |
-| ErrAIChatModelUnavailable | 110208 | 200 | Model configuration is valid but the provider or runtime is unavailable. | 模型配置有效但 provider 或运行时当前不可用。 |
-| ErrAIChatGenerationConflict | 110209 | 200 | The topic already has an active generation. | 同一话题已有运行中的 generation。 |
-| ErrAIChatGenerationNotFound | 110210 | 200 | Generation does not exist or does not belong to the current user. | generation 不存在或不属于当前用户。 |
-| ErrAIChatBranchSourceMissing | 110211 | 200 | Branch source message does not exist or does not belong to the current user. | 分支来源消息不存在或不属于当前用户。 |
-| ErrAIChatSystemAssistantProtected | 110212 | 200 | System assistant cannot be deleted or renamed by normal editing. | 系统助手禁止删除或普通名称编辑。 |
-| ErrAIChatDuplicateAssistantName | 110213 | 200 | Assistant name is duplicated in the current user scope. | 当前用户范围内助手名称重复。 |
-| ErrAIChatTranslationModelMissing | 110214 | 200 | Current user has no default translation model configured. | 当前用户未配置默认翻译模型。 |
-| ErrAIChatTranslationModelNotFound | 110215 | 200 | Default translation model does not exist or does not belong to the current user. | 默认翻译模型不存在或不属于当前用户。 |
-| ErrAIChatTranslationModelDisabled | 110216 | 200 | Default translation model exists but is disabled. | 默认翻译模型存在但未启用。 |
-| ErrAIChatAttachmentUnsupported | 110217 | 200 | Attachment format is unsupported or the model lacks the required capability. | 附件格式不支持或模型能力不支持。 |
-| ErrAIChatAttachmentTooLarge | 110218 | 200 | A single image exceeds 5MB. | 单张图片超过 5MB。 |
-| ErrAIChatExportFailed | 110219 | 200 | Frontend export assembly failed. | 前端导出组装失败。 |
+| ErrAIChatTopicNotFound | 110200 | 200 | Topic does not exist or is not visible to current user. | 话题不存在或当前用户不可见。 |
+| ErrAIChatMessageNotFound | 110400 | 200 | Message does not exist or is not visible to current user. | 消息不存在或当前用户不可见。 |
+| ErrAIChatMessageEmpty | 110401 | 200 | Message input is empty and has no image attachment. | 输入为空且没有图片附件。 |
+| ErrAIChatAssistantNotFound | 110600 | 200 | Assistant does not exist or is not visible to current user. | 助手不存在或当前用户不可见。 |
+| ErrAIChatAssistantSystemProtected | 110601 | 200 | System assistant cannot be deleted or protected fields cannot be changed. | 系统助手不可删除或修改受保护字段。 |
+| ErrAIChatQuickPhraseInvalid | 110800 | 200 | Quick phrase is invalid or assistant-scoped phrase misses assistant. | 快捷短语不合法或助手级短语缺少助手。 |
+| ErrAIChatConcurrentGeneration | 111000 | 200 | The topic already has an active generation. | 同一话题已有运行中的生成。 |
+| ErrAIChatGenerationNotFound | 111001 | 200 | Generation run does not exist or is not visible to current user. | 生成运行不存在或当前用户不可见。 |
+| ErrAIChatTranslationModelMissing | 111200 | 200 | Current user has not configured a default translation model. | 当前用户未配置默认翻译模型。 |
+| ErrAIChatTranslationModelUnhealthy | 111201 | 200 | Default translation model is unavailable. | 默认翻译模型不可用。 |
+| ErrAIChatAccessDenied | 111400 | 200 | Current user cannot access this chat resource. | 当前用户不能访问该聊天资源。 |
+| ErrModelProviderNotFound | 120200 | 200 | Model provider does not exist or is not visible to current user. | 模型提供商不存在或当前用户不可见。 |
+| ErrModelProviderNameDuplicated | 120201 | 200 | Provider name is duplicated in current user scope. | 当前用户范围内提供商名称重复。 |
+| ErrModelProviderTestFailed | 120202 | 200 | Model provider connection test failed. | 模型提供商连接检测失败。 |
+| ErrProviderModelNotFound | 120400 | 200 | Provider model does not exist or is not visible to current user. | 模型不存在或当前用户不可见。 |
+| ErrProviderModelIdentifierInvalid | 120401 | 200 | Model identifier is empty or invalid. | 模型标识不能为空或不合法。 |
+| ErrProviderModelDuplicated | 120402 | 200 | Model identifier or display name is duplicated under the same provider. | 同一提供商下模型标识或显示名重复。 |
+| ErrDefaultModelMissing | 120600 | 200 | Current user has not configured a default model for the requested usage. | 当前用户未配置指定用途的默认模型。 |
+| ErrDefaultModelInvalid | 120601 | 200 | Default model candidate is not available. | 默认模型候选不可用。 |
+| ErrModelHealthCheckFailed | 120800 | 200 | Model health check failed. | 模型健康检测失败。 |
+| ErrModelAccessDenied | 121000 | 200 | Current user is not allowed to access this model configuration. | 当前用户无权访问该模型配置。 |
 | ErrTemplateParseFailed | 130200 | 200 | Template parsing failed and the template cannot be created. | 模板解析失败，无法创建模板。 |
 | ErrTemplateReferenceBlocked | 130201 | 200 | Template has references and cannot be deleted. | 模板存在引用，禁止删除。 |
 | ErrTemplateNameDuplicated | 130203 | 200 | Template name is duplicated for the same owner. | 同一用户下模板名称重复。 |

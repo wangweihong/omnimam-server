@@ -26,7 +26,7 @@ make frontend.image FRONTEND_VERSION=latest FRONTEND_REGISTRY_PREFIX=omnimam \
 make frontend.image FRONTEND_VERSION=latest FRONTEND_REGISTRY_PREFIX=omnimam FRONTEND_PULL=1
 ```
 
-启动 PostgreSQL、`apiserver`、`taskworker` 和 nginx frontend：
+启动 PostgreSQL、`apiserver` 和 nginx frontend：
 
 ```bash
 docker compose -f deployments/docker-compose.yaml up -d

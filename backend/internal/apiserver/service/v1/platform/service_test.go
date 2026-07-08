@@ -118,28 +118,6 @@ func TestFetchOpenAICompatibleModelsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestProviderPresetsIncludeAPISettings(t *testing.T) {
-	presets := providerPresets()
-	if len(presets) < 4 {
-		t.Fatalf("preset count = %d", len(presets))
-	}
-	seen := map[string]bool{}
-	for _, preset := range presets {
-		seen[preset.Key] = true
-		if preset.Name == "" || preset.Type == "" || preset.BaseURL == "" || preset.AuthType == "" {
-			t.Fatalf("incomplete preset = %#v", preset)
-		}
-		if len(preset.APISettingsSchema) == 0 {
-			t.Fatalf("missing api setting schema for %s", preset.Key)
-		}
-	}
-	for _, key := range []string{"deepseek", "qwen", "openrouter", "siliconflow"} {
-		if !seen[key] {
-			t.Fatalf("missing preset %s", key)
-		}
-	}
-}
-
 func TestApplyPresetModelDefaults(t *testing.T) {
 	provider := &iapiserver.Provider{PresetKey: "qwen"}
 	provider.Name = "通义千问"
@@ -186,7 +164,7 @@ func TestProviderCreateRejectsDuplicateName(t *testing.T) {
 		t.Fatal("expected duplicate provider name to fail")
 	}
 	status := errors.ToStatus(err)
-	if status.Code != code.ErrValidation {
+	if status.Code != code.ErrModelProviderNameDuplicated {
 		t.Fatalf("status code = %d", status.Code)
 	}
 }
@@ -459,20 +437,62 @@ func TestProviderDeleteClearsModelsAndSystemConfig(t *testing.T) {
 	}
 }
 
+func TestMeIncludesTaskCenterDefaultPermissions(t *testing.T) {
+	svc := newTestPlatformService()
+	resp, err := svc.Me(context.Background())
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	for _, permission := range []string{
+		"task.definition.manage",
+		"task.run.operate",
+		"task.worker.protocol",
+		"task.operation.admin",
+	} {
+		if !hasPermission(resp.Permissions, permission) {
+			t.Fatalf("permissions missing %s: %#v", permission, resp.Permissions)
+		}
+	}
+}
+
+func TestMeDeduplicatesDatabasePermissions(t *testing.T) {
+	svc := newTestPlatformService()
+	factory := svc.store.(*testFactory)
+	factory.permissions.items = []*iapiserver.Permission{
+		{Key: "task.run.operate"},
+		{Key: "custom.permission"},
+	}
+
+	resp, err := svc.Me(context.Background())
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	if countPermission(resp.Permissions, "task.run.operate") != 1 {
+		t.Fatalf("task.run.operate should appear once: %#v", resp.Permissions)
+	}
+	if !hasPermission(resp.Permissions, "custom.permission") {
+		t.Fatalf("custom permission missing: %#v", resp.Permissions)
+	}
+}
+
 func newTestPlatformService() *platformService {
 	return &platformService{
 		store: &testFactory{
-			providers: &testProviderStore{items: map[string]*iapiserver.Provider{}},
-			models:    &testProviderModelStore{items: map[string]*iapiserver.ProviderModel{}},
-			configs:   &testSystemLLMConfigStore{items: map[string]*iapiserver.SystemLLMConfig{}},
+			providers:   &testProviderStore{items: map[string]*iapiserver.Provider{}},
+			models:      &testProviderModelStore{items: map[string]*iapiserver.ProviderModel{}},
+			configs:     &testSystemLLMConfigStore{items: map[string]*iapiserver.SystemLLMConfig{}},
+			flags:       &testFeatureFlagStore{},
+			permissions: &testPermissionStore{},
 		},
 	}
 }
 
 type testFactory struct {
-	providers *testProviderStore
-	models    *testProviderModelStore
-	configs   *testSystemLLMConfigStore
+	providers   *testProviderStore
+	models      *testProviderModelStore
+	configs     *testSystemLLMConfigStore
+	flags       *testFeatureFlagStore
+	permissions *testPermissionStore
 }
 
 func (f *testFactory) IdentityProviders() store.IdentityProviderStore { return nil }
@@ -503,18 +523,55 @@ func (f *testFactory) AssetTags() store.AssetTagStore                 { return n
 func (f *testFactory) AssetGroups() store.AssetGroupStore             { return nil }
 func (f *testFactory) AssetGroupMembers() store.AssetGroupMemberStore { return nil }
 func (f *testFactory) AssetRelations() store.AssetRelationStore       { return nil }
-func (f *testFactory) Tasks() store.TaskStore                         { return nil }
 func (f *testFactory) TaskCenters() store.TaskCenterStore             { return nil }
 func (f *testFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return nil
 }
-func (f *testFactory) FeatureFlags() store.FeatureFlagStore { return nil }
+func (f *testFactory) FeatureFlags() store.FeatureFlagStore { return f.flags }
 func (f *testFactory) Roles() store.RoleStore               { return nil }
-func (f *testFactory) Permissions() store.PermissionStore   { return nil }
+func (f *testFactory) Permissions() store.PermissionStore   { return f.permissions }
 func (f *testFactory) UserRoles() store.UserRoleStore       { return nil }
 func (f *testFactory) AIChat() store.AIChatStore            { return nil }
 func (f *testFactory) EnsureScheme(metaTypes ...any) error  { return nil }
 func (f *testFactory) Close() error                         { return nil }
+
+type testFeatureFlagStore struct {
+	items []*iapiserver.FeatureFlag
+}
+
+func (s *testFeatureFlagStore) List(_ context.Context) ([]*iapiserver.FeatureFlag, error) {
+	return s.items, nil
+}
+
+func (s *testFeatureFlagStore) Upsert(
+	_ context.Context,
+	data *iapiserver.FeatureFlag,
+) (*iapiserver.FeatureFlag, error) {
+	s.items = append(s.items, data)
+	return data, nil
+}
+
+type testPermissionStore struct {
+	items []*iapiserver.Permission
+}
+
+func (s *testPermissionStore) List(_ context.Context) ([]*iapiserver.Permission, error) {
+	return s.items, nil
+}
+
+func hasPermission(items []string, permission string) bool {
+	return countPermission(items, permission) > 0
+}
+
+func countPermission(items []string, permission string) int {
+	count := 0
+	for _, item := range items {
+		if item == permission {
+			count++
+		}
+	}
+	return count
+}
 
 type testProviderStore struct {
 	items map[string]*iapiserver.Provider

@@ -63,41 +63,33 @@ const (
 	AssetGroupTypeCollection = "collection"
 	AssetGroupTypeDataset    = "dataset"
 	AssetGroupTypeDynamic    = "dynamic"
-
-	TaskStatusPending   = "pending"
-	TaskStatusRunning   = "running"
-	TaskStatusSucceeded = "succeeded"
-	TaskStatusFailed    = "failed"
-	TaskStatusCanceled  = "canceled"
-
-	TaskTypeAssetProbe     = "asset.probe"
-	TaskTypeAssetThumbnail = "asset.thumbnail"
-	TaskTypeLLMInvoke      = "llm.invoke"
-	TaskTypeAssetTagging   = "asset.tagging"
-	TaskTypeQueryParse     = "query.parse"
-
-	TaskTypeCanvasRun                   = "canvas.run"
-	TaskTypeCanvasNodeRun               = "canvas.node.run"
-	TaskTypeCanvasWorkflowPackageExport = "canvas.workflow.package.export"
-	TaskTypeCanvasWorkflowPackageImport = "canvas.workflow.package.import"
-	TaskTypeCanvasOutputRegister        = "canvas.output.register"
-	TaskTypeProviderInvoke              = "provider.invoke"
-	TaskTypeProviderQuery               = "provider.query"
 )
 
 type Provider struct {
 	imachinery.ObjectMeta
-	Type          string         `json:"type"                     gorm:"column:type;type:varchar(64);not null;index"`
-	Enabled       bool           `json:"enabled"                  gorm:"column:enabled;type:boolean;not null"`
-	BaseURL       string         `json:"base_url"                 gorm:"column:base_url;type:varchar(512)"`
-	AuthType      string         `json:"auth_type"                gorm:"column:auth_type;type:varchar(64)"`
-	CredentialRef string         `json:"credential_ref,omitempty" gorm:"column:credential_ref;type:varchar(512)"`
-	PresetKey     string         `json:"preset_key,omitempty"     gorm:"column:preset_key;type:varchar(64);index"`
-	Config        map[string]any `json:"config,omitempty"         gorm:"-"`
-	ConfigShadow  string         `json:"-"                        gorm:"column:config;type:text"`
+	// OwnerUserID 标识 provider 所属用户，model-management S2 当前按用户隔离配置。
+	OwnerUserID string `json:"owner_user_id"           gorm:"column:owner_user_id;type:text;not null;index"`
+	// Type 表示 provider 协议类型，当前 S2 使用 openai-compatible。
+	Type string `json:"provider_type"           gorm:"column:provider_type;type:text;not null;index"`
+	// Enabled 控制该 provider 是否参与默认模型和模型选项选择。
+	Enabled bool `json:"enabled"                 gorm:"column:enabled;type:boolean;not null;default:true"`
+	// BaseURL 是 provider API 入口地址，创建和连接检测都会使用。
+	BaseURL string `json:"api_base_url"            gorm:"column:api_base_url;type:text;not null"`
+	// AuthType 表示鉴权方式，当前 S2 仅定义 API key 引用模式。
+	AuthType string `json:"auth_type"               gorm:"column:auth_type;type:text;not null"`
+	// CredentialRef 引用凭据存储中的密钥，不保存或返回明文。
+	CredentialRef string `json:"api_key_ref,omitempty"   gorm:"column:api_key_ref;type:text;default:''"`
+	// PresetKey 是导入 provider preset 时的临时参数，不属于 S2 持久化字段。
+	PresetKey string `json:"-"                       gorm:"-"`
+	// Config 保存 provider 的额外连接配置，对外以 extra_config 暴露。
+	Config map[string]any `json:"extra_config,omitempty"  gorm:"-"`
+	// ConfigShadow 是 Config 的 JSON 存储影子字段，业务层不直接读写。
+	ConfigShadow string `json:"-"                       gorm:"column:extra_config_json;type:text;not null;default:'{}'"`
+	// DeletedAt 用于草稿阶段软删除，避免破坏已有 provider/model/default 关联。
+	DeletedAt string `json:"-"                       gorm:"column:deleted_at;type:text;default:'';index"`
 }
 
-func (Provider) TableName() string { return "providers" }
+func (Provider) TableName() string { return "user_model_providers" }
 
 func (p *Provider) BeforeCreate(tx *gorm.DB) error {
 	if err := p.ObjectMeta.BeforeCreate(tx); err != nil {
@@ -132,25 +124,51 @@ func (p *Provider) marshalShadows() error {
 
 type ProviderModel struct {
 	imachinery.ObjectMeta
-	ProviderID          string         `json:"provider_id"              gorm:"column:provider_id;type:varchar(64);not null;index"`
-	Model               string         `json:"model"                    gorm:"column:model;type:varchar(128);not null;index"`
-	EndpointType        string         `json:"endpoint_type,omitempty"   gorm:"column:endpoint_type;type:varchar(64);index"`
-	GroupName           string         `json:"group_name,omitempty"      gorm:"column:group_name;type:varchar(128);index"`
-	HealthStatus        string         `json:"health_status"            gorm:"column:health_status;type:varchar(32);not null;default:unknown;index"`
-	HealthReason        string         `json:"health_reason,omitempty"   gorm:"column:health_reason;type:varchar(512)"`
-	HealthCheckedAt     *time.Time     `json:"health_checked_at"        gorm:"column:health_checked_at"`
-	Capabilities        []string       `json:"capabilities"             gorm:"-"`
-	CapabilitiesShadow  string         `json:"-"                        gorm:"column:capabilities;type:text"`
-	ModelTypes          []string       `json:"model_types,omitempty"     gorm:"-"`
-	ModelTypesShadow    string         `json:"-"                        gorm:"column:model_types;type:text"`
-	Enabled             bool           `json:"enabled"                  gorm:"column:enabled;type:boolean;not null;default:true"`
-	DefaultParams       map[string]any `json:"default_params,omitempty" gorm:"-"`
-	DefaultParamsShadow string         `json:"-"                        gorm:"column:default_params;type:text"`
-	Pricing             map[string]any `json:"pricing,omitempty"        gorm:"-"`
-	PricingShadow       string         `json:"-"                        gorm:"column:pricing;type:text"`
+	// OwnerUserID 标识 provider model 所属用户，与 Provider 保持相同隔离边界。
+	OwnerUserID string `json:"owner_user_id"            gorm:"column:owner_user_id;type:text;not null;index"`
+	// ProviderID 指向 user_model_providers.id，用于聚合某个 provider 下的模型。
+	ProviderID string `json:"provider_id"              gorm:"column:provider_id;type:text;not null;index"`
+	// ProviderName 是列表响应中的只读展示字段，不落库。
+	ProviderName string `json:"provider_name,omitempty"  gorm:"-"`
+	// Model 是上游 provider 的真实模型标识，调用模型时使用该值。
+	Model string `json:"model"                    gorm:"column:model;type:text;not null;index"`
+	// DisplayName 是控制台展示名，允许用户用更友好的名称管理模型。
+	DisplayName string `json:"display_name"             gorm:"column:display_name;type:text;not null"`
+	// GroupName 用于模型选项分组展示，对外字段名按 S2 使用 group。
+	GroupName string `json:"group,omitempty"          gorm:"column:model_group;type:text;default:'';index"`
+	// Capabilities 声明模型支持的业务能力，如 llm.chat、query.parse。
+	Capabilities []string `json:"capabilities"             gorm:"-"`
+	// CapabilitiesShadow 是 Capabilities 的 JSON 存储影子字段。
+	CapabilitiesShadow string `json:"-"                        gorm:"column:capabilities_json;type:text;not null;default:'[]'"`
+	// StreamSupported 表示模型是否支持流式输出，供 ai-chat generation 选择策略使用。
+	StreamSupported bool `json:"stream_supported"         gorm:"column:stream_supported;type:boolean;not null;default:true"`
+	// HealthStatus 保存最近一次健康检测结果，用于过滤不可用模型。
+	HealthStatus string `json:"health_status"            gorm:"column:health_status;type:text;not null;default:'unknown';index"`
+	// HealthReason 保存健康检测失败原因，对外按 S2 暴露为 unhealthy_reason。
+	HealthReason string `json:"unhealthy_reason,omitempty" gorm:"column:unhealthy_reason;type:text;default:''"`
+	// HealthCheckedAt 是旧草稿健康检查的运行态临时字段，S2 响应不直接暴露。
+	HealthCheckedAt *time.Time `json:"-"                      gorm:"-"`
+	// Enabled 控制该模型是否出现在可选模型列表中。
+	Enabled bool `json:"enabled"                  gorm:"column:enabled;type:boolean;not null;default:true"`
+	// EndpointType 是 provider 同步时的内部分类结果，当前不进入 S2 表结构。
+	EndpointType string `json:"-"                         gorm:"-"`
+	// ModelTypes 是 provider 同步时推导的内部类型集合，当前不进入 S2 表结构。
+	ModelTypes []string `json:"-"                         gorm:"-"`
+	// ModelTypesShadow 保留旧草稿字段名，当前不落库。
+	ModelTypesShadow string `json:"-"                         gorm:"-"`
+	// DefaultParams 是旧草稿默认参数，当前 S2 未定义为 provider_model 字段。
+	DefaultParams map[string]any `json:"-"                   gorm:"-"`
+	// DefaultParamsShadow 保留旧草稿字段名，当前不落库。
+	DefaultParamsShadow string `json:"-"                   gorm:"-"`
+	// Pricing 是旧草稿价格信息，当前 S2 未定义为 provider_model 字段。
+	Pricing map[string]any `json:"-"                   gorm:"-"`
+	// PricingShadow 保留旧草稿字段名，当前不落库。
+	PricingShadow string `json:"-"                   gorm:"-"`
+	// DeletedAt 用于软删除 provider model，避免影响已引用的默认模型配置。
+	DeletedAt string `json:"-"                   gorm:"column:deleted_at;type:text;default:'';index"`
 }
 
-func (ProviderModel) TableName() string { return "provider_models" }
+func (ProviderModel) TableName() string { return "user_provider_models" }
 
 func (m *ProviderModel) BeforeCreate(tx *gorm.DB) error {
 	if err := m.ObjectMeta.BeforeCreate(tx); err != nil {
@@ -171,9 +189,6 @@ func (m *ProviderModel) AfterFind(tx *gorm.DB) error {
 		return err
 	}
 	_ = json.Unmarshal([]byte(m.CapabilitiesShadow), &m.Capabilities)
-	_ = json.Unmarshal([]byte(m.ModelTypesShadow), &m.ModelTypes)
-	_ = json.Unmarshal([]byte(m.DefaultParamsShadow), &m.DefaultParams)
-	_ = json.Unmarshal([]byte(m.PricingShadow), &m.Pricing)
 	return nil
 }
 
@@ -182,22 +197,7 @@ func (m *ProviderModel) marshalShadows() error {
 	if err != nil {
 		return err
 	}
-	modelTypes, err := json.Marshal(m.ModelTypes)
-	if err != nil {
-		return err
-	}
-	params, err := json.Marshal(m.DefaultParams)
-	if err != nil {
-		return err
-	}
-	pricing, err := json.Marshal(m.Pricing)
-	if err != nil {
-		return err
-	}
 	m.CapabilitiesShadow = string(capabilities)
-	m.ModelTypesShadow = string(modelTypes)
-	m.DefaultParamsShadow = string(params)
-	m.PricingShadow = string(pricing)
 	return nil
 }
 
@@ -209,14 +209,23 @@ func (ProviderCapability) TableName() string { return "provider_capabilities" }
 
 type SystemLLMConfig struct {
 	imachinery.ObjectMeta
-	Purpose    string `json:"purpose"     gorm:"column:purpose;type:varchar(64);not null;uniqueIndex"`
-	ProviderID string `json:"provider_id" gorm:"column:provider_id;type:varchar(64);not null;index"`
-	ModelID    string `json:"model_id"    gorm:"column:model_id;type:varchar(64);index"`
-	Model      string `json:"model"       gorm:"column:model;type:varchar(128)"`
-	Enabled    bool   `json:"enabled"     gorm:"column:enabled;type:boolean;not null;default:true"`
+	// OwnerUserID 标识默认模型配置所属用户，usage 在同一用户内唯一。
+	OwnerUserID string `json:"owner_user_id"     gorm:"column:owner_user_id;type:text;not null;uniqueIndex:idx_user_default_model_configs_owner_usage,priority:1"`
+	// Purpose 对应 S2 的 usage，表示 chat、translation 等业务用途。
+	Purpose string `json:"usage"             gorm:"column:usage;type:text;not null;uniqueIndex:idx_user_default_model_configs_owner_usage,priority:2"`
+	// ProviderID 指向默认模型所属 provider。
+	ProviderID string `json:"provider_id"       gorm:"column:provider_id;type:text;not null;index"`
+	// ModelID 指向默认模型配置实际选中的 provider model。
+	ModelID string `json:"model_id"          gorm:"column:model_id;type:text;not null;index"`
+	// Model 是旧草稿传入的 provider 模型名，S2 默认模型配置不直接暴露。
+	Model string `json:"-"                 gorm:"-"`
+	// Enabled 是旧草稿开关字段，S2 默认模型配置当前以记录存在表示启用。
+	Enabled bool `json:"-"                 gorm:"-"`
+	// ModelDetail 是详情响应中的只读模型对象，来自 provider model 聚合查询。
+	ModelDetail *ProviderModel `json:"model,omitempty"   gorm:"-"`
 }
 
-func (SystemLLMConfig) TableName() string { return "system_llm_configs" }
+func (SystemLLMConfig) TableName() string { return "user_default_model_configs" }
 
 type StorageBackend struct {
 	imachinery.ObjectMeta
@@ -316,14 +325,22 @@ func (a *Asset) marshalShadows() error {
 
 type AssetThumbnail struct {
 	imachinery.ObjectMeta
-	AssetID          string `json:"asset_id"           gorm:"column:asset_id;type:varchar(64);not null;index"`
+	// AssetID 指向原始素材，缩略图任务完成后仍通过该字段回写归属。
+	AssetID string `json:"asset_id"           gorm:"column:asset_id;type:varchar(64);not null;index"`
+	// StorageBackendID 标识缩略图对象所在存储后端，通常沿用原素材后端。
 	StorageBackendID string `json:"storage_backend_id" gorm:"column:storage_backend_id;type:varchar(64);not null;index"`
-	ObjectKey        string `json:"object_key"         gorm:"column:object_key;type:varchar(1024)"`
-	Width            int    `json:"width"              gorm:"column:width"`
-	Height           int    `json:"height"             gorm:"column:height"`
-	MimeType         string `json:"mime_type"          gorm:"column:mime_type;type:varchar(128)"`
-	Size             int64  `json:"size"               gorm:"column:size"`
-	Status           string `json:"status"             gorm:"column:status;type:varchar(32);not null;default:pending;index"`
+	// ObjectKey 是缩略图对象在存储后端中的 key，pending/unsupported 时允许为空。
+	ObjectKey string `json:"object_key"         gorm:"column:object_key;type:varchar(1024)"`
+	// Width 保存生成后缩略图宽度，任务未完成时为零值。
+	Width int `json:"width"              gorm:"column:width"`
+	// Height 保存生成后缩略图高度，任务未完成时为零值。
+	Height int `json:"height"             gorm:"column:height"`
+	// MimeType 保存缩略图对象 MIME 类型，当前图片缩略图默认生成 PNG。
+	MimeType string `json:"mime_type"          gorm:"column:mime_type;type:varchar(128)"`
+	// Size 保存缩略图对象大小，便于列表响应避免访问对象存储。
+	Size int64 `json:"size"               gorm:"column:size"`
+	// Status 表示缩略图任务状态，pending/processing 由 TaskRun 推进，unsupported/failed/ready 为可展示结果。
+	Status string `json:"status"             gorm:"column:status;type:varchar(32);not null;default:pending;index"`
 }
 
 func (AssetThumbnail) TableName() string { return "asset_thumbnails" }
@@ -433,64 +450,6 @@ func (r *AssetRelation) marshalShadows() error {
 		return err
 	}
 	r.ParamsShadow = string(data)
-	return nil
-}
-
-type Task struct {
-	imachinery.ObjectMeta
-	Type           string         `json:"type"                   gorm:"column:type;type:varchar(64);not null;index"`
-	Status         string         `json:"status"                 gorm:"column:status;type:varchar(32);not null;default:pending;index"`
-	Priority       int            `json:"priority"               gorm:"column:priority;not null;default:0;index"`
-	Queue          string         `json:"queue"                  gorm:"column:queue;type:varchar(64);not null;default:default;index"`
-	Input          map[string]any `json:"input,omitempty"        gorm:"-"`
-	InputShadow    string         `json:"-"                      gorm:"column:input;type:text"`
-	Output         map[string]any `json:"output,omitempty"       gorm:"-"`
-	OutputShadow   string         `json:"-"                      gorm:"column:output;type:text"`
-	Progress       int            `json:"progress"               gorm:"column:progress;not null;default:0"`
-	Error          string         `json:"error"                  gorm:"column:error;type:text"`
-	Attempts       int            `json:"attempts"               gorm:"column:attempts;not null;default:0"`
-	MaxAttempts    int            `json:"max_attempts"           gorm:"column:max_attempts;not null;default:3"`
-	LockOwner      string         `json:"lock_owner"             gorm:"column:lock_owner;type:varchar(128);index"`
-	LockedUntil    time.Time      `json:"locked_until,omitempty" gorm:"column:locked_until;index"`
-	IdempotencyKey string         `json:"idempotency_key"        gorm:"column:idempotency_key;type:varchar(128);index"`
-}
-
-func (Task) TableName() string { return "tasks" }
-
-func (t *Task) BeforeCreate(tx *gorm.DB) error {
-	if err := t.ObjectMeta.BeforeCreate(tx); err != nil {
-		return err
-	}
-	return t.marshalShadows()
-}
-
-func (t *Task) BeforeUpdate(tx *gorm.DB) error {
-	if err := t.ObjectMeta.BeforeUpdate(tx); err != nil {
-		return err
-	}
-	return t.marshalShadows()
-}
-
-func (t *Task) AfterFind(tx *gorm.DB) error {
-	if err := t.ObjectMeta.AfterFind(tx); err != nil {
-		return err
-	}
-	_ = json.Unmarshal([]byte(t.InputShadow), &t.Input)
-	_ = json.Unmarshal([]byte(t.OutputShadow), &t.Output)
-	return nil
-}
-
-func (t *Task) marshalShadows() error {
-	input, err := json.Marshal(t.Input)
-	if err != nil {
-		return err
-	}
-	output, err := json.Marshal(t.Output)
-	if err != nil {
-		return err
-	}
-	t.InputShadow = string(input)
-	t.OutputShadow = string(output)
 	return nil
 }
 

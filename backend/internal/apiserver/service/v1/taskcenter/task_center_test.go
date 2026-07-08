@@ -9,6 +9,7 @@ import (
 	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -53,7 +54,7 @@ func TestValidateDAGRejectsCycle(t *testing.T) {
 func TestDeleteRunRequiresTerminalStatus(t *testing.T) {
 	taskStore := &fakeTaskCenterStore{
 		runs: map[string]*iapiserver.TaskRun{
-			"run-1": {TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "run-1"}, Status: iapiserver.TaskRunStatusRunning},
+			"run-1": {ObjectMeta: imachinery.ObjectMeta{ID: "run-1"}, Status: iapiserver.TaskRunStatusRunning},
 		},
 	}
 	srv := NewService(&fakeFactory{taskCenter: taskStore})
@@ -70,9 +71,9 @@ func TestRetryRunMovesFailedRunToReady(t *testing.T) {
 	taskStore := &fakeTaskCenterStore{
 		runs: map[string]*iapiserver.TaskRun{
 			"run-1": {
-				TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "run-1"},
-				Status:         iapiserver.TaskRunStatusFailed,
-				Progress:       1,
+				ObjectMeta: imachinery.ObjectMeta{ID: "run-1"},
+				Status:     iapiserver.TaskRunStatusFailed,
+				Progress:   1,
 			},
 		},
 	}
@@ -93,7 +94,7 @@ func TestCreateRunUsesDefinitionRetryPolicy(t *testing.T) {
 	taskStore := &fakeTaskCenterStore{
 		definitions: map[string]*iapiserver.TaskDefinition{
 			"def-1": {
-				TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "def-1", Name: "atomic"},
+				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
 				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
 				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: 2},
 				ProjectID:      "project-a",
@@ -122,7 +123,7 @@ func TestCreateRunRejectsInfiniteRetryWithoutExitProtection(t *testing.T) {
 	taskStore := &fakeTaskCenterStore{
 		definitions: map[string]*iapiserver.TaskDefinition{
 			"def-1": {
-				TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "def-1", Name: "atomic"},
+				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
 				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
 				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: -1},
 			},
@@ -150,7 +151,7 @@ func TestCreateRunAllowsInfiniteRetryWithOverallTimeout(t *testing.T) {
 	taskStore := &fakeTaskCenterStore{
 		definitions: map[string]*iapiserver.TaskDefinition{
 			"def-1": {
-				TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "def-1", Name: "atomic"},
+				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
 				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
 				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: -1},
 				TimeoutPolicy:  iapiserver.TimeoutPolicy{OverallTimeout: "1h"},
@@ -174,19 +175,19 @@ func TestCreateRunAllowsInfiniteRetryWithOverallTimeout(t *testing.T) {
 	}
 }
 
-func TestTaskCenterMetaUsesContractTimestampFields(t *testing.T) {
+func TestTaskCenterObjectMetaUsesContractTimestampFields(t *testing.T) {
 	data, err := json.Marshal(iapiserver.TaskRun{
-		TaskCenterMeta: iapiserver.TaskCenterMeta{ID: "run-1"},
+		ObjectMeta: imachinery.ObjectMeta{ID: "run-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal task run: %v", err)
 	}
 	payload := string(data)
-	if !strings.Contains(payload, `"createdAt"`) {
-		t.Fatalf("json = %s, want createdAt field", payload)
+	if !strings.Contains(payload, `"created_at"`) {
+		t.Fatalf("json = %s, want created_at field", payload)
 	}
-	if strings.Contains(payload, `"created_at"`) {
-		t.Fatalf("json = %s, should not contain created_at field", payload)
+	if strings.Contains(payload, `"createdAt"`) {
+		t.Fatalf("json = %s, should not contain createdAt field", payload)
 	}
 }
 
