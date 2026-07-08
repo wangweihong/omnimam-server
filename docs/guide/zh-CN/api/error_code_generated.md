@@ -77,6 +77,15 @@
 | ErrAIChatAttachmentUnsupported | 110217 | 200 | Attachment format is unsupported or the model lacks the required capability. | 附件格式不支持或模型能力不支持。 |
 | ErrAIChatAttachmentTooLarge | 110218 | 200 | A single image exceeds 5MB. | 单张图片超过 5MB。 |
 | ErrAIChatExportFailed | 110219 | 200 | Frontend export assembly failed. | 前端导出组装失败。 |
+| ErrTemplateParseFailed | 130200 | 200 | Template parsing failed and the template cannot be created. | 模板解析失败，无法创建模板。 |
+| ErrTemplateReferenceBlocked | 130201 | 200 | Template has references and cannot be deleted. | 模板存在引用，禁止删除。 |
+| ErrTemplateNameDuplicated | 130203 | 200 | Template name is duplicated for the same owner. | 同一用户下模板名称重复。 |
+| ErrTemplateContentImmutable | 130204 | 200 | Template kind, content, and parsed fields are immutable after creation. | 模板类型、内容或解析变量创建后不可修改。 |
+| ErrMappingPathInvalid | 130300 | 200 | Field mapping source path is not present in parsed template fields. | 字段映射路径不在模板解析变量中。 |
+| ErrFieldKeyDuplicated | 130301 | 200 | Field key is duplicated in the same application. | 同一应用内字段标识重复。 |
+| ErrFieldMappingIncomplete | 130302 | 200 | Application field mappings are incomplete. | 应用字段映射不完整。 |
+| ErrFieldTypeInvalid | 130303 | 200 | Field type is not derived from parsed template fields. | 字段类型不来自模板解析变量。 |
+| ErrAIAppPermissionDenied | 130500 | 200 | Current user does not have permission. | 当前用户缺少操作权限。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
 | ErrTaskDAGCycleDetected | 140201 | 200 | DAGFlowTask contains a cyclic dependency. | DAGFlowTask 存在环形依赖。 |
 | ErrTaskRunNotFound | 140400 | 200 | Task run does not exist or is not visible to the current user. | 任务运行不存在或当前用户不可见。 |

@@ -43,6 +43,7 @@ type Factory interface {
 	AssetRelations() AssetRelationStore
 	Tasks() TaskStore
 	TaskCenters() TaskCenterStore
+	ApplicationPlatforms() ApplicationPlatformStore
 	FeatureFlags() FeatureFlagStore
 	Roles() RoleStore
 	Permissions() PermissionStore

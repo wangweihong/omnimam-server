@@ -505,13 +505,16 @@ func (f *testFactory) AssetGroupMembers() store.AssetGroupMemberStore { return n
 func (f *testFactory) AssetRelations() store.AssetRelationStore       { return nil }
 func (f *testFactory) Tasks() store.TaskStore                         { return nil }
 func (f *testFactory) TaskCenters() store.TaskCenterStore             { return nil }
-func (f *testFactory) FeatureFlags() store.FeatureFlagStore           { return nil }
-func (f *testFactory) Roles() store.RoleStore                         { return nil }
-func (f *testFactory) Permissions() store.PermissionStore             { return nil }
-func (f *testFactory) UserRoles() store.UserRoleStore                 { return nil }
-func (f *testFactory) AIChat() store.AIChatStore                      { return nil }
-func (f *testFactory) EnsureScheme(metaTypes ...any) error            { return nil }
-func (f *testFactory) Close() error                                   { return nil }
+func (f *testFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
+	return nil
+}
+func (f *testFactory) FeatureFlags() store.FeatureFlagStore { return nil }
+func (f *testFactory) Roles() store.RoleStore               { return nil }
+func (f *testFactory) Permissions() store.PermissionStore   { return nil }
+func (f *testFactory) UserRoles() store.UserRoleStore       { return nil }
+func (f *testFactory) AIChat() store.AIChatStore            { return nil }
+func (f *testFactory) EnsureScheme(metaTypes ...any) error  { return nil }
+func (f *testFactory) Close() error                         { return nil }
 
 type testProviderStore struct {
 	items map[string]*iapiserver.Provider

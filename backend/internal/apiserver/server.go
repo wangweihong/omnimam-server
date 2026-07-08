@@ -150,6 +150,11 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.Permission{},
 		&iapiserver.UserRole{},
 
+		// application platform
+		&iapiserver.AppTemplate{},
+		&iapiserver.Application{},
+		&iapiserver.FieldMapping{},
+
 		// ai chat
 		&iapiserver.AIChatModel{},
 		&iapiserver.AIChatAssistant{},

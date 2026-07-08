@@ -192,6 +192,10 @@ func (ds *datastore) TaskCenters() store.TaskCenterStore {
 	return newTaskCenter(ds)
 }
 
+func (ds *datastore) ApplicationPlatforms() store.ApplicationPlatformStore {
+	return newApplicationPlatform(ds)
+}
+
 func (ds *datastore) FeatureFlags() store.FeatureFlagStore {
 	return newFeatureFlag(ds)
 }

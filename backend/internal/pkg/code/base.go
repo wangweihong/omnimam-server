@@ -308,6 +308,54 @@ const (
 	ErrAIChatExportFailed int = 110219
 )
 
+// application-platform: feature scoped business errors.
+const (
+	// @HTTP 200
+	// @CN 模板解析失败，无法创建模板。
+	// @EN Template parsing failed and the template cannot be created.
+	ErrTemplateParseFailed int = 130200
+
+	// @HTTP 200
+	// @CN 模板存在引用，禁止删除。
+	// @EN Template has references and cannot be deleted.
+	ErrTemplateReferenceBlocked int = 130201
+
+	// @HTTP 200
+	// @CN 同一用户下模板名称重复。
+	// @EN Template name is duplicated for the same owner.
+	ErrTemplateNameDuplicated int = 130203
+
+	// @HTTP 200
+	// @CN 模板类型、内容或解析变量创建后不可修改。
+	// @EN Template kind, content, and parsed fields are immutable after creation.
+	ErrTemplateContentImmutable int = 130204
+
+	// @HTTP 200
+	// @CN 字段映射路径不在模板解析变量中。
+	// @EN Field mapping source path is not present in parsed template fields.
+	ErrMappingPathInvalid int = 130300
+
+	// @HTTP 200
+	// @CN 同一应用内字段标识重复。
+	// @EN Field key is duplicated in the same application.
+	ErrFieldKeyDuplicated int = 130301
+
+	// @HTTP 200
+	// @CN 应用字段映射不完整。
+	// @EN Application field mappings are incomplete.
+	ErrFieldMappingIncomplete int = 130302
+
+	// @HTTP 200
+	// @CN 字段类型不来自模板解析变量。
+	// @EN Field type is not derived from parsed template fields.
+	ErrFieldTypeInvalid int = 130303
+
+	// @HTTP 200
+	// @CN 当前用户缺少操作权限。
+	// @EN Current user does not have permission.
+	ErrAIAppPermissionDenied int = 130500
+)
+
 // task-center: SSOT scoped business errors.
 const (
 	// @HTTP 200

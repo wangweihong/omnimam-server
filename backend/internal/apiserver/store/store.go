@@ -321,6 +321,30 @@ type TaskCenterStore interface {
 	AddEvent(ctx context.Context, data *iapiserver.TaskRunEvent) (*iapiserver.TaskRunEvent, error)
 }
 
+type ApplicationPlatformStore interface {
+	ListTemplates(ctx context.Context, req *iapiserver.AppTemplateListRequest) ([]*iapiserver.AppTemplate, int64, error)
+	GetTemplate(ctx context.Context, id string) (*iapiserver.AppTemplate, error)
+	GetTemplateByOwnerName(ctx context.Context, ownerUserID, name string) (*iapiserver.AppTemplate, error)
+	AddTemplate(ctx context.Context, data *iapiserver.AppTemplate) (*iapiserver.AppTemplate, error)
+	UpdateTemplate(ctx context.Context, data *iapiserver.AppTemplate) (*iapiserver.AppTemplate, error)
+	DeleteTemplate(ctx context.Context, id string) error
+	ListApplications(ctx context.Context, req *iapiserver.ApplicationListRequest) ([]*iapiserver.Application, int64, error)
+	GetApplication(ctx context.Context, id string) (*iapiserver.Application, error)
+	AddApplication(
+		ctx context.Context,
+		data *iapiserver.Application,
+		mappings []*iapiserver.FieldMapping,
+	) (*iapiserver.Application, error)
+	UpdateApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
+	DeleteApplication(ctx context.Context, id string) error
+	ListFieldMappings(ctx context.Context, applicationID string) ([]*iapiserver.FieldMapping, error)
+	ReplaceFieldMappings(
+		ctx context.Context,
+		applicationID string,
+		mappings []*iapiserver.FieldMapping,
+	) ([]*iapiserver.FieldMapping, error)
+}
+
 type FeatureFlagStore interface {
 	List(ctx context.Context) ([]*iapiserver.FeatureFlag, error)
 	Upsert(ctx context.Context, data *iapiserver.FeatureFlag) (*iapiserver.FeatureFlag, error)

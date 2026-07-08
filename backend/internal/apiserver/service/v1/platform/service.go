@@ -1777,6 +1777,10 @@ func defaultPermissions() []string {
 		"canvas.write",
 		"canvas.execute",
 		"feature.manage",
+		iapiserver.AIAppTemplateManageOwn,
+		iapiserver.AIAppApplicationManageOwn,
+		iapiserver.AIAppAdminManageAll,
+		iapiserver.AIAppSuperAdminManageAll,
 	}
 }
 

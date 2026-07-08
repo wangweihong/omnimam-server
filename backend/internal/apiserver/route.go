@@ -5,6 +5,7 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	aichatctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/aichat"
+	aiappctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/canvas"
@@ -45,10 +46,35 @@ func InstallApis(g *gin.Engine) *gin.Engine {
 			installCanvasApis(v1, storeIns)
 			installTaskCenterApis(v1, storeIns)
 			installAIChatApis(v1, storeIns)
+			installApplicationPlatformApis(v1, storeIns)
 		}
 	}
 
 	return g
+}
+
+func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
+	controller := aiappctrl.NewController(storeIns)
+	templates := rg.Group("/app-templates")
+	{
+		templates.GET("", controller.ListTemplates)
+		templates.POST("", controller.CreateTemplate)
+		templates.GET("/:template_id", controller.GetTemplate)
+		templates.PATCH("/:template_id", controller.UpdateTemplate)
+		templates.DELETE("/:template_id", controller.DeleteTemplate)
+		templates.GET("/:template_id/references", controller.ListTemplateReferences)
+	}
+
+	applications := rg.Group("/applications")
+	{
+		applications.GET("", controller.ListApplications)
+		applications.POST("", controller.CreateApplication)
+		applications.GET("/:application_id", controller.GetApplication)
+		applications.PATCH("/:application_id", controller.UpdateApplication)
+		applications.DELETE("/:application_id", controller.DeleteApplication)
+		applications.GET("/:application_id/field-mappings", controller.ListFieldMappings)
+		applications.PUT("/:application_id/field-mappings", controller.SaveFieldMappings)
+	}
 }
 
 func installTaskCenterApis(rg *gin.RouterGroup, storeIns store.Factory) {

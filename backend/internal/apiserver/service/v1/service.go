@@ -2,6 +2,7 @@ package v1
 
 import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/asset"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/canvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
@@ -22,6 +23,7 @@ type Service interface {
 	Platforms() platform.PlatformSrv
 	TaskCenters() taskcenter.TaskCenterSrv
 	AIChat() aichat.AIChatSrv
+	ApplicationPlatforms() applicationplatform.ApplicationPlatformSrv
 }
 
 type service struct {
@@ -65,4 +67,8 @@ func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
 
 func (s *service) AIChat() aichat.AIChatSrv {
 	return aichat.NewService(s.store)
+}
+
+func (s *service) ApplicationPlatforms() applicationplatform.ApplicationPlatformSrv {
+	return applicationplatform.NewService(s.store)
 }
