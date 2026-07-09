@@ -367,12 +367,15 @@ func parseTemplateFields(kind string, config map[string]any) ([]iapiserver.Parse
 	var root any
 	switch kind {
 	case iapiserver.AppTemplateKindComfyUI:
-		raw, ok := config["raw"].(string)
-		if !ok || strings.TrimSpace(raw) == "" {
-			return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui raw json is required")
-		}
-		if err := json.Unmarshal([]byte(raw), &root); err != nil {
-			return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui raw json parse failed")
+		if raw, ok := config["raw"].(string); ok {
+			if strings.TrimSpace(raw) == "" {
+				return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui raw json is required")
+			}
+			if err := json.Unmarshal([]byte(raw), &root); err != nil {
+				return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui raw json parse failed")
+			}
+		} else {
+			root = map[string]any(config)
 		}
 	case iapiserver.AppTemplateKindSaaSAPI:
 		var ok bool
@@ -384,7 +387,13 @@ func parseTemplateFields(kind string, config map[string]any) ([]iapiserver.Parse
 		return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "template kind is unsupported")
 	}
 	fields := make([]iapiserver.ParsedField, 0)
-	collectPrimitiveFields("", root, &fields)
+	if kind == iapiserver.AppTemplateKindComfyUI {
+		if err := collectComfyUIAPIFields(root, &fields); err != nil {
+			return nil, err
+		}
+	} else {
+		collectPrimitiveFields("", root, &fields)
+	}
 	if len(fields) == 0 {
 		return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "template has no primitive leaf fields")
 	}
@@ -392,6 +401,124 @@ func parseTemplateFields(kind string, config map[string]any) ([]iapiserver.Parse
 		return fields[i].SourcePath < fields[j].SourcePath
 	})
 	return fields, nil
+}
+
+func collectComfyUIAPIFields(root any, out *[]iapiserver.ParsedField) error {
+	workflow, ok := root.(map[string]any)
+	if !ok || len(workflow) == 0 {
+		return errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui api workflow must be a json object")
+	}
+	if looksLikeComfyUIWorkflowSaveFormat(workflow) {
+		return errors.NewStatusF(
+			code.ErrTemplateParseFailed,
+			"comfyui workflow must be exported in api format",
+		)
+	}
+
+	nodeIDs := make([]string, 0, len(workflow))
+	for nodeID := range workflow {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		if strings.TrimSpace(nodeID) == "" {
+			return errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui node id is empty")
+		}
+		node, ok := workflow[nodeID].(map[string]any)
+		if !ok {
+			return errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui node %s must be an object", nodeID)
+		}
+		classType, ok := node["class_type"].(string)
+		if !ok || strings.TrimSpace(classType) == "" {
+			return errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui node %s misses class_type", nodeID)
+		}
+		inputs, ok := node["inputs"].(map[string]any)
+		if !ok {
+			return errors.NewStatusF(code.ErrTemplateParseFailed, "comfyui node %s misses inputs", nodeID)
+		}
+		labelPrefix := classType
+		if meta, ok := node["_meta"].(map[string]any); ok {
+			if title, ok := meta["title"].(string); ok && strings.TrimSpace(title) != "" {
+				labelPrefix = strings.TrimSpace(title)
+			}
+		}
+		collectComfyUIInputFields(nodeID, "", labelPrefix, inputs, out)
+	}
+	return nil
+}
+
+func looksLikeComfyUIWorkflowSaveFormat(root map[string]any) bool {
+	nodes, hasNodes := root["nodes"].([]any)
+	_, hasLinks := root["links"]
+	_, hasGroups := root["groups"]
+	_, hasExtra := root["extra"]
+	return hasNodes && len(nodes) > 0 && (hasLinks || hasGroups || hasExtra)
+}
+
+func collectComfyUIInputFields(
+	nodeID, inputPath, labelPrefix string,
+	value any,
+	out *[]iapiserver.ParsedField,
+) {
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			nextPath := joinSourcePath(inputPath, key)
+			collectComfyUIInputFields(nodeID, nextPath, labelPrefix, typed[key], out)
+		}
+	case []any:
+		if isComfyUILink(typed) {
+			return
+		}
+		for i, item := range typed {
+			collectComfyUIInputFields(nodeID, fmt.Sprintf("%s[%d]", inputPath, i), labelPrefix, item, out)
+		}
+	case string:
+		appendComfyUIParsedField(nodeID, inputPath, labelPrefix, "string", out)
+	case bool:
+		appendComfyUIParsedField(nodeID, inputPath, labelPrefix, "boolean", out)
+	case float64, float32, int, int64, int32, uint, uint64, uint32:
+		appendComfyUIParsedField(nodeID, inputPath, labelPrefix, "number", out)
+	case nil:
+		appendComfyUIParsedField(nodeID, inputPath, labelPrefix, "null", out)
+	}
+}
+
+func isComfyUILink(value []any) bool {
+	if len(value) != 2 {
+		return false
+	}
+	if _, ok := value[0].(string); !ok {
+		return false
+	}
+	return isJSONNumber(value[1])
+}
+
+func isJSONNumber(value any) bool {
+	switch value.(type) {
+	case float64, float32, int, int64, int32, uint, uint64, uint32:
+		return true
+	default:
+		return false
+	}
+}
+
+func appendComfyUIParsedField(nodeID, inputPath, labelPrefix, fieldType string, out *[]iapiserver.ParsedField) {
+	if inputPath == "" {
+		return
+	}
+	sourcePath := nodeID + ".inputs." + inputPath
+	*out = append(*out, iapiserver.ParsedField{
+		SourcePath: sourcePath,
+		FieldType:  fieldType,
+		Required:   true,
+		LabelHint:  labelPrefix + "." + labelHint(inputPath),
+	})
 }
 
 func collectPrimitiveFields(prefix string, value any, out *[]iapiserver.ParsedField) {

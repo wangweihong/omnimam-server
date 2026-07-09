@@ -15,15 +15,58 @@ func TestParseTemplateFields(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "comfyui raw json primitive leaves",
+			name: "comfyui api raw json parses input primitives and skips links",
 			kind: iapiserver.AppTemplateKindComfyUI,
 			config: map[string]any{
-				"raw": `{"node":{"inputs":{"prompt":"hello","steps":20,"enabled":true}}}`,
+				"raw": `{
+					"3": {
+						"class_type": "KSampler",
+						"inputs": {
+							"seed": 156680208700286,
+							"steps": 20,
+							"cfg": 8,
+							"sampler_name": "euler",
+							"scheduler": "normal",
+							"denoise": 1,
+							"model": ["4", 0],
+							"positive": ["6", 0]
+						},
+						"_meta": {"title": "KSampler"}
+					},
+					"4": {
+						"class_type": "CheckpointLoaderSimple",
+						"inputs": {
+							"ckpt_name": "v1-5-pruned-emaonly.safetensors"
+						},
+						"_meta": {"title": "Load Checkpoint"}
+					}
+				}`,
 			},
 			want: []iapiserver.ParsedField{
-				{SourcePath: "node.inputs.enabled", FieldType: "boolean", Required: true, LabelHint: "enabled"},
-				{SourcePath: "node.inputs.prompt", FieldType: "string", Required: true, LabelHint: "prompt"},
-				{SourcePath: "node.inputs.steps", FieldType: "number", Required: true, LabelHint: "steps"},
+				{SourcePath: "3.inputs.cfg", FieldType: "number", Required: true, LabelHint: "KSampler.cfg"},
+				{SourcePath: "3.inputs.denoise", FieldType: "number", Required: true, LabelHint: "KSampler.denoise"},
+				{SourcePath: "3.inputs.sampler_name", FieldType: "string", Required: true, LabelHint: "KSampler.sampler_name"},
+				{SourcePath: "3.inputs.scheduler", FieldType: "string", Required: true, LabelHint: "KSampler.scheduler"},
+				{SourcePath: "3.inputs.seed", FieldType: "number", Required: true, LabelHint: "KSampler.seed"},
+				{SourcePath: "3.inputs.steps", FieldType: "number", Required: true, LabelHint: "KSampler.steps"},
+				{SourcePath: "4.inputs.ckpt_name", FieldType: "string", Required: true, LabelHint: "Load Checkpoint.ckpt_name"},
+			},
+		},
+		{
+			name: "comfyui api config object parses without raw wrapper",
+			kind: iapiserver.AppTemplateKindComfyUI,
+			config: map[string]any{
+				"3": map[string]any{
+					"class_type": "CLIPTextEncode",
+					"inputs": map[string]any{
+						"text": "a cat",
+						"clip": []any{"4", float64(1)},
+					},
+					"_meta": map[string]any{"title": "Prompt"},
+				},
+			},
+			want: []iapiserver.ParsedField{
+				{SourcePath: "3.inputs.text", FieldType: "string", Required: true, LabelHint: "Prompt.text"},
 			},
 		},
 		{
@@ -42,6 +85,26 @@ func TestParseTemplateFields(t *testing.T) {
 			name:    "invalid comfyui raw json",
 			kind:    iapiserver.AppTemplateKindComfyUI,
 			config:  map[string]any{"raw": `{"node":`},
+			wantErr: true,
+		},
+		{
+			name: "comfyui ui save workflow format is rejected",
+			kind: iapiserver.AppTemplateKindComfyUI,
+			config: map[string]any{
+				"nodes": []any{map[string]any{"id": float64(1), "type": "KSampler"}},
+				"links": []any{},
+				"extra": map[string]any{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "comfyui node missing class type is rejected",
+			kind: iapiserver.AppTemplateKindComfyUI,
+			config: map[string]any{
+				"3": map[string]any{
+					"inputs": map[string]any{"text": "a cat"},
+				},
+			},
 			wantErr: true,
 		},
 		{
