@@ -2,6 +2,7 @@ package postgresql
 
 import (
 	"context"
+	stderrors "errors"
 	"strings"
 	"time"
 
@@ -69,7 +70,20 @@ func (s *applicationPlatformStore) AddTemplate(
 	ctx context.Context,
 	data *iapiserver.AppTemplate,
 ) (*iapiserver.AppTemplate, error) {
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if CheckExists(tx, &iapiserver.AppTemplate{}, map[string]any{
+			"owner_user_id": data.OwnerUserID,
+			"name":          data.Name,
+		}) {
+			return errors.NewStatusF(code.ErrTemplateNameDuplicated, "template name %s already exists", data.Name)
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return mapApplicationPlatformUniqueError(err, map[string]int{
+				"idx_aiapp_app_templates_owner_name": code.ErrTemplateNameDuplicated,
+			}, "template name duplicated")
+		}
+		return nil
+	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
@@ -80,7 +94,9 @@ func (s *applicationPlatformStore) UpdateTemplate(
 	data *iapiserver.AppTemplate,
 ) (*iapiserver.AppTemplate, error) {
 	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
-		return nil, errors.WithStack(err)
+		return nil, errors.WithStack(mapApplicationPlatformUniqueError(err, map[string]int{
+			"idx_aiapp_app_templates_owner_name": code.ErrTemplateNameDuplicated,
+		}, "template name duplicated"))
 	}
 	return data, nil
 }
@@ -184,6 +200,15 @@ func (s *applicationPlatformStore) DeleteApplication(ctx context.Context, id str
 			Where("id = ?", id).First(&app).Error; err != nil {
 			return err
 		}
+		var refs int64
+		if err := tx.Model(&iapiserver.ApplicationRun{}).
+			Where("application_id = ?", id).
+			Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs > 0 || app.ReferenceRunCount > 0 {
+			return errors.NewStatusF(code.ErrApplicationReferenceBlocked, "application has run references")
+		}
 		if err := tx.Where("application_id = ?", id).Delete(&iapiserver.FieldMapping{}).Error; err != nil {
 			return err
 		}
@@ -194,6 +219,201 @@ func (s *applicationPlatformStore) DeleteApplication(ctx context.Context, id str
 			Where("id = ? AND reference_application_count > 0", app.TemplateID).
 			UpdateColumn("reference_application_count", gorm.Expr("reference_application_count - ?", 1)).Error
 	}))
+}
+
+func (s *applicationPlatformStore) ListAppEngines(
+	ctx context.Context,
+	req *iapiserver.AppEngineListRequest,
+) ([]*iapiserver.AppEngine, int64, error) {
+	var items []*iapiserver.AppEngine
+	var total int64
+	query := applicationPlatformQuery(ctx, s.ds.db.Model(&iapiserver.AppEngine{}), req.BasicQueryParam, func(q *gorm.DB) *gorm.DB {
+		if !req.IncludeAll {
+			q = q.Where("owner_user_id = ?", req.OwnerUserID)
+		}
+		if req.EngineType != "" {
+			q = q.Where("engine_type = ?", req.EngineType)
+		}
+		if req.Status != "" {
+			q = q.Where("status = ?", req.Status)
+		}
+		if req.HealthStatus != "" {
+			q = q.Where("health_status = ?", req.HealthStatus)
+		}
+		return q
+	})
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	if err := applicationPlatformPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+
+func (s *applicationPlatformStore) GetAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error) {
+	var item iapiserver.AppEngine
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
+func (s *applicationPlatformStore) GetAppEngineByOwnerName(
+	ctx context.Context,
+	ownerUserID, name string,
+) (*iapiserver.AppEngine, error) {
+	var item iapiserver.AppEngine
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND name = ?", ownerUserID, name).
+		First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
+func (s *applicationPlatformStore) AddAppEngine(
+	ctx context.Context,
+	data *iapiserver.AppEngine,
+) (*iapiserver.AppEngine, error) {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if CheckExists(tx, &iapiserver.AppEngine{}, map[string]any{
+			"owner_user_id": data.OwnerUserID,
+			"name":          data.Name,
+		}) {
+			return errors.NewStatusF(code.ErrAppEngineNameDuplicated, "app engine name %s already exists", data.Name)
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return mapApplicationPlatformUniqueError(err, map[string]int{
+				"idx_aiapp_app_engines_owner_name": code.ErrAppEngineNameDuplicated,
+			}, "app engine name duplicated")
+		}
+		return nil
+	}); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func (s *applicationPlatformStore) UpdateAppEngine(
+	ctx context.Context,
+	data *iapiserver.AppEngine,
+) (*iapiserver.AppEngine, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(mapApplicationPlatformUniqueError(err, map[string]int{
+			"idx_aiapp_app_engines_owner_name": code.ErrAppEngineNameDuplicated,
+		}, "app engine name duplicated"))
+	}
+	return data, nil
+}
+
+func (s *applicationPlatformStore) DeleteAppEngine(ctx context.Context, id string) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var engine iapiserver.AppEngine
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", id).First(&engine).Error; err != nil {
+			return err
+		}
+		var refs int64
+		if err := tx.Model(&iapiserver.ApplicationRun{}).
+			Where("app_engine_id = ?", id).
+			Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs > 0 || engine.ReferenceRunCount > 0 {
+			return errors.NewStatusF(code.ErrAppEngineReferenceBlocked, "app engine has run references")
+		}
+		return tx.Delete(&iapiserver.AppEngine{}, "id = ?", id).Error
+	}))
+}
+
+func (s *applicationPlatformStore) ListApplicationRuns(
+	ctx context.Context,
+	req *iapiserver.ApplicationRunListRequest,
+) ([]*iapiserver.ApplicationRun, int64, error) {
+	var items []*iapiserver.ApplicationRun
+	var total int64
+	query := applicationPlatformQuery(ctx, s.ds.db.Model(&iapiserver.ApplicationRun{}), req.BasicQueryParam, func(q *gorm.DB) *gorm.DB {
+		if !req.IncludeAll {
+			q = q.Where("owner_user_id = ?", req.OwnerUserID)
+		}
+		if req.Status != "" {
+			q = q.Where("status = ?", req.Status)
+		}
+		if req.ApplicationID != "" {
+			q = q.Where("application_id = ?", req.ApplicationID)
+		}
+		return q
+	})
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	if err := applicationPlatformPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+
+func (s *applicationPlatformStore) GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error) {
+	var item iapiserver.ApplicationRun
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
+func (s *applicationPlatformStore) CreateApplicationRun(
+	ctx context.Context,
+	data *iapiserver.ApplicationRun,
+	definition *iapiserver.TaskDefinition,
+	taskRun *iapiserver.TaskRun,
+) (*iapiserver.ApplicationRun, error) {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing iapiserver.TaskDefinition
+		err := tx.Where("definition_type = ? AND id = ?", definition.DefinitionType, definition.ID).
+			First(&existing).Error
+		if err != nil {
+			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if err := tx.Create(definition).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return err
+		}
+		taskRun.Input["application_run_id"] = data.ID
+		taskRun.Name = data.Name
+		if err := tx.Create(taskRun).Error; err != nil {
+			return err
+		}
+		data.TaskRunID = taskRun.ID
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&iapiserver.Application{}).
+			Where("id = ?", data.ApplicationID).
+			UpdateColumn("reference_run_count", gorm.Expr("reference_run_count + ?", 1)).Error; err != nil {
+			return err
+		}
+		return tx.Model(&iapiserver.AppEngine{}).
+			Where("id = ?", data.AppEngineID).
+			UpdateColumn("reference_run_count", gorm.Expr("reference_run_count + ?", 1)).Error
+	}); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func (s *applicationPlatformStore) UpdateApplicationRun(
+	ctx context.Context,
+	data *iapiserver.ApplicationRun,
+) (*iapiserver.ApplicationRun, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
 }
 
 func (s *applicationPlatformStore) ListFieldMappings(
@@ -264,12 +484,17 @@ func applicationPlatformPaginate(query *gorm.DB, pageNum, pageSize int) *gorm.DB
 
 func applicationPlatformOrder(sortField, sortOrder string) clause.OrderByColumn {
 	columns := map[string]string{
-		"id":         "id",
-		"name":       "name",
-		"createdAt":  "created_at",
-		"created_at": "created_at",
-		"updatedAt":  "updated_at",
-		"updated_at": "updated_at",
+		"id":                   "id",
+		"name":                 "name",
+		"createdAt":            "created_at",
+		"created_at":           "created_at",
+		"updatedAt":            "updated_at",
+		"updated_at":           "updated_at",
+		"kind":                 "kind",
+		"engine_type":          "engine_type",
+		"status":               "status",
+		"health_status":        "health_status",
+		"last_health_check_at": "last_health_check_at",
 	}
 	column := columns[sortField]
 	if column == "" {
@@ -279,4 +504,20 @@ func applicationPlatformOrder(sortField, sortOrder string) clause.OrderByColumn 
 		Column: clause.Column{Name: column},
 		Desc:   strings.ToLower(sortOrder) != "asc",
 	}
+}
+
+func mapApplicationPlatformUniqueError(err error, constraintCodes map[string]int, message string) error {
+	if err == nil {
+		return nil
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "SQLSTATE 23505") && !strings.Contains(errText, "duplicate key value") {
+		return err
+	}
+	for constraint, errCode := range constraintCodes {
+		if strings.Contains(errText, constraint) {
+			return errors.NewStatus(errCode, message)
+		}
+	}
+	return err
 }

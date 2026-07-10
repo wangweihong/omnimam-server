@@ -70,7 +70,21 @@ func TestParseTemplateFields(t *testing.T) {
 			},
 		},
 		{
-			name: "saas request template primitive leaves",
+			name: "saas config root primitive leaves",
+			kind: iapiserver.AppTemplateKindSaaSAPI,
+			config: map[string]any{
+				"model":  "z-image",
+				"prompt": "cat",
+				"size":   "1024x1024",
+			},
+			want: []iapiserver.ParsedField{
+				{SourcePath: "model", FieldType: "string", Required: true, LabelHint: "model"},
+				{SourcePath: "prompt", FieldType: "string", Required: true, LabelHint: "prompt"},
+				{SourcePath: "size", FieldType: "string", Required: true, LabelHint: "size"},
+			},
+		},
+		{
+			name: "saas request template wrapper stays compatible",
 			kind: iapiserver.AppTemplateKindSaaSAPI,
 			config: map[string]any{
 				"requestTemplate": map[string]any{
@@ -108,9 +122,17 @@ func TestParseTemplateFields(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "saas missing request template",
+			name:    "saas empty config",
 			kind:    iapiserver.AppTemplateKindSaaSAPI,
 			config:  map[string]any{},
+			wantErr: true,
+		},
+		{
+			name: "saas config without primitive leaves",
+			kind: iapiserver.AppTemplateKindSaaSAPI,
+			config: map[string]any{
+				"body": map[string]any{},
+			},
 			wantErr: true,
 		},
 	}
@@ -205,5 +227,107 @@ func TestBuildFieldMappings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateTemplateSaaSConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     *iapiserver.AppTemplateCreateRequest
+		wantErr bool
+	}{
+		{
+			name: "comfyui does not require saas fields",
+			req:  &iapiserver.AppTemplateCreateRequest{Kind: iapiserver.AppTemplateKindComfyUI},
+		},
+		{
+			name: "valid saas config",
+			req: &iapiserver.AppTemplateCreateRequest{
+				Kind:             iapiserver.AppTemplateKindSaaSAPI,
+				SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
+				CapabilityType:   iapiserver.CapabilityImageGeneration,
+				OperationKey:     "modelscope.image_generation",
+			},
+		},
+		{
+			name: "missing saas platform",
+			req: &iapiserver.AppTemplateCreateRequest{
+				Kind:           iapiserver.AppTemplateKindSaaSAPI,
+				CapabilityType: iapiserver.CapabilityImageGeneration,
+				OperationKey:   "modelscope.image_generation",
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsupported capability",
+			req: &iapiserver.AppTemplateCreateRequest{
+				Kind:             iapiserver.AppTemplateKindSaaSAPI,
+				SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
+				CapabilityType:   "text_generation",
+				OperationKey:     "modelscope.text_generation",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTemplateSaaSConfig(tt.req)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateTemplateSaaSConfig() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateTemplateSaaSConfig() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateApplicationRunEngine(t *testing.T) {
+	app := &iapiserver.Application{
+		Kind:             iapiserver.AppTemplateKindSaaSAPI,
+		SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
+		CapabilityType:   iapiserver.CapabilityImageGeneration,
+	}
+	engine := &iapiserver.AppEngine{
+		EngineType:               iapiserver.AppEngineTypeSaaSAPI,
+		SaaSPlatformType:         iapiserver.SaaSPlatformModelScope,
+		Status:                   iapiserver.AppEngineStatusActive,
+		HealthStatus:             iapiserver.AppEngineHealthHealthy,
+		SupportedCapabilityTypes: []string{iapiserver.CapabilityImageGeneration},
+	}
+	if err := validateApplicationRunEngine(app, engine); err != nil {
+		t.Fatalf("validateApplicationRunEngine() error = %v", err)
+	}
+	engine.SaaSPlatformType = iapiserver.SaaSPlatformCustomHTTP
+	if err := validateApplicationRunEngine(app, engine); err == nil {
+		t.Fatalf("validateApplicationRunEngine() error = nil, want platform mismatch")
+	}
+	engine.SaaSPlatformType = iapiserver.SaaSPlatformModelScope
+	engine.SupportedCapabilityTypes = []string{iapiserver.CapabilityVideoGeneration}
+	if err := validateApplicationRunEngine(app, engine); err == nil {
+		t.Fatalf("validateApplicationRunEngine() error = nil, want capability unsupported")
+	}
+	engine.SupportedCapabilityTypes = []string{iapiserver.CapabilityImageGeneration}
+	engine.HealthStatus = iapiserver.AppEngineHealthUnhealthy
+	if err := validateApplicationRunEngine(app, engine); err == nil {
+		t.Fatalf("validateApplicationRunEngine() error = nil, want unhealthy")
+	}
+}
+
+func TestRenderApplicationPayload(t *testing.T) {
+	app := &iapiserver.Application{
+		FixedParameters: map[string]any{"body.model": "z-image"},
+		FieldMappings: []*iapiserver.FieldMapping{
+			{FieldKey: "prompt", SourcePath: "body.prompt", DefaultValue: "cat", Required: true},
+			{FieldKey: "steps", SourcePath: "body.steps", DefaultValue: float64(20), Required: true},
+		},
+	}
+	got, err := renderApplicationPayload(app, map[string]any{"prompt": "dog"})
+	if err != nil {
+		t.Fatalf("renderApplicationPayload() error = %v", err)
+	}
+	if got["body.model"] != "z-image" || got["body.prompt"] != "dog" || got["body.steps"] != float64(20) {
+		t.Fatalf("renderApplicationPayload() = %#v", got)
 	}
 }

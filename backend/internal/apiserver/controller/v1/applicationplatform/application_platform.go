@@ -97,6 +97,77 @@ func (c *Controller) DeleteApplication(ctx *gin.Context) {
 	})
 }
 
+// CreateApplicationRun 提交一次 Application 运行，创建 AppRun 并委托 task-center 创建 TaskRun。
+func (c *Controller) CreateApplicationRun(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().CreateApplicationRun(ctx, ctx.Param("application_id"), r)
+	})
+}
+
+// ListApplicationRuns 返回当前用户可见的 AppRun 列表。
+func (c *Controller) ListApplicationRuns(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ApplicationRunListRequest{}, func(r *iapiserver.ApplicationRunListRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().ListApplicationRuns(ctx, r)
+	})
+}
+
+// GetApplicationRun 返回一个 AppRun 详情，包含 TaskRun 关联和运行快照。
+func (c *Controller) GetApplicationRun(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().GetApplicationRun(ctx, ctx.Param("run_id"))
+	})
+}
+
+// ListAppEngines 返回当前用户可见的应用引擎列表，包含明文认证配置。
+func (c *Controller) ListAppEngines(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AppEngineListRequest{}, func(r *iapiserver.AppEngineListRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().ListAppEngines(ctx, r)
+	})
+}
+
+// CheckAppEngineHealthByConfig 使用临时连接参数检测健康状态，不创建或更新 AppEngine。
+func (c *Controller) CheckAppEngineHealthByConfig(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AppEngineHealthCheckRequest{}, func(r *iapiserver.AppEngineHealthCheckRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().CheckAppEngineHealthByConfig(ctx, r)
+	})
+}
+
+// CreateAppEngine 创建用户级应用引擎；资源归属始终为当前用户。
+func (c *Controller) CreateAppEngine(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AppEngineCreateRequest{}, func(r *iapiserver.AppEngineCreateRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().CreateAppEngine(ctx, r)
+	})
+}
+
+// GetAppEngine 返回一个应用引擎详情，包含明文认证配置和健康状态。
+func (c *Controller) GetAppEngine(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().GetAppEngine(ctx, ctx.Param("app_engine_id"))
+	})
+}
+
+// UpdateAppEngine 更新应用引擎元数据、认证配置、状态和能力标签，不改变 owner_user_id。
+func (c *Controller) UpdateAppEngine(ctx *gin.Context) {
+	req := &iapiserver.AppEngineUpdateRequest{ID: ctx.Param("app_engine_id")}
+	core.Run(ctx, req, func(r *iapiserver.AppEngineUpdateRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().UpdateAppEngine(ctx, r)
+	})
+}
+
+// DeleteAppEngine 删除无 AppRun 引用的应用引擎；存在引用时返回业务错误。
+func (c *Controller) DeleteAppEngine(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().DeleteAppEngine(ctx, ctx.Param("app_engine_id"))
+	})
+}
+
+// CheckAppEngineHealth 触发一次应用引擎健康检测并返回写回后的引擎详情。
+func (c *Controller) CheckAppEngineHealth(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().CheckAppEngineHealth(ctx, ctx.Param("app_engine_id"))
+	})
+}
+
 // ListFieldMappings 返回应用当前字段映射列表。
 func (c *Controller) ListFieldMappings(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) {

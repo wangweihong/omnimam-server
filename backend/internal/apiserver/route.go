@@ -72,8 +72,26 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory)
 		applications.GET("/:application_id", controller.GetApplication)
 		applications.PATCH("/:application_id", controller.UpdateApplication)
 		applications.DELETE("/:application_id", controller.DeleteApplication)
+		applications.POST("/:application_id/runs", controller.CreateApplicationRun)
 		applications.GET("/:application_id/field-mappings", controller.ListFieldMappings)
 		applications.PUT("/:application_id/field-mappings", controller.SaveFieldMappings)
+	}
+
+	applicationRuns := rg.Group("/application-runs")
+	{
+		applicationRuns.GET("", controller.ListApplicationRuns)
+		applicationRuns.GET("/:run_id", controller.GetApplicationRun)
+	}
+
+	appEngines := rg.Group("/app-engines")
+	{
+		appEngines.GET("", controller.ListAppEngines)
+		appEngines.POST("", controller.CreateAppEngine)
+		appEngines.POST("/health-check", controller.CheckAppEngineHealthByConfig)
+		appEngines.GET("/:app_engine_id", controller.GetAppEngine)
+		appEngines.PATCH("/:app_engine_id", controller.UpdateAppEngine)
+		appEngines.DELETE("/:app_engine_id", controller.DeleteAppEngine)
+		appEngines.POST("/:app_engine_id/health-check", controller.CheckAppEngineHealth)
 	}
 }
 

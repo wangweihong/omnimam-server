@@ -1934,6 +1934,8 @@ func defaultPermissions() []string {
 		"feature.manage",
 		iapiserver.AIAppTemplateManageOwn,
 		iapiserver.AIAppApplicationManageOwn,
+		iapiserver.AIAppAppEngineManageOwn,
+		iapiserver.AIAppApplicationRunOwn,
 		iapiserver.AIAppAdminManageAll,
 		iapiserver.AIAppSuperAdminManageAll,
 	}

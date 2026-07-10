@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
@@ -14,6 +15,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
+)
+
+const (
+	applicationRunTaskDefinitionID = "application-platform.application-run"
+	applicationRunTaskFunctionRef  = "application-platform.run"
 )
 
 type ApplicationPlatformSrv interface {
@@ -28,16 +34,27 @@ type ApplicationPlatformSrv interface {
 	GetApplication(ctx context.Context, id string) (*iapiserver.Application, error)
 	UpdateApplication(ctx context.Context, req *iapiserver.ApplicationUpdateRequest) (*iapiserver.Application, error)
 	DeleteApplication(ctx context.Context, id string) (*iapiserver.SuccessResponse, error)
+	ListAppEngines(ctx context.Context, req *iapiserver.AppEngineListRequest) (*iapiserver.AppEngineListResponse, error)
+	CreateAppEngine(ctx context.Context, req *iapiserver.AppEngineCreateRequest) (*iapiserver.AppEngine, error)
+	GetAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error)
+	UpdateAppEngine(ctx context.Context, req *iapiserver.AppEngineUpdateRequest) (*iapiserver.AppEngine, error)
+	CheckAppEngineHealth(ctx context.Context, id string) (*iapiserver.AppEngine, error)
+	CheckAppEngineHealthByConfig(ctx context.Context, req *iapiserver.AppEngineHealthCheckRequest) (*iapiserver.AppEngineHealthCheckResult, error)
+	DeleteAppEngine(ctx context.Context, id string) (*iapiserver.SuccessResponse, error)
+	CreateApplicationRun(ctx context.Context, applicationID string, req *iapiserver.ApplicationRunCreateRequest) (*iapiserver.ApplicationRun, error)
+	ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) (*iapiserver.ApplicationRunListResponse, error)
+	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
 	ListFieldMappings(ctx context.Context, applicationID string) (*iapiserver.FieldMappingListResponse, error)
 	SaveFieldMappings(ctx context.Context, applicationID string, req *iapiserver.FieldMappingSaveRequest) (*iapiserver.FieldMappingListResponse, error)
 }
 
 type applicationPlatformService struct {
-	store store.Factory
+	store    store.Factory
+	checkers map[string]AppEngineHealthyChecker
 }
 
 func NewService(str store.Factory) *applicationPlatformService {
-	return &applicationPlatformService{store: str}
+	return &applicationPlatformService{store: str, checkers: defaultAppEngineCheckers()}
 }
 
 func (s *applicationPlatformService) ListTemplates(
@@ -69,14 +86,21 @@ func (s *applicationPlatformService) CreateTemplate(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateTemplateSaaSConfig(req); err != nil {
+		return nil, err
+	}
 	if err := s.ensureTemplateNameUnique(ctx, principal.userID, req.Name, ""); err != nil {
 		return nil, err
 	}
 	tpl := &iapiserver.AppTemplate{
-		OwnerUserID:  principal.userID,
-		Kind:         req.Kind,
-		Config:       req.Config,
-		ParsedFields: parsedFields,
+		OwnerUserID:       principal.userID,
+		Kind:              req.Kind,
+		SaaSPlatformType:  req.SaaSPlatformType,
+		CapabilityType:    req.CapabilityType,
+		OperationKey:      req.OperationKey,
+		OperationContract: req.OperationContract,
+		Config:            req.Config,
+		ParsedFields:      parsedFields,
 	}
 	tpl.Name = req.Name
 	tpl.Description = req.Description
@@ -195,9 +219,13 @@ func (s *applicationPlatformService) CreateApplication(
 		return nil, err
 	}
 	app := &iapiserver.Application{
-		OwnerUserID: principal.userID,
-		TemplateID:  tpl.ID,
-		Kind:        tpl.Kind,
+		OwnerUserID:      principal.userID,
+		TemplateID:       tpl.ID,
+		Kind:             tpl.Kind,
+		SaaSPlatformType: tpl.SaaSPlatformType,
+		CapabilityType:   tpl.CapabilityType,
+		OperationKey:     tpl.OperationKey,
+		FixedParameters:  req.FixedParameters,
 	}
 	app.Name = req.Name
 	app.Description = req.Description
@@ -245,6 +273,9 @@ func (s *applicationPlatformService) UpdateApplication(
 	if req.Description != nil {
 		app.Description = *req.Description
 	}
+	if req.FixedParameters != nil {
+		app.FixedParameters = *req.FixedParameters
+	}
 	app.FieldMappings = nil
 	updated, err := s.store.ApplicationPlatforms().UpdateApplication(ctx, app)
 	if err != nil {
@@ -261,6 +292,108 @@ func (s *applicationPlatformService) DeleteApplication(ctx context.Context, id s
 		return nil, err
 	}
 	return &iapiserver.SuccessResponse{Success: true}, nil
+}
+
+func (s *applicationPlatformService) CreateApplicationRun(
+	ctx context.Context,
+	applicationID string,
+	req *iapiserver.ApplicationRunCreateRequest,
+) (*iapiserver.ApplicationRun, error) {
+	principal, err := s.currentPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	app, err := s.GetApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	engine, err := s.GetAppEngine(ctx, req.AppEngineID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateApplicationRunEngine(app, engine); err != nil {
+		return nil, err
+	}
+	renderedPayload, err := renderApplicationPayload(app, req.Input)
+	if err != nil {
+		return nil, err
+	}
+	run := &iapiserver.ApplicationRun{
+		OwnerUserID:             principal.userID,
+		ApplicationID:           app.ID,
+		AppTemplateID:           app.TemplateID,
+		AppEngineID:             engine.ID,
+		Kind:                    app.Kind,
+		SaaSPlatformType:        app.SaaSPlatformType,
+		CapabilityType:          app.CapabilityType,
+		OperationKey:            app.OperationKey,
+		InputSnapshot:           copyMap(req.Input),
+		RenderedPayloadSnapshot: renderedPayload,
+		Status:                  iapiserver.AppRunStatusPending,
+	}
+	run.Name = app.Name + "-run"
+	definition := applicationRunTaskDefinition()
+	taskRun := &iapiserver.TaskRun{
+		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:   applicationRunTaskDefinitionID,
+		ScheduleAt:     req.ScheduleAt,
+		Input: map[string]any{
+			"application_id":     app.ID,
+			"app_template_id":    app.TemplateID,
+			"app_engine_id":      engine.ID,
+			"kind":               app.Kind,
+			"saas_platform_type": app.SaaSPlatformType,
+			"capability_type":    app.CapabilityType,
+			"operation_key":      app.OperationKey,
+			"rendered_payload":   renderedPayload,
+		},
+		ProjectID:   iapiserver.DefaultTaskCenterProjectID,
+		Namespace:   iapiserver.DefaultTaskCenterNamespace,
+		CreatedBy:   principal.userID,
+		MaxAttempts: 1,
+	}
+	if !req.ScheduleAt.IsZero() && req.ScheduleAt.Time.After(time.Now()) {
+		taskRun.Status = iapiserver.TaskRunStatusPending
+	} else {
+		taskRun.Status = iapiserver.TaskRunStatusReady
+	}
+	created, err := s.store.ApplicationPlatforms().CreateApplicationRun(ctx, run, definition, taskRun)
+	if err != nil {
+		return nil, errors.NewStatusF(code.ErrApplicationRunCreateFailed, "application run create failed")
+	}
+	return created, nil
+}
+
+func (s *applicationPlatformService) ListApplicationRuns(
+	ctx context.Context,
+	req *iapiserver.ApplicationRunListRequest,
+) (*iapiserver.ApplicationRunListResponse, error) {
+	principal, err := s.currentPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.OwnerUserID = principal.userID
+	req.IncludeAll = principal.admin
+	items, total, err := s.store.ApplicationPlatforms().ListApplicationRuns(ctx, req)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &iapiserver.ApplicationRunListResponse{Total: total, Items: items}, nil
+}
+
+func (s *applicationPlatformService) GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error) {
+	principal, err := s.currentPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	run, err := s.store.ApplicationPlatforms().GetApplicationRun(ctx, id)
+	if err != nil {
+		return nil, errors.NewStatusF(code.ErrApplicationRunNotVisible, "application run not found or not visible")
+	}
+	if !principal.canAccess(run.OwnerUserID) {
+		return nil, errors.NewStatusF(code.ErrApplicationRunNotVisible, "application run not found or not visible")
+	}
+	return run, nil
 }
 
 func (s *applicationPlatformService) ListFieldMappings(
@@ -310,6 +443,106 @@ func (s *applicationPlatformService) ensureTemplateNameUnique(
 		return errors.NewStatusF(code.ErrTemplateNameDuplicated, "template name %s already exists", name)
 	}
 	return nil
+}
+
+func validateTemplateSaaSConfig(req *iapiserver.AppTemplateCreateRequest) error {
+	if req.Kind != iapiserver.AppTemplateKindSaaSAPI {
+		return nil
+	}
+	if !validSaaSPlatformType(req.SaaSPlatformType) ||
+		!validCapabilityType(req.CapabilityType) ||
+		strings.TrimSpace(req.OperationKey) == "" {
+		return errors.NewStatusF(code.ErrTemplateParseFailed, "saas platform configuration is incomplete")
+	}
+	return nil
+}
+
+func validSaaSPlatformType(value string) bool {
+	switch value {
+	case iapiserver.SaaSPlatformModelScope, iapiserver.SaaSPlatformCustomHTTP:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCapabilityType(value string) bool {
+	switch value {
+	case iapiserver.CapabilityImageGeneration,
+		iapiserver.CapabilityImageEditing,
+		iapiserver.CapabilityVideoGeneration:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateApplicationRunEngine(app *iapiserver.Application, engine *iapiserver.AppEngine) error {
+	if app.Kind != engine.EngineType {
+		return errors.NewStatusF(code.ErrAppEngineTypeMismatched, "app engine type does not match application kind")
+	}
+	if engine.Status != iapiserver.AppEngineStatusActive ||
+		engine.HealthStatus != iapiserver.AppEngineHealthHealthy {
+		return errors.NewStatusF(code.ErrAppEngineUnhealthy, "app engine is not available")
+	}
+	if app.Kind == iapiserver.AppTemplateKindSaaSAPI {
+		if app.SaaSPlatformType != engine.SaaSPlatformType {
+			return errors.NewStatusF(code.ErrSaaSPlatformMismatched, "saas platform type does not match")
+		}
+		if !containsString(engine.SupportedCapabilityTypes, app.CapabilityType) {
+			return errors.NewStatusF(code.ErrAppEngineCapabilityUnsupported, "app engine capability unsupported")
+		}
+	}
+	return nil
+}
+
+func renderApplicationPayload(app *iapiserver.Application, input map[string]any) (map[string]any, error) {
+	payload := copyMap(app.FixedParameters)
+	for _, mapping := range app.FieldMappings {
+		value, ok := input[mapping.FieldKey]
+		if !ok || value == nil {
+			value = mapping.DefaultValue
+		}
+		if mapping.Required && value == nil {
+			return nil, errors.NewStatusF(code.ErrFieldMappingIncomplete, "field %s is required", mapping.FieldKey)
+		}
+		if value != nil {
+			payload[mapping.SourcePath] = value
+		}
+	}
+	return payload, nil
+}
+
+func applicationRunTaskDefinition() *iapiserver.TaskDefinition {
+	definition := &iapiserver.TaskDefinition{
+		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
+		FunctionRef:          applicationRunTaskFunctionRef,
+		RequiredCapabilities: "application-platform",
+		ProjectID:            iapiserver.DefaultTaskCenterProjectID,
+		Namespace:            iapiserver.DefaultTaskCenterNamespace,
+		CreatedBy:            iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	definition.ID = applicationRunTaskDefinitionID
+	definition.Name = "Application Platform Run"
+	definition.Description = "Application Platform delegated AppRun execution"
+	return definition
+}
+
+func copyMap(src map[string]any) map[string]any {
+	ret := make(map[string]any, len(src))
+	for key, value := range src {
+		ret[key] = value
+	}
+	return ret
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 type principal struct {
@@ -378,10 +611,10 @@ func parseTemplateFields(kind string, config map[string]any) ([]iapiserver.Parse
 			root = map[string]any(config)
 		}
 	case iapiserver.AppTemplateKindSaaSAPI:
-		var ok bool
-		root, ok = config["requestTemplate"]
-		if !ok || root == nil {
-			return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "saas api requestTemplate is required")
+		if requestTemplate, ok := config["requestTemplate"]; ok {
+			root = requestTemplate
+		} else {
+			root = map[string]any(config)
 		}
 	default:
 		return nil, errors.NewStatusF(code.ErrTemplateParseFailed, "template kind is unsupported")

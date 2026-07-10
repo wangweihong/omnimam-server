@@ -375,9 +375,69 @@ const (
 	ErrFieldTypeInvalid int = 130303
 
 	// @HTTP 200
+	// @CN 应用运行创建失败。
+	// @EN Application run creation failed.
+	ErrApplicationRunCreateFailed int = 130400
+
+	// @HTTP 200
+	// @CN 应用运行不存在或当前用户不可见。
+	// @EN Application run does not exist or is not visible to current user.
+	ErrApplicationRunNotVisible int = 130401
+
+	// @HTTP 200
+	// @CN 应用存在运行引用，禁止物理删除。
+	// @EN Application has application run references and cannot be physically deleted.
+	ErrApplicationReferenceBlocked int = 130402
+
+	// @HTTP 200
 	// @CN 当前用户缺少操作权限。
 	// @EN Current user does not have permission.
 	ErrAIAppPermissionDenied int = 130500
+
+	// @HTTP 200
+	// @CN 应用引擎不存在或当前用户不可见。
+	// @EN AppEngine does not exist or is not visible to current user.
+	ErrAppEngineNotVisible int = 130600
+
+	// @HTTP 200
+	// @CN 同一用户下应用引擎名称重复。
+	// @EN AppEngine name is duplicated for the same owner.
+	ErrAppEngineNameDuplicated int = 130601
+
+	// @HTTP 200
+	// @CN 应用引擎认证配置不完整或不匹配认证方式。
+	// @EN AppEngine auth config is incomplete or mismatched with auth type.
+	ErrAppEngineAuthConfigInvalid int = 130602
+
+	// @HTTP 200
+	// @CN 应用引擎健康检查失败或不可用。
+	// @EN AppEngine health check failed or is unavailable.
+	ErrAppEngineUnhealthy int = 130603
+
+	// @HTTP 200
+	// @CN 应用引擎类型与应用类型不匹配。
+	// @EN AppEngine type does not match application type.
+	ErrAppEngineTypeMismatched int = 130604
+
+	// @HTTP 200
+	// @CN SaaS Application 与 AppEngine 的第三方平台类型不一致。
+	// @EN SaaS platform type of the Application and AppEngine does not match.
+	ErrSaaSPlatformMismatched int = 130605
+
+	// @HTTP 200
+	// @CN AppEngine 不支持 Application 所需能力类型。
+	// @EN AppEngine does not support the capability type required by the Application.
+	ErrAppEngineCapabilityUnsupported int = 130606
+
+	// @HTTP 200
+	// @CN 应用引擎存在运行引用，禁止物理删除。
+	// @EN AppEngine has application run references and cannot be physically deleted.
+	ErrAppEngineReferenceBlocked int = 130607
+
+	// @HTTP 200
+	// @CN 应用引擎健康检测配置缺失或非法。
+	// @EN AppEngine health check configuration is missing or invalid.
+	ErrAppEngineHealthCheckConfigInvalid int = 130608
 )
 
 // task-center: SSOT scoped business errors.

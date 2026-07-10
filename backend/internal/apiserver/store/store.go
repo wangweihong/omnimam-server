@@ -323,6 +323,21 @@ type ApplicationPlatformStore interface {
 	) (*iapiserver.Application, error)
 	UpdateApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
 	DeleteApplication(ctx context.Context, id string) error
+	ListAppEngines(ctx context.Context, req *iapiserver.AppEngineListRequest) ([]*iapiserver.AppEngine, int64, error)
+	GetAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error)
+	GetAppEngineByOwnerName(ctx context.Context, ownerUserID, name string) (*iapiserver.AppEngine, error)
+	AddAppEngine(ctx context.Context, data *iapiserver.AppEngine) (*iapiserver.AppEngine, error)
+	UpdateAppEngine(ctx context.Context, data *iapiserver.AppEngine) (*iapiserver.AppEngine, error)
+	DeleteAppEngine(ctx context.Context, id string) error
+	ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) ([]*iapiserver.ApplicationRun, int64, error)
+	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
+	CreateApplicationRun(
+		ctx context.Context,
+		data *iapiserver.ApplicationRun,
+		definition *iapiserver.TaskDefinition,
+		taskRun *iapiserver.TaskRun,
+	) (*iapiserver.ApplicationRun, error)
+	UpdateApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
 	ListFieldMappings(ctx context.Context, applicationID string) ([]*iapiserver.FieldMapping, error)
 	ReplaceFieldMappings(
 		ctx context.Context,

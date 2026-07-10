@@ -23,6 +23,15 @@ ON task_execution_leases(run_id)
 WHERE status IN ('ACTIVE', 'RENEWED')
 `
 
+const applicationPlatformOwnerNameIndexesSQL = `
+DROP INDEX IF EXISTS idx_aiapp_app_templates_owner_name;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_app_templates_owner_name
+ON aiapp_app_templates(owner_user_id, name);
+DROP INDEX IF EXISTS idx_aiapp_app_engines_owner_name;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_app_engines_owner_name
+ON aiapp_app_engines(owner_user_id, name);
+`
+
 // GetPostgresSQLFactoryOr create postgresql factory with the given config.
 func GetPostgresSQLFactoryOr(opts *genericoptions.PostgresSQLOptions) (store.Factory, error) {
 	if opts == nil && postgresqlFactory == nil {
@@ -68,11 +77,18 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureTaskCenterScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureApplicationPlatformScheme(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (ds *datastore) ensureTaskCenterScheme() error {
 	return ds.db.Exec(taskCenterActiveLeaseIndexSQL).Error
+}
+
+func (ds *datastore) ensureApplicationPlatformScheme() error {
+	return ds.db.Exec(applicationPlatformOwnerNameIndexesSQL).Error
 }
 
 func (ds *datastore) Users() store.UserStore {

@@ -17,7 +17,6 @@ require (
 	github.com/gosuri/uitable v0.0.4
 	github.com/mattermost/xml-roundtrip-validator v0.1.0
 	github.com/mattn/go-isatty v0.0.21
-	github.com/mcuadros/go-defaults v1.2.0
 	github.com/pquerna/otp v1.5.0
 	github.com/russellhaering/goxmldsig v1.4.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -38,9 +37,9 @@ require (
 	k8s.io/gengo v0.0.0-20240404160639-a0386bf69313
 	k8s.io/klog/v2 v2.130.1
 )
-replace (
-	github.com/wangweihong/gotoolbox => ./third_party/gotoolbox
-)
+
+replace github.com/wangweihong/gotoolbox => ./third_party/gotoolbox
+
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
