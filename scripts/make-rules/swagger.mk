@@ -2,8 +2,16 @@
 # Makefile helper functions for swagger
 #
 
+.PHONY: swagger.application-platform.sync
+swagger.application-platform.sync:
+	@cp $(ROOT_DIR)/ssot/01_contracts/domains/application-platform/openapi.yaml $(ROOT_DIR)/api/swagger/application-platform.yaml
+
+.PHONY: swagger.application-platform.verify
+swagger.application-platform.verify:
+	@cmp $(ROOT_DIR)/ssot/01_contracts/domains/application-platform/openapi.yaml $(ROOT_DIR)/api/swagger/application-platform.yaml
+
 .PHONY: swagger.run
-swagger.run: tools.verify.swagger
+swagger.run: tools.verify.swagger swagger.application-platform.sync
 	@echo "===========> Generating swagger API docs"
 	#@swagger generate spec --scan-models -w $(ROOT_DIR)/cmd/genswaggertypedocs -o $(ROOT_DIR)/api/swagger/swagger.yaml
 	#@swag init --parseDependency --generalInfo ./cmd/gin-swagger-example/example.go --output ./api/swagger/example

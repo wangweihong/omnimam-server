@@ -78,20 +78,49 @@
 | ErrDefaultModelInvalid | 120601 | 200 | Default model candidate is not available. | 默认模型候选不可用。 |
 | ErrModelHealthCheckFailed | 120800 | 200 | Model health check failed. | 模型健康检测失败。 |
 | ErrModelAccessDenied | 121000 | 200 | Current user is not allowed to access this model configuration. | 当前用户无权访问该模型配置。 |
-| ErrTemplateParseFailed | 130200 | 200 | Template parsing failed and the template cannot be created. | 模板解析失败，无法创建模板。 |
-| ErrTemplateReferenceBlocked | 130201 | 200 | Template has references and cannot be deleted. | 模板存在引用，禁止删除。 |
-| ErrTemplateNameDuplicated | 130203 | 200 | Template name is duplicated for the same owner. | 同一用户下模板名称重复。 |
-| ErrTemplateContentImmutable | 130204 | 200 | Template kind, content, and parsed fields are immutable after creation. | 模板类型、内容或解析变量创建后不可修改。 |
-| ErrMappingPathInvalid | 130300 | 200 | Field mapping source path is not present in parsed template fields. | 字段映射路径不在模板解析变量中。 |
-| ErrFieldKeyDuplicated | 130301 | 200 | Field key is duplicated in the same application. | 同一应用内字段标识重复。 |
-| ErrFieldMappingIncomplete | 130302 | 200 | Application field mappings are incomplete. | 应用字段映射不完整。 |
-| ErrFieldTypeInvalid | 130303 | 200 | Field type is not derived from parsed template fields. | 字段类型不来自模板解析变量。 |
-| ErrAIAppPermissionDenied | 130500 | 200 | Current user does not have permission. | 当前用户缺少操作权限。 |
+| ErrAIAppProviderCapabilityDirectoryUnreadable | 130220 | 200 | The ProviderCapability directory is missing or unreadable; the registry is degraded. | ProviderCapability 目录不存在或不可读取，能力注册表已降级。 |
+| ErrAIAppProviderCapabilityYAMLInvalid | 130221 | 200 | The ProviderCapability file is not valid YAML. | ProviderCapability 文件不是合法 YAML。 |
+| ErrAIAppProviderCapabilitySchemaInvalid | 130222 | 200 | ProviderCapability fields do not conform to the current schema. | ProviderCapability 字段不符合当前 Schema。 |
+| ErrAIAppProviderCapabilitySchemaVersionUnsupported | 130223 | 200 | The ProviderCapability schema_version is not supported. | ProviderCapability schema_version 不受支持。 |
+| ErrAIAppProviderCapabilityIDDuplicated | 130224 | 200 | Multiple ProviderCapability files declare the same ID; all conflicting entries are unavailable. | 多个 ProviderCapability 文件声明了相同 ID，所有冲突项均不可用。 |
+| ErrAIAppProviderCapabilityEngineTypeMissing | 130225 | 200 | The ApplicationEngineType referenced by ProviderCapability is not registered. | ProviderCapability 引用的 ApplicationEngineType 未注册。 |
+| ErrAIAppProviderCapabilityAdapterMissing | 130226 | 200 | The EngineAdapter required by ProviderCapability is not registered. | ProviderCapability 对应的 EngineAdapter 未注册。 |
+| ErrAIAppProviderCapabilityExecutorMissing | 130227 | 200 | At least one ProviderCapability operation has no registered OperationExecutor. | ProviderCapability 中至少一个 Operation 缺少 OperationExecutor。 |
+| ErrAIAppProviderCapabilityVariantInvalid | 130228 | 200 | ProviderCapability models, operations, variants, or parameter constraints are inconsistent. | ProviderCapability 的模型、Operation、Variant 或参数约束不一致。 |
+| ErrAIAppProviderCapabilityUnavailable | 130229 | 200 | The ProviderCapability is currently unavailable or disabled. | ProviderCapability 当前不可用或已禁用。 |
+| ErrAIAppProviderCapabilityNotFound | 130230 | 200 | The ProviderCapability does not exist. | ProviderCapability 不存在。 |
+| ErrAIAppEngineInstanceNotFound | 130420 | 200 | The ApplicationEngineInstance does not exist. | ApplicationEngineInstance 不存在。 |
+| ErrAIAppEngineAuthConfigInvalid | 130421 | 200 | The EngineInstance authentication configuration does not satisfy its EngineType. | EngineInstance 的鉴权配置不符合 EngineType 要求。 |
+| ErrAIAppEngineBindingIncompatible | 130422 | 200 | The EngineCapabilityBinding is incompatible with its EngineType or ProviderCapability. | EngineCapabilityBinding 与 EngineType 或 ProviderCapability 不兼容。 |
+| ErrAIAppEngineBindingRestrictionExpands | 130423 | 200 | EngineCapabilityBinding restrictions expand ProviderCapability capabilities. | EngineCapabilityBinding restrictions 扩张了 ProviderCapability 能力。 |
+| ErrAIAppEngineUnavailable | 130424 | 200 | No enabled and healthy EngineInstance is currently available. | 当前没有可用且健康的 EngineInstance。 |
+| ErrAIAppEngineReferenceBlocked | 130425 | 200 | The EngineInstance has historical ApplicationRun references and cannot be deleted. | EngineInstance 存在历史 ApplicationRun 引用，禁止删除。 |
+| ErrAIAppEngineBindingNotFound | 130426 | 200 | The EngineCapabilityBinding does not exist. | EngineCapabilityBinding 不存在。 |
+| ErrAIAppTemplateSourceInvalid | 130620 | 200 | The ApplicationTemplate union capability source is invalid. | ApplicationTemplate 的联合能力来源不合法。 |
+| ErrAIAppApplicationVersionImmutable | 130621 | 200 | A published ApplicationTemplateVersion or ApplicationVersion is immutable. | 已发布的 ApplicationTemplateVersion 或 ApplicationVersion 不可原地修改。 |
+| ErrAIAppRuntimeFormNoValidVariant | 130622 | 200 | No executable CapabilityVariant exists under the current constraints. | 当前约束下没有可执行的 CapabilityVariant。 |
+| ErrAIAppApplicationInputInvalid | 130623 | 200 | ApplicationRun input does not conform to RuntimeFormSchema. | ApplicationRun 输入不符合 RuntimeFormSchema。 |
+| ErrAIAppTemplateNotFound | 130624 | 200 | The ApplicationTemplate does not exist or is not visible. | ApplicationTemplate 不存在或不可见。 |
+| ErrAIAppTemplateVersionNotFound | 130625 | 200 | The ApplicationTemplateVersion does not exist. | ApplicationTemplateVersion 不存在。 |
+| ErrAIAppApplicationNotFound | 130626 | 200 | The Application does not exist or is not visible. | Application 不存在或不可见。 |
+| ErrAIAppApplicationVersionNotFound | 130627 | 200 | The ApplicationVersion does not exist. | ApplicationVersion 不存在。 |
+| ErrAIAppTemplateVersionNotPublishable | 130628 | 200 | The ApplicationTemplateVersion failed publish validation. | ApplicationTemplateVersion 未通过发布校验。 |
+| ErrAIAppApplicationVersionNotPublishable | 130629 | 200 | The ApplicationVersion failed publish validation. | ApplicationVersion 未通过发布校验。 |
+| ErrAIAppApplicationSemanticVersionDuplicated | 130630 | 200 | The Application already has the same semantic version. | 同一 Application 已存在相同语义版本。 |
+| ErrAIAppResourceVersionConflict | 130631 | 200 | The resource version changed; refresh and retry. | 资源版本已变化，请刷新后重试。 |
+| ErrAIAppApplicationRunCreateFailed | 130820 | 200 | The ApplicationRun could not be created. | ApplicationRun 创建失败。 |
+| ErrAIAppTaskProjectionStale | 130821 | 200 | The TaskRun status projection version is stale. | TaskRun 状态投影版本过旧。 |
+| ErrAIAppProviderRuntimeCapabilityMismatch | 130822 | 200 | The provider rejected a capability combination declared by ProviderCapability. | 外部平台拒绝了当前 ProviderCapability 声明的能力组合。 |
+| ErrAIAppTaskRunCreateFailed | 130823 | 200 | TaskRun creation failed; the ApplicationRun snapshot was retained. | TaskRun 创建失败，ApplicationRun 快照已保留。 |
+| ErrAIAppArtifactRegistrationFailed | 130824 | 200 | Artifact registration as a UserAsset failed. | Artifact 登记 UserAsset 失败。 |
+| ErrAIAppApplicationRunNotFound | 130825 | 200 | The ApplicationRun does not exist or is not visible to the current user. | ApplicationRun 不存在或当前用户不可见。 |
+| ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
 | ErrTaskDAGCycleDetected | 140201 | 200 | DAGFlowTask contains a cyclic dependency. | DAGFlowTask 存在环形依赖。 |
 | ErrTaskRunNotFound | 140400 | 200 | Task run does not exist or is not visible to the current user. | 任务运行不存在或当前用户不可见。 |
 | ErrTaskRunStateBlocked | 140401 | 200 | Current task run status does not allow this operation. | 任务当前状态不允许执行该操作。 |
 | ErrTaskRetryPolicyInvalid | 140402 | 200 | Task retry policy is invalid. | 任务重试策略不合法。 |
+| ErrTaskRunIdempotencyConflict | 140403 | 200 | The same application run and idempotency key were used with a different task run creation request. | 相同应用运行和幂等键已用于不同的任务运行创建请求。 |
 | ErrTaskWorkerNotAvailable | 140600 | 200 | Worker does not exist, is unavailable, or capability does not match. | Worker 不存在、不可用或能力不匹配。 |
 | ErrTaskLeaseInvalid | 140800 | 200 | ExecutionLease is invalid, expired, or does not belong to current worker. | ExecutionLease 无效、已过期或不属于当前 Worker。 |
 | ErrTaskAttemptUpdateRejected | 141000 | 200 | Current task attempt is not allowed to update task result. | 当前执行尝试不允许更新任务结果。 |

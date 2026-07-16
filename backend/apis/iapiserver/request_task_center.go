@@ -3,6 +3,8 @@ package iapiserver
 import (
 	"strings"
 
+	"github.com/wangweihong/gotoolbox/pkg/errors"
+
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
@@ -126,6 +128,10 @@ type (
 		DefinitionType string `json:"definition_type" binding:"required,oneof=ATOMIC TASK_GROUP DAG_FLOW"`
 		// DefinitionID 指定要运行的任务定义 ID。
 		DefinitionID string `json:"definition_id"   binding:"required"`
+		// ApplicationRunID 关联 application-platform 的运行快照；应用任务必须与幂等键同时提供。
+		ApplicationRunID string `json:"application_run_id"`
+		// IdempotencyKey 与 ApplicationRunID 组成应用任务创建幂等键；非应用任务必须为空。
+		IdempotencyKey string `json:"idempotency_key"`
 		// ParentRunID 指定父运行实例，通常由编排展开逻辑填充。
 		ParentRunID string `json:"parent_run_id"`
 		// RootRunID 指定根运行实例，空值时服务层会使用自身。
@@ -320,6 +326,14 @@ type (
 		Success bool `json:"success"`
 	}
 )
+
+// Validate 校验 ApplicationRun 关联和幂等键必须同时出现或同时为空。
+func (r *TaskRunCreateRequest) Validate() error {
+	if (r.ApplicationRunID == "") != (r.IdempotencyKey == "") {
+		return errors.New("application_run_id and idempotency_key must be provided together")
+	}
+	return nil
+}
 
 func (r *TaskDefinitionListRequest) PostBind() error {
 	r.DefinitionType = strings.ToUpper(strings.TrimSpace(r.DefinitionType))

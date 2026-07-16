@@ -1,0 +1,70 @@
+schema_version: "1.0"
+description: >-
+  Application Platform 只读 Runtime Registry 契约。该文件登记内置能力定义、
+  EngineType、Adapter、OperationExecutor 和鉴权结构，不是运行时配置，也不提供写 API。
+x-s1-refs:
+  user_stories: [US-AIAPP-039, US-AIAPP-041, US-AIAPP-042]
+  business_rules: [BR-AIAPP-140, BR-AIAPP-144, BR-AIAPP-151]
+
+capability_definitions:
+  - {id: video.text_to_video, name: 文生视频, input_media_types: [text], output_media_types: [video]}
+  - {id: video.image_to_video, name: 图生视频, input_media_types: [text, image], output_media_types: [video]}
+  - {id: video.video_edit, name: 视频编辑, input_media_types: [text, image, video, audio], output_media_types: [video]}
+  - {id: image.text_to_image, name: 文生图, input_media_types: [text], output_media_types: [image]}
+  - {id: image.edit, name: 图像编辑, input_media_types: [text, image], output_media_types: [image]}
+  - {id: image.upscale, name: 图像放大, input_media_types: [image], output_media_types: [image]}
+  - {id: text.chat_completion, name: 对话补全, input_media_types: [text, json], output_media_types: [text, json]}
+
+engine_adapters:
+  - id: comfyui
+    responsibilities: [authentication, base_url, upload, health_check, common_error_mapping]
+  - id: byteplus_modelark
+    responsibilities: [authentication, base_url, upload, health_check, common_error_mapping]
+  - id: deepseek_official
+    responsibilities: [authentication, base_url, health_check, common_error_mapping]
+
+operation_executors:
+  - {id: comfyui_workflow, engine_adapter_id: comfyui, capability_definition_ids: [video.text_to_video, video.image_to_video, video.video_edit, image.text_to_image, image.edit, image.upscale]}
+  - {id: byteplus_text_to_video, engine_adapter_id: byteplus_modelark, capability_definition_ids: [video.text_to_video]}
+  - {id: byteplus_image_to_video, engine_adapter_id: byteplus_modelark, capability_definition_ids: [video.image_to_video]}
+  - {id: byteplus_reference_to_video, engine_adapter_id: byteplus_modelark, capability_definition_ids: [video.video_edit]}
+  - {id: deepseek_chat_completions, engine_adapter_id: deepseek_official, capability_definition_ids: [text.chat_completion]}
+
+application_engine_types:
+  - id: comfyui
+    name: ComfyUI
+    enabled: true
+    engine_adapter_id: comfyui
+    authentication_types: [none, api_key, bearer_token]
+    authentication_config_schema:
+      none: {required: []}
+      api_key: {required: [api_key]}
+      bearer_token: {required: [bearer_token]}
+    operation_executors:
+      video.text_to_video: comfyui_workflow
+      video.image_to_video: comfyui_workflow
+      video.video_edit: comfyui_workflow
+      image.text_to_image: comfyui_workflow
+      image.edit: comfyui_workflow
+      image.upscale: comfyui_workflow
+  - id: byteplus_modelark
+    name: BytePlus ModelArk
+    enabled: true
+    engine_adapter_id: byteplus_modelark
+    authentication_types: [api_key, ak_sk]
+    authentication_config_schema:
+      api_key: {required: [api_key]}
+      ak_sk: {required: [access_key, secret_key]}
+    operation_executors:
+      video.text_to_video: byteplus_text_to_video
+      video.image_to_video: byteplus_image_to_video
+      video.video_edit: byteplus_reference_to_video
+  - id: deepseek_official
+    name: DeepSeek Official API
+    enabled: true
+    engine_adapter_id: deepseek_official
+    authentication_types: [api_key]
+    authentication_config_schema:
+      api_key: {required: [api_key]}
+    operation_executors:
+      text.chat_completion: deepseek_chat_completions

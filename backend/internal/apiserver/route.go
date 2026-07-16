@@ -13,15 +13,16 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
+	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine) {
+func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv) {
 	InstallMiddleware(g)
-	InstallApis(g)
+	InstallApis(g, applicationPlatform)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -30,7 +31,7 @@ func InstallMiddleware(g *gin.Engine) {
 	g.Use(genericmiddleware.LoggerMiddleware())
 }
 
-func InstallApis(g *gin.Engine) *gin.Engine {
+func InstallApis(g *gin.Engine, applicationPlatform ...appplatformsvc.ApplicationPlatformSrv) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errors.NewStatusF(code.ErrPageNotFound, "Page not found."), nil)
 	})
@@ -46,32 +47,53 @@ func InstallApis(g *gin.Engine) *gin.Engine {
 			installCanvasApis(v1, storeIns)
 			installTaskCenterApis(v1, storeIns)
 			installAIChatApis(v1, storeIns)
-			installApplicationPlatformApis(v1, storeIns)
+			if len(applicationPlatform) > 0 && applicationPlatform[0] != nil {
+				installApplicationPlatformApis(v1, applicationPlatform[0])
+			}
 		}
 	}
 
 	return g
 }
 
-func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	controller := aiappctrl.NewController(storeIns)
-	providerAdapters := rg.Group("/provider-adapters")
+func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.ApplicationPlatformSrv) {
+	controller := aiappctrl.NewController(service)
+	providerCapabilities := rg.Group("/provider-capabilities")
 	{
-		providerAdapters.GET("", controller.ListProviderAdapters)
-		providerAdapters.GET("/:adapter_key/operations", controller.ListProviderOperations)
+		providerCapabilities.GET("", controller.ListProviderCapabilities)
+		providerCapabilities.GET("/:provider_capability_id", controller.GetProviderCapability)
+	}
+	rg.GET("/provider-capability-load-results", controller.ListProviderCapabilityLoadResults)
+	rg.GET("/application-engine-types", controller.ListApplicationEngineTypes)
+
+	engines := rg.Group("/engine-instances")
+	{
+		engines.GET("", controller.ListEngineInstances)
+		engines.POST("", controller.CreateEngineInstance)
+		engines.GET("/:engine_instance_id", controller.GetEngineInstance)
+		engines.PATCH("/:engine_instance_id", controller.UpdateEngineInstance)
+		engines.DELETE("/:engine_instance_id", controller.DeleteEngineInstance)
+		engines.POST("/:engine_instance_id/health-check", controller.CheckEngineInstanceHealth)
 	}
 
-	templates := rg.Group("/app-templates")
+	bindings := rg.Group("/engine-capability-bindings")
+	{
+		bindings.GET("", controller.ListEngineBindings)
+		bindings.POST("", controller.CreateEngineBinding)
+		bindings.PATCH("/:binding_id", controller.UpdateEngineBinding)
+		bindings.DELETE("/:binding_id", controller.DeleteEngineBinding)
+	}
+
+	templates := rg.Group("/application-templates")
 	{
 		templates.GET("", controller.ListTemplates)
 		templates.POST("", controller.CreateTemplate)
-		templates.GET("/:template_id", controller.GetTemplate)
-		templates.PATCH("/:template_id", controller.UpdateTemplate)
-		templates.DELETE("/:template_id", controller.DeleteTemplate)
-		templates.GET("/:template_id/capability-graph", controller.GetTemplateCapabilityGraph)
-		templates.GET("/:template_id/references", controller.ListTemplateReferences)
-		templates.POST("/:template_id/convert-to-application", controller.ConvertTemplateToApplication)
+		templates.GET("/:application_template_id", controller.GetTemplate)
+		templates.GET("/:application_template_id/versions", controller.ListTemplateVersions)
+		templates.POST("/:application_template_id/versions", controller.CreateTemplateVersion)
 	}
+	rg.GET("/application-template-versions/:application_template_version_id", controller.GetTemplateVersion)
+	rg.POST("/application-template-versions/:application_template_version_id/publish", controller.PublishTemplateVersion)
 
 	applications := rg.Group("/applications")
 	{
@@ -79,31 +101,17 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory)
 		applications.POST("", controller.CreateApplication)
 		applications.GET("/:application_id", controller.GetApplication)
 		applications.PATCH("/:application_id", controller.UpdateApplication)
-		applications.DELETE("/:application_id", controller.DeleteApplication)
-		applications.GET("/:application_id/input-mappings", controller.ListInputMappings)
-		applications.PUT("/:application_id/input-mappings", controller.SaveInputMappings)
-		applications.GET("/:application_id/output-mappings", controller.ListOutputMappings)
-		applications.PUT("/:application_id/output-mappings", controller.SaveOutputMappings)
-		applications.GET("/:application_id/available-engines", controller.ListAvailableAppEngines)
+		applications.GET("/:application_id/versions", controller.ListApplicationVersions)
+		applications.POST("/:application_id/versions", controller.CreateApplicationVersion)
+		applications.POST("/:application_id/runtime-form", controller.ResolveRuntimeForm)
 		applications.POST("/:application_id/runs", controller.CreateApplicationRun)
-		applications.POST("/:application_id/test-runs", controller.CreateApplicationTestRun)
 	}
+	rg.GET("/application-versions/:application_version_id", controller.GetApplicationVersion)
+	rg.POST("/application-versions/:application_version_id/publish", controller.PublishApplicationVersion)
 
 	applicationRuns := rg.Group("/application-runs")
 	{
-		applicationRuns.GET("", controller.ListApplicationRuns)
-		applicationRuns.GET("/:run_id", controller.GetApplicationRun)
-	}
-
-	appEngines := rg.Group("/app-engines")
-	{
-		appEngines.GET("", controller.ListAppEngines)
-		appEngines.POST("", controller.CreateAppEngine)
-		appEngines.POST("/health-check", controller.CheckAppEngineHealthByConfig)
-		appEngines.GET("/:app_engine_id", controller.GetAppEngine)
-		appEngines.PATCH("/:app_engine_id", controller.UpdateAppEngine)
-		appEngines.DELETE("/:app_engine_id", controller.DeleteAppEngine)
-		appEngines.POST("/:app_engine_id/health-check", controller.CheckAppEngineHealth)
+		applicationRuns.GET("/:application_run_id", controller.GetApplicationRun)
 	}
 }
 

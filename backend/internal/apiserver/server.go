@@ -9,12 +9,15 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/shutdown/managers/posixsignal"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
+	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskexecutor"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
 )
@@ -23,8 +26,10 @@ type server struct {
 	// api服务,提供http和tls
 	httpServer *httpsvr.GenericHTTPServer
 	// 控制服务关闭时处理动作, 如捕捉到信号后如何处理
-	gracefulShutdown *shutdown.GracefulShutdown
-	assetUpload      *options.AssetUploadOptions
+	gracefulShutdown    *shutdown.GracefulShutdown
+	assetUpload         *options.AssetUploadOptions
+	applicationPlatform appsvc.ApplicationPlatformSrv
+	dispatcher          *taskexecutor.Dispatcher
 }
 
 // preparedServer is a private wrapper that enforces a call of PrepareRun() before Run can be invoked.
@@ -73,11 +78,39 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := extraConfig.Complete().New(); err != nil {
 		return nil, err
 	}
+	storeIns := store.Client()
+	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	if err != nil {
+		return nil, errors.Wrap(err, "load application platform runtime registry")
+	}
+	capabilityRegistry, err := appregistry.LoadProviderCapabilityRegistry(cfg.ApplicationPlatformOptions.ProviderCapabilityDirectory, runtimeRegistry)
+	if err != nil {
+		return nil, errors.Wrap(err, "load application platform provider capabilities")
+	}
+	adapters := appsvc.NewEngineAdapters()
+	executors := appsvc.NewOperationExecutors()
+	assets := appsvc.NoopAssetRegistrar{}
+	events := appsvc.NoopEventPublisher{}
+	dispatcher := taskexecutor.NewDispatcher(storeIns)
+	applicationExecutor, err := appsvc.NewApplicationRunExecutor(storeIns, runtimeRegistry, capabilityRegistry, adapters, executors, assets, events)
+	if err != nil {
+		return nil, errors.Wrap(err, "construct application platform task executor")
+	}
+	dispatcher.RegisterCapability("application-platform.run", "application-platform", applicationExecutor)
+	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
+		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
+		Adapters: adapters, Executors: executors, Dispatcher: dispatcher, Assets: assets, Events: events,
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct application platform service")
+	}
 
 	server := &server{
-		httpServer:       genericServer,
-		gracefulShutdown: gs,
-		assetUpload:      cfg.AssetUploadOptions,
+		httpServer:          genericServer,
+		gracefulShutdown:    gs,
+		assetUpload:         cfg.AssetUploadOptions,
+		applicationPlatform: applicationPlatformService,
+		dispatcher:          dispatcher,
 	}
 
 	return server, nil
@@ -150,12 +183,14 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.UserRole{},
 
 		// application platform
-		&iapiserver.AppTemplate{},
+		&iapiserver.EngineInstance{},
+		&iapiserver.EngineCapabilityBinding{},
+		&iapiserver.ApplicationTemplate{},
+		&iapiserver.ApplicationTemplateVersion{},
 		&iapiserver.Application{},
-		&iapiserver.InputMapping{},
-		&iapiserver.OutputMapping{},
-		&iapiserver.AppEngine{},
+		&iapiserver.ApplicationVersion{},
 		&iapiserver.ApplicationRun{},
+		&iapiserver.ApplicationArtifact{},
 
 		// ai chat
 		&iapiserver.AIChatAssistant{},
@@ -206,9 +241,12 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
-	initRouter(s.httpServer.Engine)
+	initRouter(s.httpServer.Engine, s.applicationPlatform)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
+		if s.dispatcher != nil {
+			s.dispatcher.Close()
+		}
 		dataStore, _ := postgresql.GetPostgresSQLFactoryOr(nil)
 		if dataStore != nil {
 			_ = dataStore.Close()

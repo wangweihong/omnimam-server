@@ -335,117 +335,153 @@ const (
 // application-platform: SSOT scoped business errors.
 const (
 	// @HTTP 200
-	// @CN 平台适配器或操作已禁用。
-	// @EN Provider adapter or operation is disabled.
-	ErrAdapterDisabled int = 130200
-
+	// @CN ProviderCapability 目录不存在或不可读取，能力注册表已降级。
+	// @EN The ProviderCapability directory is missing or unreadable; the registry is degraded.
+	ErrAIAppProviderCapabilityDirectoryUnreadable int = 130220
 	// @HTTP 200
-	// @CN 平台操作版本与应用或引擎不兼容。
-	// @EN Provider operation version is incompatible with the application or engine.
-	ErrOperationVersionIncompatible int = 130201
-
+	// @CN ProviderCapability 文件不是合法 YAML。
+	// @EN The ProviderCapability file is not valid YAML.
+	ErrAIAppProviderCapabilityYAMLInvalid int = 130221
 	// @HTTP 200
-	// @CN 工作流模板解析失败。
-	// @EN Workflow template parsing failed.
-	ErrTemplateParseFailed int = 130210
-
+	// @CN ProviderCapability 字段不符合当前 Schema。
+	// @EN ProviderCapability fields do not conform to the current schema.
+	ErrAIAppProviderCapabilitySchemaInvalid int = 130222
 	// @HTTP 200
-	// @CN 所选端口尚未解析完成。
-	// @EN Selected port has not been resolved.
-	ErrPortUnresolved int = 130211
-
+	// @CN ProviderCapability schema_version 不受支持。
+	// @EN The ProviderCapability schema_version is not supported.
+	ErrAIAppProviderCapabilitySchemaVersionUnsupported int = 130223
 	// @HTTP 200
-	// @CN 候选输出尚未确认。
-	// @EN Candidate output has not been confirmed.
-	ErrCandidateOutputUnconfirmed int = 130212
-
+	// @CN 多个 ProviderCapability 文件声明了相同 ID，所有冲突项均不可用。
+	// @EN Multiple ProviderCapability files declare the same ID; all conflicting entries are unavailable.
+	ErrAIAppProviderCapabilityIDDuplicated int = 130224
 	// @HTTP 200
-	// @CN 模板存在应用引用，禁止删除。
-	// @EN Template has application references and cannot be deleted.
-	ErrTemplateReferenceBlocked int = 130213
-
+	// @CN ProviderCapability 引用的 ApplicationEngineType 未注册。
+	// @EN The ApplicationEngineType referenced by ProviderCapability is not registered.
+	ErrAIAppProviderCapabilityEngineTypeMissing int = 130225
 	// @HTTP 200
-	// @CN 应用输入映射非法。
-	// @EN Application input mapping is invalid.
-	ErrInputMappingInvalid int = 130300
-
+	// @CN ProviderCapability 对应的 EngineAdapter 未注册。
+	// @EN The EngineAdapter required by ProviderCapability is not registered.
+	ErrAIAppProviderCapabilityAdapterMissing int = 130226
 	// @HTTP 200
-	// @CN 应用输出映射非法。
-	// @EN Application output mapping is invalid.
-	ErrOutputMappingInvalid int = 130301
-
+	// @CN ProviderCapability 中至少一个 Operation 缺少 OperationExecutor。
+	// @EN At least one ProviderCapability operation has no registered OperationExecutor.
+	ErrAIAppProviderCapabilityExecutorMissing int = 130227
 	// @HTTP 200
-	// @CN 同一参数路径不能同时开放和固化。
-	// @EN A parameter path cannot be both exposed and fixed.
-	ErrFixedParameterConflicted int = 130302
-
+	// @CN ProviderCapability 的模型、Operation、Variant 或参数约束不一致。
+	// @EN ProviderCapability models, operations, variants, or parameter constraints are inconsistent.
+	ErrAIAppProviderCapabilityVariantInvalid int = 130228
 	// @HTTP 200
-	// @CN 应用存在运行引用，禁止删除。
-	// @EN Application has run references and cannot be deleted.
-	ErrApplicationReferenceBlocked int = 130303
-
+	// @CN ProviderCapability 当前不可用或已禁用。
+	// @EN The ProviderCapability is currently unavailable or disabled.
+	ErrAIAppProviderCapabilityUnavailable int = 130229
 	// @HTTP 200
-	// @CN 自动路由没有找到可用应用引擎。
-	// @EN Automatic routing found no available application engine.
-	ErrEngineUnavailable int = 130400
-
+	// @CN ProviderCapability 不存在。
+	// @EN The ProviderCapability does not exist.
+	ErrAIAppProviderCapabilityNotFound int = 130230
 	// @HTTP 200
-	// @CN 用户指定的应用引擎不可用。
-	// @EN The selected application engine is unavailable.
-	ErrSelectedEngineUnavailable int = 130401
-
+	// @CN ApplicationEngineInstance 不存在。
+	// @EN The ApplicationEngineInstance does not exist.
+	ErrAIAppEngineInstanceNotFound int = 130420
 	// @HTTP 200
-	// @CN 应用引擎认证配置非法。
-	// @EN Application engine authentication configuration is invalid.
-	ErrAppEngineAuthConfigInvalid int = 130402
-
+	// @CN EngineInstance 的鉴权配置不符合 EngineType 要求。
+	// @EN The EngineInstance authentication configuration does not satisfy its EngineType.
+	ErrAIAppEngineAuthConfigInvalid int = 130421
 	// @HTTP 200
-	// @CN 应用引擎存在运行引用，禁止删除。
-	// @EN Application engine has run references and cannot be deleted.
-	ErrAppEngineReferenceBlocked int = 130403
-
+	// @CN EngineCapabilityBinding 与 EngineType 或 ProviderCapability 不兼容。
+	// @EN The EngineCapabilityBinding is incompatible with its EngineType or ProviderCapability.
+	ErrAIAppEngineBindingIncompatible int = 130422
 	// @HTTP 200
-	// @CN 平台适配器调用失败。
-	// @EN Provider adapter invocation failed.
-	ErrAdapterInvocationFailed int = 130500
-
+	// @CN EngineCapabilityBinding restrictions 扩张了 ProviderCapability 能力。
+	// @EN EngineCapabilityBinding restrictions expand ProviderCapability capabilities.
+	ErrAIAppEngineBindingRestrictionExpands int = 130423
 	// @HTTP 200
-	// @CN 已提交的外部任务无法恢复查询。
-	// @EN Previously submitted external task could not be recovered.
-	ErrExternalTaskRecoveryFailed int = 130501
-
+	// @CN 当前没有可用且健康的 EngineInstance。
+	// @EN No enabled and healthy EngineInstance is currently available.
+	ErrAIAppEngineUnavailable int = 130424
 	// @HTTP 200
-	// @CN 应用真实测试失败。
-	// @EN Application live test failed.
-	ErrApplicationTestFailed int = 130502
-
+	// @CN EngineInstance 存在历史 ApplicationRun 引用，禁止删除。
+	// @EN The EngineInstance has historical ApplicationRun references and cannot be deleted.
+	ErrAIAppEngineReferenceBlocked int = 130425
 	// @HTTP 200
-	// @CN TaskRun 投影事件版本已过期。
-	// @EN TaskRun projection event version is stale.
-	ErrProjectionVersionStale int = 130503
-
+	// @CN EngineCapabilityBinding 不存在。
+	// @EN The EngineCapabilityBinding does not exist.
+	ErrAIAppEngineBindingNotFound int = 130426
 	// @HTTP 200
-	// @CN 当前用户缺少资源管理权或引擎使用权。
-	// @EN Current user lacks resource management or engine usage permission.
-	ErrAIAppPermissionDenied int = 130600
-)
-
-const (
-	ErrTemplateNameDuplicated            = ErrTemplateReferenceBlocked
-	ErrTemplateContentImmutable          = ErrTemplateParseFailed
-	ErrMappingPathInvalid                = ErrInputMappingInvalid
-	ErrFieldKeyDuplicated                = ErrInputMappingInvalid
-	ErrFieldMappingIncomplete            = ErrInputMappingInvalid
-	ErrFieldTypeInvalid                  = ErrInputMappingInvalid
-	ErrApplicationRunCreateFailed        = ErrAdapterInvocationFailed
-	ErrApplicationRunNotVisible          = ErrAIAppPermissionDenied
-	ErrAppEngineNotVisible               = ErrAIAppPermissionDenied
-	ErrAppEngineNameDuplicated           = ErrAppEngineAuthConfigInvalid
-	ErrAppEngineUnhealthy                = ErrSelectedEngineUnavailable
-	ErrAppEngineTypeMismatched           = ErrSelectedEngineUnavailable
-	ErrSaaSPlatformMismatched            = ErrSelectedEngineUnavailable
-	ErrAppEngineCapabilityUnsupported    = ErrSelectedEngineUnavailable
-	ErrAppEngineHealthCheckConfigInvalid = ErrAppEngineAuthConfigInvalid
+	// @CN ApplicationTemplate 的联合能力来源不合法。
+	// @EN The ApplicationTemplate union capability source is invalid.
+	ErrAIAppTemplateSourceInvalid int = 130620
+	// @HTTP 200
+	// @CN 已发布的 ApplicationTemplateVersion 或 ApplicationVersion 不可原地修改。
+	// @EN A published ApplicationTemplateVersion or ApplicationVersion is immutable.
+	ErrAIAppApplicationVersionImmutable int = 130621
+	// @HTTP 200
+	// @CN 当前约束下没有可执行的 CapabilityVariant。
+	// @EN No executable CapabilityVariant exists under the current constraints.
+	ErrAIAppRuntimeFormNoValidVariant int = 130622
+	// @HTTP 200
+	// @CN ApplicationRun 输入不符合 RuntimeFormSchema。
+	// @EN ApplicationRun input does not conform to RuntimeFormSchema.
+	ErrAIAppApplicationInputInvalid int = 130623
+	// @HTTP 200
+	// @CN ApplicationTemplate 不存在或不可见。
+	// @EN The ApplicationTemplate does not exist or is not visible.
+	ErrAIAppTemplateNotFound int = 130624
+	// @HTTP 200
+	// @CN ApplicationTemplateVersion 不存在。
+	// @EN The ApplicationTemplateVersion does not exist.
+	ErrAIAppTemplateVersionNotFound int = 130625
+	// @HTTP 200
+	// @CN Application 不存在或不可见。
+	// @EN The Application does not exist or is not visible.
+	ErrAIAppApplicationNotFound int = 130626
+	// @HTTP 200
+	// @CN ApplicationVersion 不存在。
+	// @EN The ApplicationVersion does not exist.
+	ErrAIAppApplicationVersionNotFound int = 130627
+	// @HTTP 200
+	// @CN ApplicationTemplateVersion 未通过发布校验。
+	// @EN The ApplicationTemplateVersion failed publish validation.
+	ErrAIAppTemplateVersionNotPublishable int = 130628
+	// @HTTP 200
+	// @CN ApplicationVersion 未通过发布校验。
+	// @EN The ApplicationVersion failed publish validation.
+	ErrAIAppApplicationVersionNotPublishable int = 130629
+	// @HTTP 200
+	// @CN 同一 Application 已存在相同语义版本。
+	// @EN The Application already has the same semantic version.
+	ErrAIAppApplicationSemanticVersionDuplicated int = 130630
+	// @HTTP 200
+	// @CN 资源版本已变化，请刷新后重试。
+	// @EN The resource version changed; refresh and retry.
+	ErrAIAppResourceVersionConflict int = 130631
+	// @HTTP 200
+	// @CN ApplicationRun 创建失败。
+	// @EN The ApplicationRun could not be created.
+	ErrAIAppApplicationRunCreateFailed int = 130820
+	// @HTTP 200
+	// @CN TaskRun 状态投影版本过旧。
+	// @EN The TaskRun status projection version is stale.
+	ErrAIAppTaskProjectionStale int = 130821
+	// @HTTP 200
+	// @CN 外部平台拒绝了当前 ProviderCapability 声明的能力组合。
+	// @EN The provider rejected a capability combination declared by ProviderCapability.
+	ErrAIAppProviderRuntimeCapabilityMismatch int = 130822
+	// @HTTP 200
+	// @CN TaskRun 创建失败，ApplicationRun 快照已保留。
+	// @EN TaskRun creation failed; the ApplicationRun snapshot was retained.
+	ErrAIAppTaskRunCreateFailed int = 130823
+	// @HTTP 200
+	// @CN Artifact 登记 UserAsset 失败。
+	// @EN Artifact registration as a UserAsset failed.
+	ErrAIAppArtifactRegistrationFailed int = 130824
+	// @HTTP 200
+	// @CN ApplicationRun 不存在或当前用户不可见。
+	// @EN The ApplicationRun does not exist or is not visible to the current user.
+	ErrAIAppApplicationRunNotFound int = 130825
+	// @HTTP 200
+	// @CN 当前用户缺少所需的应用平台权限。
+	// @EN The current user lacks the required application-platform permission.
+	ErrAIAppPermissionDenied int = 131020
 )
 
 // task-center: SSOT scoped business errors.
@@ -474,6 +510,11 @@ const (
 	// @CN 任务重试策略不合法。
 	// @EN Task retry policy is invalid.
 	ErrTaskRetryPolicyInvalid int = 140402
+
+	// @HTTP 200
+	// @CN 相同应用运行和幂等键已用于不同的任务运行创建请求。
+	// @EN The same application run and idempotency key were used with a different task run creation request.
+	ErrTaskRunIdempotencyConflict int = 140403
 
 	// @HTTP 200
 	// @CN Worker 不存在、不可用或能力不匹配。

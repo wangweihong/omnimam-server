@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 631ec47f9ba2ec7fbc2058776d7e79d4e966e11c
+commit: 6d2cf826c4d5c0e3515b0ae89423fc03434e0067
 contract_version: 0.1.0-draft
-updated_at: 2026-07-08
+updated_at: 2026-07-16
 status: exploration-only
 note: current omnimam-spec commit has no release/tag; formal acceptance requires a released SSOT commit or tag.

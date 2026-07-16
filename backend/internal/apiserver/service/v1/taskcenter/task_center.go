@@ -172,6 +172,9 @@ func (s *taskCenterService) CreateRun(
 	ctx context.Context,
 	req *iapiserver.TaskRunCreateRequest,
 ) (*iapiserver.TaskRun, error) {
+	if err := req.Validate(); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	definition, err := s.store.TaskCenters().GetDefinition(ctx, req.DefinitionType, req.DefinitionID)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -188,23 +191,25 @@ func (s *taskCenterService) CreateRun(
 		return nil, err
 	}
 	run := &iapiserver.TaskRun{
-		DefinitionType: req.DefinitionType,
-		DefinitionID:   req.DefinitionID,
-		ParentRunID:    req.ParentRunID,
-		RootRunID:      req.RootRunID,
-		ScheduleAt:     req.ScheduleAt,
-		AdapterKey:     req.AdapterKey,
-		OperationKey:   req.OperationKey,
-		OperationVersion: req.OperationVersion,
+		DefinitionType:    req.DefinitionType,
+		DefinitionID:      req.DefinitionID,
+		ApplicationRunID:  req.ApplicationRunID,
+		IdempotencyKey:    req.IdempotencyKey,
+		ParentRunID:       req.ParentRunID,
+		RootRunID:         req.RootRunID,
+		ScheduleAt:        req.ScheduleAt,
+		AdapterKey:        req.AdapterKey,
+		OperationKey:      req.OperationKey,
+		OperationVersion:  req.OperationVersion,
 		RequestedEngineID: req.RequestedEngineID,
-		ResolvedEngineID: req.ResolvedEngineID,
-		Input:          req.Input,
-		TimeoutAt:      timeoutAt(req.ScheduleAt, timeoutPolicy),
-		MaxAttempts:    retryPolicyMaxAttempts(retryPolicy),
-		ProjectID:      fallbackString(req.ProjectID, definition.ProjectID),
-		Namespace:      fallbackString(req.Namespace, definition.Namespace),
-		Tags:           req.Tags,
-		CreatedBy:      req.CreatedBy,
+		ResolvedEngineID:  req.ResolvedEngineID,
+		Input:             req.Input,
+		TimeoutAt:         timeoutAt(req.ScheduleAt, timeoutPolicy),
+		MaxAttempts:       retryPolicyMaxAttempts(retryPolicy),
+		ProjectID:         fallbackString(req.ProjectID, definition.ProjectID),
+		Namespace:         fallbackString(req.Namespace, definition.Namespace),
+		Tags:              req.Tags,
+		CreatedBy:         req.CreatedBy,
 	}
 	run.Name = definition.Name + "-run"
 	if !req.ScheduleAt.IsZero() && req.ScheduleAt.Time.After(time.Now()) {
@@ -212,11 +217,13 @@ func (s *taskCenterService) CreateRun(
 	} else {
 		run.Status = iapiserver.TaskRunStatusReady
 	}
-	ret, err := s.store.TaskCenters().AddRun(ctx, run)
+	ret, created, err := s.store.TaskCenters().AddRunIdempotent(ctx, run)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventRunCreated, "", ret.Status))
+	if created {
+		s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventRunCreated, "", ret.Status))
+	}
 	return ret, nil
 }
 
@@ -330,21 +337,51 @@ func (s *taskCenterService) UpdateProgress(
 	ctx context.Context,
 	req *iapiserver.ProgressUpdateRequest,
 ) (*iapiserver.TaskRun, error) {
-	return s.store.TaskCenters().UpdateProgress(ctx, req)
+	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+	if err != nil {
+		return nil, err
+	}
+	ret, err := s.store.TaskCenters().UpdateProgress(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if before.Status != ret.Status {
+		s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
+	}
+	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventProgressUpdated, ret.Status, ret.Status))
+	return ret, nil
 }
 
 func (s *taskCenterService) CompleteRun(
 	ctx context.Context,
 	req *iapiserver.TaskRunCompleteRequest,
 ) (*iapiserver.TaskRun, error) {
-	return s.store.TaskCenters().CompleteRun(ctx, req)
+	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+	if err != nil {
+		return nil, err
+	}
+	ret, err := s.store.TaskCenters().CompleteRun(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
+	return ret, nil
 }
 
 func (s *taskCenterService) FailRun(
 	ctx context.Context,
 	req *iapiserver.TaskRunFailRequest,
 ) (*iapiserver.TaskRun, error) {
-	return s.store.TaskCenters().FailRun(ctx, req)
+	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+	if err != nil {
+		return nil, err
+	}
+	ret, err := s.store.TaskCenters().FailRun(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
+	return ret, nil
 }
 
 func (s *taskCenterService) RenewLease(
@@ -469,13 +506,20 @@ func newTaskRunEvent(run *iapiserver.TaskRun, eventType, from, to string) *iapis
 		FromStatus: from,
 		ToStatus:   to,
 		Payload: map[string]any{
-			"run_id":          run.ID,
-			"definition_type": run.DefinitionType,
-			"definition_id":   run.DefinitionID,
-			"status":          run.Status,
-			"project_id":      run.ProjectID,
-			"namespace":       run.Namespace,
-			"created_by":      run.CreatedBy,
+			"run_id":              run.ID,
+			"application_run_id":  run.ApplicationRunID,
+			"resource_version":    run.ResourceVersion,
+			"definition_type":     run.DefinitionType,
+			"definition_id":       run.DefinitionID,
+			"status":              run.Status,
+			"adapter_key":         run.AdapterKey,
+			"operation_key":       run.OperationKey,
+			"operation_version":   run.OperationVersion,
+			"requested_engine_id": run.RequestedEngineID,
+			"resolved_engine_id":  run.ResolvedEngineID,
+			"project_id":          run.ProjectID,
+			"namespace":           run.Namespace,
+			"created_by":          run.CreatedBy,
 		},
 		OccurredAt: imachinery.NewTime(time.Now()),
 	}

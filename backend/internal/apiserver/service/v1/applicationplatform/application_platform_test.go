@@ -6,328 +6,104 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
 
-func TestParseTemplateFields(t *testing.T) {
-	tests := []struct {
-		name    string
-		kind    string
-		config  map[string]any
-		want    []iapiserver.ParsedField
-		wantErr bool
-	}{
-		{
-			name: "comfyui api raw json parses input primitives and skips links",
-			kind: iapiserver.AppTemplateKindComfyUI,
-			config: map[string]any{
-				"raw": `{
-					"3": {
-						"class_type": "KSampler",
-						"inputs": {
-							"seed": 156680208700286,
-							"steps": 20,
-							"cfg": 8,
-							"sampler_name": "euler",
-							"scheduler": "normal",
-							"denoise": 1,
-							"model": ["4", 0],
-							"positive": ["6", 0]
-						},
-						"_meta": {"title": "KSampler"}
-					},
-					"4": {
-						"class_type": "CheckpointLoaderSimple",
-						"inputs": {
-							"ckpt_name": "v1-5-pruned-emaonly.safetensors"
-						},
-						"_meta": {"title": "Load Checkpoint"}
-					}
-				}`,
-			},
-			want: []iapiserver.ParsedField{
-				{SourcePath: "3.inputs.cfg", FieldType: "number", Required: true, LabelHint: "KSampler.cfg"},
-				{SourcePath: "3.inputs.denoise", FieldType: "number", Required: true, LabelHint: "KSampler.denoise"},
-				{SourcePath: "3.inputs.sampler_name", FieldType: "string", Required: true, LabelHint: "KSampler.sampler_name"},
-				{SourcePath: "3.inputs.scheduler", FieldType: "string", Required: true, LabelHint: "KSampler.scheduler"},
-				{SourcePath: "3.inputs.seed", FieldType: "number", Required: true, LabelHint: "KSampler.seed"},
-				{SourcePath: "3.inputs.steps", FieldType: "number", Required: true, LabelHint: "KSampler.steps"},
-				{SourcePath: "4.inputs.ckpt_name", FieldType: "string", Required: true, LabelHint: "Load Checkpoint.ckpt_name"},
-			},
-		},
-		{
-			name: "comfyui api config object parses without raw wrapper",
-			kind: iapiserver.AppTemplateKindComfyUI,
-			config: map[string]any{
-				"3": map[string]any{
-					"class_type": "CLIPTextEncode",
-					"inputs": map[string]any{
-						"text": "a cat",
-						"clip": []any{"4", float64(1)},
-					},
-					"_meta": map[string]any{"title": "Prompt"},
-				},
-			},
-			want: []iapiserver.ParsedField{
-				{SourcePath: "3.inputs.text", FieldType: "string", Required: true, LabelHint: "Prompt.text"},
-			},
-		},
-		{
-			name: "saas config root primitive leaves",
-			kind: iapiserver.AppTemplateKindSaaSAPI,
-			config: map[string]any{
-				"model":  "z-image",
-				"prompt": "cat",
-				"size":   "1024x1024",
-			},
-			want: []iapiserver.ParsedField{
-				{SourcePath: "model", FieldType: "string", Required: true, LabelHint: "model"},
-				{SourcePath: "prompt", FieldType: "string", Required: true, LabelHint: "prompt"},
-				{SourcePath: "size", FieldType: "string", Required: true, LabelHint: "size"},
-			},
-		},
-		{
-			name: "saas request template wrapper stays compatible",
-			kind: iapiserver.AppTemplateKindSaaSAPI,
-			config: map[string]any{
-				"requestTemplate": map[string]any{
-					"body": map[string]any{"query": "cat"},
-				},
-			},
-			want: []iapiserver.ParsedField{
-				{SourcePath: "body.query", FieldType: "string", Required: true, LabelHint: "query"},
-			},
-		},
-		{
-			name:    "invalid comfyui raw json",
-			kind:    iapiserver.AppTemplateKindComfyUI,
-			config:  map[string]any{"raw": `{"node":`},
-			wantErr: true,
-		},
-		{
-			name: "comfyui ui save workflow format is rejected",
-			kind: iapiserver.AppTemplateKindComfyUI,
-			config: map[string]any{
-				"nodes": []any{map[string]any{"id": float64(1), "type": "KSampler"}},
-				"links": []any{},
-				"extra": map[string]any{},
-			},
-			wantErr: true,
-		},
-		{
-			name: "comfyui node missing class type is rejected",
-			kind: iapiserver.AppTemplateKindComfyUI,
-			config: map[string]any{
-				"3": map[string]any{
-					"inputs": map[string]any{"text": "a cat"},
-				},
-			},
-			wantErr: true,
-		},
-		{
-			name:    "saas empty config",
-			kind:    iapiserver.AppTemplateKindSaaSAPI,
-			config:  map[string]any{},
-			wantErr: true,
-		},
-		{
-			name: "saas config without primitive leaves",
-			kind: iapiserver.AppTemplateKindSaaSAPI,
-			config: map[string]any{
-				"body": map[string]any{},
-			},
-			wantErr: true,
-		},
+func TestValidateRestrictionsRejectsCapabilityExpansion(t *testing.T) {
+	capability := &iapiserver.AIAppProviderCapability{
+		Models:     []iapiserver.ProviderCapabilityModel{{ID: "model-a"}},
+		Operations: []iapiserver.ProviderCapabilityOperation{{ID: "operation-a"}},
+		Variants:   []iapiserver.ProviderCapabilityVariant{{ID: "variant-a"}},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseTemplateFields(tt.kind, tt.config)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("parseTemplateFields() error = nil, want error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseTemplateFields() error = %v", err)
-			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("parseTemplateFields() len = %d, want %d: %#v", len(got), len(tt.want), got)
-			}
-			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Fatalf("parseTemplateFields()[%d] = %#v, want %#v", i, got[i], tt.want[i])
-				}
-			}
-		})
+	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-a"}}); err != nil {
+		t.Fatalf("valid restriction rejected: %v", err)
+	}
+	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-b"}}); err == nil {
+		t.Fatal("expanding restriction was accepted")
+	}
+	if err := validateRestrictions(capability, map[string]any{"unknown": []any{"x"}}); err == nil {
+		t.Fatal("unknown restriction was accepted")
 	}
 }
 
-func TestBuildFieldMappings(t *testing.T) {
-	parsed := []iapiserver.ParsedField{
-		{SourcePath: "body.prompt", FieldType: "string", Required: true},
-		{SourcePath: "body.steps", FieldType: "number", Required: true},
+func TestBuildRuntimeFieldsAppliesInvalidStrategies(t *testing.T) {
+	properties := map[string]any{
+		"resolution": map[string]any{"type": "string", "enum": []any{"720p", "1080p"}},
+		"steps":      map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
 	}
-
-	tests := []struct {
-		name    string
-		inputs  []iapiserver.FieldMappingInput
-		wantErr bool
-	}{
-		{
-			name: "valid mappings inherit required flag",
-			inputs: []iapiserver.FieldMappingInput{
-				{FieldKey: "prompt", FieldLabel: "Prompt", FieldType: "string", SourcePath: "body.prompt", SortOrder: 1},
-				{FieldKey: "steps", FieldLabel: "Steps", FieldType: "number", SourcePath: "body.steps", SortOrder: 2},
-			},
-		},
-		{
-			name: "duplicate field key",
-			inputs: []iapiserver.FieldMappingInput{
-				{FieldKey: "prompt", FieldLabel: "Prompt", FieldType: "string", SourcePath: "body.prompt"},
-				{FieldKey: "prompt", FieldLabel: "Prompt 2", FieldType: "number", SourcePath: "body.steps"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid source path",
-			inputs: []iapiserver.FieldMappingInput{
-				{FieldKey: "missing", FieldLabel: "Missing", FieldType: "string", SourcePath: "body.missing"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid field type",
-			inputs: []iapiserver.FieldMappingInput{
-				{FieldKey: "prompt", FieldLabel: "Prompt", FieldType: "number", SourcePath: "body.prompt"},
-			},
-			wantErr: true,
-		},
+	policies := map[string]any{
+		"resolution": map[string]any{"on_invalid": "reset"},
+		"steps":      map[string]any{"on_invalid": "clamp"},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := buildFieldMappings("app-1", "tpl-1", parsed, tt.inputs)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("buildFieldMappings() error = nil, want error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("buildFieldMappings() error = %v", err)
-			}
-			if len(got) != len(tt.inputs) {
-				t.Fatalf("buildFieldMappings() len = %d, want %d", len(got), len(tt.inputs))
-			}
-			for i := range got {
-				if got[i].ApplicationID != "app-1" || got[i].TemplateID != "tpl-1" {
-					t.Fatalf("buildFieldMappings()[%d] ids = %s/%s", i, got[i].ApplicationID, got[i].TemplateID)
-				}
-				if !got[i].Required {
-					t.Fatalf("buildFieldMappings()[%d].Required = false, want true", i)
-				}
-			}
-		})
+	fields, changes, violations := buildRuntimeFields(properties, []string{"resolution", "steps"}, policies, map[string]any{"resolution": "4k", "steps": 20})
+	if len(violations) != 1 || violations[0].Field != "resolution" {
+		t.Fatalf("violations = %#v, want required resolution after reset", violations)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("changes = %d, want 2", len(changes))
+	}
+	for _, field := range fields {
+		if field.Name == "steps" && field.Value != 10 {
+			t.Fatalf("clamped steps = %#v, want 10", field.Value)
+		}
 	}
 }
 
-func TestValidateTemplateSaaSConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		req     *iapiserver.AppTemplateCreateRequest
-		wantErr bool
-	}{
-		{
-			name: "comfyui does not require saas fields",
-			req:  &iapiserver.AppTemplateCreateRequest{Kind: iapiserver.AppTemplateKindComfyUI},
-		},
-		{
-			name: "valid saas config",
-			req: &iapiserver.AppTemplateCreateRequest{
-				Kind:             iapiserver.AppTemplateKindSaaSAPI,
-				SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
-				CapabilityType:   iapiserver.CapabilityImageGeneration,
-				OperationKey:     "modelscope.image_generation",
-			},
-		},
-		{
-			name: "missing saas platform",
-			req: &iapiserver.AppTemplateCreateRequest{
-				Kind:           iapiserver.AppTemplateKindSaaSAPI,
-				CapabilityType: iapiserver.CapabilityImageGeneration,
-				OperationKey:   "modelscope.image_generation",
-			},
-			wantErr: true,
-		},
-		{
-			name: "unsupported capability",
-			req: &iapiserver.AppTemplateCreateRequest{
-				Kind:             iapiserver.AppTemplateKindSaaSAPI,
-				SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
-				CapabilityType:   "text_generation",
-				OperationKey:     "modelscope.text_generation",
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateTemplateSaaSConfig(tt.req)
-			if tt.wantErr && err == nil {
-				t.Fatalf("validateTemplateSaaSConfig() error = nil, want error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateTemplateSaaSConfig() error = %v", err)
-			}
-		})
+func TestBuildRuntimeFieldsRejectsEmptyPolicyIntersection(t *testing.T) {
+	properties := map[string]any{"resolution": map[string]any{"type": "string", "enum": []any{"720p"}}}
+	policies := map[string]any{"resolution": map[string]any{"values": []any{"4k"}}}
+	_, _, violations := buildRuntimeFields(properties, nil, policies, nil)
+	if len(violations) != 1 || violations[0].Code != "NO_VALID_OPTION" {
+		t.Fatalf("empty capability-policy intersection was not rejected: %#v", violations)
 	}
 }
 
-func TestValidateApplicationRunEngine(t *testing.T) {
-	app := &iapiserver.Application{
-		Kind:             iapiserver.AppTemplateKindSaaSAPI,
-		SaaSPlatformType: iapiserver.SaaSPlatformModelScope,
-		CapabilityType:   iapiserver.CapabilityImageGeneration,
+func TestValidateComfyUIWorkflowRequiresObjectInfo(t *testing.T) {
+	workflow := map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}
+	if err := validateComfyUIWorkflow(workflow, map[string]any{"KSampler": map[string]any{}}); err != nil {
+		t.Fatalf("valid workflow rejected: %v", err)
 	}
-	engine := &iapiserver.AppEngine{
-		EngineType:               iapiserver.AppEngineTypeSaaSAPI,
-		SaaSPlatformType:         iapiserver.SaaSPlatformModelScope,
-		Status:                   iapiserver.AppEngineStatusActive,
-		HealthStatus:             iapiserver.AppEngineHealthHealthy,
-		SupportedCapabilityTypes: []string{iapiserver.CapabilityImageGeneration},
-	}
-	if err := validateApplicationRunEngine(app, engine); err != nil {
-		t.Fatalf("validateApplicationRunEngine() error = %v", err)
-	}
-	engine.SaaSPlatformType = iapiserver.SaaSPlatformCustomHTTP
-	if err := validateApplicationRunEngine(app, engine); err == nil {
-		t.Fatalf("validateApplicationRunEngine() error = nil, want platform mismatch")
-	}
-	engine.SaaSPlatformType = iapiserver.SaaSPlatformModelScope
-	engine.SupportedCapabilityTypes = []string{iapiserver.CapabilityVideoGeneration}
-	if err := validateApplicationRunEngine(app, engine); err == nil {
-		t.Fatalf("validateApplicationRunEngine() error = nil, want capability unsupported")
-	}
-	engine.SupportedCapabilityTypes = []string{iapiserver.CapabilityImageGeneration}
-	engine.HealthStatus = iapiserver.AppEngineHealthUnhealthy
-	if err := validateApplicationRunEngine(app, engine); err == nil {
-		t.Fatalf("validateApplicationRunEngine() error = nil, want unhealthy")
+	if err := validateComfyUIWorkflow(workflow, map[string]any{}); err == nil {
+		t.Fatal("missing object_info class was accepted")
 	}
 }
 
-func TestRenderApplicationPayload(t *testing.T) {
-	app := &iapiserver.Application{
-		FixedParameters: map[string]any{"body.model": "z-image"},
-		FieldMappings: []*iapiserver.FieldMapping{
-			{FieldKey: "prompt", SourcePath: "body.prompt", DefaultValue: "cat", Required: true},
-			{FieldKey: "steps", SourcePath: "body.steps", DefaultValue: float64(20), Required: true},
-		},
+func TestValidateComfyUIContractRequiresMappingsAndOutputs(t *testing.T) {
+	workflow := map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}
+	objectInfo := map[string]any{"KSampler": map[string]any{}}
+	contract := map[string]any{
+		"parameters":      map[string]any{"seed": map[string]any{"required": true}},
+		"request_mapping": map[string]any{"seed": "1.inputs.seed"},
+		"outputs":         map[string]any{"image": map[string]any{"node_id": "1"}},
 	}
-	got, err := renderApplicationPayload(app, map[string]any{"prompt": "dog"})
-	if err != nil {
-		t.Fatalf("renderApplicationPayload() error = %v", err)
+	if err := validateComfyUIContract(workflow, objectInfo, contract); err != nil {
+		t.Fatalf("valid ComfyUI contract rejected: %v", err)
 	}
-	if got["body.model"] != "z-image" || got["body.prompt"] != "dog" || got["body.steps"] != float64(20) {
-		t.Fatalf("renderApplicationPayload() = %#v", got)
+	delete(contract, "outputs")
+	if err := validateComfyUIContract(workflow, objectInfo, contract); err == nil {
+		t.Fatal("ComfyUI contract without outputs was accepted")
+	}
+}
+
+func TestResolvedRuntimeInputsUsesFinalFormValues(t *testing.T) {
+	resolved := resolvedRuntimeInputs(map[string]any{"duration": 99, "removed": "old", "passthrough": true}, []iapiserver.RuntimeFormField{
+		{Name: "duration", Value: 15},
+		{Name: "removed", Value: nil},
+		{Name: "model", Value: "seedance-2.0"},
+	})
+	if resolved["duration"] != 15 || resolved["model"] != "seedance-2.0" || resolved["passthrough"] != true {
+		t.Fatalf("resolved inputs do not contain final form values: %#v", resolved)
+	}
+	if _, exists := resolved["removed"]; exists {
+		t.Fatalf("reset field remained in resolved inputs: %#v", resolved)
+	}
+}
+
+func TestSameApplicationRunRequestRejectsIdempotencyConflict(t *testing.T) {
+	existing := &iapiserver.ApplicationRun{ApplicationID: "app-1", ApplicationVersionID: "version-1", EngineInstanceID: "engine-1", InputSnapshot: map[string]any{"prompt": "same"}}
+	request := &iapiserver.ApplicationRunCreateRequest{ApplicationVersionID: "version-1", EngineInstanceID: "engine-1", Inputs: map[string]any{"prompt": "same"}}
+	if !sameApplicationRunRequest(existing, "app-1", request) {
+		t.Fatal("equivalent idempotent request was rejected")
+	}
+	request.Inputs["prompt"] = "different"
+	if sameApplicationRunRequest(existing, "app-1", request) {
+		t.Fatal("conflicting idempotent request was accepted")
 	}
 }

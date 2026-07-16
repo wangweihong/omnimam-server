@@ -318,7 +318,6 @@ func (g *Generator) generateDocs(typeName string) {
 		format += "\n"
 		g.Printf(format, args...)
 	}
-	g.Printf("\n")
 }
 
 // format returns the gofmt-ed contents of the Generator's buffer.

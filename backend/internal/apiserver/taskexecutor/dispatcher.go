@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -27,22 +29,43 @@ const (
 	CapabilityAssetThumbnail       = "asset.thumbnail"
 	AssetThumbnailDefinitionID     = "asset-thumbnail-generate"
 
-	internalThumbnailWorkerID = "api-internal-thumbnail-worker"
+	internalThumbnailWorkerID      = "api-internal-worker-v3"
+	internalWorkerMaxConcurrency   = 64
+	internalDispatcherPollInterval = 200 * time.Millisecond
 )
 
 type TaskFunctionExecutor interface {
 	Execute(ctx context.Context, run *iapiserver.TaskRun) (map[string]any, error)
 }
 
+type taskCompletionObserver interface {
+	Completed(ctx context.Context, task *iapiserver.TaskRun) error
+}
+
 type Dispatcher struct {
-	store     store.Factory
-	executors map[string]TaskFunctionExecutor
+	store        store.Factory
+	executors    map[string]TaskFunctionExecutor
+	capabilities map[string]struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	lifecycleMu  sync.Mutex
+	closing      bool
 }
 
 func NewDispatcher(store store.Factory) *Dispatcher {
-	dispatcher := &Dispatcher{store: store, executors: map[string]TaskFunctionExecutor{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	dispatcher := &Dispatcher{store: store, executors: map[string]TaskFunctionExecutor{}, capabilities: map[string]struct{}{CapabilityAssetThumbnail: {}}, ctx: ctx, cancel: cancel}
 	dispatcher.Register(FunctionAssetThumbnailGenerate, NewThumbnailExecutor(store))
 	return dispatcher
+}
+
+// RegisterCapability registers an executor together with the worker capability required to claim it.
+func (d *Dispatcher) RegisterCapability(functionRef, capability string, executor TaskFunctionExecutor) {
+	d.Register(functionRef, executor)
+	if capability != "" {
+		d.capabilities[capability] = struct{}{}
+	}
 }
 
 func (d *Dispatcher) Register(functionRef string, executor TaskFunctionExecutor) {
@@ -53,16 +76,39 @@ func (d *Dispatcher) Register(functionRef string, executor TaskFunctionExecutor)
 }
 
 // DispatchAsync schedules one TaskRun for API-local execution while keeping Task Center as the state machine owner.
-func (d *Dispatcher) DispatchAsync(ctx context.Context, runID string) {
+func (d *Dispatcher) DispatchAsync(_ context.Context, runID string) {
 	if d == nil || d.store == nil || runID == "" {
 		return
 	}
-	runCtx := context.WithoutCancel(ctx)
+	d.lifecycleMu.Lock()
+	if d.closing {
+		d.lifecycleMu.Unlock()
+		return
+	}
+	d.wg.Add(1)
+	d.lifecycleMu.Unlock()
 	go func() {
-		if err := d.Dispatch(runCtx, runID); err != nil {
+		defer d.wg.Done()
+		if err := d.Dispatch(d.ctx, runID); err != nil && !stderrors.Is(err, context.Canceled) {
 			log.Errorf("task run dispatch failed: run_id=%s error=%v", runID, err)
 		}
 	}()
+}
+
+// Close cancels API-local executions and waits for every dispatcher goroutine to exit.
+func (d *Dispatcher) Close() {
+	if d == nil {
+		return
+	}
+	d.lifecycleMu.Lock()
+	if d.closing {
+		d.lifecycleMu.Unlock()
+		return
+	}
+	d.closing = true
+	d.cancel()
+	d.lifecycleMu.Unlock()
+	d.wg.Wait()
 }
 
 // Dispatch claims and executes TaskRuns through the Task Center worker protocol.
@@ -70,17 +116,33 @@ func (d *Dispatcher) Dispatch(ctx context.Context, runID string) error {
 	if err := d.ensureWorker(ctx); err != nil {
 		return err
 	}
-	for i := 0; i < 10; i++ {
+	for {
 		claim, err := d.store.TaskCenters().ClaimRun(ctx, &iapiserver.ClaimTaskRunRequest{
 			WorkerID:     internalThumbnailWorkerID,
-			Capabilities: CapabilityAssetThumbnail,
+			Capabilities: d.workerCapabilities(),
 			MaxCount:     1,
 		})
 		if err != nil {
 			return errors.WithStack(err)
 		}
 		if claim.TaskRun == nil {
-			return nil
+			target, getErr := d.store.TaskCenters().GetRun(ctx, runID)
+			if getErr != nil {
+				return errors.WithStack(getErr)
+			}
+			if terminalTaskStatus(target.Status) {
+				return nil
+			}
+			timer := time.NewTimer(internalDispatcherPollInterval)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+				continue
+			}
 		}
 		if err := d.executeClaim(ctx, claim); err != nil {
 			return err
@@ -89,7 +151,6 @@ func (d *Dispatcher) Dispatch(ctx context.Context, runID string) error {
 			return nil
 		}
 	}
-	return errors.Errorf("task run %s was not claimed by internal dispatcher", runID)
 }
 
 func (d *Dispatcher) ensureWorker(ctx context.Context) error {
@@ -102,13 +163,13 @@ func (d *Dispatcher) ensureWorker(ctx context.Context) error {
 		return nil
 	}
 	worker := &iapiserver.Worker{
-		WorkerType:     "api-internal-thumbnail",
+		WorkerType:     "api-internal",
 		Status:         iapiserver.WorkerStatusOnline,
-		Capabilities:   CapabilityAssetThumbnail,
-		MaxConcurrency: 1,
+		Capabilities:   d.workerCapabilities(),
+		MaxConcurrency: internalWorkerMaxConcurrency,
 	}
 	worker.ID = internalThumbnailWorkerID
-	worker.Name = "api-internal-thumbnail"
+	worker.Name = "api-internal"
 	if _, registerErr := d.store.TaskCenters().RegisterWorker(ctx, worker); registerErr != nil {
 		_, heartbeatErr := d.store.TaskCenters().HeartbeatWorker(ctx, &iapiserver.WorkerHeartbeatRequest{
 			WorkerID:     internalThumbnailWorkerID,
@@ -120,6 +181,16 @@ func (d *Dispatcher) ensureWorker(ctx context.Context) error {
 	return nil
 }
 
+func terminalTaskStatus(status string) bool {
+	switch status {
+	case iapiserver.TaskRunStatusSuccess, iapiserver.TaskRunStatusFailed, iapiserver.TaskRunStatusCanceled,
+		iapiserver.TaskRunStatusTimeout, iapiserver.TaskRunStatusLost:
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *Dispatcher) executeClaim(ctx context.Context, claim *iapiserver.ClaimTaskRunResponse) error {
 	run := claim.TaskRun
 	definition, err := d.store.TaskCenters().GetDefinition(ctx, run.DefinitionType, run.DefinitionID)
@@ -129,7 +200,10 @@ func (d *Dispatcher) executeClaim(ctx context.Context, claim *iapiserver.ClaimTa
 	executor := d.executors[definition.FunctionRef]
 	if executor == nil {
 		err = errors.Errorf("task function %s has no internal executor", definition.FunctionRef)
-		return d.failRun(ctx, claim, err)
+		if _, failErr := d.failRun(ctx, claim, err); failErr != nil {
+			return failErr
+		}
+		return err
 	}
 	_, _ = d.store.TaskCenters().UpdateProgress(ctx, &iapiserver.ProgressUpdateRequest{
 		RunID:         run.ID,
@@ -139,11 +213,25 @@ func (d *Dispatcher) executeClaim(ctx context.Context, claim *iapiserver.ClaimTa
 		Progress:      0.1,
 		ExternalJobID: "api-internal",
 	})
-	output, err := executor.Execute(ctx, run)
+	executeCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go d.renewLeaseAndWatchCancellation(executeCtx, cancel, claim, done)
+	output, err := executor.Execute(executeCtx, run)
+	cancel()
+	<-done
 	if err != nil {
-		return d.failRun(ctx, claim, err)
+		failed, failErr := d.failRun(ctx, claim, err)
+		if failErr != nil {
+			return failErr
+		}
+		if observer, ok := executor.(taskCompletionObserver); ok {
+			if observerErr := observer.Completed(ctx, failed); observerErr != nil {
+				return errors.WithStack(observerErr)
+			}
+		}
+		return err
 	}
-	_, err = d.store.TaskCenters().CompleteRun(ctx, &iapiserver.TaskRunCompleteRequest{
+	completed, err := d.store.TaskCenters().CompleteRun(ctx, &iapiserver.TaskRunCompleteRequest{
 		RunID:         run.ID,
 		AttemptID:     claim.Attempt.ID,
 		LeaseID:       claim.Lease.ID,
@@ -151,27 +239,72 @@ func (d *Dispatcher) executeClaim(ctx context.Context, claim *iapiserver.ClaimTa
 		Output:        output,
 		ExternalJobID: "api-internal",
 	})
-	return errors.WithStack(err)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if observer, ok := executor.(taskCompletionObserver); ok {
+		return errors.WithStack(observer.Completed(ctx, completed))
+	}
+	return nil
 }
 
-func (d *Dispatcher) failRun(ctx context.Context, claim *iapiserver.ClaimTaskRunResponse, cause error) error {
-	_, err := d.store.TaskCenters().FailRun(ctx, &iapiserver.TaskRunFailRequest{
+func (d *Dispatcher) workerCapabilities() string {
+	items := make([]string, 0, len(d.capabilities))
+	for capability := range d.capabilities {
+		items = append(items, capability)
+	}
+	sort.Strings(items)
+	return strings.Join(items, ",")
+}
+
+func (d *Dispatcher) renewLeaseAndWatchCancellation(ctx context.Context, cancel context.CancelFunc, claim *iapiserver.ClaimTaskRunResponse, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(iapiserver.DefaultTaskCenterLeaseDuration / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run, err := d.store.TaskCenters().GetRun(ctx, claim.TaskRun.ID)
+			if err != nil || run.Status == iapiserver.TaskRunStatusCancelRequested || run.Status == iapiserver.TaskRunStatusCanceled {
+				cancel()
+				return
+			}
+			if _, err := d.store.TaskCenters().RenewLease(ctx, &iapiserver.LeaseRenewRequest{LeaseID: claim.Lease.ID, WorkerID: internalThumbnailWorkerID, AttemptID: claim.Attempt.ID, RunID: claim.TaskRun.ID}); err != nil {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+func (d *Dispatcher) failRun(ctx context.Context, claim *iapiserver.ClaimTaskRunResponse, cause error) (*iapiserver.TaskRun, error) {
+	failureType := iapiserver.FailureTypeFunctionError
+	errorCode := "asset_thumbnail_generate_failed"
+	switch {
+	case stderrors.Is(cause, context.Canceled):
+		failureType, errorCode = iapiserver.FailureTypeCanceled, "task_execution_canceled"
+	case stderrors.Is(cause, context.DeadlineExceeded):
+		failureType, errorCode = iapiserver.FailureTypeTimeout, "task_execution_timeout"
+	}
+	failed, err := d.store.TaskCenters().FailRun(ctx, &iapiserver.TaskRunFailRequest{
 		RunID:     claim.TaskRun.ID,
 		AttemptID: claim.Attempt.ID,
 		LeaseID:   claim.Lease.ID,
 		WorkerID:  internalThumbnailWorkerID,
 		Error: iapiserver.TaskError{
-			Code:        "asset_thumbnail_generate_failed",
+			Code:        errorCode,
 			Message:     cause.Error(),
-			FailureType: iapiserver.FailureTypeFunctionError,
+			FailureType: failureType,
 			Retryable:   false,
 			OccurredAt:  imachinery.NewTime(time.Now()),
 		},
 	})
 	if err != nil {
-		return errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
-	return cause
+	return failed, nil
 }
 
 type ThumbnailExecutor struct {

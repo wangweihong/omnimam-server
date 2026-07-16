@@ -1,0 +1,152 @@
+schema_version: "1.0"
+id: deepseek-official
+name: DeepSeek Official API
+description: DeepSeek 官方稳定 OpenAI-compatible Chat Completions 能力清单。
+application_engine_type_id: deepseek_official
+revision: "2026-07-15.1"
+enabled: true
+provider:
+  code: deepseek
+  name: DeepSeek
+  model_owner: DeepSeek
+  serving_platform: DeepSeek Official API
+  official_website: https://api-docs.deepseek.com/
+sources:
+  - type: api_reference
+    title: Create Chat Completion
+    url: https://api-docs.deepseek.com/api/create-chat-completion
+    checked_at: "2026-07-15"
+    scope: Chat Completions 请求、响应、思考、工具、流式输出和采样参数。
+  - type: changelog
+    title: DeepSeek API Change Log
+    url: https://api-docs.deepseek.com/updates/
+    checked_at: "2026-07-15"
+    source_updated_at: "2026-04-24"
+    scope: V4 Pro/Flash 上线及旧 chat/reasoner 别名退役计划。
+models:
+  - id: deepseek-v4-pro
+    provider_model_id: deepseek-v4-pro
+    display_name: DeepSeek V4 Pro
+    family: deepseek-v4
+    variant: pro
+    lifecycle: {status: active, available_since: "2026-04-24"}
+    context_window_tokens: 1000000
+    maximum_output_tokens: 384000
+    limits:
+      thinking_modes: [enabled, disabled]
+      reasoning_effort: [high, max]
+      maximum_tools: 128
+  - id: deepseek-v4-flash
+    provider_model_id: deepseek-v4-flash
+    display_name: DeepSeek V4 Flash
+    family: deepseek-v4
+    variant: flash
+    lifecycle: {status: active, available_since: "2026-04-24"}
+    context_window_tokens: 1000000
+    maximum_output_tokens: 384000
+    limits:
+      thinking_modes: [enabled, disabled]
+      reasoning_effort: [high, max]
+      maximum_tools: 128
+operations:
+  - id: chat-completions
+    capability_definition_id: text.chat_completion
+    execution_mode: synchronous
+    input_media_types: [text, json]
+    output_media_types: [text, json]
+    description: 官方稳定 OpenAI-compatible POST /chat/completions；stream=true 时使用 SSE。
+variants:
+  - id: v4-pro-chat-completions
+    model_id: deepseek-v4-pro
+    operation_id: chat-completions
+    lifecycle: {status: active}
+    input_schema: &deepseek_chat_input
+      type: object
+      additionalProperties: false
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: {type: string, enum: [system, user, assistant, tool]}
+              content: {type: [string, 'null']}
+              name: {type: string}
+              reasoning_content: {type: [string, 'null']}
+              tool_call_id: {type: string}
+              tool_calls: {type: array}
+            additionalProperties: false
+        thinking:
+          type: object
+          properties:
+            type: {type: string, enum: [enabled, disabled], default: enabled}
+          required: [type]
+          additionalProperties: false
+        reasoning_effort: {type: string, enum: [high, max], default: high}
+        max_tokens: {type: integer, minimum: 1, maximum: 384000}
+        response_format:
+          type: object
+          properties:
+            type: {type: string, enum: [text, json_object], default: text}
+          required: [type]
+          additionalProperties: false
+        stop: {type: [string, array], items: {type: string}, maxItems: 16}
+        stream: {type: boolean, default: false}
+        stream_options:
+          type: object
+          properties:
+            include_usage: {type: boolean}
+          additionalProperties: false
+        temperature: {type: number, minimum: 0, maximum: 2, default: 1}
+        top_p: {type: number, minimum: 0, maximum: 1, default: 1}
+        tools: {type: array, maxItems: 128, items: {type: object}}
+        tool_choice: {type: [string, object]}
+        logprobs: {type: boolean}
+        top_logprobs: {type: integer, minimum: 0, maximum: 20}
+        user_id: {type: string, pattern: '^[A-Za-z0-9_-]{1,512}$'}
+      allOf:
+        - if:
+            required: [top_logprobs]
+          then:
+            required: [logprobs]
+            properties:
+              logprobs: {const: true}
+        - if:
+            required: [thinking]
+            properties:
+              thinking:
+                properties:
+                  type: {const: enabled}
+          then:
+            not:
+              required: [tool_choice]
+      x-omnimam-constraints:
+        - temperature 与 top_p 建议只调整其中一个。
+        - developer 角色不受支持；系统提示使用 system 角色。
+        - response_format.type=json_object 时消息必须明确要求 JSON 输出。
+        - thinking 模式的工具调用历史必须回传 reasoning_content。
+    output_schema: &deepseek_chat_output
+      type: object
+      additionalProperties: false
+      required: [id, model, choices, usage]
+      properties:
+        id: {type: string}
+        model: {type: string}
+        choices: {type: array, minItems: 1, items: {type: object}}
+        usage: {type: object, additionalProperties: true}
+        system_fingerprint: {type: string}
+    unsupported_parameters: [frequency_penalty, presence_penalty, max_completion_tokens, developer_role]
+  - id: v4-flash-chat-completions
+    model_id: deepseek-v4-flash
+    operation_id: chat-completions
+    lifecycle: {status: active}
+    input_schema: *deepseek_chat_input
+    output_schema: *deepseek_chat_output
+    unsupported_parameters: [frequency_penalty, presence_penalty, max_completion_tokens, developer_role]
+notes:
+  - 本清单排除 Prefix Completion、FIM Completion 等 Beta 能力。
+  - deepseek-chat 与 deepseek-reasoner 将于 2026-07-24 15:59 UTC 退役，不作为可执行模型注册。
+  - ProviderCapability 不保存 API Key；鉴权和 base URL 由 deepseek_official EngineAdapter 与 ApplicationEngineInstance 提供。

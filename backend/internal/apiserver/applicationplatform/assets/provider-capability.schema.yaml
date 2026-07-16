@@ -1,0 +1,358 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://omnimam.local/schemas/application-platform/provider-capability.schema.yaml
+title: OmniMAM ProviderCapability Manifest
+description: >-
+  ProviderCapability 只读 YAML 清单契约。运行态 availability、failure_reason、
+  loaded_at 和 source_file 不属于清单字段，由启动加载器生成。
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - id
+  - name
+  - application_engine_type_id
+  - revision
+  - provider
+  - sources
+  - models
+  - operations
+  - variants
+properties:
+  schema_version:
+    const: "1.0"
+  id:
+    type: string
+    pattern: '^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$'
+    maxLength: 128
+  name:
+    type: string
+    minLength: 1
+    maxLength: 200
+  description:
+    type: string
+    maxLength: 2000
+  application_engine_type_id:
+    type: string
+    pattern: '^[a-z][a-z0-9_]*$'
+    maxLength: 128
+  revision:
+    type: string
+    minLength: 1
+    maxLength: 64
+  enabled:
+    type: boolean
+    default: true
+  provider:
+    $ref: '#/$defs/provider'
+  sources:
+    type: array
+    minItems: 1
+    items:
+      $ref: '#/$defs/source'
+  models:
+    type: array
+    minItems: 1
+    items:
+      $ref: '#/$defs/model'
+  operations:
+    type: array
+    minItems: 1
+    items:
+      $ref: '#/$defs/operation'
+  variants:
+    type: array
+    minItems: 1
+    items:
+      $ref: '#/$defs/variant'
+  labels:
+    type: object
+    propertyNames:
+      pattern: '^[a-z][a-z0-9_.-]*$'
+    additionalProperties:
+      type: string
+  notes:
+    type: array
+    items:
+      type: string
+      minLength: 1
+  extensions:
+    type: object
+    additionalProperties: true
+
+$defs:
+  provider:
+    type: object
+    additionalProperties: false
+    required: [code, name, model_owner, serving_platform, official_website]
+    properties:
+      code:
+        type: string
+        pattern: '^[a-z][a-z0-9_]*$'
+      name:
+        type: string
+        minLength: 1
+      model_owner:
+        type: string
+        minLength: 1
+      serving_platform:
+        type: string
+        minLength: 1
+      official_website:
+        type: string
+        format: uri
+
+  source:
+    type: object
+    additionalProperties: false
+    required: [type, title, url, checked_at, scope]
+    properties:
+      type:
+        enum: [model_owner, api_reference, changelog, model_card]
+      title:
+        type: string
+        minLength: 1
+      url:
+        type: string
+        format: uri
+      checked_at:
+        type: string
+        format: date
+      source_updated_at:
+        type: string
+        format: date
+      scope:
+        type: string
+        minLength: 1
+
+  lifecycle:
+    type: object
+    additionalProperties: false
+    required: [status]
+    properties:
+      status:
+        enum: [active, preview, deprecated, retired]
+      available_since:
+        type: string
+        format: date
+      deprecated_at:
+        type: string
+        format: date
+      retired_at:
+        type: string
+        format: date
+      replacement_model_id:
+        type: string
+
+  model:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - provider_model_id
+      - display_name
+      - family
+      - variant
+      - lifecycle
+    properties:
+      id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      provider_model_id:
+        type: string
+        minLength: 1
+      display_name:
+        type: string
+        minLength: 1
+      family:
+        type: string
+        minLength: 1
+      variant:
+        type: string
+        minLength: 1
+      lifecycle:
+        $ref: '#/$defs/lifecycle'
+      context_window_tokens:
+        type: integer
+        minimum: 1
+      maximum_output_tokens:
+        type: integer
+        minimum: 1
+      limits:
+        type: object
+        additionalProperties:
+          anyOf:
+            - type: string
+            - type: number
+            - type: integer
+            - type: boolean
+            - type: array
+              items:
+                anyOf:
+                  - type: string
+                  - type: number
+                  - type: integer
+                  - type: boolean
+      extensions:
+        type: object
+        additionalProperties: true
+
+  operation:
+    type: object
+    additionalProperties: false
+    required: [id, capability_definition_id, execution_mode, input_media_types, output_media_types]
+    properties:
+      id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      capability_definition_id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      execution_mode:
+        enum: [synchronous, asynchronous]
+      input_media_types:
+        type: array
+        uniqueItems: true
+        items:
+          enum: [text, image, video, audio, json]
+      output_media_types:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          enum: [text, image, video, audio, json]
+      description:
+        type: string
+      extensions:
+        type: object
+        additionalProperties: true
+
+  parameter_definition:
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type:
+        oneOf:
+          - enum: [string, integer, number, boolean, object, array]
+          - type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              enum: [string, integer, number, boolean, object, array, 'null']
+      title:
+        type: string
+      description:
+        type: string
+      enum:
+        type: array
+        minItems: 1
+        uniqueItems: true
+      const: {}
+      default: {}
+      minimum:
+        type: number
+      maximum:
+        type: number
+      minLength:
+        type: integer
+        minimum: 0
+      maxLength:
+        type: integer
+        minimum: 0
+      pattern:
+        type: string
+      format:
+        enum: [uri, date, date-time, asset_image, asset_video, asset_audio]
+      minItems:
+        type: integer
+        minimum: 0
+      maxItems:
+        type: integer
+        minimum: 0
+      uniqueItems:
+        type: boolean
+      items:
+        type: object
+        additionalProperties: true
+      properties:
+        type: object
+        additionalProperties: true
+      required:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+      additionalProperties:
+        type: boolean
+      deprecated:
+        type: boolean
+      x-omnimam-connectable:
+        type: boolean
+      x-provider-parameter:
+        type: string
+
+  parameter_schema:
+    type: object
+    additionalProperties: false
+    required: [type, additionalProperties, properties]
+    properties:
+      type:
+        const: object
+      additionalProperties:
+        const: false
+      properties:
+        type: object
+        additionalProperties:
+          $ref: '#/$defs/parameter_definition'
+      required:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+      allOf:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      anyOf:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      x-omnimam-constraints:
+        type: array
+        items:
+          type: string
+
+  variant:
+    type: object
+    additionalProperties: false
+    required: [id, model_id, operation_id, lifecycle, input_schema, output_schema]
+    properties:
+      id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      model_id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      operation_id:
+        type: string
+        pattern: '^[a-z][a-z0-9_.-]*$'
+      lifecycle:
+        $ref: '#/$defs/lifecycle'
+      input_schema:
+        $ref: '#/$defs/parameter_schema'
+      output_schema:
+        $ref: '#/$defs/parameter_schema'
+      unsupported_parameters:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+      notes:
+        type: array
+        items:
+          type: string
+      extensions:
+        type: object
+        additionalProperties: true

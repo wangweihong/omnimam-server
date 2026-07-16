@@ -1,234 +1,216 @@
 package iapiserver
 
-import "github.com/wangweihong/omnimam/backend/apis/imachinery"
+import (
+	"errors"
+	"regexp"
 
-type (
-	PageInfo struct {
-		PageNum  int   `json:"page_num"`
-		PageSize int   `json:"page_size"`
-		Total    int64 `json:"total"`
-	}
-
-	ProviderAdapterListRequest struct {
-		imachinery.BasicQueryParam
-		PlatformType   string `json:"platform_type" form:"platform_type"`
-		CapabilityType string `json:"capability_type" form:"capability_type"`
-		Enabled        *bool  `json:"enabled" form:"enabled"`
-	}
-
-	ProviderAdapterListResponse struct {
-		Items []*ProviderAdapter `json:"items"`
-		Page  PageInfo           `json:"page"`
-	}
-
-	ProviderOperationListRequest struct {
-		SourceMode     string `json:"source_mode" form:"source_mode"`
-		CapabilityType string `json:"capability_type" form:"capability_type"`
-	}
-
-	ProviderOperationListResponse struct {
-		Items []*ProviderOperation `json:"items"`
-	}
-
-	AppTemplateListRequest struct {
-		imachinery.BasicQueryParam
-		OwnerUserID string `json:"-" form:"-"`
-		IncludeAll  bool   `json:"-" form:"-"`
-		SourceKind  string `json:"source_kind" form:"source_kind"`
-		AdapterKey  string `json:"adapter_key" form:"adapter_key"`
-	}
-
-	AppTemplateCreateRequest struct {
-		Name             string         `json:"name" binding:"required"`
-		Description      string         `json:"description"`
-		SourceKind       string         `json:"source_kind" binding:"required,oneof=comfyui_workflow provider_workflow"`
-		AdapterKey       string         `json:"adapter_key" binding:"required"`
-		OperationKey     string         `json:"operation_key" binding:"required"`
-		OperationVersion string         `json:"operation_version" binding:"required"`
-		RawConfig        map[string]any `json:"raw_config" binding:"required"`
-		Kind             string         `json:"-"`
-		Config           map[string]any `json:"-"`
-		SaaSPlatformType string         `json:"-"`
-		CapabilityType   string         `json:"-"`
-	}
-
-	MetadataUpdateRequest struct {
-		Name        *string `json:"name"`
-		Description *string `json:"description"`
-	}
-
-	AppTemplateUpdateRequest struct {
-		ID string `json:"id"`
-		MetadataUpdateRequest
-	}
-
-	AppTemplateListResponse struct {
-		Items []*AppTemplate `json:"items"`
-		Page  PageInfo       `json:"page"`
-	}
-
-	CapabilityGraphResponse struct {
-		Data CapabilityGraph `json:"data"`
-	}
-
-	InputMappingInput struct {
-		InputKey      string `json:"input_key" binding:"required"`
-		InputLabel    string `json:"input_label" binding:"required"`
-		SourcePortKey string `json:"source_port_key" binding:"required"`
-		SourcePath    string `json:"source_path" binding:"required"`
-		DataType      string `json:"data_type" binding:"required"`
-		DefaultValue  any    `json:"default_value"`
-		SortOrder     int    `json:"sort_order"`
-	}
-
-	InputMappingSaveRequest struct {
-		Items []InputMappingInput `json:"items" binding:"required"`
-	}
-
-	InputMappingListResponse struct {
-		Items []*InputMapping `json:"items"`
-	}
-
-	OutputMappingInput struct {
-		OutputKey       string `json:"output_key" binding:"required"`
-		OutputLabel     string `json:"output_label" binding:"required"`
-		SourcePortKey   string `json:"source_port_key" binding:"required"`
-		SourcePath      string `json:"source_path" binding:"required"`
-		DataType        string `json:"data_type" binding:"required"`
-		Cardinality     string `json:"cardinality" binding:"required,oneof=single multiple"`
-		Primary         bool   `json:"primary"`
-		Materialization string `json:"materialization" binding:"required,oneof=inline reference asset"`
-		SortOrder       int    `json:"sort_order"`
-	}
-
-	OutputMappingSaveRequest struct {
-		Items []OutputMappingInput `json:"items" binding:"required"`
-	}
-
-	OutputMappingListResponse struct {
-		Items []*OutputMapping `json:"items"`
-	}
-
-	ApplicationListRequest struct {
-		imachinery.BasicQueryParam
-		OwnerUserID    string `json:"-" form:"-"`
-		IncludeAll     bool   `json:"-" form:"-"`
-		TemplateID     string `json:"template_id" form:"template_id"`
-		SourceType     string `json:"source_type" form:"source_type"`
-		CapabilityType string `json:"capability_type" form:"capability_type"`
-	}
-
-	ApplicationFromTemplateRequest struct {
-		Name            string                   `json:"name" binding:"required"`
-		Description     string                   `json:"description"`
-		InputMappings   InputMappingSaveRequest  `json:"input_mappings" binding:"required"`
-		OutputMappings  OutputMappingSaveRequest `json:"output_mappings" binding:"required"`
-		FixedParameters map[string]any           `json:"fixed_parameters" binding:"required"`
-	}
-
-	ApplicationFromOperationRequest struct {
-		Name             string                   `json:"name" binding:"required"`
-		Description      string                   `json:"description"`
-		AdapterKey       string                   `json:"adapter_key" binding:"required"`
-		OperationKey     string                   `json:"operation_key" binding:"required"`
-		OperationVersion string                   `json:"operation_version" binding:"required"`
-		InputMappings    InputMappingSaveRequest  `json:"input_mappings" binding:"required"`
-		OutputMappings   OutputMappingSaveRequest `json:"output_mappings" binding:"required"`
-		FixedParameters  map[string]any           `json:"fixed_parameters" binding:"required"`
-	}
-
-	ApplicationCreateRequest = ApplicationFromOperationRequest
-
-	ApplicationUpdateRequest struct {
-		ID              string          `json:"id"`
-		Name            *string         `json:"name"`
-		Description     *string         `json:"description"`
-		FixedParameters *map[string]any `json:"fixed_parameters"`
-	}
-
-	ApplicationListResponse struct {
-		Items []*Application `json:"items"`
-		Page  PageInfo       `json:"page"`
-	}
-
-	AvailableEngineListResponse struct {
-		Items []*AvailableEngine `json:"items"`
-	}
-
-	AppEngineListRequest struct {
-		imachinery.BasicQueryParam
-		OwnerUserID  string `json:"-" form:"-"`
-		IncludeAll   bool   `json:"-" form:"-"`
-		AdapterKey   string `json:"adapter_key" form:"adapter_key"`
-		Status       string `json:"status" form:"status"`
-		HealthStatus string `json:"health_status" form:"health_status"`
-	}
-
-	AppEngineCreateRequest struct {
-		Name                string               `json:"name" binding:"required"`
-		Description         string               `json:"description"`
-		AdapterKey          string               `json:"adapter_key" binding:"required"`
-		Endpoint            string               `json:"endpoint" binding:"required"`
-		AuthType            string               `json:"auth_type" binding:"required,oneof=bearer_token api_key ak_sk none"`
-		AuthConfig          AppEngineAuthConfig  `json:"auth_config"`
-		SupportedOperations []SupportedOperation `json:"supported_operations" binding:"required"`
-		NodeTypes           []string             `json:"node_types"`
-		ModelRefs           []string             `json:"model_refs"`
-		Priority            int                  `json:"priority"`
-		MaxConcurrency      int                  `json:"max_concurrency" binding:"required,min=1"`
-	}
-
-	AppEngineUpdateRequest struct {
-		ID                  string                `json:"id"`
-		Name                *string               `json:"name"`
-		Description         *string               `json:"description"`
-		Endpoint            *string               `json:"endpoint"`
-		AuthType            *string               `json:"auth_type"`
-		AuthConfig          *AppEngineAuthConfig  `json:"auth_config"`
-		Status              *string               `json:"status"`
-		SupportedOperations *[]SupportedOperation `json:"supported_operations"`
-		NodeTypes           *[]string             `json:"node_types"`
-		ModelRefs           *[]string             `json:"model_refs"`
-		Priority            *int                  `json:"priority"`
-		MaxConcurrency      *int                  `json:"max_concurrency"`
-	}
-
-	AppEngineHealthCheckRequest struct {
-		AdapterKey string              `json:"adapter_key" binding:"required"`
-		Endpoint   string              `json:"endpoint" binding:"required"`
-		AuthType   string              `json:"auth_type" binding:"required"`
-		AuthConfig AppEngineAuthConfig `json:"auth_config"`
-	}
-
-	AppEngineHealthCheckResult struct {
-		HealthStatus      string          `json:"health_status"`
-		CheckedAt         imachinery.Time `json:"checked_at"`
-		UnhealthyReason   string          `json:"unhealthy_reason,omitempty"`
-		LatencyMS         int64           `json:"latency_ms,omitempty"`
-		CapabilitySummary map[string]any  `json:"capability_summary,omitempty"`
-	}
-
-	AppEngineListResponse struct {
-		Items []*AppEngine `json:"items"`
-		Page  PageInfo     `json:"page"`
-	}
-
-	ApplicationRunCreateRequest struct {
-		AppEngineID string         `json:"app_engine_id"`
-		Input       map[string]any `json:"input" binding:"required"`
-	}
-
-	ApplicationRunListRequest struct {
-		imachinery.BasicQueryParam
-		OwnerUserID   string `json:"-" form:"-"`
-		IncludeAll    bool   `json:"-" form:"-"`
-		ApplicationID string `json:"application_id" form:"application_id"`
-		RunMode       string `json:"run_mode" form:"run_mode"`
-		TaskStatus    string `json:"task_status" form:"task_status"`
-	}
-
-	ApplicationRunListResponse struct {
-		Items []*ApplicationRun `json:"items"`
-		Page  PageInfo          `json:"page"`
-	}
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
+
+type ProviderCapabilityListRequest struct {
+	imachinery.BasicQueryParam
+	ApplicationEngineTypeID string `form:"application_engine_type_id"`
+	Availability            string `form:"availability" binding:"omitempty,oneof=available disabled unavailable"`
+}
+type ProviderCapabilityLoadResultListRequest struct {
+	imachinery.BasicQueryParam
+	Result string `form:"result" binding:"omitempty,oneof=loaded disabled failed"`
+}
+type ApplicationEngineTypeListRequest struct{ imachinery.BasicQueryParam }
+type EngineInstanceListRequest struct {
+	imachinery.BasicQueryParam
+	ApplicationEngineTypeID string `form:"application_engine_type_id"`
+	HealthStatus            string `form:"health_status" binding:"omitempty,oneof=unknown online offline degraded"`
+	Enabled                 *bool  `form:"enabled"`
+}
+type EngineCapabilityBindingListRequest struct {
+	imachinery.BasicQueryParam
+	EngineInstanceID     string `form:"engine_instance_id"`
+	ProviderCapabilityID string `form:"provider_capability_id"`
+	Enabled              *bool  `form:"enabled"`
+}
+type ApplicationTemplateListRequest struct {
+	imachinery.BasicQueryParam
+	CapabilitySourceType   string `form:"capability_source_type" binding:"omitempty,oneof=provider_capability comfyui_workflow"`
+	CapabilityDefinitionID string `form:"capability_definition_id"`
+	OwnerUserID            string `form:"-"`
+}
+type ApplicationTemplateVersionListRequest struct {
+	imachinery.BasicQueryParam
+	ApplicationTemplateID string `form:"-"`
+	Status                string `form:"status" binding:"omitempty,oneof=draft published retired"`
+}
+type ApplicationListRequest struct {
+	imachinery.BasicQueryParam
+	CapabilityDefinitionID string `form:"capability_definition_id"`
+	Visibility             string `form:"visibility" binding:"omitempty,oneof=private global"`
+	RunEnabled             *bool  `form:"run_enabled"`
+	OwnerUserID            string `form:"-"`
+	IncludeGlobal          bool   `form:"-"`
+}
+type ApplicationVersionListRequest struct {
+	imachinery.BasicQueryParam
+	ApplicationID string `form:"-"`
+	Status        string `form:"status" binding:"omitempty,oneof=draft published retired"`
+}
+
+type EngineInstanceCreateRequest struct {
+	Name                    string         `json:"name" binding:"required,max=255"`
+	Description             string         `json:"description"`
+	ApplicationEngineTypeID string         `json:"application_engine_type_id" binding:"required"`
+	BaseURL                 string         `json:"base_url" binding:"required,url"`
+	AuthType                string         `json:"auth_type" binding:"required,oneof=none api_key bearer_token ak_sk"`
+	AuthConfig              map[string]any `json:"auth_config"`
+	Enabled                 *bool          `json:"enabled" binding:"required"`
+	Region                  string         `json:"region"`
+	MaxConcurrency          int            `json:"max_concurrency" binding:"required,min=1"`
+	RequestTimeoutSeconds   int            `json:"request_timeout_seconds" binding:"omitempty,min=1"`
+	TaskTimeoutSeconds      int            `json:"task_timeout_seconds" binding:"omitempty,min=1"`
+}
+type EngineInstanceUpdateRequest struct {
+	ID                    string         `json:"-"`
+	Name                  *string        `json:"name"`
+	Description           *string        `json:"description"`
+	BaseURL               *string        `json:"base_url" binding:"omitempty,url"`
+	AuthType              *string        `json:"auth_type" binding:"omitempty,oneof=none api_key bearer_token ak_sk"`
+	AuthConfig            map[string]any `json:"auth_config"`
+	Enabled               *bool          `json:"enabled"`
+	Region                *string        `json:"region"`
+	MaxConcurrency        *int           `json:"max_concurrency" binding:"omitempty,min=1"`
+	RequestTimeoutSeconds *int           `json:"request_timeout_seconds" binding:"omitempty,min=1"`
+	TaskTimeoutSeconds    *int           `json:"task_timeout_seconds" binding:"omitempty,min=1"`
+	ResourceVersion       int64          `json:"resource_version" binding:"required"`
+}
+type EngineCapabilityBindingCreateRequest struct {
+	Name                 string         `json:"name" binding:"required"`
+	Description          string         `json:"description"`
+	EngineInstanceID     string         `json:"engine_instance_id" binding:"required"`
+	ProviderCapabilityID string         `json:"provider_capability_id" binding:"required"`
+	Enabled              *bool          `json:"enabled" binding:"required"`
+	Restrictions         map[string]any `json:"restrictions"`
+}
+type EngineCapabilityBindingUpdateRequest struct {
+	ID              string         `json:"-"`
+	Name            *string        `json:"name"`
+	Description     *string        `json:"description"`
+	Enabled         *bool          `json:"enabled"`
+	Restrictions    map[string]any `json:"restrictions"`
+	ResourceVersion int64          `json:"resource_version" binding:"required"`
+}
+
+type ApplicationTemplateCreateRequest struct {
+	Name                     string         `json:"name" binding:"required"`
+	Description              string         `json:"description"`
+	CapabilityDefinitionID   string         `json:"capability_definition_id" binding:"required"`
+	CapabilitySourceType     string         `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
+	ProviderCapabilityID     string         `json:"provider_capability_id"`
+	ProviderOperationID      string         `json:"provider_operation_id"`
+	WorkflowContractRevision string         `json:"workflow_contract_revision"`
+	ComfyUIAPIWorkflow       map[string]any `json:"comfyui_api_workflow"`
+	ComfyUIObjectInfo        map[string]any `json:"comfyui_object_info"`
+	TemplateContract         map[string]any `json:"template_contract"`
+}
+type ApplicationTemplateVersionCreateRequest struct {
+	Name                     string         `json:"name"`
+	Description              string         `json:"description"`
+	CapabilitySourceType     string         `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
+	ProviderCapabilityID     string         `json:"provider_capability_id"`
+	ProviderOperationID      string         `json:"provider_operation_id"`
+	WorkflowContractRevision string         `json:"workflow_contract_revision"`
+	ComfyUIAPIWorkflow       map[string]any `json:"comfyui_api_workflow"`
+	ComfyUIObjectInfo        map[string]any `json:"comfyui_object_info"`
+	TemplateContract         map[string]any `json:"template_contract"`
+}
+type ApplicationCreateRequest struct {
+	Name                   string `json:"name" binding:"required"`
+	Description            string `json:"description"`
+	CapabilityDefinitionID string `json:"capability_definition_id" binding:"required"`
+	Visibility             string `json:"visibility" binding:"omitempty,oneof=private global"`
+	RunEnabled             *bool  `json:"run_enabled"`
+	CanvasEnabled          *bool  `json:"canvas_enabled"`
+	CopyEnabled            *bool  `json:"copy_enabled"`
+	PresetEnabled          *bool  `json:"preset_enabled"`
+}
+type ApplicationUpdateRequest struct {
+	ID              string  `json:"-"`
+	Name            *string `json:"name"`
+	Description     *string `json:"description"`
+	Visibility      *string `json:"visibility" binding:"omitempty,oneof=private global"`
+	RunEnabled      *bool   `json:"run_enabled"`
+	CanvasEnabled   *bool   `json:"canvas_enabled"`
+	CopyEnabled     *bool   `json:"copy_enabled"`
+	PresetEnabled   *bool   `json:"preset_enabled"`
+	ResourceVersion int64   `json:"resource_version" binding:"required"`
+}
+type ApplicationVersionCreateRequest struct {
+	SemanticVersion              string         `json:"semantic_version" binding:"required"`
+	ApplicationTemplateVersionID string         `json:"application_template_version_id" binding:"required"`
+	InputSchema                  map[string]any `json:"input_schema"`
+	OutputSchema                 map[string]any `json:"output_schema"`
+	ParameterPolicies            map[string]any `json:"parameter_policies"`
+}
+type RuntimeFormResolveRequest struct {
+	ApplicationVersionID string         `json:"application_version_id" binding:"required"`
+	EngineInstanceID     string         `json:"engine_instance_id"`
+	CurrentValues        map[string]any `json:"current_values"`
+}
+type ApplicationRunCreateRequest struct {
+	ApplicationVersionID string         `json:"application_version_id" binding:"required"`
+	EngineInstanceID     string         `json:"engine_instance_id"`
+	Inputs               map[string]any `json:"inputs"`
+	IdempotencyKey       string         `json:"idempotency_key" binding:"required"`
+}
+
+var applicationSemanticVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+// Validate distinguishes required JSON fields whose valid zero values cannot be expressed by binding tags.
+func (r *EngineInstanceCreateRequest) Validate() error {
+	if r.AuthConfig == nil {
+		return errors.New("auth_config is required")
+	}
+	if r.Enabled == nil {
+		return errors.New("enabled is required")
+	}
+	return nil
+}
+
+func (r *EngineCapabilityBindingCreateRequest) Validate() error {
+	if r.Enabled == nil {
+		return errors.New("enabled is required")
+	}
+	if r.Restrictions == nil {
+		return errors.New("restrictions is required")
+	}
+	return nil
+}
+
+func (r *ApplicationTemplateCreateRequest) Validate() error {
+	if r.TemplateContract == nil {
+		return errors.New("template_contract is required")
+	}
+	return nil
+}
+
+func (r *ApplicationTemplateVersionCreateRequest) Validate() error {
+	if r.TemplateContract == nil {
+		return errors.New("template_contract is required")
+	}
+	return nil
+}
+
+func (r *ApplicationVersionCreateRequest) Validate() error {
+	if !applicationSemanticVersionPattern.MatchString(r.SemanticVersion) {
+		return errors.New("semantic_version is invalid")
+	}
+	if r.InputSchema == nil || r.OutputSchema == nil || r.ParameterPolicies == nil {
+		return errors.New("input_schema, output_schema, and parameter_policies are required")
+	}
+	return nil
+}
+
+func (r *ApplicationRunCreateRequest) Validate() error {
+	if r.Inputs == nil {
+		return errors.New("inputs is required")
+	}
+	return nil
+}

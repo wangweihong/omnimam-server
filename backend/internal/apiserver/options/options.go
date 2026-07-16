@@ -25,13 +25,28 @@ type Options struct {
 	InsecureServing         *genericoptions.InsecureServingOptions `json:"insecure"     mapstructure:"insecure"`
 	SecureServing           *genericoptions.SecureServingOptions   `json:"secure"       mapstructure:"secure"`
 	//PostgresSQLOptions      *genericoptions.PostgresSQLOptions     `json:"postgres" mapstructure:"postgres"`
-	DatabaseOptions    *genericoptions.DatabaseOptions `json:"database"     mapstructure:"database"`
-	AssetUploadOptions *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
+	DatabaseOptions            *genericoptions.DatabaseOptions `json:"database"     mapstructure:"database"`
+	AssetUploadOptions         *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
+	ApplicationPlatformOptions *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
 }
 
 type AssetUploadOptions struct {
 	ChunkTempDir      string `json:"chunk-temp-dir"      mapstructure:"chunk-temp-dir"`
 	ChunkCleanupHours int    `json:"chunk-cleanup-hours" mapstructure:"chunk-cleanup-hours"`
+}
+
+// ApplicationPlatformOptions configures the immutable provider capability snapshot loaded at startup.
+type ApplicationPlatformOptions struct {
+	ProviderCapabilityDirectory string `json:"provider-capability-directory" mapstructure:"provider-capability-directory"`
+}
+
+func NewApplicationPlatformOptions() *ApplicationPlatformOptions {
+	return &ApplicationPlatformOptions{ProviderCapabilityDirectory: "./provider-capabilities"}
+}
+
+func (o *ApplicationPlatformOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVar(&o.ProviderCapabilityDirectory, "application-platform.provider-capability-directory", o.ProviderCapabilityDirectory,
+		"directory containing immutable ProviderCapability YAML manifests")
 }
 
 func NewAssetUploadOptions() *AssetUploadOptions {
@@ -59,8 +74,9 @@ func NewOptions() *Options {
 		FeatureOptions:          genericoptions.NewFeatureOptions(),
 		GenericServerRunOptions: genericoptions.NewServerRunOptions(),
 		//PostgresSQLOptions:      genericoptions.NewPostgresSQLOptions(),
-		DatabaseOptions:    genericoptions.NewDatabaseOptions(),
-		AssetUploadOptions: NewAssetUploadOptions(),
+		DatabaseOptions:            genericoptions.NewDatabaseOptions(),
+		AssetUploadOptions:         NewAssetUploadOptions(),
+		ApplicationPlatformOptions: NewApplicationPlatformOptions(),
 	}
 
 	return &s
@@ -77,6 +93,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	//o.PostgresSQLOptions.AddFlags(fss.FlagSet("database"))
 	o.DatabaseOptions.AddFlags(fss.FlagSet("database"))
 	o.AssetUploadOptions.AddFlags(fss.FlagSet("asset upload"))
+	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
 
 	fs := fss.FlagSet("misc")
 	fs.StringVar(&o.Name, "misc.name", o.Name, "name of server")
@@ -103,6 +120,12 @@ func (o *Options) Complete() error {
 	}
 	if o.AssetUploadOptions.ChunkCleanupHours <= 0 {
 		o.AssetUploadOptions.ChunkCleanupHours = 24
+	}
+	if o.ApplicationPlatformOptions == nil {
+		o.ApplicationPlatformOptions = NewApplicationPlatformOptions()
+	}
+	if o.ApplicationPlatformOptions.ProviderCapabilityDirectory == "" {
+		o.ApplicationPlatformOptions.ProviderCapabilityDirectory = "./provider-capabilities"
 	}
 
 	return nil

@@ -104,6 +104,7 @@ image.build.%: go.build.%
 		| sed -e "s#\$$TARGETPLATFORM#$(IMAGE_PLAT)#g" -e "s#__COMMAND__#$(IMAGE)#g" >$(TMP_DIR)/$(IMAGE)/Dockerfile
 	@cp $(OUTPUT_DIR)/configs/$(IMAGE).yaml $(TMP_DIR)/$(IMAGE)/ || true
 	@cp -rf $(OUTPUT_DIR)/platforms $(TMP_DIR)/$(IMAGE)/
+	@if [[ "$(IMAGE)" == "apiserver" ]]; then cp -rf $(ROOT_DIR)/provider-capabilities $(TMP_DIR)/$(IMAGE)/; fi
 	@DST_DIR=$(TMP_DIR)/$(IMAGE) $(ROOT_DIR)/build/docker/$(IMAGE)/build.sh 2>/dev/null || true
 	$(eval BUILD_SUFFIX := $(_DOCKER_BUILD_EXTRA_ARGS) -t $(IMAGETAG) $(TMP_DIR)/$(IMAGE))
 	@$(DOCKER) build $(BUILD_SUFFIX)
@@ -127,6 +128,7 @@ image.build.multiarch.%: image.dockerbuildx.prerequisite
 		| sed -e "s#__COMMAND__#$(IMAGE)#g" >$(TMP_DIR)/$(IMAGE)/Dockerfile
 	@cp $(OUTPUT_DIR)/configs/$(IMAGE).yaml $(TMP_DIR)/$(IMAGE)/ || true
 	@cp -rf $(OUTPUT_DIR)/platforms $(TMP_DIR)/$(IMAGE)/
+	@if [[ "$(IMAGE)" == "apiserver" ]]; then cp -rf $(ROOT_DIR)/provider-capabilities $(TMP_DIR)/$(IMAGE)/; fi
 	@docker buildx build $(_DOCKER_BUILD_EXTRA_ARGS)\
 		--output type=registry \
 		--platform  $(BUILDPLTFORM)  \

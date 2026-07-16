@@ -26,6 +26,7 @@ VOLUME ["/etc/omnimam"]
 
 COPY ./platforms/$TARGETPLATFORM/__COMMAND__ /opt/omnimam/bin/
 COPY __COMMAND__.yaml /etc/omnimam/
+COPY provider-capabilities /opt/omnimam/provider-capabilities
 
 ENTRYPOINT ["/opt/omnimam/bin/__COMMAND__"]
 CMD ["-c", "/etc/omnimam/__COMMAND__.yaml"]

@@ -175,6 +175,90 @@ func TestCreateRunAllowsInfiniteRetryWithOverallTimeout(t *testing.T) {
 	}
 }
 
+func TestCreateRunRequiresApplicationIdempotencyPair(t *testing.T) {
+	taskStore := &fakeTaskCenterStore{
+		definitions: map[string]*iapiserver.TaskDefinition{
+			"def-1": {
+				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
+				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
+			},
+		},
+		runs: map[string]*iapiserver.TaskRun{},
+	}
+	srv := NewService(&fakeFactory{taskCenter: taskStore})
+	_, err := srv.CreateRun(context.Background(), &iapiserver.TaskRunCreateRequest{
+		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:     "def-1",
+		ApplicationRunID: "app-run-1",
+	})
+	if err == nil {
+		t.Fatal("expected incomplete application idempotency pair to fail")
+	}
+}
+
+func TestCreateRunReturnsExistingForSameApplicationIdempotencyKey(t *testing.T) {
+	taskStore := &fakeTaskCenterStore{
+		definitions: map[string]*iapiserver.TaskDefinition{
+			"def-1": {
+				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
+				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
+			},
+		},
+		runs: map[string]*iapiserver.TaskRun{},
+	}
+	srv := NewService(&fakeFactory{taskCenter: taskStore})
+	req := &iapiserver.TaskRunCreateRequest{
+		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:     "def-1",
+		ApplicationRunID: "app-run-1",
+		IdempotencyKey:   "submit-1",
+	}
+	first, err := srv.CreateRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first create run: %v", err)
+	}
+	second, err := srv.CreateRun(context.Background(), req)
+	if err != nil {
+		t.Fatalf("idempotent create run: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("second run id = %s, want %s", second.ID, first.ID)
+	}
+	if taskStore.eventCount != 1 {
+		t.Fatalf("created event count = %d, want 1", taskStore.eventCount)
+	}
+}
+
+func TestCreateRunRejectsDifferentRequestForSameApplicationIdempotencyKey(t *testing.T) {
+	taskStore := &fakeTaskCenterStore{
+		definitions: map[string]*iapiserver.TaskDefinition{
+			"def-1": {ObjectMeta: imachinery.ObjectMeta{ID: "def-1", Name: "one"}, DefinitionType: iapiserver.TaskDefinitionTypeAtomic},
+			"def-2": {ObjectMeta: imachinery.ObjectMeta{ID: "def-2", Name: "two"}, DefinitionType: iapiserver.TaskDefinitionTypeAtomic},
+		},
+		runs: map[string]*iapiserver.TaskRun{},
+	}
+	srv := NewService(&fakeFactory{taskCenter: taskStore})
+	first := &iapiserver.TaskRunCreateRequest{
+		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:     "def-1",
+		ApplicationRunID: "app-run-1",
+		IdempotencyKey:   "submit-1",
+	}
+	if _, err := srv.CreateRun(context.Background(), first); err != nil {
+		t.Fatalf("first create run: %v", err)
+	}
+	second := *first
+	second.DefinitionID = "def-2"
+	_, err := srv.CreateRun(context.Background(), &second)
+	if err == nil {
+		t.Fatal("expected idempotency conflict")
+	}
+	status := toolboxerrors.ToStatus(err)
+	if status.Code != code.ErrTaskRunIdempotencyConflict {
+		t.Fatalf("code = %d, want %d", status.Code, code.ErrTaskRunIdempotencyConflict)
+	}
+}
+
 func TestTaskCenterObjectMetaUsesContractTimestampFields(t *testing.T) {
 	data, err := json.Marshal(iapiserver.TaskRun{
 		ObjectMeta: imachinery.ObjectMeta{ID: "run-1"},
@@ -191,6 +275,28 @@ func TestTaskCenterObjectMetaUsesContractTimestampFields(t *testing.T) {
 	}
 }
 
+func TestTaskRunEventCarriesApplicationProjectionKey(t *testing.T) {
+	run := &iapiserver.TaskRun{
+		ObjectMeta:       imachinery.ObjectMeta{ID: "run-1", ResourceVersion: 7},
+		ApplicationRunID: "app-run-1",
+		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
+		DefinitionID:     "application.execute",
+		Status:           iapiserver.TaskRunStatusRunning,
+	}
+	event := newTaskRunEvent(
+		run,
+		iapiserver.TaskCenterEventProgressUpdated,
+		iapiserver.TaskRunStatusRunning,
+		iapiserver.TaskRunStatusRunning,
+	)
+	if event.Payload["application_run_id"] != "app-run-1" {
+		t.Fatalf("application_run_id = %v, want app-run-1", event.Payload["application_run_id"])
+	}
+	if event.Payload["resource_version"] != int64(7) {
+		t.Fatalf("resource_version = %v, want 7", event.Payload["resource_version"])
+	}
+}
+
 type fakeFactory struct {
 	store.Factory
 	taskCenter store.TaskCenterStore
@@ -203,6 +309,7 @@ type fakeTaskCenterStore struct {
 	definitions map[string]*iapiserver.TaskDefinition
 	runs        map[string]*iapiserver.TaskRun
 	deleted     bool
+	eventCount  int
 }
 
 func (s *fakeTaskCenterStore) GetDefinition(
@@ -225,6 +332,28 @@ func (s *fakeTaskCenterStore) AddRun(_ context.Context, data *iapiserver.TaskRun
 	s.runs[data.ID] = &cloned
 	ret := cloned
 	return &ret, nil
+}
+
+func (s *fakeTaskCenterStore) AddRunIdempotent(
+	_ context.Context,
+	data *iapiserver.TaskRun,
+) (*iapiserver.TaskRun, bool, error) {
+	for _, existing := range s.runs {
+		if data.ApplicationRunID != "" &&
+			existing.ApplicationRunID == data.ApplicationRunID &&
+			existing.IdempotencyKey == data.IdempotencyKey {
+			if existing.DefinitionType != data.DefinitionType || existing.DefinitionID != data.DefinitionID {
+				return nil, false, toolboxerrors.NewStatusF(
+					code.ErrTaskRunIdempotencyConflict,
+					"idempotency conflict",
+				)
+			}
+			cloned := *existing
+			return &cloned, false, nil
+		}
+	}
+	created, err := s.AddRun(context.Background(), data)
+	return created, err == nil, err
 }
 
 func (s *fakeTaskCenterStore) GetRun(_ context.Context, id string) (*iapiserver.TaskRun, error) {
@@ -252,6 +381,7 @@ func (s *fakeTaskCenterStore) AddEvent(
 	_ context.Context,
 	data *iapiserver.TaskRunEvent,
 ) (*iapiserver.TaskRunEvent, error) {
+	s.eventCount++
 	return data, nil
 }
 

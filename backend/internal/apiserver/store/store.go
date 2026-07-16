@@ -293,6 +293,7 @@ type TaskCenterStore interface {
 	ListRuns(ctx context.Context, req *iapiserver.TaskRunListRequest) ([]*iapiserver.TaskRun, int64, error)
 	GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error)
 	AddRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
+	AddRunIdempotent(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, bool, error)
 	UpdateRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
 	SoftDeleteRun(ctx context.Context, id string) error
 	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
@@ -308,52 +309,40 @@ type TaskCenterStore interface {
 }
 
 type ApplicationPlatformStore interface {
-	ListTemplates(ctx context.Context, req *iapiserver.AppTemplateListRequest) ([]*iapiserver.AppTemplate, int64, error)
-	GetTemplate(ctx context.Context, id string) (*iapiserver.AppTemplate, error)
-	GetTemplateByOwnerName(ctx context.Context, ownerUserID, name string) (*iapiserver.AppTemplate, error)
-	AddTemplate(ctx context.Context, data *iapiserver.AppTemplate) (*iapiserver.AppTemplate, error)
-	UpdateTemplate(ctx context.Context, data *iapiserver.AppTemplate) (*iapiserver.AppTemplate, error)
-	DeleteTemplate(ctx context.Context, id string) error
+	ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) ([]*iapiserver.EngineInstance, int64, error)
+	GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error)
+	AddEngineInstance(ctx context.Context, data *iapiserver.EngineInstance) (*iapiserver.EngineInstance, error)
+	UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64) (*iapiserver.EngineInstance, error)
+	DeleteEngineInstance(ctx context.Context, id string) error
+	CountRunsByEngineInstance(ctx context.Context, id string) (int64, error)
+	ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) ([]*iapiserver.EngineCapabilityBinding, int64, error)
+	GetEngineBinding(ctx context.Context, id string) (*iapiserver.EngineCapabilityBinding, error)
+	AddEngineBinding(ctx context.Context, data *iapiserver.EngineCapabilityBinding) (*iapiserver.EngineCapabilityBinding, error)
+	UpdateEngineBinding(ctx context.Context, data *iapiserver.EngineCapabilityBinding, expectedVersion int64) (*iapiserver.EngineCapabilityBinding, error)
+	DeleteEngineBinding(ctx context.Context, id string) error
+	ListTemplates(ctx context.Context, req *iapiserver.ApplicationTemplateListRequest) ([]*iapiserver.ApplicationTemplate, int64, error)
+	GetTemplate(ctx context.Context, id string) (*iapiserver.ApplicationTemplate, error)
+	AddTemplateWithVersion(ctx context.Context, data *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ApplicationTemplate, error)
+	ListTemplateVersions(ctx context.Context, req *iapiserver.ApplicationTemplateVersionListRequest) ([]*iapiserver.ApplicationTemplateVersion, int64, error)
+	GetTemplateVersion(ctx context.Context, id string) (*iapiserver.ApplicationTemplateVersion, error)
+	AddTemplateVersion(ctx context.Context, data *iapiserver.ApplicationTemplateVersion) (*iapiserver.ApplicationTemplateVersion, error)
+	PublishTemplateVersion(ctx context.Context, id string) (*iapiserver.ApplicationTemplateVersion, error)
 	ListApplications(ctx context.Context, req *iapiserver.ApplicationListRequest) ([]*iapiserver.Application, int64, error)
 	GetApplication(ctx context.Context, id string) (*iapiserver.Application, error)
-	AddApplication(
-		ctx context.Context,
-		data *iapiserver.Application,
-		inputs []*iapiserver.InputMapping,
-		outputs []*iapiserver.OutputMapping,
-	) (*iapiserver.Application, error)
-	UpdateApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
-	DeleteApplication(ctx context.Context, id string) error
-	ListAppEngines(ctx context.Context, req *iapiserver.AppEngineListRequest) ([]*iapiserver.AppEngine, int64, error)
-	GetAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error)
-	GetAppEngineByOwnerName(ctx context.Context, ownerUserID, name string) (*iapiserver.AppEngine, error)
-	AddAppEngine(ctx context.Context, data *iapiserver.AppEngine) (*iapiserver.AppEngine, error)
-	UpdateAppEngine(ctx context.Context, data *iapiserver.AppEngine) (*iapiserver.AppEngine, error)
-	DeleteAppEngine(ctx context.Context, id string) error
-	ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) ([]*iapiserver.ApplicationRun, int64, error)
+	AddApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
+	UpdateApplication(ctx context.Context, data *iapiserver.Application, expectedVersion int64) (*iapiserver.Application, error)
+	ListApplicationVersions(ctx context.Context, req *iapiserver.ApplicationVersionListRequest) ([]*iapiserver.ApplicationVersion, int64, error)
+	GetApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
+	AddApplicationVersion(ctx context.Context, data *iapiserver.ApplicationVersion) (*iapiserver.ApplicationVersion, error)
+	PublishApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
-	CreateApplicationRun(
-		ctx context.Context,
-		data *iapiserver.ApplicationRun,
-		definition *iapiserver.TaskDefinition,
-		taskRun *iapiserver.TaskRun,
-	) (*iapiserver.ApplicationRun, error)
-	UpdateApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
-	ListInputMappings(ctx context.Context, applicationID string) ([]*iapiserver.InputMapping, error)
-	ReplaceInputMappings(
-		ctx context.Context,
-		applicationID string,
-		mappings []*iapiserver.InputMapping,
-	) ([]*iapiserver.InputMapping, error)
-	ListOutputMappings(ctx context.Context, applicationID string) ([]*iapiserver.OutputMapping, error)
-	ReplaceOutputMappings(
-		ctx context.Context,
-		applicationID string,
-		mappings []*iapiserver.OutputMapping,
-	) ([]*iapiserver.OutputMapping, error)
-	ListAvailableAppEngines(ctx context.Context, app *iapiserver.Application, ownerUserID string) ([]*iapiserver.AppEngine, error)
-	ReserveAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error)
-	ReleaseAppEngine(ctx context.Context, id string) error
+	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
+	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
+	BindApplicationRunTask(ctx context.Context, id, taskRunID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
+	ProjectApplicationRun(ctx context.Context, id string, taskVersion int64, status, failure string, outputs []map[string]any) (*iapiserver.ApplicationRun, error)
+	ListArtifactsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifact, error)
+	UpsertArtifact(ctx context.Context, data *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error)
+	UpdateArtifactRegistration(ctx context.Context, id, status, assetID, errorCode, failureDetail string, expectedVersion int64) (*iapiserver.ApplicationArtifact, error)
 }
 
 type FeatureFlagStore interface {

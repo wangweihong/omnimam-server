@@ -1,0 +1,377 @@
+package applicationplatform
+
+import (
+	"context"
+	"fmt"
+	"sort"
+
+	"github.com/wangweihong/gotoolbox/pkg/errors"
+
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+)
+
+type runtimeCandidate struct {
+	engineID string
+	variants []iapiserver.ProviderCapabilityVariant
+}
+
+func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app *iapiserver.Application, version *iapiserver.ApplicationVersion, req *iapiserver.RuntimeFormResolveRequest) (*iapiserver.RuntimeFormSchema, error) {
+	templateVersion, err := s.Store.ApplicationPlatforms().GetTemplateVersion(ctx, version.ApplicationTemplateVersionID)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppTemplateVersionNotFound, "application template version not found")
+	}
+	form := &iapiserver.RuntimeFormSchema{
+		ApplicationVersionID: version.ID,
+		CapabilitySourceType: templateVersion.CapabilitySourceType,
+		SourceRevision:       templateVersion.SourceRevision,
+		Changes:              []iapiserver.RuntimeFormChange{},
+		Violations:           []iapiserver.RuntimeFormViolation{},
+		ResolvedAt:           imachinery.Now(),
+	}
+	var properties map[string]any
+	var required []string
+	if raw, ok := version.InputSchema["properties"].(map[string]any); ok {
+		properties = cloneMap(raw)
+	} else {
+		properties = map[string]any{}
+	}
+	required = anyStrings(version.InputSchema["required"])
+
+	switch templateVersion.CapabilitySourceType {
+	case iapiserver.CapabilitySourceProviderCapability:
+		if templateVersion.ProviderCapabilityID == nil || templateVersion.ProviderOperationID == nil {
+			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "provider capability source is incomplete")
+		}
+		capability, ok := s.Capabilities.Get(*templateVersion.ProviderCapabilityID)
+		if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable {
+			return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
+		}
+		form.SourceRevision = capability.Revision
+		form.ProviderCapabilityID = stringPtr(capability.ID)
+		form.ProviderCapabilityRevision = stringPtr(capability.Revision)
+		candidates, err := s.providerRuntimeCandidates(ctx, capability, *templateVersion.ProviderOperationID, req.EngineInstanceID)
+		if err != nil {
+			return nil, err
+		}
+		variants := selectRuntimeVariants(candidates, req.CurrentValues)
+		if len(variants) == 0 {
+			return nil, errors.NewStatus(code.ErrAIAppRuntimeFormNoValidVariant, "no executable capability variant")
+		}
+		for _, candidate := range candidates {
+			form.CompatibleEngineInstanceIDs = append(form.CompatibleEngineInstanceIDs, candidate.engineID)
+		}
+		mergeVariantProperties(properties, &required, variants)
+	case iapiserver.CapabilitySourceComfyUIWorkflow:
+		if templateVersion.WorkflowContractRevision == nil {
+			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow revision is missing")
+		}
+		form.WorkflowContractRevision = stringPtr(*templateVersion.WorkflowContractRevision)
+		engines, _, err := s.Store.ApplicationPlatforms().ListEngineInstances(ctx, &iapiserver.EngineInstanceListRequest{ApplicationEngineTypeID: "comfyui", Enabled: boolPtr(true)})
+		if err != nil {
+			return nil, err
+		}
+		for _, engine := range engines {
+			if !runtimeHealthy(engine) || (req.EngineInstanceID != "" && engine.ID != req.EngineInstanceID) {
+				continue
+			}
+			form.CompatibleEngineInstanceIDs = append(form.CompatibleEngineInstanceIDs, engine.ID)
+		}
+		if len(form.CompatibleEngineInstanceIDs) == 0 {
+			return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "no compatible ComfyUI engine")
+		}
+	default:
+		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "unknown capability source type")
+	}
+	sort.Strings(form.CompatibleEngineInstanceIDs)
+	form.Fields, form.Changes, form.Violations = buildRuntimeFields(properties, required, version.ParameterPolicies, req.CurrentValues)
+	return form, nil
+}
+
+func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Context, capability *iapiserver.AIAppProviderCapability, operationID, selectedEngineID string) ([]runtimeCandidate, error) {
+	enabled := true
+	bindings, _, err := s.Store.ApplicationPlatforms().ListEngineBindings(ctx, &iapiserver.EngineCapabilityBindingListRequest{ProviderCapabilityID: capability.ID, Enabled: &enabled})
+	if err != nil {
+		return nil, err
+	}
+	baseVariants := make([]iapiserver.ProviderCapabilityVariant, 0)
+	for _, variant := range capability.Variants {
+		if variant.OperationID == operationID && (variant.Lifecycle.Status == "active" || variant.Lifecycle.Status == "preview") {
+			baseVariants = append(baseVariants, variant)
+		}
+	}
+	candidates := make([]runtimeCandidate, 0, len(bindings))
+	for _, binding := range bindings {
+		s.resolveBindingStatus(binding)
+		if binding.EffectiveStatus != iapiserver.BindingEffectiveAvailable || (selectedEngineID != "" && binding.EngineInstanceID != selectedEngineID) {
+			continue
+		}
+		engine, engineErr := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, binding.EngineInstanceID)
+		if engineErr != nil || !runtimeHealthy(engine) || engine.ApplicationEngineTypeID != capability.ApplicationEngineTypeID {
+			continue
+		}
+		variants := restrictVariants(baseVariants, binding.Restrictions)
+		if len(variants) > 0 {
+			candidates = append(candidates, runtimeCandidate{engineID: engine.ID, variants: variants})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "no enabled and healthy engine binding")
+	}
+	return candidates, nil
+}
+
+func selectRuntimeVariants(candidates []runtimeCandidate, values map[string]any) []iapiserver.ProviderCapabilityVariant {
+	seen := map[string]struct{}{}
+	result := []iapiserver.ProviderCapabilityVariant{}
+	model := stringValue(values["model"])
+	for _, candidate := range candidates {
+		for _, variant := range candidate.variants {
+			if model != "" && variant.ModelID != model {
+				continue
+			}
+			if _, ok := seen[variant.ID]; ok {
+				continue
+			}
+			seen[variant.ID] = struct{}{}
+			result = append(result, variant)
+		}
+	}
+	return result
+}
+
+func restrictVariants(variants []iapiserver.ProviderCapabilityVariant, restrictions map[string]any) []iapiserver.ProviderCapabilityVariant {
+	models, operations, variantIDs := stringSet(anyStrings(restrictions["model_ids"])), stringSet(anyStrings(restrictions["operation_ids"])), stringSet(anyStrings(restrictions["variant_ids"]))
+	result := make([]iapiserver.ProviderCapabilityVariant, 0, len(variants))
+	for _, variant := range variants {
+		if len(models) > 0 && !models[variant.ModelID] {
+			continue
+		}
+		if len(operations) > 0 && !operations[variant.OperationID] {
+			continue
+		}
+		if len(variantIDs) > 0 && !variantIDs[variant.ID] {
+			continue
+		}
+		result = append(result, variant)
+	}
+	return result
+}
+
+func mergeVariantProperties(properties map[string]any, required *[]string, variants []iapiserver.ProviderCapabilityVariant) {
+	properties["model"] = map[string]any{"type": "string", "enum": variantModelIDs(variants)}
+	for _, variant := range variants {
+		variantProps, _ := variant.InputSchema["properties"].(map[string]any)
+		for name, raw := range variantProps {
+			schema, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			existing, _ := properties[name].(map[string]any)
+			if existing == nil {
+				existing = cloneMap(schema)
+				properties[name] = existing
+			}
+			if values := anyValues(schema["enum"]); len(values) > 0 {
+				existing["enum"] = uniqueValues(append(anyValues(existing["enum"]), values...))
+			}
+		}
+		for _, name := range anyStrings(variant.InputSchema["required"]) {
+			if !contains(*required, name) {
+				*required = append(*required, name)
+			}
+		}
+	}
+}
+
+func buildRuntimeFields(properties map[string]any, required []string, policies, current map[string]any) ([]iapiserver.RuntimeFormField, []iapiserver.RuntimeFormChange, []iapiserver.RuntimeFormViolation) {
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fields := make([]iapiserver.RuntimeFormField, 0, len(names))
+	changes := []iapiserver.RuntimeFormChange{}
+	violations := []iapiserver.RuntimeFormViolation{}
+	for _, name := range names {
+		schema, _ := properties[name].(map[string]any)
+		policy, _ := policies[name].(map[string]any)
+		field := iapiserver.RuntimeFormField{Name: name, Type: stringValue(schema["type"]), Required: contains(required, name), Value: current[name], Options: anyValues(schema["enum"]), Connectable: boolValue(schema["x-omnimam-connectable"]), Dynamic: false, DependsOn: anyStrings(policy["depends_on"]), OnInvalid: stringValue(policy["on_invalid"]), UI: mapValue(policy["ui"])}
+		if field.Type == "" {
+			field.Type = "string"
+		}
+		if field.OnInvalid == "" {
+			if field.Type == "integer" || field.Type == "number" {
+				field.OnInvalid = iapiserver.RuntimeInvalidClamp
+			} else {
+				field.OnInvalid = iapiserver.RuntimeInvalidReset
+			}
+		}
+		if exposure := stringValue(policy["exposure"]); exposure == "fixed" {
+			field.Value = policy["value"]
+			field.Options = []any{policy["value"]}
+		}
+		if allowlist := anyValues(policy["values"]); len(allowlist) > 0 {
+			field.Options = intersectValues(field.Options, allowlist)
+			if len(field.Options) == 0 {
+				violations = append(violations, iapiserver.RuntimeFormViolation{Field: name, Code: "NO_VALID_OPTION", Message: "application policy has no value allowed by the current capability"})
+			}
+		}
+		field.Dynamic = len(field.DependsOn) > 0
+		if field.Value == nil {
+			if defaultValue, ok := schema["default"]; ok {
+				field.Value = defaultValue
+			}
+		}
+		if field.Value != nil && !valueAllowed(field.Value, field.Options, schema) {
+			previous := field.Value
+			switch field.OnInvalid {
+			case iapiserver.RuntimeInvalidReset:
+				field.Value = nil
+				changes = append(changes, iapiserver.RuntimeFormChange{Field: name, Reason: "VALUE_NOT_SUPPORTED", Strategy: field.OnInvalid, PreviousValue: previous})
+			case iapiserver.RuntimeInvalidFallback:
+				if len(field.Options) > 0 {
+					field.Value = field.Options[0]
+				}
+				changes = append(changes, iapiserver.RuntimeFormChange{Field: name, Reason: "VALUE_NOT_SUPPORTED", Strategy: field.OnInvalid, PreviousValue: previous, CurrentValue: field.Value})
+			case iapiserver.RuntimeInvalidClamp:
+				field.Value = clampValue(field.Value, schema)
+				changes = append(changes, iapiserver.RuntimeFormChange{Field: name, Reason: "VALUE_OUT_OF_RANGE", Strategy: field.OnInvalid, PreviousValue: previous, CurrentValue: field.Value})
+			default:
+				violations = append(violations, iapiserver.RuntimeFormViolation{Field: name, Code: "VALUE_NOT_SUPPORTED", Message: "value is not allowed by the current capability", CurrentValue: previous})
+			}
+		}
+		if field.Required && field.Value == nil {
+			violations = append(violations, iapiserver.RuntimeFormViolation{Field: name, Code: "REQUIRED", Message: "required field is missing"})
+		}
+		fields = append(fields, field)
+	}
+	return fields, changes, violations
+}
+
+func runtimeHealthy(engine *iapiserver.EngineInstance) bool {
+	return engine.Enabled && (engine.HealthStatus == iapiserver.EngineHealthOnline || engine.HealthStatus == iapiserver.EngineHealthDegraded)
+}
+func variantModelIDs(variants []iapiserver.ProviderCapabilityVariant) []any {
+	values := []any{}
+	for _, variant := range variants {
+		values = append(values, variant.ModelID)
+	}
+	return uniqueValues(values)
+}
+func stringSet(items []string) map[string]bool {
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[item] = true
+	}
+	return set
+}
+func anyValues(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return append([]any(nil), typed...)
+	case []string:
+		result := make([]any, len(typed))
+		for i := range typed {
+			result[i] = typed[i]
+		}
+		return result
+	default:
+		return nil
+	}
+}
+func uniqueValues(items []any) []any {
+	seen := map[string]struct{}{}
+	result := []any{}
+	for _, item := range items {
+		key := fmt.Sprint(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, item)
+	}
+	return result
+}
+func intersectValues(left, right []any) []any {
+	if len(left) == 0 {
+		return uniqueValues(right)
+	}
+	allowed := map[string]bool{}
+	for _, item := range right {
+		allowed[fmt.Sprint(item)] = true
+	}
+	result := []any{}
+	for _, item := range left {
+		if allowed[fmt.Sprint(item)] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+func valueAllowed(value any, options []any, schema map[string]any) bool {
+	if len(options) > 0 {
+		for _, option := range options {
+			if fmt.Sprint(option) == fmt.Sprint(value) {
+				return true
+			}
+		}
+		return false
+	}
+	number, ok := numberValue(value)
+	if !ok {
+		return true
+	}
+	if min, ok := numberValue(schema["minimum"]); ok && number < min {
+		return false
+	}
+	if max, ok := numberValue(schema["maximum"]); ok && number > max {
+		return false
+	}
+	return true
+}
+func clampValue(value any, schema map[string]any) any {
+	number, ok := numberValue(value)
+	if !ok {
+		return value
+	}
+	if min, ok := numberValue(schema["minimum"]); ok && number < min {
+		number = min
+	}
+	if max, ok := numberValue(schema["maximum"]); ok && number > max {
+		number = max
+	}
+	if stringValue(schema["type"]) == "integer" {
+		return int(number)
+	}
+	return number
+}
+func numberValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
+}
+func boolValue(value any) bool          { ret, _ := value.(bool); return ret }
+func boolPtr(value bool) *bool          { return &value }
+func mapValue(value any) map[string]any { ret, _ := value.(map[string]any); return ret }
+func cloneMap(source map[string]any) map[string]any {
+	target := make(map[string]any, len(source))
+	for key, value := range source {
+		if nested, ok := value.(map[string]any); ok {
+			target[key] = cloneMap(nested)
+		} else {
+			target[key] = value
+		}
+	}
+	return target
+}

@@ -4,236 +4,165 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	srvv1 "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
-	"github.com/wangweihong/omnimam/backend/pkg/core"
+	appservice "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 )
 
 type Controller struct {
-	srv srvv1.Service
+	service appservice.ApplicationPlatformSrv
 }
 
-func NewController(storeIns store.Factory) *Controller {
-	return &Controller{srv: srvv1.NewService(storeIns)}
+func NewController(service appservice.ApplicationPlatformSrv) *Controller {
+	return &Controller{service: service}
 }
 
-// ListProviderAdapters 返回系统代码注册的只读 ProviderAdapter 目录。
-func (c *Controller) ListProviderAdapters(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ProviderAdapterListRequest{}, func(r *iapiserver.ProviderAdapterListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListProviderAdapters(ctx, r)
+func (c *Controller) ListProviderCapabilities(ctx *gin.Context) {
+	run(ctx, &iapiserver.ProviderCapabilityListRequest{}, func(r *iapiserver.ProviderCapabilityListRequest) (any, error) {
+		return c.service.ListProviderCapabilities(ctx, r)
+	})
+}
+func (c *Controller) GetProviderCapability(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.GetProviderCapability(ctx, ctx.Param("provider_capability_id"))
+	})
+}
+func (c *Controller) ListProviderCapabilityLoadResults(ctx *gin.Context) {
+	run(ctx, &iapiserver.ProviderCapabilityLoadResultListRequest{}, func(r *iapiserver.ProviderCapabilityLoadResultListRequest) (any, error) {
+		return c.service.ListProviderCapabilityLoadResults(ctx, r)
+	})
+}
+func (c *Controller) ListApplicationEngineTypes(ctx *gin.Context) {
+	run(ctx, &iapiserver.ApplicationEngineTypeListRequest{}, func(r *iapiserver.ApplicationEngineTypeListRequest) (any, error) {
+		return c.service.ListApplicationEngineTypes(ctx, r)
 	})
 }
 
-// ListProviderOperations 返回指定适配器支持的 ProviderOperation 目录。
-func (c *Controller) ListProviderOperations(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ProviderOperationListRequest{}, func(r *iapiserver.ProviderOperationListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListProviderOperations(ctx, ctx.Param("adapter_key"), r)
+func (c *Controller) ListEngineInstances(ctx *gin.Context) {
+	run(ctx, &iapiserver.EngineInstanceListRequest{}, func(r *iapiserver.EngineInstanceListRequest) (any, error) {
+		return c.service.ListEngineInstances(ctx, r)
+	})
+}
+func (c *Controller) CreateEngineInstance(ctx *gin.Context) {
+	run(ctx, &iapiserver.EngineInstanceCreateRequest{}, func(r *iapiserver.EngineInstanceCreateRequest) (any, error) {
+		return c.service.CreateEngineInstance(ctx, r)
+	})
+}
+func (c *Controller) GetEngineInstance(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.GetEngineInstance(ctx, ctx.Param("engine_instance_id")) })
+}
+func (c *Controller) UpdateEngineInstance(ctx *gin.Context) {
+	req := &iapiserver.EngineInstanceUpdateRequest{ID: ctx.Param("engine_instance_id")}
+	run(ctx, req, func(r *iapiserver.EngineInstanceUpdateRequest) (any, error) {
+		return c.service.UpdateEngineInstance(ctx, r)
+	})
+}
+func (c *Controller) DeleteEngineInstance(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.DeleteEngineInstance(ctx, ctx.Param("engine_instance_id")) })
+}
+func (c *Controller) CheckEngineInstanceHealth(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.CheckEngineInstanceHealth(ctx, ctx.Param("engine_instance_id"))
 	})
 }
 
-// ListTemplates 返回当前用户可见的应用模板列表，不返回运行结果或外部调用内容。
+func (c *Controller) ListEngineBindings(ctx *gin.Context) {
+	run(ctx, &iapiserver.EngineCapabilityBindingListRequest{}, func(r *iapiserver.EngineCapabilityBindingListRequest) (any, error) {
+		return c.service.ListEngineBindings(ctx, r)
+	})
+}
+func (c *Controller) CreateEngineBinding(ctx *gin.Context) {
+	run(ctx, &iapiserver.EngineCapabilityBindingCreateRequest{}, func(r *iapiserver.EngineCapabilityBindingCreateRequest) (any, error) {
+		return c.service.CreateEngineBinding(ctx, r)
+	})
+}
+func (c *Controller) UpdateEngineBinding(ctx *gin.Context) {
+	req := &iapiserver.EngineCapabilityBindingUpdateRequest{ID: ctx.Param("binding_id")}
+	run(ctx, req, func(r *iapiserver.EngineCapabilityBindingUpdateRequest) (any, error) {
+		return c.service.UpdateEngineBinding(ctx, r)
+	})
+}
+func (c *Controller) DeleteEngineBinding(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.DeleteEngineBinding(ctx, ctx.Param("binding_id")) })
+}
+
 func (c *Controller) ListTemplates(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.AppTemplateListRequest{}, func(r *iapiserver.AppTemplateListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListTemplates(ctx, r)
+	run(ctx, &iapiserver.ApplicationTemplateListRequest{}, func(r *iapiserver.ApplicationTemplateListRequest) (any, error) {
+		return c.service.ListTemplates(ctx, r)
 	})
 }
-
-// CreateTemplate 创建应用模板并在保存前解析可映射变量。
 func (c *Controller) CreateTemplate(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.AppTemplateCreateRequest{}, func(r *iapiserver.AppTemplateCreateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CreateTemplate(ctx, r)
+	run(ctx, &iapiserver.ApplicationTemplateCreateRequest{}, func(r *iapiserver.ApplicationTemplateCreateRequest) (any, error) {
+		return c.service.CreateTemplate(ctx, r)
 	})
 }
-
-// GetTemplate 返回一个应用模板详情，包含创建时解析出的变量。
 func (c *Controller) GetTemplate(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().GetTemplate(ctx, ctx.Param("template_id"))
+	run(ctx, nil, func(any) (any, error) { return c.service.GetTemplate(ctx, ctx.Param("application_template_id")) })
+}
+func (c *Controller) ListTemplateVersions(ctx *gin.Context) {
+	req := &iapiserver.ApplicationTemplateVersionListRequest{ApplicationTemplateID: ctx.Param("application_template_id")}
+	run(ctx, req, func(r *iapiserver.ApplicationTemplateVersionListRequest) (any, error) {
+		return c.service.ListTemplateVersions(ctx, r)
+	})
+}
+func (c *Controller) CreateTemplateVersion(ctx *gin.Context) {
+	run(ctx, &iapiserver.ApplicationTemplateVersionCreateRequest{}, func(r *iapiserver.ApplicationTemplateVersionCreateRequest) (any, error) {
+		return c.service.CreateTemplateVersion(ctx, ctx.Param("application_template_id"), r)
+	})
+}
+func (c *Controller) GetTemplateVersion(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.GetTemplateVersion(ctx, ctx.Param("application_template_version_id"))
+	})
+}
+func (c *Controller) PublishTemplateVersion(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.PublishTemplateVersion(ctx, ctx.Param("application_template_version_id"))
 	})
 }
 
-// GetTemplateCapabilityGraph 返回模板解析出的能力图和端口。
-func (c *Controller) GetTemplateCapabilityGraph(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().GetTemplateCapabilityGraph(ctx, ctx.Param("template_id"))
-	})
-}
-
-// UpdateTemplate 仅允许更新模板名称和描述，模板类型、内容和解析变量不可变。
-func (c *Controller) UpdateTemplate(ctx *gin.Context) {
-	req := &iapiserver.AppTemplateUpdateRequest{ID: ctx.Param("template_id")}
-	core.Run(ctx, req, func(r *iapiserver.AppTemplateUpdateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().UpdateTemplate(ctx, r)
-	})
-}
-
-// DeleteTemplate 删除无引用模板；存在应用引用时返回业务错误。
-func (c *Controller) DeleteTemplate(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().DeleteTemplate(ctx, ctx.Param("template_id"))
-	})
-}
-
-// ListTemplateReferences 返回引用指定模板的应用列表。
-func (c *Controller) ListTemplateReferences(ctx *gin.Context) {
-	req := &iapiserver.ApplicationListRequest{}
-	core.Run(ctx, req, func(r *iapiserver.ApplicationListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListTemplateReferences(ctx, ctx.Param("template_id"), r)
-	})
-}
-
-// ConvertTemplateToApplication 基于模板端口裁剪创建应用。
-func (c *Controller) ConvertTemplateToApplication(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationFromTemplateRequest{}, func(r *iapiserver.ApplicationFromTemplateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ConvertTemplateToApplication(ctx, ctx.Param("template_id"), r)
-	})
-}
-
-// ListApplications 返回当前用户可见的正式应用列表。
 func (c *Controller) ListApplications(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationListRequest{}, func(r *iapiserver.ApplicationListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListApplications(ctx, r)
-	})
+	run(ctx, &iapiserver.ApplicationListRequest{}, func(r *iapiserver.ApplicationListRequest) (any, error) { return c.service.ListApplications(ctx, r) })
 }
-
-// CreateApplication 基于模板创建正式应用，并一次性保存完整字段映射。
 func (c *Controller) CreateApplication(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationCreateRequest{}, func(r *iapiserver.ApplicationCreateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CreateApplication(ctx, r)
-	})
+	run(ctx, &iapiserver.ApplicationCreateRequest{}, func(r *iapiserver.ApplicationCreateRequest) (any, error) { return c.service.CreateApplication(ctx, r) })
 }
-
-// GetApplication 返回正式应用详情，包含当前字段映射。
 func (c *Controller) GetApplication(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().GetApplication(ctx, ctx.Param("application_id"))
-	})
+	run(ctx, nil, func(any) (any, error) { return c.service.GetApplication(ctx, ctx.Param("application_id")) })
 }
-
-// UpdateApplication 仅更新应用名称和描述，不改变 owner_user_id 或模板引用。
 func (c *Controller) UpdateApplication(ctx *gin.Context) {
 	req := &iapiserver.ApplicationUpdateRequest{ID: ctx.Param("application_id")}
-	core.Run(ctx, req, func(r *iapiserver.ApplicationUpdateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().UpdateApplication(ctx, r)
+	run(ctx, req, func(r *iapiserver.ApplicationUpdateRequest) (any, error) { return c.service.UpdateApplication(ctx, r) })
+}
+func (c *Controller) ListApplicationVersions(ctx *gin.Context) {
+	req := &iapiserver.ApplicationVersionListRequest{ApplicationID: ctx.Param("application_id")}
+	run(ctx, req, func(r *iapiserver.ApplicationVersionListRequest) (any, error) {
+		return c.service.ListApplicationVersions(ctx, r)
 	})
 }
-
-// DeleteApplication 删除应用并同步删除字段映射、更新模板引用计数。
-func (c *Controller) DeleteApplication(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().DeleteApplication(ctx, ctx.Param("application_id"))
+func (c *Controller) CreateApplicationVersion(ctx *gin.Context) {
+	run(ctx, &iapiserver.ApplicationVersionCreateRequest{}, func(r *iapiserver.ApplicationVersionCreateRequest) (any, error) {
+		return c.service.CreateApplicationVersion(ctx, ctx.Param("application_id"), r)
 	})
 }
-
-// CreateApplicationRun 提交一次 Application 运行，创建 AppRun 并委托 task-center 创建 TaskRun。
+func (c *Controller) GetApplicationVersion(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.GetApplicationVersion(ctx, ctx.Param("application_version_id"))
+	})
+}
+func (c *Controller) PublishApplicationVersion(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.PublishApplicationVersion(ctx, ctx.Param("application_version_id"))
+	})
+}
+func (c *Controller) ResolveRuntimeForm(ctx *gin.Context) {
+	run(ctx, &iapiserver.RuntimeFormResolveRequest{}, func(r *iapiserver.RuntimeFormResolveRequest) (any, error) {
+		return c.service.ResolveRuntimeForm(ctx, ctx.Param("application_id"), r)
+	})
+}
 func (c *Controller) CreateApplicationRun(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CreateApplicationRun(ctx, ctx.Param("application_id"), r)
+	run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
+		return c.service.CreateApplicationRun(ctx, ctx.Param("application_id"), r)
 	})
 }
-
-// CreateApplicationTestRun 创建真实测试运行，与正式运行共用 TaskRun 链路。
-func (c *Controller) CreateApplicationTestRun(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CreateApplicationTestRun(ctx, ctx.Param("application_id"), r)
-	})
-}
-
-// ListAvailableAppEngines 返回当前用户可使用的匹配引擎，不包含 auth_config。
-func (c *Controller) ListAvailableAppEngines(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().ListAvailableAppEngines(ctx, ctx.Param("application_id"))
-	})
-}
-
-// ListApplicationRuns 返回当前用户可见的 AppRun 列表。
-func (c *Controller) ListApplicationRuns(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.ApplicationRunListRequest{}, func(r *iapiserver.ApplicationRunListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListApplicationRuns(ctx, r)
-	})
-}
-
-// GetApplicationRun 返回一个 AppRun 详情，包含 TaskRun 关联和运行快照。
 func (c *Controller) GetApplicationRun(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().GetApplicationRun(ctx, ctx.Param("run_id"))
-	})
-}
-
-// ListAppEngines 返回当前用户可见的应用引擎列表，包含明文认证配置。
-func (c *Controller) ListAppEngines(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.AppEngineListRequest{}, func(r *iapiserver.AppEngineListRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().ListAppEngines(ctx, r)
-	})
-}
-
-// CheckAppEngineHealthByConfig 使用临时连接参数检测健康状态，不创建或更新 AppEngine。
-func (c *Controller) CheckAppEngineHealthByConfig(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.AppEngineHealthCheckRequest{}, func(r *iapiserver.AppEngineHealthCheckRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CheckAppEngineHealthByConfig(ctx, r)
-	})
-}
-
-// CreateAppEngine 创建用户级应用引擎；资源归属始终为当前用户。
-func (c *Controller) CreateAppEngine(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.AppEngineCreateRequest{}, func(r *iapiserver.AppEngineCreateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().CreateAppEngine(ctx, r)
-	})
-}
-
-// GetAppEngine 返回一个应用引擎详情，包含明文认证配置和健康状态。
-func (c *Controller) GetAppEngine(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().GetAppEngine(ctx, ctx.Param("app_engine_id"))
-	})
-}
-
-// UpdateAppEngine 更新应用引擎元数据、认证配置、状态和能力标签，不改变 owner_user_id。
-func (c *Controller) UpdateAppEngine(ctx *gin.Context) {
-	req := &iapiserver.AppEngineUpdateRequest{ID: ctx.Param("app_engine_id")}
-	core.Run(ctx, req, func(r *iapiserver.AppEngineUpdateRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().UpdateAppEngine(ctx, r)
-	})
-}
-
-// DeleteAppEngine 删除无 AppRun 引用的应用引擎；存在引用时返回业务错误。
-func (c *Controller) DeleteAppEngine(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().DeleteAppEngine(ctx, ctx.Param("app_engine_id"))
-	})
-}
-
-// CheckAppEngineHealth 触发一次应用引擎健康检测并返回检测结果。
-func (c *Controller) CheckAppEngineHealth(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().CheckAppEngineHealth(ctx, ctx.Param("app_engine_id"))
-	})
-}
-
-// ListInputMappings 返回应用当前输入映射列表。
-func (c *Controller) ListInputMappings(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().ListInputMappings(ctx, ctx.Param("application_id"))
-	})
-}
-
-// SaveInputMappings 整体替换应用输入映射，并按能力图重新校验。
-func (c *Controller) SaveInputMappings(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.InputMappingSaveRequest{}, func(r *iapiserver.InputMappingSaveRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().SaveInputMappings(ctx, ctx.Param("application_id"), r)
-	})
-}
-
-// ListOutputMappings 返回应用当前输出映射列表。
-func (c *Controller) ListOutputMappings(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().ListOutputMappings(ctx, ctx.Param("application_id"))
-	})
-}
-
-// SaveOutputMappings 整体替换应用输出映射，并按能力图重新校验。
-func (c *Controller) SaveOutputMappings(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.OutputMappingSaveRequest{}, func(r *iapiserver.OutputMappingSaveRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().SaveOutputMappings(ctx, ctx.Param("application_id"), r)
-	})
+	run(ctx, nil, func(any) (any, error) { return c.service.GetApplicationRun(ctx, ctx.Param("application_run_id")) })
 }

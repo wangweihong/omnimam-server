@@ -309,6 +309,10 @@ type TaskRun struct {
 	DefinitionType string `json:"definition_type"          gorm:"column:definition_type;type:varchar(32);not null;index:idx_task_runs_definition,priority:1"`
 	// DefinitionID 指向 task_definitions.id，是运行实例的定义来源。
 	DefinitionID string `json:"definition_id"            gorm:"column:definition_id;type:varchar(64);not null;index:idx_task_runs_definition,priority:2"`
+	// ApplicationRunID 关联 application-platform 的不可变运行快照；非应用任务必须为空。
+	ApplicationRunID string `json:"application_run_id,omitempty" gorm:"column:application_run_id;type:varchar(64);default:'';index:idx_task_runs_application"`
+	// IdempotencyKey 与 ApplicationRunID 共同保证应用任务重复提交只创建一个 TaskRun。
+	IdempotencyKey string `json:"idempotency_key,omitempty" gorm:"column:idempotency_key;type:varchar(256);default:''"`
 	// ParentRunID 指向直接父运行实例，编排任务展开子运行时使用。
 	ParentRunID string `json:"parent_run_id,omitempty"  gorm:"column:parent_run_id;type:varchar(64);index"`
 	// RootRunID 指向根运行实例，便于整条编排链路查询。

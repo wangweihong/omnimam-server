@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	stderrors "errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -43,7 +44,17 @@ func (s *taskCenterStore) ListDefinitions(
 		}
 		return q
 	}
-	query := taskCenterListQuery(ctx, s.ds.db.Model(&iapiserver.TaskDefinition{}), req.BasicQueryParam, filter)
+	query := taskCenterListQuery(
+		ctx,
+		s.ds.db.Model(&iapiserver.TaskDefinition{}),
+		req.BasicQueryParam,
+		map[string]string{
+			"name": "name", "created_at": taskCenterCreatedAtColumn, "updated_at": taskCenterUpdatedAtColumn,
+			"definition_type": "definition_type", "project_id": "project_id", "namespace": "namespace",
+		},
+		taskCenterCreatedAtColumn,
+		filter,
+	)
 	if err := query.Find(&items).Count(&total).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
@@ -98,7 +109,18 @@ func (s *taskCenterStore) ListRuns(
 		}
 		return q
 	}
-	query := taskCenterListQuery(ctx, s.ds.db.Model(&iapiserver.TaskRun{}), req.BasicQueryParam, filter)
+	query := taskCenterListQuery(
+		ctx,
+		s.ds.db.Model(&iapiserver.TaskRun{}),
+		req.BasicQueryParam,
+		map[string]string{
+			"name": "name", "created_at": taskCenterCreatedAtColumn, "started_at": "started_at",
+			"completed_at": "completed_at", "status": "status", "definition_type": "definition_type",
+			"project_id": "project_id",
+		},
+		taskCenterCreatedAtColumn,
+		filter,
+	)
 	if err := query.Find(&items).Count(&total).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
@@ -122,6 +144,94 @@ func (s *taskCenterStore) AddRun(ctx context.Context, data *iapiserver.TaskRun) 
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
+}
+
+// AddRunIdempotent 创建 TaskRun；应用运行重复提交时返回已有记录，并拒绝同键不同请求。
+func (s *taskCenterStore) AddRunIdempotent(
+	ctx context.Context,
+	data *iapiserver.TaskRun,
+) (*iapiserver.TaskRun, bool, error) {
+	fillTaskRunDefaults(data)
+	if data.ApplicationRunID == "" {
+		if data.IdempotencyKey != "" {
+			return nil, false, errors.NewStatusF(
+				code.ErrTaskRunIdempotencyConflict,
+				"application run id and idempotency key must be provided together",
+			)
+		}
+		if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+			return nil, false, errors.WithStack(err)
+		}
+		return data, true, nil
+	}
+	if data.IdempotencyKey == "" {
+		return nil, false, errors.NewStatusF(
+			code.ErrTaskRunIdempotencyConflict,
+			"application run id and idempotency key must be provided together",
+		)
+	}
+
+	existing, err := s.getRunByApplicationIdempotency(ctx, data.ApplicationRunID, data.IdempotencyKey)
+	if err == nil {
+		return resolveIdempotentTaskRun(existing, data)
+	}
+	if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, errors.WithStack(err)
+	}
+	if err := s.ds.db.WithContext(ctx).Create(data).Error; err == nil {
+		return data, true, nil
+	} else {
+		// 唯一索引解决并发竞争；等待冲突事务提交后读取胜出的 TaskRun 再比对请求。
+		existing, lookupErr := s.getRunByApplicationIdempotency(ctx, data.ApplicationRunID, data.IdempotencyKey)
+		if lookupErr != nil {
+			return nil, false, errors.WithStack(err)
+		}
+		return resolveIdempotentTaskRun(existing, data)
+	}
+}
+
+func (s *taskCenterStore) getRunByApplicationIdempotency(
+	ctx context.Context,
+	applicationRunID, idempotencyKey string,
+) (*iapiserver.TaskRun, error) {
+	var item iapiserver.TaskRun
+	err := s.ds.db.WithContext(ctx).
+		Where("application_run_id = ? AND idempotency_key = ?", applicationRunID, idempotencyKey).
+		First(&item).Error
+	return &item, err
+}
+
+func resolveIdempotentTaskRun(
+	existing, requested *iapiserver.TaskRun,
+) (*iapiserver.TaskRun, bool, error) {
+	if sameTaskRunCreateRequest(existing, requested) {
+		return existing, false, nil
+	}
+	return nil, false, errors.NewStatusF(
+		code.ErrTaskRunIdempotencyConflict,
+		"idempotency key was used with a different task run creation request",
+	)
+}
+
+func sameTaskRunCreateRequest(a, b *iapiserver.TaskRun) bool {
+	return a.DefinitionType == b.DefinitionType &&
+		a.DefinitionID == b.DefinitionID &&
+		a.ApplicationRunID == b.ApplicationRunID &&
+		a.IdempotencyKey == b.IdempotencyKey &&
+		a.ParentRunID == b.ParentRunID &&
+		a.RootRunID == b.RootRunID &&
+		a.ScheduleAt.Time.Equal(b.ScheduleAt.Time) &&
+		a.AdapterKey == b.AdapterKey &&
+		a.OperationKey == b.OperationKey &&
+		a.OperationVersion == b.OperationVersion &&
+		a.RequestedEngineID == b.RequestedEngineID &&
+		a.ResolvedEngineID == b.ResolvedEngineID &&
+		reflect.DeepEqual(a.Input, b.Input) &&
+		a.MaxAttempts == b.MaxAttempts &&
+		a.ProjectID == b.ProjectID &&
+		a.Namespace == b.Namespace &&
+		a.Tags == b.Tags &&
+		a.CreatedBy == b.CreatedBy
 }
 
 func (s *taskCenterStore) UpdateRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error) {
@@ -153,7 +263,17 @@ func (s *taskCenterStore) ListAttempts(
 		}
 		return q
 	}
-	query := taskCenterListQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), req.BasicQueryParam, filter)
+	query := taskCenterListQuery(
+		ctx,
+		s.ds.db.Model(&iapiserver.TaskAttempt{}),
+		req.BasicQueryParam,
+		map[string]string{
+			"attempt_no": "attempt_no", "started_at": "started_at", "heartbeat_at": "heartbeat_at",
+			"progress_at": "progress_at", "completed_at": "completed_at", "status": "status", "worker_id": "worker_id",
+		},
+		"attempt_no",
+		filter,
+	)
 	if err := query.Find(&items).Count(&total).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
@@ -400,7 +520,6 @@ func (s *taskCenterStore) FailRun(
 		if taskErr.OccurredAt.IsZero() {
 			taskErr.OccurredAt = now
 		}
-		attempt.Status = iapiserver.TaskAttemptStatusFailed
 		attempt.Error = taskErr
 		attempt.FailureType = taskErr.FailureType
 		attempt.Retryable = taskErr.Retryable
@@ -411,13 +530,7 @@ func (s *taskCenterStore) FailRun(
 		loadedRun.LastError = taskErr
 		loadedRun.Progress = 1
 		loadedRun.CompletedAt = now
-		if taskErr.Retryable && (loadedRun.MaxAttempts < 0 || loadedRun.CurrentAttempt < loadedRun.MaxAttempts) {
-			loadedRun.Status = iapiserver.TaskRunStatusRetrying
-			loadedRun.Progress = 0
-			loadedRun.CompletedAt = imachinery.Time{}
-		} else {
-			loadedRun.Status = iapiserver.TaskRunStatusFailed
-		}
+		applyTaskFailureStatus(loadedRun, attempt, taskErr, now)
 		lease.Status = iapiserver.LeaseStatusReleased
 		if err := decrementWorkerRunning(tx, req.WorkerID); err != nil {
 			return err
@@ -438,6 +551,31 @@ func (s *taskCenterStore) FailRun(
 		return nil, err
 	}
 	return &run, nil
+}
+
+func applyTaskFailureStatus(run *iapiserver.TaskRun, attempt *iapiserver.TaskAttempt, taskErr iapiserver.TaskError, now imachinery.Time) {
+	attempt.Status = iapiserver.TaskAttemptStatusFailed
+	switch taskErr.FailureType {
+	case iapiserver.FailureTypeCanceled:
+		attempt.Status = iapiserver.TaskAttemptStatusCanceled
+		run.Status = iapiserver.TaskRunStatusCanceled
+		if run.CanceledAt.IsZero() {
+			run.CanceledAt = now
+		}
+	case iapiserver.FailureTypeTimeout:
+		attempt.Status = iapiserver.TaskAttemptStatusTimeout
+		run.Status = iapiserver.TaskRunStatusTimeout
+	case iapiserver.FailureTypeFunctionError, iapiserver.FailureTypeExternalExecutorError, iapiserver.FailureTypeSystemError:
+		if taskErr.Retryable && (run.MaxAttempts < 0 || run.CurrentAttempt < run.MaxAttempts) {
+			run.Status = iapiserver.TaskRunStatusRetrying
+			run.Progress = 0
+			run.CompletedAt = imachinery.Time{}
+		} else {
+			run.Status = iapiserver.TaskRunStatusFailed
+		}
+	default:
+		run.Status = iapiserver.TaskRunStatusFailed
+	}
 }
 
 func (s *taskCenterStore) RenewLease(
@@ -690,6 +828,8 @@ func taskCenterListQuery(
 	ctx context.Context,
 	db *gorm.DB,
 	params imachinery.BasicQueryParam,
+	orderFields map[string]string,
+	defaultOrderField string,
 	resourceSpecificFilter func(*gorm.DB) *gorm.DB,
 ) *gorm.DB {
 	query := db.WithContext(ctx)
@@ -705,7 +845,7 @@ func taskCenterListQuery(
 	if params.CreatedBefore != 0 {
 		query = query.Where(`"created_at" <= ?`, time.Unix(params.CreatedBefore, 0))
 	}
-	query = query.Order(taskCenterOrderBy(params))
+	query = query.Order(taskCenterOrderBy(params, orderFields, defaultOrderField))
 	if params.PageNum > 0 && params.PageSize > 0 {
 		pageSize := params.PageSize
 		if pageSize > 1000 {
@@ -746,25 +886,17 @@ func applyTaskCenterKeywordFilter(query *gorm.DB, params imachinery.BasicQueryPa
 	return query.Where(strings.Join(conditions, " OR "), args...)
 }
 
-func taskCenterOrderBy(params imachinery.BasicQueryParam) clause.OrderByColumn {
-	allowedFields := map[string]string{
-		"id":              "id",
-		"name":            "name",
-		"definition_type": "definition_type",
-		"status":          "status",
-		"project_id":      "project_id",
-		"namespace":       "namespace",
-		"createdAt":       taskCenterCreatedAtColumn,
-		"created_at":      taskCenterCreatedAtColumn,
-		"updatedAt":       taskCenterUpdatedAtColumn,
-		"updated_at":      taskCenterUpdatedAtColumn,
-	}
-	column := taskCenterCreatedAtColumn
+func taskCenterOrderBy(
+	params imachinery.BasicQueryParam,
+	allowedFields map[string]string,
+	defaultField string,
+) clause.OrderByColumn {
+	column := defaultField
 	if mapped, ok := allowedFields[params.SortField]; ok {
 		column = mapped
 	}
 	return clause.OrderByColumn{
 		Column: clause.Column{Name: column},
-		Desc:   strings.ToLower(params.SortOrder) != "asc",
+		Desc:   strings.EqualFold(params.SortOrder, "desc"),
 	}
 }
