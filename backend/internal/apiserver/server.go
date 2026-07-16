@@ -30,6 +30,8 @@ type server struct {
 	assetUpload         *options.AssetUploadOptions
 	applicationPlatform appsvc.ApplicationPlatformSrv
 	dispatcher          *taskexecutor.Dispatcher
+	authOptions         *options.AuthOptions
+	serverMode          string
 }
 
 // preparedServer is a private wrapper that enforces a call of PrepareRun() before Run can be invoked.
@@ -116,6 +118,8 @@ func createServer(cfg *config.Config) (*server, error) {
 		assetUpload:         cfg.AssetUploadOptions,
 		applicationPlatform: applicationPlatformService,
 		dispatcher:          dispatcher,
+		authOptions:         cfg.AuthOptions,
+		serverMode:          cfg.GenericServerRunOptions.Mode,
 	}
 
 	return server, nil
@@ -246,7 +250,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.dispatcher)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.dispatcher, s.authOptions, s.serverMode)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		if s.dispatcher != nil {

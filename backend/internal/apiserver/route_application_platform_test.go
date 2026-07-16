@@ -2,6 +2,9 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,10 +14,35 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
 
 type routeContractService struct{ appsvc.ApplicationPlatformSrv }
+
+type routeAuthenticationFactory struct {
+	store.Factory
+	users store.UserStore
+}
+
+func (f routeAuthenticationFactory) Users() store.UserStore { return f.users }
+
+type routeApplicationService struct {
+	appsvc.ApplicationPlatformSrv
+	userID string
+}
+
+func (s *routeApplicationService) ListApplications(ctx context.Context, _ *iapiserver.ApplicationListRequest) (*iapiserver.ApplicationListResponse, error) {
+	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
+	if err != nil {
+		return nil, err
+	}
+	s.userID = user.ID
+	return &iapiserver.ApplicationListResponse{Items: []*iapiserver.Application{}}, nil
+}
 
 func TestApplicationPlatformRoutesMatchSSOTOpenAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -34,12 +62,32 @@ func TestApplicationPlatformRoutesMatchSSOTOpenAPI(t *testing.T) {
 	}
 }
 
+func TestApplicationPlatformAllowsAnonymousDevelopmentPrincipal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStore := store.Client()
+	store.SetClient(routeAuthenticationFactory{})
+	t.Cleanup(func() { store.SetClient(previousStore) })
+
+	service := &routeApplicationService{}
+	router := gin.New()
+	installApis(router, service, nil, &options.AuthOptions{AllowAnonymousDevelopment: true}, "debug")
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/applications?page_num=0&page_size=20", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if service.userID != "system-admin" {
+		t.Fatalf("service principal = %q, want system-admin; body=%s", service.userID, recorder.Body.String())
+	}
+}
+
 func readApplicationPlatformOperations(t *testing.T) map[string]struct{} {
 	t.Helper()
 	source := filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "application-platform", "openapi.yaml")
 	raw, err := os.ReadFile(source)
 	if err != nil {
-		 t.Fatal(err)
+		t.Fatal(err)
 	}
 	serverCopy, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "swagger", "application-platform.yaml"))
 	if err != nil {

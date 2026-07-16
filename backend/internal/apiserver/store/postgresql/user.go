@@ -34,10 +34,9 @@ func (s *user) List(ctx context.Context, param *iapiserver.UserListRequest) ([]*
 
 func (s *user) Get(ctx context.Context, id string) (*iapiserver.User, error) {
 	var meta iapiserver.User
-	meta.ID = id
 	err := s.ds.db.WithContext(ctx).
-		Model(&iapiserver.User{}).
-		Find(&meta).Error
+		Where("id = ?", id).
+		First(&meta).Error
 	return &meta, err
 }
 

@@ -13,6 +13,8 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
+	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -21,9 +23,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, dispatcher platformsvc.TaskDispatcher) {
+func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, dispatcher platformsvc.TaskDispatcher, authOptions *options.AuthOptions, mode string) {
 	InstallMiddleware(g)
-	InstallApis(g, applicationPlatform, dispatcher)
+	installApis(g, applicationPlatform, dispatcher, authOptions, mode)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -37,6 +39,16 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	dispatcher platformsvc.TaskDispatcher,
 ) *gin.Engine {
+	return installApis(g, applicationPlatform, dispatcher, options.NewAuthOptions(), "release")
+}
+
+func installApis(
+	g *gin.Engine,
+	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
+	dispatcher platformsvc.TaskDispatcher,
+	authOptions *options.AuthOptions,
+	mode string,
+) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errors.NewStatusF(code.ErrPageNotFound, "Page not found."), nil)
 	})
@@ -44,6 +56,7 @@ func InstallApis(
 	if storeIns != nil {
 		v1 := g.Group("/api/v1")
 		{
+			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
 			installPlatformApis(v1, storeIns, dispatcher)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)

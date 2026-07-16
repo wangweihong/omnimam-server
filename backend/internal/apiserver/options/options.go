@@ -28,7 +28,15 @@ type Options struct {
 	DatabaseOptions            *genericoptions.DatabaseOptions `json:"database"     mapstructure:"database"`
 	AssetUploadOptions         *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
 	ApplicationPlatformOptions *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
+	AuthOptions                *AuthOptions                    `json:"auth"             mapstructure:"auth"`
 }
+
+// AuthOptions 控制用户系统完成前的开发态认证兼容路径。
+type AuthOptions struct {
+	AllowAnonymousDevelopment bool `json:"allow-anonymous-development" mapstructure:"allow-anonymous-development"`
+}
+
+func NewAuthOptions() *AuthOptions { return &AuthOptions{} }
 
 type AssetUploadOptions struct {
 	ChunkTempDir      string `json:"chunk-temp-dir"      mapstructure:"chunk-temp-dir"`
@@ -77,6 +85,7 @@ func NewOptions() *Options {
 		DatabaseOptions:            genericoptions.NewDatabaseOptions(),
 		AssetUploadOptions:         NewAssetUploadOptions(),
 		ApplicationPlatformOptions: NewApplicationPlatformOptions(),
+		AuthOptions:                NewAuthOptions(),
 	}
 
 	return &s
@@ -94,8 +103,11 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.DatabaseOptions.AddFlags(fss.FlagSet("database"))
 	o.AssetUploadOptions.AddFlags(fss.FlagSet("asset upload"))
 	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
+	fs := fss.FlagSet("authentication")
+	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
+		"allow anonymous development authentication for unfinished user management")
 
-	fs := fss.FlagSet("misc")
+	fs = fss.FlagSet("misc")
 	fs.StringVar(&o.Name, "misc.name", o.Name, "name of server")
 	return fss
 }
@@ -123,6 +135,9 @@ func (o *Options) Complete() error {
 	}
 	if o.ApplicationPlatformOptions == nil {
 		o.ApplicationPlatformOptions = NewApplicationPlatformOptions()
+	}
+	if o.AuthOptions == nil {
+		o.AuthOptions = NewAuthOptions()
 	}
 	if o.ApplicationPlatformOptions.ProviderCapabilityDirectory == "" {
 		o.ApplicationPlatformOptions.ProviderCapabilityDirectory = "./provider-capabilities"
