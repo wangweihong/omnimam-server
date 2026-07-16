@@ -332,112 +332,120 @@ const (
 	ErrAIChatExportFailed               = ErrAIChatAccessDenied
 )
 
-// application-platform: feature scoped business errors.
+// application-platform: SSOT scoped business errors.
 const (
 	// @HTTP 200
-	// @CN 模板解析失败，无法创建模板。
-	// @EN Template parsing failed and the template cannot be created.
-	ErrTemplateParseFailed int = 130200
+	// @CN 平台适配器或操作已禁用。
+	// @EN Provider adapter or operation is disabled.
+	ErrAdapterDisabled int = 130200
 
 	// @HTTP 200
-	// @CN 模板存在引用，禁止删除。
-	// @EN Template has references and cannot be deleted.
-	ErrTemplateReferenceBlocked int = 130201
+	// @CN 平台操作版本与应用或引擎不兼容。
+	// @EN Provider operation version is incompatible with the application or engine.
+	ErrOperationVersionIncompatible int = 130201
 
 	// @HTTP 200
-	// @CN 同一用户下模板名称重复。
-	// @EN Template name is duplicated for the same owner.
-	ErrTemplateNameDuplicated int = 130203
+	// @CN 工作流模板解析失败。
+	// @EN Workflow template parsing failed.
+	ErrTemplateParseFailed int = 130210
 
 	// @HTTP 200
-	// @CN 模板类型、内容或解析变量创建后不可修改。
-	// @EN Template kind, content, and parsed fields are immutable after creation.
-	ErrTemplateContentImmutable int = 130204
+	// @CN 所选端口尚未解析完成。
+	// @EN Selected port has not been resolved.
+	ErrPortUnresolved int = 130211
 
 	// @HTTP 200
-	// @CN 字段映射路径不在模板解析变量中。
-	// @EN Field mapping source path is not present in parsed template fields.
-	ErrMappingPathInvalid int = 130300
+	// @CN 候选输出尚未确认。
+	// @EN Candidate output has not been confirmed.
+	ErrCandidateOutputUnconfirmed int = 130212
 
 	// @HTTP 200
-	// @CN 同一应用内字段标识重复。
-	// @EN Field key is duplicated in the same application.
-	ErrFieldKeyDuplicated int = 130301
+	// @CN 模板存在应用引用，禁止删除。
+	// @EN Template has application references and cannot be deleted.
+	ErrTemplateReferenceBlocked int = 130213
 
 	// @HTTP 200
-	// @CN 应用字段映射不完整。
-	// @EN Application field mappings are incomplete.
-	ErrFieldMappingIncomplete int = 130302
+	// @CN 应用输入映射非法。
+	// @EN Application input mapping is invalid.
+	ErrInputMappingInvalid int = 130300
 
 	// @HTTP 200
-	// @CN 字段类型不来自模板解析变量。
-	// @EN Field type is not derived from parsed template fields.
-	ErrFieldTypeInvalid int = 130303
+	// @CN 应用输出映射非法。
+	// @EN Application output mapping is invalid.
+	ErrOutputMappingInvalid int = 130301
 
 	// @HTTP 200
-	// @CN 应用运行创建失败。
-	// @EN Application run creation failed.
-	ErrApplicationRunCreateFailed int = 130400
+	// @CN 同一参数路径不能同时开放和固化。
+	// @EN A parameter path cannot be both exposed and fixed.
+	ErrFixedParameterConflicted int = 130302
 
 	// @HTTP 200
-	// @CN 应用运行不存在或当前用户不可见。
-	// @EN Application run does not exist or is not visible to current user.
-	ErrApplicationRunNotVisible int = 130401
+	// @CN 应用存在运行引用，禁止删除。
+	// @EN Application has run references and cannot be deleted.
+	ErrApplicationReferenceBlocked int = 130303
 
 	// @HTTP 200
-	// @CN 应用存在运行引用，禁止物理删除。
-	// @EN Application has application run references and cannot be physically deleted.
-	ErrApplicationReferenceBlocked int = 130402
+	// @CN 自动路由没有找到可用应用引擎。
+	// @EN Automatic routing found no available application engine.
+	ErrEngineUnavailable int = 130400
 
 	// @HTTP 200
-	// @CN 当前用户缺少操作权限。
-	// @EN Current user does not have permission.
-	ErrAIAppPermissionDenied int = 130500
+	// @CN 用户指定的应用引擎不可用。
+	// @EN The selected application engine is unavailable.
+	ErrSelectedEngineUnavailable int = 130401
 
 	// @HTTP 200
-	// @CN 应用引擎不存在或当前用户不可见。
-	// @EN AppEngine does not exist or is not visible to current user.
-	ErrAppEngineNotVisible int = 130600
+	// @CN 应用引擎认证配置非法。
+	// @EN Application engine authentication configuration is invalid.
+	ErrAppEngineAuthConfigInvalid int = 130402
 
 	// @HTTP 200
-	// @CN 同一用户下应用引擎名称重复。
-	// @EN AppEngine name is duplicated for the same owner.
-	ErrAppEngineNameDuplicated int = 130601
+	// @CN 应用引擎存在运行引用，禁止删除。
+	// @EN Application engine has run references and cannot be deleted.
+	ErrAppEngineReferenceBlocked int = 130403
 
 	// @HTTP 200
-	// @CN 应用引擎认证配置不完整或不匹配认证方式。
-	// @EN AppEngine auth config is incomplete or mismatched with auth type.
-	ErrAppEngineAuthConfigInvalid int = 130602
+	// @CN 平台适配器调用失败。
+	// @EN Provider adapter invocation failed.
+	ErrAdapterInvocationFailed int = 130500
 
 	// @HTTP 200
-	// @CN 应用引擎健康检查失败或不可用。
-	// @EN AppEngine health check failed or is unavailable.
-	ErrAppEngineUnhealthy int = 130603
+	// @CN 已提交的外部任务无法恢复查询。
+	// @EN Previously submitted external task could not be recovered.
+	ErrExternalTaskRecoveryFailed int = 130501
 
 	// @HTTP 200
-	// @CN 应用引擎类型与应用类型不匹配。
-	// @EN AppEngine type does not match application type.
-	ErrAppEngineTypeMismatched int = 130604
+	// @CN 应用真实测试失败。
+	// @EN Application live test failed.
+	ErrApplicationTestFailed int = 130502
 
 	// @HTTP 200
-	// @CN SaaS Application 与 AppEngine 的第三方平台类型不一致。
-	// @EN SaaS platform type of the Application and AppEngine does not match.
-	ErrSaaSPlatformMismatched int = 130605
+	// @CN TaskRun 投影事件版本已过期。
+	// @EN TaskRun projection event version is stale.
+	ErrProjectionVersionStale int = 130503
 
 	// @HTTP 200
-	// @CN AppEngine 不支持 Application 所需能力类型。
-	// @EN AppEngine does not support the capability type required by the Application.
-	ErrAppEngineCapabilityUnsupported int = 130606
+	// @CN 当前用户缺少资源管理权或引擎使用权。
+	// @EN Current user lacks resource management or engine usage permission.
+	ErrAIAppPermissionDenied int = 130600
+)
 
-	// @HTTP 200
-	// @CN 应用引擎存在运行引用，禁止物理删除。
-	// @EN AppEngine has application run references and cannot be physically deleted.
-	ErrAppEngineReferenceBlocked int = 130607
-
-	// @HTTP 200
-	// @CN 应用引擎健康检测配置缺失或非法。
-	// @EN AppEngine health check configuration is missing or invalid.
-	ErrAppEngineHealthCheckConfigInvalid int = 130608
+const (
+	ErrTemplateNameDuplicated            = ErrTemplateReferenceBlocked
+	ErrTemplateContentImmutable          = ErrTemplateParseFailed
+	ErrMappingPathInvalid                = ErrInputMappingInvalid
+	ErrFieldKeyDuplicated                = ErrInputMappingInvalid
+	ErrFieldMappingIncomplete            = ErrInputMappingInvalid
+	ErrFieldTypeInvalid                  = ErrInputMappingInvalid
+	ErrApplicationRunCreateFailed        = ErrAdapterInvocationFailed
+	ErrApplicationRunNotVisible          = ErrAIAppPermissionDenied
+	ErrAppEngineNotVisible               = ErrAIAppPermissionDenied
+	ErrAppEngineNameDuplicated           = ErrAppEngineAuthConfigInvalid
+	ErrAppEngineUnhealthy                = ErrSelectedEngineUnavailable
+	ErrAppEngineTypeMismatched           = ErrSelectedEngineUnavailable
+	ErrSaaSPlatformMismatched            = ErrSelectedEngineUnavailable
+	ErrAppEngineCapabilityUnsupported    = ErrSelectedEngineUnavailable
+	ErrAppEngineHealthCheckConfigInvalid = ErrAppEngineAuthConfigInvalid
 )
 
 // task-center: SSOT scoped business errors.

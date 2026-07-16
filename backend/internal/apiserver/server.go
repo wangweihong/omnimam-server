@@ -152,9 +152,10 @@ func (c *CompletedExtraConfig) New() error {
 		// application platform
 		&iapiserver.AppTemplate{},
 		&iapiserver.Application{},
+		&iapiserver.InputMapping{},
+		&iapiserver.OutputMapping{},
 		&iapiserver.AppEngine{},
 		&iapiserver.ApplicationRun{},
-		&iapiserver.FieldMapping{},
 
 		// ai chat
 		&iapiserver.AIChatAssistant{},

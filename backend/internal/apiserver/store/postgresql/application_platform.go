@@ -31,8 +31,11 @@ func (s *applicationPlatformStore) ListTemplates(
 		if !req.IncludeAll {
 			q = q.Where("owner_user_id = ?", req.OwnerUserID)
 		}
-		if req.Kind != "" {
-			q = q.Where("kind = ?", req.Kind)
+		if req.SourceKind != "" {
+			q = q.Where("source_kind = ?", req.SourceKind)
+		}
+		if req.AdapterKey != "" {
+			q = q.Where("adapter_key = ?", req.AdapterKey)
 		}
 		return q
 	})
@@ -134,8 +137,11 @@ func (s *applicationPlatformStore) ListApplications(
 		if req.TemplateID != "" {
 			q = q.Where("template_id = ?", req.TemplateID)
 		}
-		if req.Kind != "" {
-			q = q.Where("kind = ?", req.Kind)
+		if req.SourceType != "" {
+			q = q.Where("source_type = ?", req.SourceType)
+		}
+		if req.CapabilityType != "" {
+			q = q.Where("capability_type = ?", req.CapabilityType)
 		}
 		return q
 	})
@@ -159,19 +165,31 @@ func (s *applicationPlatformStore) GetApplication(ctx context.Context, id string
 func (s *applicationPlatformStore) AddApplication(
 	ctx context.Context,
 	data *iapiserver.Application,
-	mappings []*iapiserver.FieldMapping,
+	inputs []*iapiserver.InputMapping,
+	outputs []*iapiserver.OutputMapping,
 ) (*iapiserver.Application, error) {
 	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(data).Error; err != nil {
 			return err
 		}
-		if len(mappings) > 0 {
-			for _, mapping := range mappings {
+		if len(inputs) > 0 {
+			for _, mapping := range inputs {
 				mapping.ApplicationID = data.ID
 			}
-			if err := tx.Create(&mappings).Error; err != nil {
+			if err := tx.Create(&inputs).Error; err != nil {
 				return err
 			}
+		}
+		if len(outputs) > 0 {
+			for _, mapping := range outputs {
+				mapping.ApplicationID = data.ID
+			}
+			if err := tx.Create(&outputs).Error; err != nil {
+				return err
+			}
+		}
+		if data.TemplateID == "" {
+			return nil
 		}
 		return tx.Model(&iapiserver.AppTemplate{}).
 			Where("id = ?", data.TemplateID).
@@ -179,7 +197,8 @@ func (s *applicationPlatformStore) AddApplication(
 	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	data.FieldMappings = mappings
+	data.InputMappings = inputs
+	data.OutputMappings = outputs
 	return data, nil
 }
 
@@ -209,11 +228,17 @@ func (s *applicationPlatformStore) DeleteApplication(ctx context.Context, id str
 		if refs > 0 || app.ReferenceRunCount > 0 {
 			return errors.NewStatusF(code.ErrApplicationReferenceBlocked, "application has run references")
 		}
-		if err := tx.Where("application_id = ?", id).Delete(&iapiserver.FieldMapping{}).Error; err != nil {
+		if err := tx.Where("application_id = ?", id).Delete(&iapiserver.InputMapping{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("application_id = ?", id).Delete(&iapiserver.OutputMapping{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Delete(&iapiserver.Application{}, "id = ?", id).Error; err != nil {
 			return err
+		}
+		if app.TemplateID == "" {
+			return nil
 		}
 		return tx.Model(&iapiserver.AppTemplate{}).
 			Where("id = ? AND reference_application_count > 0", app.TemplateID).
@@ -231,8 +256,8 @@ func (s *applicationPlatformStore) ListAppEngines(
 		if !req.IncludeAll {
 			q = q.Where("owner_user_id = ?", req.OwnerUserID)
 		}
-		if req.EngineType != "" {
-			q = q.Where("engine_type = ?", req.EngineType)
+		if req.AdapterKey != "" {
+			q = q.Where("adapter_key = ?", req.AdapterKey)
 		}
 		if req.Status != "" {
 			q = q.Where("status = ?", req.Status)
@@ -316,7 +341,7 @@ func (s *applicationPlatformStore) DeleteAppEngine(ctx context.Context, id strin
 		}
 		var refs int64
 		if err := tx.Model(&iapiserver.ApplicationRun{}).
-			Where("app_engine_id = ?", id).
+			Where("resolved_engine_id = ?", id).
 			Count(&refs).Error; err != nil {
 			return err
 		}
@@ -337,11 +362,14 @@ func (s *applicationPlatformStore) ListApplicationRuns(
 		if !req.IncludeAll {
 			q = q.Where("owner_user_id = ?", req.OwnerUserID)
 		}
-		if req.Status != "" {
-			q = q.Where("status = ?", req.Status)
-		}
 		if req.ApplicationID != "" {
 			q = q.Where("application_id = ?", req.ApplicationID)
+		}
+		if req.RunMode != "" {
+			q = q.Where("run_mode = ?", req.RunMode)
+		}
+		if req.TaskStatus != "" {
+			q = q.Where("task_status_projection = ?", req.TaskStatus)
 		}
 		return q
 	})
@@ -397,8 +425,11 @@ func (s *applicationPlatformStore) CreateApplicationRun(
 			UpdateColumn("reference_run_count", gorm.Expr("reference_run_count + ?", 1)).Error; err != nil {
 			return err
 		}
+		if data.ResolvedEngineID == "" {
+			return nil
+		}
 		return tx.Model(&iapiserver.AppEngine{}).
-			Where("id = ?", data.AppEngineID).
+			Where("id = ?", data.ResolvedEngineID).
 			UpdateColumn("reference_run_count", gorm.Expr("reference_run_count + ?", 1)).Error
 	}); err != nil {
 		return nil, errors.WithStack(err)
@@ -416,11 +447,11 @@ func (s *applicationPlatformStore) UpdateApplicationRun(
 	return data, nil
 }
 
-func (s *applicationPlatformStore) ListFieldMappings(
+func (s *applicationPlatformStore) ListInputMappings(
 	ctx context.Context,
 	applicationID string,
-) ([]*iapiserver.FieldMapping, error) {
-	var items []*iapiserver.FieldMapping
+) ([]*iapiserver.InputMapping, error) {
+	var items []*iapiserver.InputMapping
 	if err := s.ds.db.WithContext(ctx).
 		Where("application_id = ?", applicationID).
 		Order("sort_order ASC, created_at ASC").
@@ -430,13 +461,13 @@ func (s *applicationPlatformStore) ListFieldMappings(
 	return items, nil
 }
 
-func (s *applicationPlatformStore) ReplaceFieldMappings(
+func (s *applicationPlatformStore) ReplaceInputMappings(
 	ctx context.Context,
 	applicationID string,
-	mappings []*iapiserver.FieldMapping,
-) ([]*iapiserver.FieldMapping, error) {
+	mappings []*iapiserver.InputMapping,
+) ([]*iapiserver.InputMapping, error) {
 	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("application_id = ?", applicationID).Delete(&iapiserver.FieldMapping{}).Error; err != nil {
+		if err := tx.Where("application_id = ?", applicationID).Delete(&iapiserver.InputMapping{}).Error; err != nil {
 			return err
 		}
 		if len(mappings) == 0 {
@@ -446,7 +477,93 @@ func (s *applicationPlatformStore) ReplaceFieldMappings(
 	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return s.ListFieldMappings(ctx, applicationID)
+	return s.ListInputMappings(ctx, applicationID)
+}
+
+func (s *applicationPlatformStore) ListOutputMappings(
+	ctx context.Context,
+	applicationID string,
+) ([]*iapiserver.OutputMapping, error) {
+	var items []*iapiserver.OutputMapping
+	if err := s.ds.db.WithContext(ctx).
+		Where("application_id = ?", applicationID).
+		Order("sort_order ASC, created_at ASC").
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
+func (s *applicationPlatformStore) ReplaceOutputMappings(
+	ctx context.Context,
+	applicationID string,
+	mappings []*iapiserver.OutputMapping,
+) ([]*iapiserver.OutputMapping, error) {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("application_id = ?", applicationID).Delete(&iapiserver.OutputMapping{}).Error; err != nil {
+			return err
+		}
+		if len(mappings) == 0 {
+			return nil
+		}
+		return tx.Create(&mappings).Error
+	}); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return s.ListOutputMappings(ctx, applicationID)
+}
+
+func (s *applicationPlatformStore) ListAvailableAppEngines(
+	ctx context.Context,
+	app *iapiserver.Application,
+	ownerUserID string,
+) ([]*iapiserver.AppEngine, error) {
+	var items []*iapiserver.AppEngine
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ?", ownerUserID).
+		Where("adapter_key = ?", app.AdapterKey).
+		Where("status = ? AND health_status = ?", iapiserver.AppEngineStatusActive, iapiserver.AppEngineHealthHealthy).
+		Where("current_inflight < max_concurrency").
+		Order("priority ASC, current_inflight ASC, id ASC").
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if appEngineSupportsOperation(item, app.OperationKey, app.OperationVersion) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *applicationPlatformStore) ReserveAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error) {
+	var engine iapiserver.AppEngine
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", id).First(&engine).Error; err != nil {
+			return err
+		}
+		if engine.Status != iapiserver.AppEngineStatusActive ||
+			engine.HealthStatus != iapiserver.AppEngineHealthHealthy ||
+			engine.CurrentInflight >= engine.MaxConcurrency {
+			return errors.NewStatusF(code.ErrSelectedEngineUnavailable, "app engine is unavailable")
+		}
+		engine.CurrentInflight++
+		return tx.Save(&engine).Error
+	}); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &engine, nil
+}
+
+func (s *applicationPlatformStore) ReleaseAppEngine(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	return errors.WithStack(s.ds.db.WithContext(ctx).Model(&iapiserver.AppEngine{}).
+		Where("id = ? AND current_inflight > 0", id).
+		UpdateColumn("current_inflight", gorm.Expr("current_inflight - ?", 1)).Error)
 }
 
 func applicationPlatformQuery(
@@ -490,8 +607,9 @@ func applicationPlatformOrder(sortField, sortOrder string) clause.OrderByColumn 
 		"created_at":           "created_at",
 		"updatedAt":            "updated_at",
 		"updated_at":           "updated_at",
-		"kind":                 "kind",
-		"engine_type":          "engine_type",
+		"source_kind":          "source_kind",
+		"source_type":          "source_type",
+		"adapter_key":          "adapter_key",
 		"status":               "status",
 		"health_status":        "health_status",
 		"last_health_check_at": "last_health_check_at",
@@ -504,6 +622,22 @@ func applicationPlatformOrder(sortField, sortOrder string) clause.OrderByColumn 
 		Column: clause.Column{Name: column},
 		Desc:   strings.ToLower(sortOrder) != "asc",
 	}
+}
+
+func appEngineSupportsOperation(engine *iapiserver.AppEngine, operationKey, operationVersion string) bool {
+	for _, supported := range engine.SupportedOperations {
+		if supported.OperationKey != operationKey {
+			continue
+		}
+		if supported.MinVersion != "" && operationVersion < supported.MinVersion {
+			continue
+		}
+		if supported.MaxVersion != "" && operationVersion > supported.MaxVersion {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func mapApplicationPlatformUniqueError(err error, constraintCodes map[string]int, message string) error {

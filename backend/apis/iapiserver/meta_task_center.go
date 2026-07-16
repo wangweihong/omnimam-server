@@ -325,6 +325,16 @@ type TaskRun struct {
 	MaxAttempts int `json:"max_attempts"             gorm:"column:max_attempts;not null;default:1"`
 	// Progress 保存 0 到 1 的运行进度，由持 lease 的 worker 上报。
 	Progress float64 `json:"progress"                 gorm:"column:progress;not null;default:0"`
+	// AdapterKey 保存外部运行需要的适配器标识，任务中心只持久化不解释。
+	AdapterKey string `json:"adapter_key,omitempty" gorm:"column:adapter_key;type:text;default:'';index:idx_task_runs_adapter_operation,priority:1"`
+	// OperationKey 保存外部运行需要的操作标识，任务中心只持久化不解释。
+	OperationKey string `json:"operation_key,omitempty" gorm:"column:operation_key;type:text;default:'';index:idx_task_runs_adapter_operation,priority:2"`
+	// OperationVersion 保存外部运行需要的操作版本，任务中心只持久化不解释。
+	OperationVersion string `json:"operation_version,omitempty" gorm:"column:operation_version;type:text;default:'';index:idx_task_runs_adapter_operation,priority:3"`
+	// RequestedEngineID 保存调用方请求的引擎 ID，任务中心不校验其业务含义。
+	RequestedEngineID string `json:"requested_engine_id,omitempty" gorm:"column:requested_engine_id;type:text;default:''"`
+	// ResolvedEngineID 保存调用方最终解析出的引擎 ID，任务中心不校验其业务含义。
+	ResolvedEngineID string `json:"resolved_engine_id,omitempty" gorm:"column:resolved_engine_id;type:text;default:'';index"`
 	// Input 保存运行输入，创建时来自请求和定义默认参数合并。
 	Input map[string]any `json:"input,omitempty"          gorm:"-"`
 	// InputShadow 是 Input 的 JSON 存储字段。

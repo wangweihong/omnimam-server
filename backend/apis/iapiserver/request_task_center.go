@@ -132,6 +132,16 @@ type (
 		RootRunID string `json:"root_run_id"`
 		// ScheduleAt 指定最早可调度时间，空值表示立即进入队列。
 		ScheduleAt imachinery.Time `json:"schedule_at"`
+		// AdapterKey 保存调用方传入的适配器标识，任务中心只持久化不解释。
+		AdapterKey string `json:"adapter_key"`
+		// OperationKey 保存调用方传入的操作标识，任务中心只持久化不解释。
+		OperationKey string `json:"operation_key"`
+		// OperationVersion 保存调用方传入的操作版本，任务中心只持久化不解释。
+		OperationVersion string `json:"operation_version"`
+		// RequestedEngineID 保存调用方请求的引擎 ID。
+		RequestedEngineID string `json:"requested_engine_id"`
+		// ResolvedEngineID 保存调用方最终解析的引擎 ID。
+		ResolvedEngineID string `json:"resolved_engine_id"`
 		// Input 保存本次运行输入。
 		Input map[string]any `json:"input"`
 		// TimeoutPolicy 覆盖定义上的超时策略。

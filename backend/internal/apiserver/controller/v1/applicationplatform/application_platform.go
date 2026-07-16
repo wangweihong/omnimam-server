@@ -17,6 +17,20 @@ func NewController(storeIns store.Factory) *Controller {
 	return &Controller{srv: srvv1.NewService(storeIns)}
 }
 
+// ListProviderAdapters 返回系统代码注册的只读 ProviderAdapter 目录。
+func (c *Controller) ListProviderAdapters(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ProviderAdapterListRequest{}, func(r *iapiserver.ProviderAdapterListRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().ListProviderAdapters(ctx, r)
+	})
+}
+
+// ListProviderOperations 返回指定适配器支持的 ProviderOperation 目录。
+func (c *Controller) ListProviderOperations(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ProviderOperationListRequest{}, func(r *iapiserver.ProviderOperationListRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().ListProviderOperations(ctx, ctx.Param("adapter_key"), r)
+	})
+}
+
 // ListTemplates 返回当前用户可见的应用模板列表，不返回运行结果或外部调用内容。
 func (c *Controller) ListTemplates(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.AppTemplateListRequest{}, func(r *iapiserver.AppTemplateListRequest) (any, error) {
@@ -35,6 +49,13 @@ func (c *Controller) CreateTemplate(ctx *gin.Context) {
 func (c *Controller) GetTemplate(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) {
 		return c.srv.ApplicationPlatforms().GetTemplate(ctx, ctx.Param("template_id"))
+	})
+}
+
+// GetTemplateCapabilityGraph 返回模板解析出的能力图和端口。
+func (c *Controller) GetTemplateCapabilityGraph(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().GetTemplateCapabilityGraph(ctx, ctx.Param("template_id"))
 	})
 }
 
@@ -58,6 +79,13 @@ func (c *Controller) ListTemplateReferences(ctx *gin.Context) {
 	req := &iapiserver.ApplicationListRequest{}
 	core.Run(ctx, req, func(r *iapiserver.ApplicationListRequest) (any, error) {
 		return c.srv.ApplicationPlatforms().ListTemplateReferences(ctx, ctx.Param("template_id"), r)
+	})
+}
+
+// ConvertTemplateToApplication 基于模板端口裁剪创建应用。
+func (c *Controller) ConvertTemplateToApplication(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ApplicationFromTemplateRequest{}, func(r *iapiserver.ApplicationFromTemplateRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().ConvertTemplateToApplication(ctx, ctx.Param("template_id"), r)
 	})
 }
 
@@ -101,6 +129,20 @@ func (c *Controller) DeleteApplication(ctx *gin.Context) {
 func (c *Controller) CreateApplicationRun(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
 		return c.srv.ApplicationPlatforms().CreateApplicationRun(ctx, ctx.Param("application_id"), r)
+	})
+}
+
+// CreateApplicationTestRun 创建真实测试运行，与正式运行共用 TaskRun 链路。
+func (c *Controller) CreateApplicationTestRun(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ApplicationRunCreateRequest{}, func(r *iapiserver.ApplicationRunCreateRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().CreateApplicationTestRun(ctx, ctx.Param("application_id"), r)
+	})
+}
+
+// ListAvailableAppEngines 返回当前用户可使用的匹配引擎，不包含 auth_config。
+func (c *Controller) ListAvailableAppEngines(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().ListAvailableAppEngines(ctx, ctx.Param("application_id"))
 	})
 }
 
@@ -161,23 +203,37 @@ func (c *Controller) DeleteAppEngine(ctx *gin.Context) {
 	})
 }
 
-// CheckAppEngineHealth 触发一次应用引擎健康检测并返回写回后的引擎详情。
+// CheckAppEngineHealth 触发一次应用引擎健康检测并返回检测结果。
 func (c *Controller) CheckAppEngineHealth(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) {
 		return c.srv.ApplicationPlatforms().CheckAppEngineHealth(ctx, ctx.Param("app_engine_id"))
 	})
 }
 
-// ListFieldMappings 返回应用当前字段映射列表。
-func (c *Controller) ListFieldMappings(ctx *gin.Context) {
+// ListInputMappings 返回应用当前输入映射列表。
+func (c *Controller) ListInputMappings(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) {
-		return c.srv.ApplicationPlatforms().ListFieldMappings(ctx, ctx.Param("application_id"))
+		return c.srv.ApplicationPlatforms().ListInputMappings(ctx, ctx.Param("application_id"))
 	})
 }
 
-// SaveFieldMappings 整体替换应用字段映射，并按模板解析变量重新校验。
-func (c *Controller) SaveFieldMappings(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.FieldMappingSaveRequest{}, func(r *iapiserver.FieldMappingSaveRequest) (any, error) {
-		return c.srv.ApplicationPlatforms().SaveFieldMappings(ctx, ctx.Param("application_id"), r)
+// SaveInputMappings 整体替换应用输入映射，并按能力图重新校验。
+func (c *Controller) SaveInputMappings(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.InputMappingSaveRequest{}, func(r *iapiserver.InputMappingSaveRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().SaveInputMappings(ctx, ctx.Param("application_id"), r)
+	})
+}
+
+// ListOutputMappings 返回应用当前输出映射列表。
+func (c *Controller) ListOutputMappings(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) {
+		return c.srv.ApplicationPlatforms().ListOutputMappings(ctx, ctx.Param("application_id"))
+	})
+}
+
+// SaveOutputMappings 整体替换应用输出映射，并按能力图重新校验。
+func (c *Controller) SaveOutputMappings(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.OutputMappingSaveRequest{}, func(r *iapiserver.OutputMappingSaveRequest) (any, error) {
+		return c.srv.ApplicationPlatforms().SaveOutputMappings(ctx, ctx.Param("application_id"), r)
 	})
 }

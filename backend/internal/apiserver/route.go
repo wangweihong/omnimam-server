@@ -55,6 +55,12 @@ func InstallApis(g *gin.Engine) *gin.Engine {
 
 func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	controller := aiappctrl.NewController(storeIns)
+	providerAdapters := rg.Group("/provider-adapters")
+	{
+		providerAdapters.GET("", controller.ListProviderAdapters)
+		providerAdapters.GET("/:adapter_key/operations", controller.ListProviderOperations)
+	}
+
 	templates := rg.Group("/app-templates")
 	{
 		templates.GET("", controller.ListTemplates)
@@ -62,7 +68,9 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory)
 		templates.GET("/:template_id", controller.GetTemplate)
 		templates.PATCH("/:template_id", controller.UpdateTemplate)
 		templates.DELETE("/:template_id", controller.DeleteTemplate)
+		templates.GET("/:template_id/capability-graph", controller.GetTemplateCapabilityGraph)
 		templates.GET("/:template_id/references", controller.ListTemplateReferences)
+		templates.POST("/:template_id/convert-to-application", controller.ConvertTemplateToApplication)
 	}
 
 	applications := rg.Group("/applications")
@@ -72,9 +80,13 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, storeIns store.Factory)
 		applications.GET("/:application_id", controller.GetApplication)
 		applications.PATCH("/:application_id", controller.UpdateApplication)
 		applications.DELETE("/:application_id", controller.DeleteApplication)
+		applications.GET("/:application_id/input-mappings", controller.ListInputMappings)
+		applications.PUT("/:application_id/input-mappings", controller.SaveInputMappings)
+		applications.GET("/:application_id/output-mappings", controller.ListOutputMappings)
+		applications.PUT("/:application_id/output-mappings", controller.SaveOutputMappings)
+		applications.GET("/:application_id/available-engines", controller.ListAvailableAppEngines)
 		applications.POST("/:application_id/runs", controller.CreateApplicationRun)
-		applications.GET("/:application_id/field-mappings", controller.ListFieldMappings)
-		applications.PUT("/:application_id/field-mappings", controller.SaveFieldMappings)
+		applications.POST("/:application_id/test-runs", controller.CreateApplicationTestRun)
 	}
 
 	applicationRuns := rg.Group("/application-runs")

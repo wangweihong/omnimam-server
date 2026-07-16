@@ -319,7 +319,8 @@ type ApplicationPlatformStore interface {
 	AddApplication(
 		ctx context.Context,
 		data *iapiserver.Application,
-		mappings []*iapiserver.FieldMapping,
+		inputs []*iapiserver.InputMapping,
+		outputs []*iapiserver.OutputMapping,
 	) (*iapiserver.Application, error)
 	UpdateApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
 	DeleteApplication(ctx context.Context, id string) error
@@ -338,12 +339,21 @@ type ApplicationPlatformStore interface {
 		taskRun *iapiserver.TaskRun,
 	) (*iapiserver.ApplicationRun, error)
 	UpdateApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
-	ListFieldMappings(ctx context.Context, applicationID string) ([]*iapiserver.FieldMapping, error)
-	ReplaceFieldMappings(
+	ListInputMappings(ctx context.Context, applicationID string) ([]*iapiserver.InputMapping, error)
+	ReplaceInputMappings(
 		ctx context.Context,
 		applicationID string,
-		mappings []*iapiserver.FieldMapping,
-	) ([]*iapiserver.FieldMapping, error)
+		mappings []*iapiserver.InputMapping,
+	) ([]*iapiserver.InputMapping, error)
+	ListOutputMappings(ctx context.Context, applicationID string) ([]*iapiserver.OutputMapping, error)
+	ReplaceOutputMappings(
+		ctx context.Context,
+		applicationID string,
+		mappings []*iapiserver.OutputMapping,
+	) ([]*iapiserver.OutputMapping, error)
+	ListAvailableAppEngines(ctx context.Context, app *iapiserver.Application, ownerUserID string) ([]*iapiserver.AppEngine, error)
+	ReserveAppEngine(ctx context.Context, id string) (*iapiserver.AppEngine, error)
+	ReleaseAppEngine(ctx context.Context, id string) error
 }
 
 type FeatureFlagStore interface {
