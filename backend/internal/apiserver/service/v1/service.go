@@ -25,14 +25,17 @@ type Service interface {
 }
 
 type service struct {
-	store store.Factory
+	store              store.Factory
+	platformDispatcher platform.TaskDispatcher
 }
 
 // NewService returns Service interface.
-func NewService(store store.Factory) Service {
-	return &service{
-		store: store,
+func NewService(store store.Factory, dispatcher ...platform.TaskDispatcher) Service {
+	service := &service{store: store}
+	if len(dispatcher) > 0 {
+		service.platformDispatcher = dispatcher[0]
 	}
+	return service
 }
 
 func (s *service) Settings() setting.SettingSrv {
@@ -56,7 +59,7 @@ func (s *service) Canvases() canvas.CanvasSrv {
 }
 
 func (s *service) Platforms() platform.PlatformSrv {
-	return platform.NewService(s.store)
+	return platform.NewService(s.store, s.platformDispatcher)
 }
 
 func (s *service) TaskCenters() taskcenter.TaskCenterSrv {

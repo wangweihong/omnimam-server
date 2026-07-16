@@ -2,144 +2,236 @@ package taskexecutor
 
 import (
 	"context"
-	"image"
-	"image/color"
-	"image/png"
-	"os"
-	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
-func TestThumbnailExecutorImageSuccess(t *testing.T) {
-	root := t.TempDir()
-	srcKey := filepath.ToSlash(filepath.Join("assets", "image.png"))
-	srcPath := filepath.Join(root, filepath.FromSlash(srcKey))
-	if err := os.MkdirAll(filepath.Dir(srcPath), 0750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	writeTestPNG(t, srcPath, 640, 320)
+func TestDispatcherStartsOnceAndRecoversQueuedRun(t *testing.T) {
+	run := &iapiserver.TaskRun{DefinitionType: iapiserver.TaskDefinitionTypeAtomic, DefinitionID: "test-definition"}
+	run.ID = "run-1"
+	protocol := &fakeWorkerProtocol{run: run, completed: make(chan struct{})}
+	factory := &dispatcherFactory{tasks: &dispatcherTaskStore{definition: &iapiserver.TaskDefinition{FunctionRef: "test.execute"}}}
+	dispatcher := NewDispatcher(factory)
+	dispatcher.taskCenter = protocol
+	dispatcher.RegisterCapability("test.execute", "test", executorFunc(func(context.Context, *iapiserver.TaskRun) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	}))
 
-	thumbnail := &iapiserver.AssetThumbnail{AssetID: "asset-1", StorageBackendID: "local", Status: iapiserver.ThumbnailStatusPending}
-	factory := &fakeFactory{
-		assets: &fakeAssetStore{item: &iapiserver.Asset{
-			MediaType:        iapiserver.AssetMediaTypeImage,
-			StorageBackendID: "local",
-			ObjectKey:        srcKey,
-		}},
-		thumbnails: &fakeThumbnailStore{item: thumbnail},
-		storage:    &fakeStorageBackendStore{item: &iapiserver.StorageBackend{Type: iapiserver.StorageBackendTypeLocal, Root: root}},
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
 	}
-	factory.assets.item.ID = "asset-1"
-	factory.thumbnails.item.ID = "thumbnail-1"
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("start dispatcher twice: %v", err)
+	}
+	select {
+	case <-protocol.completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued task was not recovered on dispatcher start")
+	}
+	dispatcher.Close()
+	dispatcher.Close()
 
-	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.TaskRun{
-		Input: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"},
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	protocol.mu.Lock()
+	defer protocol.mu.Unlock()
+	if protocol.claimed != 1 {
+		t.Fatalf("claimed = %d, want 1", protocol.claimed)
 	}
-	if thumbnail.Status != iapiserver.ThumbnailStatusReady {
-		t.Fatalf("thumbnail status = %s", thumbnail.Status)
-	}
-	if thumbnail.Width != 320 || thumbnail.Height != 160 {
-		t.Fatalf("thumbnail size = %dx%d", thumbnail.Width, thumbnail.Height)
-	}
-	if output["thumbnail_status"] != iapiserver.ThumbnailStatusReady {
-		t.Fatalf("output = %#v", output)
-	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(thumbnail.ObjectKey))); err != nil {
-		t.Fatalf("thumbnail file: %v", err)
+	if protocol.progressUpdates != 1 || protocol.completions != 1 {
+		t.Fatalf("progress updates = %d, completions = %d", protocol.progressUpdates, protocol.completions)
 	}
 }
 
-func TestThumbnailExecutorUnsupportedMedia(t *testing.T) {
-	thumbnail := &iapiserver.AssetThumbnail{AssetID: "asset-1", StorageBackendID: "local", Status: iapiserver.ThumbnailStatusPending}
-	factory := &fakeFactory{
-		assets: &fakeAssetStore{item: &iapiserver.Asset{
-			MediaType:        iapiserver.AssetMediaTypeAudio,
-			StorageBackendID: "local",
-			ObjectKey:        "assets/audio.mp3",
-		}},
-		thumbnails: &fakeThumbnailStore{item: thumbnail},
+func TestDispatcherLimitsConcurrentExecutions(t *testing.T) {
+	const taskTotal = internalWorkerMaxConcurrency + 2
+	protocol := newConcurrentWorkerProtocol(taskTotal)
+	factory := &dispatcherFactory{tasks: &dispatcherTaskStore{definition: &iapiserver.TaskDefinition{FunctionRef: "test.execute"}}}
+	dispatcher := NewDispatcher(factory)
+	dispatcher.taskCenter = protocol
+	release := make(chan struct{})
+	var active atomic.Int64
+	var maximum atomic.Int64
+	dispatcher.RegisterCapability("test.execute", "test", executorFunc(func(context.Context, *iapiserver.TaskRun) (map[string]any, error) {
+		current := active.Add(1)
+		for current > maximum.Load() && !maximum.CompareAndSwap(maximum.Load(), current) {
+		}
+		protocol.started <- struct{}{}
+		<-release
+		active.Add(-1)
+		return map[string]any{"ok": true}, nil
+	}))
+
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
 	}
-	factory.assets.item.ID = "asset-1"
-	factory.thumbnails.item.ID = "thumbnail-1"
-
-	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.TaskRun{
-		Input: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"},
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if thumbnail.Status != iapiserver.ThumbnailStatusUnsupported {
-		t.Fatalf("thumbnail status = %s", thumbnail.Status)
-	}
-	if output["thumbnail_status"] != iapiserver.ThumbnailStatusUnsupported {
-		t.Fatalf("output = %#v", output)
-	}
-}
-
-type fakeFactory struct {
-	store.Factory
-	assets     *fakeAssetStore
-	thumbnails *fakeThumbnailStore
-	storage    *fakeStorageBackendStore
-}
-
-func (f *fakeFactory) AssetsV2() store.AssetStore                 { return f.assets }
-func (f *fakeFactory) AssetThumbnails() store.AssetThumbnailStore { return f.thumbnails }
-func (f *fakeFactory) StorageBackends() store.StorageBackendStore { return f.storage }
-
-type fakeAssetStore struct {
-	store.AssetStore
-	item *iapiserver.Asset
-}
-
-func (s *fakeAssetStore) Get(context.Context, string) (*iapiserver.Asset, error) { return s.item, nil }
-
-type fakeThumbnailStore struct {
-	store.AssetThumbnailStore
-	item *iapiserver.AssetThumbnail
-}
-
-func (s *fakeThumbnailStore) GetByAsset(context.Context, string) (*iapiserver.AssetThumbnail, error) {
-	return s.item, nil
-}
-
-func (s *fakeThumbnailStore) Update(
-	_ context.Context,
-	data *iapiserver.AssetThumbnail,
-) (*iapiserver.AssetThumbnail, error) {
-	s.item = data
-	return data, nil
-}
-
-type fakeStorageBackendStore struct {
-	store.StorageBackendStore
-	item *iapiserver.StorageBackend
-}
-
-func (s *fakeStorageBackendStore) Get(context.Context, string) (*iapiserver.StorageBackend, error) {
-	return s.item, nil
-}
-
-func writeTestPNG(t *testing.T, path string, width int, height int) {
-	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			img.Set(x, y, color.RGBA{R: uint8(x % 255), G: uint8(y % 255), B: 80, A: 255})
+	for range internalWorkerMaxConcurrency {
+		select {
+		case <-protocol.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("workers did not reach configured concurrency")
 		}
 	}
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create png: %v", err)
+	select {
+	case <-protocol.started:
+		t.Fatal("dispatcher exceeded configured concurrency")
+	case <-time.After(100 * time.Millisecond):
 	}
-	defer file.Close()
-	if err := png.Encode(file, img); err != nil {
-		t.Fatalf("encode png: %v", err)
+	close(release)
+	select {
+	case <-protocol.completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued tasks did not complete after workers were released")
 	}
+	dispatcher.Close()
+	if got := maximum.Load(); got != internalWorkerMaxConcurrency {
+		t.Fatalf("maximum concurrency = %d, want %d", got, internalWorkerMaxConcurrency)
+	}
+}
+
+type executorFunc func(context.Context, *iapiserver.TaskRun) (map[string]any, error)
+
+func (f executorFunc) Execute(ctx context.Context, run *iapiserver.TaskRun) (map[string]any, error) {
+	return f(ctx, run)
+}
+
+type dispatcherFactory struct {
+	store.Factory
+	tasks *dispatcherTaskStore
+}
+
+func (f *dispatcherFactory) TaskCenters() store.TaskCenterStore { return f.tasks }
+
+type dispatcherTaskStore struct {
+	store.TaskCenterStore
+	definition *iapiserver.TaskDefinition
+}
+
+func (s *dispatcherTaskStore) GetDefinition(context.Context, string, string) (*iapiserver.TaskDefinition, error) {
+	return s.definition, nil
+}
+
+type fakeWorkerProtocol struct {
+	mu              sync.Mutex
+	run             *iapiserver.TaskRun
+	claimed         int
+	progressUpdates int
+	completions     int
+	completed       chan struct{}
+}
+
+type concurrentWorkerProtocol struct {
+	mu        sync.Mutex
+	runs      []*iapiserver.TaskRun
+	next      int
+	done      int
+	started   chan struct{}
+	completed chan struct{}
+}
+
+func newConcurrentWorkerProtocol(total int) *concurrentWorkerProtocol {
+	protocol := &concurrentWorkerProtocol{
+		runs: make([]*iapiserver.TaskRun, total), started: make(chan struct{}, total), completed: make(chan struct{}),
+	}
+	for i := range total {
+		run := &iapiserver.TaskRun{DefinitionType: iapiserver.TaskDefinitionTypeAtomic, DefinitionID: "test-definition"}
+		run.ID = "run-" + string(rune('a'+i))
+		protocol.runs[i] = run
+	}
+	return protocol
+}
+
+func (p *concurrentWorkerProtocol) GetRun(context.Context, string) (*iapiserver.TaskRun, error) {
+	return nil, nil
+}
+
+func (p *concurrentWorkerProtocol) HeartbeatWorker(context.Context, *iapiserver.WorkerHeartbeatRequest) (*iapiserver.Worker, error) {
+	return &iapiserver.Worker{}, nil
+}
+
+func (p *concurrentWorkerProtocol) ClaimRun(context.Context, *iapiserver.ClaimTaskRunRequest) (*iapiserver.ClaimTaskRunResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.next >= len(p.runs) {
+		return &iapiserver.ClaimTaskRunResponse{}, nil
+	}
+	run := p.runs[p.next]
+	p.next++
+	attempt := &iapiserver.TaskAttempt{}
+	attempt.ID = run.ID + "-attempt"
+	lease := &iapiserver.ExecutionLease{}
+	lease.ID = run.ID + "-lease"
+	return &iapiserver.ClaimTaskRunResponse{TaskRun: run, Attempt: attempt, Lease: lease}, nil
+}
+
+func (p *concurrentWorkerProtocol) UpdateProgress(context.Context, *iapiserver.ProgressUpdateRequest) (*iapiserver.TaskRun, error) {
+	return &iapiserver.TaskRun{}, nil
+}
+
+func (p *concurrentWorkerProtocol) CompleteRun(context.Context, *iapiserver.TaskRunCompleteRequest) (*iapiserver.TaskRun, error) {
+	p.mu.Lock()
+	p.done++
+	if p.done == len(p.runs) {
+		close(p.completed)
+	}
+	p.mu.Unlock()
+	return &iapiserver.TaskRun{}, nil
+}
+
+func (p *concurrentWorkerProtocol) FailRun(context.Context, *iapiserver.TaskRunFailRequest) (*iapiserver.TaskRun, error) {
+	return &iapiserver.TaskRun{}, nil
+}
+
+func (p *concurrentWorkerProtocol) RenewLease(context.Context, *iapiserver.LeaseRenewRequest) (*iapiserver.ExecutionLease, error) {
+	return &iapiserver.ExecutionLease{}, nil
+}
+
+func (p *fakeWorkerProtocol) GetRun(context.Context, string) (*iapiserver.TaskRun, error) {
+	return p.run, nil
+}
+
+func (p *fakeWorkerProtocol) HeartbeatWorker(context.Context, *iapiserver.WorkerHeartbeatRequest) (*iapiserver.Worker, error) {
+	return &iapiserver.Worker{}, nil
+}
+
+func (p *fakeWorkerProtocol) ClaimRun(context.Context, *iapiserver.ClaimTaskRunRequest) (*iapiserver.ClaimTaskRunResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.claimed > 0 {
+		return &iapiserver.ClaimTaskRunResponse{}, nil
+	}
+	p.claimed++
+	attempt := &iapiserver.TaskAttempt{}
+	attempt.ID = "attempt-1"
+	lease := &iapiserver.ExecutionLease{}
+	lease.ID = "lease-1"
+	return &iapiserver.ClaimTaskRunResponse{TaskRun: p.run, Attempt: attempt, Lease: lease}, nil
+}
+
+func (p *fakeWorkerProtocol) UpdateProgress(context.Context, *iapiserver.ProgressUpdateRequest) (*iapiserver.TaskRun, error) {
+	p.mu.Lock()
+	p.progressUpdates++
+	p.mu.Unlock()
+	return p.run, nil
+}
+
+func (p *fakeWorkerProtocol) CompleteRun(context.Context, *iapiserver.TaskRunCompleteRequest) (*iapiserver.TaskRun, error) {
+	p.mu.Lock()
+	p.completions++
+	if p.completions == 1 {
+		close(p.completed)
+	}
+	p.mu.Unlock()
+	return p.run, nil
+}
+
+func (p *fakeWorkerProtocol) FailRun(context.Context, *iapiserver.TaskRunFailRequest) (*iapiserver.TaskRun, error) {
+	return p.run, nil
+}
+
+func (p *fakeWorkerProtocol) RenewLease(context.Context, *iapiserver.LeaseRenewRequest) (*iapiserver.ExecutionLease, error) {
+	return &iapiserver.ExecutionLease{}, nil
 }

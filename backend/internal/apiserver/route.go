@@ -14,15 +14,16 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv) {
+func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, dispatcher platformsvc.TaskDispatcher) {
 	InstallMiddleware(g)
-	InstallApis(g, applicationPlatform)
+	InstallApis(g, applicationPlatform, dispatcher)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -31,7 +32,11 @@ func InstallMiddleware(g *gin.Engine) {
 	g.Use(genericmiddleware.LoggerMiddleware())
 }
 
-func InstallApis(g *gin.Engine, applicationPlatform ...appplatformsvc.ApplicationPlatformSrv) *gin.Engine {
+func InstallApis(
+	g *gin.Engine,
+	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
+	dispatcher platformsvc.TaskDispatcher,
+) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errors.NewStatusF(code.ErrPageNotFound, "Page not found."), nil)
 	})
@@ -39,7 +44,7 @@ func InstallApis(g *gin.Engine, applicationPlatform ...appplatformsvc.Applicatio
 	if storeIns != nil {
 		v1 := g.Group("/api/v1")
 		{
-			installPlatformApis(v1, storeIns)
+			installPlatformApis(v1, storeIns, dispatcher)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)
 			installAssetApis(v1, storeIns)
@@ -47,8 +52,8 @@ func InstallApis(g *gin.Engine, applicationPlatform ...appplatformsvc.Applicatio
 			installCanvasApis(v1, storeIns)
 			installTaskCenterApis(v1, storeIns)
 			installAIChatApis(v1, storeIns)
-			if len(applicationPlatform) > 0 && applicationPlatform[0] != nil {
-				installApplicationPlatformApis(v1, applicationPlatform[0])
+			if applicationPlatform != nil {
+				installApplicationPlatformApis(v1, applicationPlatform)
 			}
 		}
 	}
@@ -177,8 +182,8 @@ func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	}
 }
 
-func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	platformController := platformctrl.NewController(storeIns)
+func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher platformsvc.TaskDispatcher) {
+	platformController := platformctrl.NewController(storeIns, dispatcher)
 
 	rg.GET("/me", platformController.Me)
 

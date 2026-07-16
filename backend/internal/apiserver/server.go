@@ -92,6 +92,11 @@ func createServer(cfg *config.Config) (*server, error) {
 	assets := appsvc.NoopAssetRegistrar{}
 	events := appsvc.NoopEventPublisher{}
 	dispatcher := taskexecutor.NewDispatcher(storeIns)
+	dispatcher.RegisterCapability(
+		platformsvc.FunctionAssetThumbnailGenerate,
+		platformsvc.CapabilityAssetThumbnail,
+		platformsvc.NewThumbnailExecutor(storeIns),
+	)
 	applicationExecutor, err := appsvc.NewApplicationRunExecutor(storeIns, runtimeRegistry, capabilityRegistry, adapters, executors, assets, events)
 	if err != nil {
 		return nil, errors.Wrap(err, "construct application platform task executor")
@@ -241,7 +246,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
-	initRouter(s.httpServer.Engine, s.applicationPlatform)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.dispatcher)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		if s.dispatcher != nil {
@@ -259,6 +264,9 @@ func (s *server) PrepareRun() preparedServer {
 }
 
 func (s preparedServer) Run(stopCh <-chan struct{}) error {
+	if err := s.dispatcher.Start(); err != nil {
+		return errors.Wrap(err, "start task dispatcher")
+	}
 	if s.assetUpload != nil {
 		platformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
 		platformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)

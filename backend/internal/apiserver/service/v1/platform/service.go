@@ -31,7 +31,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 	"github.com/wangweihong/omnimam/backend/pkg/general"
@@ -153,10 +152,11 @@ type PlatformSrv interface {
 
 type platformService struct {
 	store      store.Factory
-	dispatcher taskRunDispatcher
+	dispatcher TaskDispatcher
 }
 
-type taskRunDispatcher interface {
+// TaskDispatcher 是素材上传完成后唤醒共享任务执行器所需的最小接口。
+type TaskDispatcher interface {
 	DispatchAsync(ctx context.Context, runID string)
 }
 
@@ -214,8 +214,12 @@ func StartProviderModelHealthCheck(stopCh <-chan struct{}, storeIns store.Factor
 	}()
 }
 
-func NewService(str store.Factory) *platformService {
-	return &platformService{store: str, dispatcher: taskexecutor.NewDispatcher(str)}
+func NewService(str store.Factory, dispatcher ...TaskDispatcher) *platformService {
+	service := &platformService{store: str}
+	if len(dispatcher) > 0 {
+		service.dispatcher = dispatcher[0]
+	}
+	return service
 }
 
 func (s *platformService) Me(ctx context.Context) (*iapiserver.MeResponse, error) {
@@ -1289,11 +1293,11 @@ func (s *platformService) createAssetFromReader(
 	var taskRuns []*iapiserver.TaskRun
 	if mediaType == iapiserver.AssetMediaTypeImage || mediaType == iapiserver.AssetMediaTypeVideo {
 		run, err := s.createTaskRun(ctx, taskRunSpec{
-			DefinitionID:         taskexecutor.AssetThumbnailDefinitionID,
+			DefinitionID:         AssetThumbnailDefinitionID,
 			Name:                 "asset-thumbnail-generate",
 			Description:          "Generate asset thumbnail from image or video content.",
-			FunctionRef:          taskexecutor.FunctionAssetThumbnailGenerate,
-			RequiredCapabilities: taskexecutor.CapabilityAssetThumbnail,
+			FunctionRef:          FunctionAssetThumbnailGenerate,
+			RequiredCapabilities: CapabilityAssetThumbnail,
 			Input:                map[string]any{"asset_id": created.ID, "thumbnail_id": thumb.ID},
 			Tags:                 "asset,thumbnail",
 		})

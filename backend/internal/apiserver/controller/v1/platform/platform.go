@@ -9,6 +9,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	srvv1 "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1"
+	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
@@ -18,8 +19,8 @@ type PlatformController struct {
 	srv srvv1.Service
 }
 
-func NewController(storeIns store.Factory) *PlatformController {
-	return &PlatformController{srv: srvv1.NewService(storeIns)}
+func NewController(storeIns store.Factory, dispatcher ...platformsvc.TaskDispatcher) *PlatformController {
+	return &PlatformController{srv: srvv1.NewService(storeIns, dispatcher...)}
 }
 
 func (pc *PlatformController) Me(c *gin.Context) {
