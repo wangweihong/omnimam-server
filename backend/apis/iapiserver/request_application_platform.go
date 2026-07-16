@@ -99,27 +99,24 @@ type EngineCapabilityBindingUpdateRequest struct {
 }
 
 type ApplicationTemplateCreateRequest struct {
-	Name                     string         `json:"name" binding:"required"`
-	Description              string         `json:"description"`
-	CapabilityDefinitionID   string         `json:"capability_definition_id" binding:"required"`
-	CapabilitySourceType     string         `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
-	ProviderCapabilityID     string         `json:"provider_capability_id"`
-	ProviderOperationID      string         `json:"provider_operation_id"`
-	WorkflowContractRevision string         `json:"workflow_contract_revision"`
-	ComfyUIAPIWorkflow       map[string]any `json:"comfyui_api_workflow"`
-	ComfyUIObjectInfo        map[string]any `json:"comfyui_object_info"`
-	TemplateContract         map[string]any `json:"template_contract"`
+	Name                   string         `json:"name" binding:"required"`
+	Description            string         `json:"description"`
+	CapabilityDefinitionID string         `json:"capability_definition_id" binding:"required"`
+	CapabilitySourceType   string         `json:"capability_source_type" binding:"required,oneof=provider_capability"`
+	ProviderCapabilityID   string         `json:"provider_capability_id" binding:"required"`
+	ProviderOperationID    string         `json:"provider_operation_id" binding:"required"`
+	TemplateContract       map[string]any `json:"template_contract"`
 }
 type ApplicationTemplateVersionCreateRequest struct {
-	Name                     string         `json:"name"`
-	Description              string         `json:"description"`
-	CapabilitySourceType     string         `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
-	ProviderCapabilityID     string         `json:"provider_capability_id"`
-	ProviderOperationID      string         `json:"provider_operation_id"`
-	WorkflowContractRevision string         `json:"workflow_contract_revision"`
-	ComfyUIAPIWorkflow       map[string]any `json:"comfyui_api_workflow"`
-	ComfyUIObjectInfo        map[string]any `json:"comfyui_object_info"`
-	TemplateContract         map[string]any `json:"template_contract"`
+	Name                 string                      `json:"name"`
+	Description          string                      `json:"description"`
+	CapabilitySourceType string                      `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
+	ProviderCapabilityID string                      `json:"provider_capability_id"`
+	ProviderOperationID  string                      `json:"provider_operation_id"`
+	ComfyUIAPIWorkflow   map[string]any              `json:"comfyui_api_workflow"`
+	ComfyUIObjectInfo    map[string]any              `json:"comfyui_object_info"`
+	ComfyUIDependencies  []ComfyUIWorkflowDependency `json:"comfyui_dependencies"`
+	TemplateContract     map[string]any              `json:"template_contract"`
 }
 type ApplicationCreateRequest struct {
 	Name                   string `json:"name" binding:"required"`
@@ -165,11 +162,27 @@ var applicationSemanticVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-
 
 // Validate distinguishes required JSON fields whose valid zero values cannot be expressed by binding tags.
 func (r *EngineInstanceCreateRequest) Validate() error {
-	if r.AuthConfig == nil {
-		return errors.New("auth_config is required")
-	}
 	if r.Enabled == nil {
 		return errors.New("enabled is required")
+	}
+	if r.AuthType == EngineAuthNone && r.AuthConfig != nil {
+		return errors.New("auth_config must be omitted when auth_type is none")
+	}
+	if r.AuthType != EngineAuthNone && r.AuthConfig == nil {
+		return errors.New("auth_config is required for the selected auth_type")
+	}
+	return nil
+}
+
+func (r *EngineInstanceUpdateRequest) Validate() error {
+	if r.AuthType == nil && r.AuthConfig != nil {
+		return errors.New("auth_type and auth_config must be updated together")
+	}
+	if r.AuthType != nil && *r.AuthType == EngineAuthNone && r.AuthConfig != nil {
+		return errors.New("auth_config must be omitted when auth_type is none")
+	}
+	if r.AuthType != nil && *r.AuthType != EngineAuthNone && r.AuthConfig == nil {
+		return errors.New("auth_config is required when auth_type changes")
 	}
 	return nil
 }
@@ -194,6 +207,22 @@ func (r *ApplicationTemplateCreateRequest) Validate() error {
 func (r *ApplicationTemplateVersionCreateRequest) Validate() error {
 	if r.TemplateContract == nil {
 		return errors.New("template_contract is required")
+	}
+	switch r.CapabilitySourceType {
+	case CapabilitySourceProviderCapability:
+		if r.ProviderCapabilityID == "" || r.ProviderOperationID == "" {
+			return errors.New("provider_capability_id and provider_operation_id are required")
+		}
+		if r.ComfyUIAPIWorkflow != nil || r.ComfyUIObjectInfo != nil || r.ComfyUIDependencies != nil {
+			return errors.New("ComfyUI fields are not allowed for provider capability versions")
+		}
+	case CapabilitySourceComfyUIWorkflow:
+		if r.ProviderCapabilityID != "" || r.ProviderOperationID != "" {
+			return errors.New("provider fields are not allowed for ComfyUI versions")
+		}
+		if r.ComfyUIAPIWorkflow == nil || r.ComfyUIObjectInfo == nil || r.ComfyUIDependencies == nil {
+			return errors.New("comfyui_api_workflow, comfyui_object_info, and comfyui_dependencies are required")
+		}
 	}
 	return nil
 }

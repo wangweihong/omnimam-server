@@ -67,6 +67,23 @@ func TestApplyComfyInputsUsesWorkflowCopy(t *testing.T) {
 	}
 }
 
+func TestApplyComfyInputsSupportsImportedTemplateContract(t *testing.T) {
+	workflow := map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{"seed": float64(1)}}}
+	contract := map[string]any{"fixed_parameters": []any{}, "parameter_mappings": []any{map[string]any{"input_key": "seed", "conversion_type": "DIRECT", "targets": []any{map[string]any{"node_id": "1", "input_name": "seed"}}}}}
+	resolved, err := applyComfyInputs(workflow, map[string]any{"seed": float64(42)}, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := mapValue(mapValue(resolved["1"])["inputs"])["seed"]
+	if seed != float64(42) {
+		t.Fatalf("seed=%v, want 42", seed)
+	}
+	original := mapValue(mapValue(workflow["1"])["inputs"])["seed"]
+	if original != float64(1) {
+		t.Fatalf("source workflow was mutated: %v", original)
+	}
+}
+
 func TestComfyUIAdapterSubmitPollAndCancel(t *testing.T) {
 	var interrupted atomic.Bool
 	promptSubmitted := make(chan struct{}, 2)

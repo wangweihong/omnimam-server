@@ -482,6 +482,62 @@ const (
 	// @CN 当前用户缺少所需的应用平台权限。
 	// @EN The current user lacks the required application-platform permission.
 	ErrAIAppPermissionDenied int = 131020
+	// @HTTP 200
+	// @CN API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。
+	// @EN The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure.
+	ErrAIAppComfyUIWorkflowFileInvalid int = 131220
+	// @HTTP 200
+	// @CN 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。
+	// @EN The selected source or target EngineInstance is not a ComfyUI engine.
+	ErrAIAppComfyUIEngineTypeInvalid int = 131221
+	// @HTTP 200
+	// @CN 无法从指定 ComfyUI EngineInstance 获取有效的 object_info。
+	// @EN Valid object_info could not be retrieved from the selected ComfyUI EngineInstance.
+	ErrAIAppComfyUIObjectInfoUnavailable int = 131222
+	// @HTTP 200
+	// @CN 工作流节点、输入连接或输出索引引用无效。
+	// @EN The workflow contains an invalid node, input connection, or output index reference.
+	ErrAIAppComfyUIWorkflowReferenceInvalid int = 131223
+	// @HTTP 200
+	// @CN 工作流节点、参数或运行依赖与目标 ComfyUI 实例不兼容。
+	// @EN The workflow nodes, parameters, or runtime dependencies are incompatible with the target ComfyUI engine.
+	ErrAIAppComfyUIWorkflowIncompatible int = 131224
+	// @HTTP 200
+	// @CN ComfyUI 工作流不存在或当前用户不可见。
+	// @EN The ComfyUI workflow does not exist or is not visible to the current user.
+	ErrAIAppComfyUIWorkflowNotFound int = 131225
+	// @HTTP 200
+	// @CN 已归档工作流不能创建兼容性校验或转换为模板。
+	// @EN An archived workflow cannot be validated or converted into a template.
+	ErrAIAppComfyUIWorkflowArchived int = 131226
+	// @HTTP 200
+	// @CN 兼容性校验记录不存在、不可见或不属于指定工作流。
+	// @EN The compatibility validation does not exist, is not visible, or does not belong to the selected workflow.
+	ErrAIAppComfyUIValidationNotFound int = 131227
+	// @HTTP 200
+	// @CN 所选校验结果不是 compatible，不能用于模板转换。
+	// @EN The selected validation is not compatible and cannot be used for template conversion.
+	ErrAIAppComfyUIValidationNotCompatible int = 131228
+	// @HTTP 200
+	// @CN 模板输入、固定参数、转换规则、输出提取或 Engine 约束不完整。
+	// @EN The template inputs, fixed parameters, mappings, output extraction, or engine restrictions are incomplete.
+	ErrAIAppComfyUITemplateContractInvalid int = 131229
+	// @HTTP 200
+	// @CN 工作流已转换为应用模板，不能再次转换。
+	// @EN The workflow has already been converted into an application template and cannot be converted again.
+	ErrAIAppComfyUIWorkflowAlreadyConverted int = 131230
+	// @HTTP 200
+	// @CN 转换幂等键已被同一所有者的其他工作流使用。
+	// @EN The conversion idempotency key is already used by another workflow owned by the same user.
+	ErrAIAppComfyUIConversionIdempotencyConflict int = 131231
+	// @HTTP 200
+	// @CN ComfyUI 工作流资源版本已变化，请刷新后重试。
+	// @EN The ComfyUI workflow resource version has changed; refresh and retry.
+	ErrAIAppComfyUIResourceVersionConflict int = 131232
+	// @HTTP 200
+	// @CN 当前用户无权访问或代管该 ComfyUI 工作流。
+	// @EN The current user is not allowed to access or administer this ComfyUI workflow.
+	ErrAIAppComfyUIWorkflowAccessDenied int = 131233
 )
 
 // task-center: SSOT scoped business errors.

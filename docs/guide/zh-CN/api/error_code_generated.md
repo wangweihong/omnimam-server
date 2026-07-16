@@ -115,6 +115,20 @@
 | ErrAIAppArtifactRegistrationFailed | 130824 | 200 | Artifact registration as a UserAsset failed. | Artifact 登记 UserAsset 失败。 |
 | ErrAIAppApplicationRunNotFound | 130825 | 200 | The ApplicationRun does not exist or is not visible to the current user. | ApplicationRun 不存在或当前用户不可见。 |
 | ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
+| ErrAIAppComfyUIWorkflowFileInvalid | 131220 | 200 | The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure. | API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。 |
+| ErrAIAppComfyUIEngineTypeInvalid | 131221 | 200 | The selected source or target EngineInstance is not a ComfyUI engine. | 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。 |
+| ErrAIAppComfyUIObjectInfoUnavailable | 131222 | 200 | Valid object_info could not be retrieved from the selected ComfyUI EngineInstance. | 无法从指定 ComfyUI EngineInstance 获取有效的 object_info。 |
+| ErrAIAppComfyUIWorkflowReferenceInvalid | 131223 | 200 | The workflow contains an invalid node, input connection, or output index reference. | 工作流节点、输入连接或输出索引引用无效。 |
+| ErrAIAppComfyUIWorkflowIncompatible | 131224 | 200 | The workflow nodes, parameters, or runtime dependencies are incompatible with the target ComfyUI engine. | 工作流节点、参数或运行依赖与目标 ComfyUI 实例不兼容。 |
+| ErrAIAppComfyUIWorkflowNotFound | 131225 | 200 | The ComfyUI workflow does not exist or is not visible to the current user. | ComfyUI 工作流不存在或当前用户不可见。 |
+| ErrAIAppComfyUIWorkflowArchived | 131226 | 200 | An archived workflow cannot be validated or converted into a template. | 已归档工作流不能创建兼容性校验或转换为模板。 |
+| ErrAIAppComfyUIValidationNotFound | 131227 | 200 | The compatibility validation does not exist, is not visible, or does not belong to the selected workflow. | 兼容性校验记录不存在、不可见或不属于指定工作流。 |
+| ErrAIAppComfyUIValidationNotCompatible | 131228 | 200 | The selected validation is not compatible and cannot be used for template conversion. | 所选校验结果不是 compatible，不能用于模板转换。 |
+| ErrAIAppComfyUITemplateContractInvalid | 131229 | 200 | The template inputs, fixed parameters, mappings, output extraction, or engine restrictions are incomplete. | 模板输入、固定参数、转换规则、输出提取或 Engine 约束不完整。 |
+| ErrAIAppComfyUIWorkflowAlreadyConverted | 131230 | 200 | The workflow has already been converted into an application template and cannot be converted again. | 工作流已转换为应用模板，不能再次转换。 |
+| ErrAIAppComfyUIConversionIdempotencyConflict | 131231 | 200 | The conversion idempotency key is already used by another workflow owned by the same user. | 转换幂等键已被同一所有者的其他工作流使用。 |
+| ErrAIAppComfyUIResourceVersionConflict | 131232 | 200 | The ComfyUI workflow resource version has changed; refresh and retry. | ComfyUI 工作流资源版本已变化，请刷新后重试。 |
+| ErrAIAppComfyUIWorkflowAccessDenied | 131233 | 200 | The current user is not allowed to access or administer this ComfyUI workflow. | 当前用户无权访问或代管该 ComfyUI 工作流。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
 | ErrTaskDAGCycleDetected | 140201 | 200 | DAGFlowTask contains a cyclic dependency. | DAGFlowTask 存在环形依赖。 |
 | ErrTaskRunNotFound | 140400 | 200 | Task run does not exist or is not visible to the current user. | 任务运行不存在或当前用户不可见。 |

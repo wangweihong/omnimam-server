@@ -16,6 +16,15 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
+func TestDefaultPermissionsIncludeComfyUIWorkflowContract(t *testing.T) {
+	permissions := sets.NewString(defaultPermissions()...)
+	for _, key := range []string{iapiserver.AIAppEngineInstanceRead, iapiserver.AIAppComfyUIWorkflowRead, iapiserver.AIAppComfyUIWorkflowManage, iapiserver.AIAppComfyUIWorkflowValidate, iapiserver.AIAppComfyUIWorkflowConvert} {
+		if !permissions.Has(key) {
+			t.Fatalf("default permissions missing %s", key)
+		}
+	}
+}
+
 func TestParseNaturalAssetQueryImageSize(t *testing.T) {
 	query := parseNaturalAssetQuery("搜索 1920x1680 的赛博朋克图片")
 	if query.MediaType != iapiserver.AssetMediaTypeImage {

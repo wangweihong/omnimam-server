@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -68,16 +72,37 @@ func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow revision is missing")
 		}
 		form.WorkflowContractRevision = stringPtr(*templateVersion.WorkflowContractRevision)
-		engines, _, err := s.Store.ApplicationPlatforms().ListEngineInstances(ctx, &iapiserver.EngineInstanceListRequest{ApplicationEngineTypeID: "comfyui", Enabled: boolPtr(true)})
+		restrictions := mapValue(templateVersion.TemplateContract["engine_restrictions"])
+		requireEnabled := true
+		if value, ok := restrictions["require_enabled"].(bool); ok {
+			requireEnabled = value
+		}
+		var enabledFilter *bool
+		if requireEnabled {
+			enabledFilter = boolPtr(true)
+		}
+		allowedIDs := commaSet(stringValue(restrictions["allowed_engine_instance_ids"]))
+		allowedRegions := commaSet(stringValue(restrictions["allowed_regions"]))
+		requiredHealth := stringValue(restrictions["required_health_status"])
+		if requiredHealth == "" {
+			requiredHealth = iapiserver.EngineHealthOnline
+		}
+		engines, _, err := s.Store.ApplicationPlatforms().ListEngineInstances(ctx, &iapiserver.EngineInstanceListRequest{ApplicationEngineTypeID: "comfyui", Enabled: enabledFilter})
 		if err != nil {
 			return nil, err
 		}
+		candidates := make([]*iapiserver.EngineInstance, 0, len(engines))
 		for _, engine := range engines {
-			if !runtimeHealthy(engine) || (req.EngineInstanceID != "" && engine.ID != req.EngineInstanceID) {
+			if engine.HealthStatus != requiredHealth || (req.EngineInstanceID != "" && engine.ID != req.EngineInstanceID) || (len(allowedIDs) > 0 && !allowedIDs[engine.ID]) || (len(allowedRegions) > 0 && !allowedRegions[engine.Region]) {
 				continue
 			}
-			form.CompatibleEngineInstanceIDs = append(form.CompatibleEngineInstanceIDs, engine.ID)
+			candidates = append(candidates, engine)
 		}
+		compatible, err := s.compatibleComfyUIEngineIDs(ctx, templateVersion, candidates)
+		if err != nil {
+			return nil, err
+		}
+		form.CompatibleEngineInstanceIDs = compatible
 		if len(form.CompatibleEngineInstanceIDs) == 0 {
 			return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "no compatible ComfyUI engine")
 		}
@@ -87,6 +112,66 @@ func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app
 	sort.Strings(form.CompatibleEngineInstanceIDs)
 	form.Fields, form.Changes, form.Violations = buildRuntimeFields(properties, required, version.ParameterPolicies, req.CurrentValues)
 	return form, nil
+}
+
+func commaSet(value string) map[string]bool {
+	result := map[string]bool{}
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result[item] = true
+		}
+	}
+	return result
+}
+
+func (s *applicationPlatformService) compatibleComfyUIEngineIDs(ctx context.Context, version *iapiserver.ApplicationTemplateVersion, engines []*iapiserver.EngineInstance) ([]string, error) {
+	if len(engines) == 0 {
+		return []string{}, nil
+	}
+	parsed, err := parseComfyUIWorkflow(version.ComfyUIAPIWorkflow, nil, version.ComfyUIObjectInfo)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI template snapshot is invalid")
+	}
+	workflow := &iapiserver.ComfyUIWorkflow{ParsedNodes: parsed.nodes, Dependencies: version.ComfyUIDependencies, ImportObjectInfo: version.ComfyUIObjectInfo}
+	typeDef, ok := s.Runtime.EngineType("comfyui")
+	if !ok {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "ComfyUI engine type is not registered")
+	}
+	reader, ok := s.Adapters[typeDef.EngineAdapterID].(ComfyUIObjectInfoReader)
+	if !ok {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info reader is unavailable")
+	}
+	var group errgroup.Group
+	group.SetLimit(8)
+	ids := make([]string, 0, len(engines))
+	var mutex sync.Mutex
+	for _, engine := range engines {
+		engine := engine
+		group.Go(func() error {
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			objectInfo, readErr := reader.ReadObjectInfo(checkCtx, engine)
+			if readErr != nil || len(objectInfo) == 0 {
+				return nil
+			}
+			if len(compatibilityDiagnostics(workflow, objectInfo)) != 0 {
+				return nil
+			}
+			mutex.Lock()
+			ids = append(ids, engine.ID)
+			mutex.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Context, capability *iapiserver.AIAppProviderCapability, operationID, selectedEngineID string) ([]runtimeCandidate, error) {

@@ -65,7 +65,17 @@ func (s *applicationPlatformStore) DeleteEngineInstance(ctx context.Context, id 
 func (s *applicationPlatformStore) CountRunsByEngineInstance(ctx context.Context, id string) (int64, error) {
 	var count int64
 	err := s.ds.db.WithContext(ctx).Model(&iapiserver.ApplicationRun{}).Where("engine_instance_id = ?", id).Count(&count).Error
-	return count, errors.WithStack(err)
+	if err != nil {
+		return 0, errors.WithStack(err)
+	}
+	var workflowCount, validationCount int64
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflow{}).Where("source_engine_instance_id = ?", id).Count(&workflowCount).Error; err != nil {
+		return 0, errors.WithStack(err)
+	}
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowValidation{}).Where("engine_instance_id = ?", id).Count(&validationCount).Error; err != nil {
+		return 0, errors.WithStack(err)
+	}
+	return count + workflowCount + validationCount, nil
 }
 
 func (s *applicationPlatformStore) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) ([]*iapiserver.EngineCapabilityBinding, int64, error) {

@@ -37,9 +37,17 @@ application_engine_types:
     engine_adapter_id: comfyui
     authentication_types: [none, api_key, bearer_token]
     authentication_config_schema:
-      none: {required: []}
-      api_key: {required: [api_key]}
-      bearer_token: {required: [bearer_token]}
+      none: {type: object, forbidden: true}
+      api_key:
+        type: object
+        additional_properties: false
+        required: [api_key]
+        properties: {api_key: {type: string, min_length: 1}}
+      bearer_token:
+        type: object
+        additional_properties: false
+        required: [bearer_token]
+        properties: {bearer_token: {type: string, min_length: 1}}
     operation_executors:
       video.text_to_video: comfyui_workflow
       video.image_to_video: comfyui_workflow
@@ -53,8 +61,18 @@ application_engine_types:
     engine_adapter_id: byteplus_modelark
     authentication_types: [api_key, ak_sk]
     authentication_config_schema:
-      api_key: {required: [api_key]}
-      ak_sk: {required: [access_key, secret_key]}
+      api_key:
+        type: object
+        additional_properties: false
+        required: [api_key]
+        properties: {api_key: {type: string, min_length: 1}}
+      ak_sk:
+        type: object
+        additional_properties: false
+        required: [access_key, secret_key]
+        properties:
+          access_key: {type: string, min_length: 1}
+          secret_key: {type: string, min_length: 1}
     operation_executors:
       video.text_to_video: byteplus_text_to_video
       video.image_to_video: byteplus_image_to_video
@@ -65,6 +83,10 @@ application_engine_types:
     engine_adapter_id: deepseek_official
     authentication_types: [api_key]
     authentication_config_schema:
-      api_key: {required: [api_key]}
+      api_key:
+        type: object
+        additional_properties: false
+        required: [api_key]
+        properties: {api_key: {type: string, min_length: 1}}
     operation_executors:
       text.chat_completion: deepseek_chat_completions

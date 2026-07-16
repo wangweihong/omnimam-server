@@ -54,7 +54,12 @@ const (
 	AIAppProviderCapabilityRead            = "aiapp.provider_capability.read"
 	AIAppProviderCapabilityReadDiagnostics = "aiapp.provider_capability.read_diagnostics"
 	AIAppEngineInstanceManage              = "aiapp.engine_instance.manage"
+	AIAppEngineInstanceRead                = "aiapp.engine_instance.read"
 	AIAppEngineBindingManage               = "aiapp.engine_binding.manage"
+	AIAppComfyUIWorkflowRead               = "aiapp.comfyui_workflow.read"
+	AIAppComfyUIWorkflowManage             = "aiapp.comfyui_workflow.manage"
+	AIAppComfyUIWorkflowValidate           = "aiapp.comfyui_workflow.validate"
+	AIAppComfyUIWorkflowConvert            = "aiapp.comfyui_workflow.convert"
 	AIAppApplicationRead                   = "aiapp.application.read"
 	AIAppApplicationManage                 = "aiapp.application.manage"
 	AIAppApplicationRun                    = "aiapp.application.run"
@@ -222,9 +227,23 @@ func (e *EngineInstance) AfterFind(*gorm.DB) error {
 }
 
 type EngineInstanceListResponse struct {
-	Total int64             `json:"total"`
-	Items []*EngineInstance `json:"items"`
+	Total int64                    `json:"total"`
+	Items []*EngineInstanceSummary `json:"items"`
 }
+type EngineInstanceSummary struct {
+	ID                      string `json:"id"`
+	Name                    string `json:"name"`
+	Description             string `json:"description,omitempty"`
+	ApplicationEngineTypeID string `json:"application_engine_type_id"`
+	Enabled                 bool   `json:"enabled"`
+	HealthStatus            string `json:"health_status"`
+	Region                  string `json:"region,omitempty"`
+}
+
+func (e *EngineInstance) Summary() *EngineInstanceSummary {
+	return &EngineInstanceSummary{ID: e.ID, Name: e.Name, Description: e.Description, ApplicationEngineTypeID: e.ApplicationEngineTypeID, Enabled: e.Enabled, HealthStatus: e.HealthStatus, Region: e.Region}
+}
+
 type EngineHealthCheckResult struct {
 	EngineInstanceID string          `json:"engine_instance_id"`
 	HealthStatus     string          `json:"health_status"`
@@ -284,22 +303,26 @@ func (*ApplicationTemplate) AfterUpdate(*gorm.DB) error       { return nil }
 
 type ApplicationTemplateVersion struct {
 	imachinery.ObjectMeta
-	ApplicationTemplateID      string           `json:"application_template_id" gorm:"column:application_template_id;type:text;not null;index"`
-	Version                    int              `json:"version" gorm:"column:version;not null"`
-	Status                     string           `json:"status" gorm:"column:status;type:text;not null;index"`
-	CapabilitySourceType       string           `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
-	SourceRevision             string           `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
-	ProviderCapabilityID       *string          `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text"`
-	ProviderCapabilityRevision *string          `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
-	ProviderOperationID        *string          `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
-	WorkflowContractRevision   *string          `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
-	TemplateContract           map[string]any   `json:"template_contract" gorm:"-"`
-	TemplateContractShadow     string           `json:"-" gorm:"column:template_contract_json;type:text;not null"`
-	ComfyUIAPIWorkflow         map[string]any   `json:"comfyui_api_workflow" gorm:"-"`
-	ComfyUIAPIWorkflowShadow   *string          `json:"-" gorm:"column:comfyui_api_workflow_json;type:text"`
-	ComfyUIObjectInfo          map[string]any   `json:"comfyui_object_info" gorm:"-"`
-	ComfyUIObjectInfoShadow    *string          `json:"-" gorm:"column:comfyui_object_info_json;type:text"`
-	PublishedAt                *imachinery.Time `json:"published_at" gorm:"column:published_at;type:timestamptz"`
+	ApplicationTemplateID      string                      `json:"application_template_id" gorm:"column:application_template_id;type:text;not null;index"`
+	Version                    int                         `json:"version" gorm:"column:version;not null"`
+	Status                     string                      `json:"status" gorm:"column:status;type:text;not null;index"`
+	CapabilitySourceType       string                      `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
+	SourceRevision             string                      `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
+	ProviderCapabilityID       *string                     `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text"`
+	ProviderCapabilityRevision *string                     `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
+	ProviderOperationID        *string                     `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
+	WorkflowContractRevision   *string                     `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
+	SourceComfyUIWorkflowID    *string                     `json:"source_comfyui_workflow_id" gorm:"column:source_comfyui_workflow_id;type:text"`
+	SourceWorkflowValidationID *string                     `json:"source_workflow_validation_id" gorm:"column:source_workflow_validation_id;type:text"`
+	TemplateContract           map[string]any              `json:"template_contract" gorm:"-"`
+	TemplateContractShadow     string                      `json:"-" gorm:"column:template_contract_json;type:text;not null"`
+	ComfyUIAPIWorkflow         map[string]any              `json:"comfyui_api_workflow" gorm:"-"`
+	ComfyUIAPIWorkflowShadow   *string                     `json:"-" gorm:"column:comfyui_api_workflow_json;type:text"`
+	ComfyUIObjectInfo          map[string]any              `json:"comfyui_object_info" gorm:"-"`
+	ComfyUIObjectInfoShadow    *string                     `json:"-" gorm:"column:comfyui_object_info_json;type:text"`
+	ComfyUIDependencies        []ComfyUIWorkflowDependency `json:"comfyui_dependencies" gorm:"-"`
+	ComfyUIDependenciesShadow  *string                     `json:"-" gorm:"column:comfyui_dependencies_json;type:text"`
+	PublishedAt                *imachinery.Time            `json:"published_at" gorm:"column:published_at;type:timestamptz"`
 }
 
 func (ApplicationTemplateVersion) TableName() string { return "aiapp_application_template_versions" }
@@ -321,6 +344,9 @@ func (v *ApplicationTemplateVersion) AfterFind(*gorm.DB) error {
 	unmarshalShadow(v.TemplateContractShadow, &v.TemplateContract)
 	unmarshalOptional(v.ComfyUIAPIWorkflowShadow, &v.ComfyUIAPIWorkflow)
 	unmarshalOptional(v.ComfyUIObjectInfoShadow, &v.ComfyUIObjectInfo)
+	if v.ComfyUIDependenciesShadow != nil {
+		unmarshalShadow(*v.ComfyUIDependenciesShadow, &v.ComfyUIDependencies)
+	}
 	return nil
 }
 func (v *ApplicationTemplateVersion) marshal() error {
@@ -330,7 +356,20 @@ func (v *ApplicationTemplateVersion) marshal() error {
 	if err := marshalOptional(v.ComfyUIAPIWorkflow, &v.ComfyUIAPIWorkflowShadow); err != nil {
 		return err
 	}
-	return marshalOptional(v.ComfyUIObjectInfo, &v.ComfyUIObjectInfoShadow)
+	if err := marshalOptional(v.ComfyUIObjectInfo, &v.ComfyUIObjectInfoShadow); err != nil {
+		return err
+	}
+	if v.ComfyUIDependencies == nil {
+		v.ComfyUIDependenciesShadow = nil
+		return nil
+	}
+	raw, err := json.Marshal(v.ComfyUIDependencies)
+	if err != nil {
+		return err
+	}
+	text := string(raw)
+	v.ComfyUIDependenciesShadow = &text
+	return nil
 }
 
 type Application struct {

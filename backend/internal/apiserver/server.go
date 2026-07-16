@@ -194,6 +194,8 @@ func (c *CompletedExtraConfig) New() error {
 		// application platform
 		&iapiserver.EngineInstance{},
 		&iapiserver.EngineCapabilityBinding{},
+		&iapiserver.ComfyUIWorkflow{},
+		&iapiserver.ComfyUIWorkflowValidation{},
 		&iapiserver.ApplicationTemplate{},
 		&iapiserver.ApplicationTemplateVersion{},
 		&iapiserver.Application{},

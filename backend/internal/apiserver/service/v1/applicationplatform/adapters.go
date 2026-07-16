@@ -54,6 +54,21 @@ func NewOperationExecutors() map[string]OperationExecutor {
 
 func (a *protocolAdapter) ID() string { return a.id }
 
+// ReadObjectInfo 获取 ComfyUI 实例的节点能力事实；该调用不会提交或执行工作流。
+func (a *protocolAdapter) ReadObjectInfo(ctx context.Context, engine *iapiserver.EngineInstance) (map[string]any, error) {
+	if a.id != "comfyui" {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine adapter is not ComfyUI")
+	}
+	result, err := invokeProvider(ctx, engine, http.MethodGet, "/object_info", nil)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, err.Error())
+	}
+	if len(result) == 0 {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info is empty")
+	}
+	return result, nil
+}
+
 // Check performs the provider-specific lightweight health request using EngineInstance credentials.
 func (a *protocolAdapter) Check(ctx context.Context, engine *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
 	requestPath := map[string]string{
@@ -140,7 +155,7 @@ func executeComfyUI(ctx context.Context, engine *iapiserver.EngineInstance, run 
 				}
 			}
 			outputs, _ := entry["outputs"].(map[string]any)
-			return map[string]any{"values": outputs, "artifacts": comfyArtifacts(engine.BaseURL, outputs)}, nil
+			return map[string]any{"values": outputs, "artifacts": comfyArtifacts(engine.BaseURL, outputs, mapValue(run.CapabilitySourceSnapshot["template_contract"]))}, nil
 		}
 	}
 }
@@ -329,6 +344,33 @@ func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any
 		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow snapshot could not be copied")
 	}
 	mappings := mapValue(contract["request_mapping"])
+	if len(mappings) == 0 && contract["parameter_mappings"] != nil {
+		for _, raw := range anySlice(contract["fixed_parameters"]) {
+			fixed := mapValue(raw)
+			if err := setComfyInput(resolved, stringValue(fixed["node_id"]), stringValue(fixed["input_name"]), fixed["value"]); err != nil {
+				return nil, err
+			}
+		}
+		for _, raw := range anySlice(contract["parameter_mappings"]) {
+			mapping := mapValue(raw)
+			key := stringValue(mapping["input_key"])
+			value, exists := inputs[key]
+			if !exists {
+				continue
+			}
+			value, err = convertComfyValue(value, stringValue(mapping["conversion_type"]), mapValue(mapping["config"]))
+			if err != nil {
+				return nil, err
+			}
+			for _, targetRaw := range anySlice(mapping["targets"]) {
+				target := mapValue(targetRaw)
+				if err := setComfyInput(resolved, stringValue(target["node_id"]), stringValue(target["input_name"]), value); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return resolved, nil
+	}
 	for field, raw := range mappings {
 		value, exists := inputs[field]
 		if !exists {
@@ -368,8 +410,100 @@ func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any
 	return resolved, nil
 }
 
-func comfyArtifacts(baseURL string, outputs map[string]any) []map[string]any {
+func setComfyInput(workflow map[string]any, nodeID, inputName string, value any) error {
+	if nodeID == "" || inputName == "" {
+		return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI mapping target is incomplete")
+	}
+	node := mapValue(workflow[nodeID])
+	if node == nil {
+		return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI mapping references missing node "+nodeID)
+	}
+	inputs := mapValue(node["inputs"])
+	if inputs == nil {
+		inputs = map[string]any{}
+		node["inputs"] = inputs
+	}
+	inputs[inputName] = value
+	return nil
+}
+
+func convertComfyValue(value any, conversion string, config map[string]any) (any, error) {
+	switch conversion {
+	case "", "DIRECT", "MULTI_TARGET_MAP":
+		return value, nil
+	case "FIXED_VALUE":
+		return config["value"], nil
+	case "ENUM_MAP", "ASPECT_RATIO_TO_SIZE":
+		if mapped, ok := mapValue(config["values"])[fmt.Sprint(value)]; ok {
+			return mapped, nil
+		}
+		return nil, errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "ComfyUI mapping has no value for input")
+	case "BOOLEAN_SWITCH":
+		if enabled, _ := value.(bool); enabled {
+			return config["true_value"], nil
+		}
+		return config["false_value"], nil
+	case "RANGE_SCALE":
+		number, ok := value.(float64)
+		if !ok {
+			return nil, errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "range scale input is not numeric")
+		}
+		scale, _ := config["scale"].(float64)
+		offset, _ := config["offset"].(float64)
+		return number*scale + offset, nil
+	case "CONCAT":
+		parts := anySlice(config["parts"])
+		var builder strings.Builder
+		for _, part := range parts {
+			if part == "$value" {
+				builder.WriteString(fmt.Sprint(value))
+			} else {
+				builder.WriteString(fmt.Sprint(part))
+			}
+		}
+		return builder.String(), nil
+	case "TEMPLATE_STRING":
+		template := stringValue(config["template"])
+		return strings.ReplaceAll(template, "{{value}}", fmt.Sprint(value)), nil
+	case "CONDITIONAL":
+		if cases := mapValue(config["cases"]); cases != nil {
+			if mapped, ok := cases[fmt.Sprint(value)]; ok {
+				return mapped, nil
+			}
+		}
+		return config["default"], nil
+	default:
+		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "unsupported ComfyUI conversion type "+conversion)
+	}
+}
+
+func comfyArtifacts(baseURL string, outputs, contract map[string]any) []map[string]any {
 	artifacts := []map[string]any{}
+	configured := anySlice(contract["outputs"])
+	if len(configured) > 0 {
+		for _, raw := range configured {
+			definition := mapValue(raw)
+			nodeID := stringValue(definition["node_id"])
+			node := mapValue(outputs[nodeID])
+			mediaType := stringValue(definition["media_type"])
+			keys := map[string]string{"image": "images", "video": "videos", "audio": "audio"}
+			items := anySlice(node[keys[mediaType]])
+			for index, itemRaw := range items {
+				item := mapValue(itemRaw)
+				filename := firstString(item, "filename")
+				if filename == "" {
+					continue
+				}
+				subfolder := firstString(item, "subfolder")
+				ref := strings.TrimRight(baseURL, "/") + "/view?filename=" + url.QueryEscape(filename)
+				if subfolder != "" {
+					ref += "&subfolder=" + url.QueryEscape(subfolder)
+				}
+				artifacts = append(artifacts, map[string]any{"output_key": stringValue(definition["key"]), "media_type": mediaType, "content_ref": ref, "node_id": nodeID, "index": index})
+			}
+		}
+		return artifacts
+	}
 	for nodeID, raw := range outputs {
 		node, _ := raw.(map[string]any)
 		for _, media := range []struct{ key, mediaType string }{{"images", "image"}, {"videos", "video"}, {"audio", "audio"}} {

@@ -102,6 +102,24 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		bindings.DELETE("/:binding_id", controller.DeleteEngineBinding)
 	}
 
+	workflows := rg.Group("/comfyui-workflows")
+	{
+		workflows.GET("", controller.ListComfyUIWorkflows)
+		workflows.POST("", controller.ImportComfyUIWorkflow)
+		workflows.GET("/:workflow_id", controller.GetComfyUIWorkflow)
+		workflows.PATCH("/:workflow_id", controller.UpdateComfyUIWorkflow)
+		workflows.POST("/:workflow_id/archive", controller.ArchiveComfyUIWorkflow)
+		workflows.POST("/:workflow_id/restore", controller.RestoreComfyUIWorkflow)
+		workflows.GET("/:workflow_id/nodes", controller.ListComfyUIWorkflowNodes)
+		workflows.GET("/:workflow_id/input-candidates", controller.ListComfyUIWorkflowInputCandidates)
+		workflows.GET("/:workflow_id/output-candidates", controller.ListComfyUIWorkflowOutputCandidates)
+		workflows.GET("/:workflow_id/dependencies", controller.ListComfyUIWorkflowDependencies)
+		workflows.GET("/:workflow_id/validations", controller.ListComfyUIWorkflowValidations)
+		workflows.POST("/:workflow_id/validations", controller.ValidateComfyUIWorkflow)
+		workflows.POST("/:workflow_id/convert-to-application-template", controller.ConvertComfyUIWorkflow)
+	}
+	rg.GET("/comfyui-workflow-validations/:workflow_validation_id", controller.GetComfyUIWorkflowValidation)
+
 	templates := rg.Group("/application-templates")
 	{
 		templates.GET("", controller.ListTemplates)

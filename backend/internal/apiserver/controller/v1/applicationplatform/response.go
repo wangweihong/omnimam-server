@@ -55,6 +55,20 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppArtifactRegistrationFailed:                 {name: "ERR_AIAPP_ARTIFACT_REGISTRATION_FAILED", retryable: true},
 	code.ErrAIAppApplicationRunNotFound:                     {name: "ERR_AIAPP_APPLICATION_RUN_NOT_FOUND"},
 	code.ErrAIAppPermissionDenied:                           {name: "ERR_AIAPP_PERMISSION_DENIED"},
+	code.ErrAIAppComfyUIWorkflowFileInvalid:                 {name: "ERR_AIAPP_COMFYUI_WORKFLOW_FILE_INVALID"},
+	code.ErrAIAppComfyUIEngineTypeInvalid:                   {name: "ERR_AIAPP_COMFYUI_ENGINE_TYPE_INVALID"},
+	code.ErrAIAppComfyUIObjectInfoUnavailable:               {name: "ERR_AIAPP_COMFYUI_OBJECT_INFO_UNAVAILABLE", retryable: true},
+	code.ErrAIAppComfyUIWorkflowReferenceInvalid:            {name: "ERR_AIAPP_COMFYUI_WORKFLOW_REFERENCE_INVALID"},
+	code.ErrAIAppComfyUIWorkflowIncompatible:                {name: "ERR_AIAPP_COMFYUI_WORKFLOW_INCOMPATIBLE"},
+	code.ErrAIAppComfyUIWorkflowNotFound:                    {name: "ERR_AIAPP_COMFYUI_WORKFLOW_NOT_FOUND"},
+	code.ErrAIAppComfyUIWorkflowArchived:                    {name: "ERR_AIAPP_COMFYUI_WORKFLOW_ARCHIVED"},
+	code.ErrAIAppComfyUIValidationNotFound:                  {name: "ERR_AIAPP_COMFYUI_VALIDATION_NOT_FOUND"},
+	code.ErrAIAppComfyUIValidationNotCompatible:             {name: "ERR_AIAPP_COMFYUI_VALIDATION_NOT_COMPATIBLE"},
+	code.ErrAIAppComfyUITemplateContractInvalid:             {name: "ERR_AIAPP_COMFYUI_TEMPLATE_CONTRACT_INVALID"},
+	code.ErrAIAppComfyUIWorkflowAlreadyConverted:            {name: "ERR_AIAPP_COMFYUI_WORKFLOW_ALREADY_CONVERTED"},
+	code.ErrAIAppComfyUIConversionIdempotencyConflict:       {name: "ERR_AIAPP_COMFYUI_CONVERSION_IDEMPOTENCY_CONFLICT"},
+	code.ErrAIAppComfyUIResourceVersionConflict:             {name: "ERR_AIAPP_COMFYUI_RESOURCE_VERSION_CONFLICT", retryable: true},
+	code.ErrAIAppComfyUIWorkflowAccessDenied:                {name: "ERR_AIAPP_COMFYUI_WORKFLOW_ACCESS_DENIED"},
 }
 
 type applicationPlatformErrorResponse struct {

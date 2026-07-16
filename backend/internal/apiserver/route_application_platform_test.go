@@ -57,8 +57,8 @@ func TestApplicationPlatformRoutesMatchSSOTOpenAPI(t *testing.T) {
 	if difference := operationDifference(expected, actual); len(difference) != 0 {
 		t.Fatalf("Application Platform route contract differs from SSOT OpenAPI:\n%s", strings.Join(difference, "\n"))
 	}
-	if len(actual) != 32 {
-		t.Fatalf("expected exactly 32 S2 operations, got %d", len(actual))
+	if len(actual) != 46 {
+		t.Fatalf("expected exactly 46 S2 operations, got %d", len(actual))
 	}
 }
 

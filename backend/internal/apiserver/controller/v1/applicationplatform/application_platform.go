@@ -1,10 +1,18 @@
 package applicationplatform
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+
 	"github.com/gin-gonic/gin"
+	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appservice "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type Controller struct {
@@ -62,6 +70,130 @@ func (c *Controller) CheckEngineInstanceHealth(ctx *gin.Context) {
 	run(ctx, nil, func(any) (any, error) {
 		return c.service.CheckEngineInstanceHealth(ctx, ctx.Param("engine_instance_id"))
 	})
+}
+
+func (c *Controller) ListComfyUIWorkflows(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowListRequest{}, func(r *iapiserver.ComfyUIWorkflowListRequest) (any, error) {
+		return c.service.ListComfyUIWorkflows(ctx, r)
+	})
+}
+func (c *Controller) ImportComfyUIWorkflow(ctx *gin.Context) {
+	req := &iapiserver.ComfyUIWorkflowImportRequest{Name: ctx.PostForm("name"), Description: ctx.PostForm("description"), SourceEngineInstanceID: ctx.PostForm("source_engine_instance_id")}
+	apiHeader, err := ctx.FormFile("api_workflow_file")
+	if err != nil {
+		writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "api_workflow_file is required"), nil)
+		return
+	}
+	req.APIWorkflowFile = apiHeader
+	req.APIWorkflow, req.APIWorkflowRaw, err = decodeWorkflowFile(apiHeader)
+	if err != nil {
+		writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, err.Error()), nil)
+		return
+	}
+	if visualHeader, visualErr := ctx.FormFile("visual_workflow_file"); visualErr == nil {
+		req.VisualWorkflowFile = visualHeader
+		req.VisualWorkflow, _, err = decodeWorkflowFile(visualHeader)
+		if err != nil {
+			writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "visual workflow: "+err.Error()), nil)
+			return
+		}
+	}
+	if validationErr := req.Validate(); validationErr != nil {
+		writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, validationErr.Error()), nil)
+		return
+	}
+	result, err := c.service.ImportComfyUIWorkflow(ctx, req)
+	writeResponse(ctx, err, result)
+}
+func (c *Controller) GetComfyUIWorkflow(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.GetComfyUIWorkflow(ctx, ctx.Param("workflow_id")) })
+}
+func (c *Controller) UpdateComfyUIWorkflow(ctx *gin.Context) {
+	req := &iapiserver.ComfyUIWorkflowUpdateRequest{ID: ctx.Param("workflow_id")}
+	run(ctx, req, func(r *iapiserver.ComfyUIWorkflowUpdateRequest) (any, error) {
+		return c.service.UpdateComfyUIWorkflow(ctx, r)
+	})
+}
+func (c *Controller) ArchiveComfyUIWorkflow(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
+		return c.service.ArchiveComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
+	})
+}
+func (c *Controller) RestoreComfyUIWorkflow(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
+		return c.service.RestoreComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
+	})
+}
+func (c *Controller) ListComfyUIWorkflowNodes(ctx *gin.Context) {
+	run(ctx, &imachinery.BasicQueryParam{}, func(r *imachinery.BasicQueryParam) (any, error) {
+		return c.service.ListComfyUIWorkflowNodes(ctx, ctx.Param("workflow_id"), r.PageNum, r.PageSize)
+	})
+}
+func (c *Controller) ListComfyUIWorkflowInputCandidates(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.ListComfyUIWorkflowInputCandidates(ctx, ctx.Param("workflow_id"))
+	})
+}
+func (c *Controller) ListComfyUIWorkflowOutputCandidates(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.ListComfyUIWorkflowOutputCandidates(ctx, ctx.Param("workflow_id"))
+	})
+}
+func (c *Controller) ListComfyUIWorkflowDependencies(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.ListComfyUIWorkflowDependencies(ctx, ctx.Param("workflow_id"))
+	})
+}
+func (c *Controller) ListComfyUIWorkflowValidations(ctx *gin.Context) {
+	req := &iapiserver.ComfyUIWorkflowValidationListRequest{WorkflowID: ctx.Param("workflow_id")}
+	run(ctx, req, func(r *iapiserver.ComfyUIWorkflowValidationListRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowValidations(ctx, r)
+	})
+}
+func (c *Controller) ValidateComfyUIWorkflow(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowValidationCreateRequest{}, func(r *iapiserver.ComfyUIWorkflowValidationCreateRequest) (any, error) {
+		return c.service.ValidateComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r)
+	})
+}
+func (c *Controller) GetComfyUIWorkflowValidation(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.GetComfyUIWorkflowValidation(ctx, ctx.Param("workflow_validation_id"))
+	})
+}
+func (c *Controller) ConvertComfyUIWorkflow(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowConvertRequest{}, func(r *iapiserver.ComfyUIWorkflowConvertRequest) (any, error) {
+		return c.service.ConvertComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r)
+	})
+}
+
+func decodeWorkflowFile(header *multipart.FileHeader) (map[string]any, []byte, error) {
+	file, err := header.Open()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	const maximumWorkflowFileSize = 32 << 20
+	raw, err := io.ReadAll(io.LimitReader(file, maximumWorkflowFileSize+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(raw) > maximumWorkflowFileSize {
+		return nil, nil, errors.New("workflow file exceeds 32 MiB")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, nil, err
+	}
+	if len(value) == 0 {
+		return nil, nil, errors.New("workflow JSON object is empty")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, nil, errors.New("workflow file contains trailing JSON content")
+	}
+	return value, raw, nil
 }
 
 func (c *Controller) ListEngineBindings(ctx *gin.Context) {
