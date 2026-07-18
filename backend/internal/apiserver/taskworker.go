@@ -237,8 +237,7 @@ func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return "", err
 		}
-		req.ProjectID = schedule.ProjectID
-		req.Namespace = schedule.Namespace
+		applyAtomicScheduleOwnership(&req, schedule)
 		created, err := tasks.CreateAtomicTask(ctx, &req)
 		if err != nil {
 			return "", err
@@ -249,8 +248,7 @@ func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return "", err
 		}
-		req.ProjectID = schedule.ProjectID
-		req.Namespace = schedule.Namespace
+		applyGroupScheduleOwnership(&req, schedule)
 		created, err := tasks.CreateTaskGroup(ctx, &req)
 		if err != nil {
 			return "", err
@@ -261,8 +259,7 @@ func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return "", err
 		}
-		req.ProjectID = schedule.ProjectID
-		req.Namespace = schedule.Namespace
+		applyDAGScheduleOwnership(&req, schedule)
 		created, err := tasks.CreateDAGTaskGroup(ctx, &req)
 		if err != nil {
 			return "", err
@@ -271,6 +268,26 @@ func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv
 	default:
 		return "", fmt.Errorf("unsupported schedule target %s", schedule.Target.Type)
 	}
+}
+
+func applyAtomicScheduleOwnership(req *iapiserver.AtomicTaskCreateRequest, schedule *iapiserver.TaskSchedule) {
+	req.ProjectID = schedule.ProjectID
+	req.Namespace = schedule.Namespace
+	req.CreatedBy = schedule.CreatedBy
+	req.OwnerType = iapiserver.TaskOwnerTypeSchedule
+	req.OwnerID = schedule.ID
+}
+
+func applyGroupScheduleOwnership(req *iapiserver.TaskGroupCreateRequest, schedule *iapiserver.TaskSchedule) {
+	req.ProjectID = schedule.ProjectID
+	req.Namespace = schedule.Namespace
+	req.CreatedBy = schedule.CreatedBy
+}
+
+func applyDAGScheduleOwnership(req *iapiserver.DAGTaskGroupCreateRequest, schedule *iapiserver.TaskSchedule) {
+	req.ProjectID = schedule.ProjectID
+	req.Namespace = schedule.Namespace
+	req.CreatedBy = schedule.CreatedBy
 }
 
 func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, interval time.Duration) error {

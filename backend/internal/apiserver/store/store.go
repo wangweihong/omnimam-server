@@ -312,15 +312,21 @@ type AssetRelationStore interface {
 
 type TaskCenterStore interface {
 	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
+	// GetAtomicTasksByIDs 批量读取调度历史引用的 AtomicTask，不用于绕过 service 权限返回完整资源。
+	GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error)
 	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
 	AddAtomicTaskIdempotent(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error)
 	UpdateAtomicTask(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error)
 	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
 	ListTaskGroups(context.Context, *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error)
+	// GetTaskGroupsByIDs 批量读取调度历史引用的 TaskGroup。
+	GetTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.TaskGroup, error)
 	GetTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
 	AddTaskGroupWithTasks(context.Context, *iapiserver.TaskGroup, []*iapiserver.AtomicTask) (*iapiserver.TaskGroup, bool, error)
 	UpdateTaskGroup(context.Context, *iapiserver.TaskGroup) (*iapiserver.TaskGroup, error)
 	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) ([]*iapiserver.DAGTaskGroup, int64, error)
+	// GetDAGTaskGroupsByIDs 批量读取调度历史引用的 DAGTaskGroup。
+	GetDAGTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.DAGTaskGroup, error)
 	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
 	AddDAGTaskGroupWithTasks(context.Context, *iapiserver.DAGTaskGroup, []*iapiserver.AtomicTask) (*iapiserver.DAGTaskGroup, bool, error)
 	UpdateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroup) (*iapiserver.DAGTaskGroup, error)
@@ -331,6 +337,8 @@ type TaskCenterStore interface {
 	AddTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
 	UpdateTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
 	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) ([]*iapiserver.TaskScheduleExecution, int64, error)
+	// ListScheduleSources 按目标类型与 ID 批量返回最新的来源调度轮次。
+	ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error)
 	AddProjectionEventIdempotent(context.Context, *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error)
 	ListNonTerminalAtomicTasks(context.Context, int) ([]*iapiserver.AtomicTask, error)
 	ListNonTerminalTaskGroups(context.Context, int) ([]*iapiserver.TaskGroup, error)

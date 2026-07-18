@@ -25,7 +25,12 @@ func newTaskCenterStore(ds *datastore) *taskCenterStore { return &taskCenterStor
 func (s *taskCenterStore) ListAtomicTasks(ctx context.Context, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
 	var items []*iapiserver.AtomicTask
 	filter := func(query *gorm.DB) *gorm.DB {
-		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ?", req.ProjectID, req.Namespace)
+		if req.IncludeSystem {
+			query = query.Where("created_by IN ?", []string{req.CreatedBy, iapiserver.DefaultTaskCenterCreatedBy})
+		} else {
+			query = query.Where("created_by = ?", req.CreatedBy)
+		}
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
 		}
@@ -40,6 +45,17 @@ func (s *taskCenterStore) ListAtomicTasks(ctx context.Context, req *iapiserver.A
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) GetAtomicTasksByIDs(ctx context.Context, ids []string) ([]*iapiserver.AtomicTask, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.AtomicTask{}, nil
+	}
+	var items []*iapiserver.AtomicTask
+	if err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *taskCenterStore) GetAtomicTask(ctx context.Context, id string) (*iapiserver.AtomicTask, error) {
@@ -99,7 +115,12 @@ func (s *taskCenterStore) ListAttempts(ctx context.Context, req *iapiserver.Task
 func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error) {
 	var items []*iapiserver.TaskGroup
 	filter := func(query *gorm.DB) *gorm.DB {
-		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ?", req.ProjectID, req.Namespace)
+		if req.IncludeSystem {
+			query = query.Where("created_by IN ?", []string{req.CreatedBy, iapiserver.DefaultTaskCenterCreatedBy})
+		} else {
+			query = query.Where("created_by = ?", req.CreatedBy)
+		}
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
 		}
@@ -108,6 +129,17 @@ func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.Ta
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter)
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) GetTaskGroupsByIDs(ctx context.Context, ids []string) ([]*iapiserver.TaskGroup, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.TaskGroup{}, nil
+	}
+	var items []*iapiserver.TaskGroup
+	if err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *taskCenterStore) GetTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
@@ -165,7 +197,12 @@ func (s *taskCenterStore) UpdateTaskGroup(ctx context.Context, data *iapiserver.
 func (s *taskCenterStore) ListDAGTaskGroups(ctx context.Context, req *iapiserver.DAGTaskGroupListRequest) ([]*iapiserver.DAGTaskGroup, int64, error) {
 	var items []*iapiserver.DAGTaskGroup
 	filter := func(query *gorm.DB) *gorm.DB {
-		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ?", req.ProjectID, req.Namespace)
+		if req.IncludeSystem {
+			query = query.Where("created_by IN ?", []string{req.CreatedBy, iapiserver.DefaultTaskCenterCreatedBy})
+		} else {
+			query = query.Where("created_by = ?", req.CreatedBy)
+		}
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
 		}
@@ -174,6 +211,17 @@ func (s *taskCenterStore) ListDAGTaskGroups(ctx context.Context, req *iapiserver
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter)
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) GetDAGTaskGroupsByIDs(ctx context.Context, ids []string) ([]*iapiserver.DAGTaskGroup, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.DAGTaskGroup{}, nil
+	}
+	var items []*iapiserver.DAGTaskGroup
+	if err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *taskCenterStore) GetDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
@@ -313,6 +361,37 @@ func (s *taskCenterStore) ListScheduleExecutions(ctx context.Context, req *iapis
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter).Order("scheduled_at DESC")
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) ListScheduleSources(ctx context.Context, targetType string, targetIDs []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+	result := make(map[string]*iapiserver.ScheduleSourceSummary)
+	if len(targetIDs) == 0 {
+		return result, nil
+	}
+	var rows []struct {
+		TargetID            string
+		ScheduleID          string
+		ScheduleName        string
+		ScheduleExecutionID string
+		ScheduledAt         imachinery.Time
+	}
+	err := s.ds.db.WithContext(ctx).
+		Table("task_schedule_executions AS execution").
+		Select("execution.target_id, schedule.id AS schedule_id, schedule.name AS schedule_name, execution.id AS schedule_execution_id, execution.scheduled_at").
+		Joins("JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id").
+		Where("execution.target_type = ? AND execution.target_id IN ?", targetType, targetIDs).
+		Order("execution.scheduled_at DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	for _, row := range rows {
+		if _, exists := result[row.TargetID]; exists {
+			continue
+		}
+		result[row.TargetID] = &iapiserver.ScheduleSourceSummary{ScheduleID: row.ScheduleID, ScheduleName: row.ScheduleName, ScheduleExecutionID: row.ScheduleExecutionID, ScheduledAt: row.ScheduledAt}
+	}
+	return result, nil
 }
 
 func (s *taskCenterStore) AddProjectionEventIdempotent(ctx context.Context, data *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error) {

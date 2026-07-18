@@ -30,9 +30,10 @@ WHERE application_run_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_idempotency
 ON atomic_tasks(project_id, namespace, idempotency_scope, idempotency_key)
 WHERE idempotency_scope <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_owner_child
+DROP INDEX IF EXISTS idx_atomic_tasks_owner_child;
+CREATE UNIQUE INDEX idx_atomic_tasks_owner_child
 ON atomic_tasks(owner_type, owner_id, child_key)
-WHERE owner_type <> '' AND child_key <> '';
+WHERE owner_type IN ('TASK_GROUP','DAG_TASK_GROUP') AND child_key <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_runtime_task
 ON atomic_tasks(runtime_task_id)
 WHERE runtime_task_id <> '';
@@ -42,6 +43,74 @@ WHERE idempotency_scope <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dag_groups_idempotency
 ON dag_task_groups(project_id, namespace, idempotency_scope, idempotency_key)
 WHERE idempotency_scope <> '';
+`
+
+const taskCenterScheduleOwnershipBackfillSQL = `
+UPDATE atomic_tasks AS target
+SET created_by = schedule.created_by,
+    project_id = schedule.project_id,
+    namespace = schedule.namespace,
+    owner_type = 'TASK_SCHEDULE',
+    owner_id = schedule.id
+FROM task_schedule_executions AS execution
+JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
+WHERE execution.target_type = 'ATOMIC_TASK'
+  AND execution.target_id <> ''
+  AND target.id = execution.target_id
+  AND (target.created_by, target.project_id, target.namespace, target.owner_type, target.owner_id)
+      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace, 'TASK_SCHEDULE', schedule.id);
+
+UPDATE task_groups AS target
+SET created_by = schedule.created_by,
+    project_id = schedule.project_id,
+    namespace = schedule.namespace
+FROM task_schedule_executions AS execution
+JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
+WHERE execution.target_type = 'TASK_GROUP'
+  AND execution.target_id <> ''
+  AND target.id = execution.target_id
+  AND (target.created_by, target.project_id, target.namespace)
+      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace);
+
+UPDATE atomic_tasks AS child
+SET created_by = parent.created_by,
+    project_id = parent.project_id,
+    namespace = parent.namespace
+FROM task_groups AS parent
+WHERE child.owner_type = 'TASK_GROUP'
+  AND child.owner_id = parent.id
+  AND EXISTS (
+    SELECT 1 FROM task_schedule_executions AS execution
+    WHERE execution.target_type = 'TASK_GROUP' AND execution.target_id = parent.id
+  )
+  AND (child.created_by, child.project_id, child.namespace)
+      IS DISTINCT FROM (parent.created_by, parent.project_id, parent.namespace);
+
+UPDATE dag_task_groups AS target
+SET created_by = schedule.created_by,
+    project_id = schedule.project_id,
+    namespace = schedule.namespace
+FROM task_schedule_executions AS execution
+JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
+WHERE execution.target_type = 'DAG_TASK_GROUP'
+  AND execution.target_id <> ''
+  AND target.id = execution.target_id
+  AND (target.created_by, target.project_id, target.namespace)
+      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace);
+
+UPDATE atomic_tasks AS child
+SET created_by = parent.created_by,
+    project_id = parent.project_id,
+    namespace = parent.namespace
+FROM dag_task_groups AS parent
+WHERE child.owner_type = 'DAG_TASK_GROUP'
+  AND child.owner_id = parent.id
+  AND EXISTS (
+    SELECT 1 FROM task_schedule_executions AS execution
+    WHERE execution.target_type = 'DAG_TASK_GROUP' AND execution.target_id = parent.id
+  )
+  AND (child.created_by, child.project_id, child.namespace)
+      IS DISTINCT FROM (parent.created_by, parent.project_id, parent.namespace);
 `
 
 const applicationPlatformLegacySchemaSQL = `
@@ -189,7 +258,10 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 	if err := ds.db.Exec(taskCenterActiveScheduleIndexSQL).Error; err != nil {
 		return err
 	}
-	return ds.db.Exec(taskCenterApplicationRunIndexesSQL).Error
+	if err := ds.db.Exec(taskCenterApplicationRunIndexesSQL).Error; err != nil {
+		return err
+	}
+	return ds.db.Exec(taskCenterScheduleOwnershipBackfillSQL).Error
 }
 
 func (ds *datastore) ensureApplicationPlatformScheme() error {

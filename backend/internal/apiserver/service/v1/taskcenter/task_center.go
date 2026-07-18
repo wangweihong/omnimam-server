@@ -87,9 +87,17 @@ func NewServiceWithFunctions(factory store.Factory, runtime workflowruntime.Work
 
 func (s *taskCenterService) ListAtomicTasks(ctx context.Context, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
 	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	req.IncludeSystem = req.CreatedBy == "system-admin"
 	items, total, err := s.store.ListAtomicTasks(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetAtomic, atomicTaskIDs(items))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		item.ScheduleSource = sources[item.ID]
 	}
 	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
 }
@@ -98,7 +106,7 @@ func (s *taskCenterService) GetAtomicTask(ctx context.Context, id string) (*iapi
 	if err != nil {
 		return nil, err
 	}
-	if item.CreatedBy != taskActor(ctx) {
+	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
 	return item, nil
@@ -121,7 +129,11 @@ func (s *taskCenterService) CreateAtomicTask(ctx context.Context, req *iapiserve
 	if (req.IdempotencyScope == "") != (req.IdempotencyKey == "") {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "idempotency scope and key must be provided together")
 	}
-	task := atomicTaskFromRequest(req, taskActor(ctx))
+	createdBy := req.CreatedBy
+	if createdBy == "" {
+		createdBy = taskActor(ctx)
+	}
+	task := atomicTaskFromRequest(req, createdBy)
 	task.ID = uuid.NewString()
 	task.RootTaskID = task.ID
 	task.Status = iapiserver.AtomicTaskStatusPending
@@ -184,9 +196,17 @@ func (s *taskCenterService) RetryAtomicTask(ctx context.Context, id string, _ *i
 
 func (s *taskCenterService) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) (*iapiserver.TaskGroupListResponse, error) {
 	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	req.IncludeSystem = req.CreatedBy == "system-admin"
 	items, total, err := s.store.ListTaskGroups(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetGroup, taskGroupIDs(items))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		item.ScheduleSource = sources[item.ID]
 	}
 	return &iapiserver.TaskGroupListResponse{Total: total, Items: items}, nil
 }
@@ -195,7 +215,7 @@ func (s *taskCenterService) GetTaskGroup(ctx context.Context, id string) (*iapis
 	if err != nil {
 		return nil, err
 	}
-	if item.CreatedBy != taskActor(ctx) {
+	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrTaskGroupNotFound, "task group not found")
 	}
 	return item, nil
@@ -221,7 +241,11 @@ func (s *taskCenterService) CreateTaskGroup(ctx context.Context, req *iapiserver
 	if req.Mode == iapiserver.TaskGroupModeSerial && !req.Strategy.FailFast {
 		req.Strategy.FailFast = true
 	}
-	group := &iapiserver.TaskGroup{Mode: req.Mode, Tasks: req.Tasks, Strategy: req.Strategy, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Tasks), Pending: len(req.Tasks)}, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	createdBy := req.CreatedBy
+	if createdBy == "" {
+		createdBy = taskActor(ctx)
+	}
+	group := &iapiserver.TaskGroup{Mode: req.Mode, Tasks: req.Tasks, Strategy: req.Strategy, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Tasks), Pending: len(req.Tasks)}, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	group.ID = uuid.NewString()
 	group.Name = req.Name
 	group.Description = req.Description
@@ -280,9 +304,17 @@ func (s *taskCenterService) RetryTaskGroup(ctx context.Context, id string) (*iap
 
 func (s *taskCenterService) ListDAGTaskGroups(ctx context.Context, req *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error) {
 	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	req.IncludeSystem = req.CreatedBy == "system-admin"
 	items, total, err := s.store.ListDAGTaskGroups(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetDAG, dagTaskGroupIDs(items))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		item.ScheduleSource = sources[item.ID]
 	}
 	return &iapiserver.DAGTaskGroupListResponse{Total: total, Items: items}, nil
 }
@@ -291,7 +323,7 @@ func (s *taskCenterService) GetDAGTaskGroup(ctx context.Context, id string) (*ia
 	if err != nil {
 		return nil, err
 	}
-	if item.CreatedBy != taskActor(ctx) {
+	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrDAGTaskGroupNotFound, "dag task group not found")
 	}
 	return item, nil
@@ -312,7 +344,11 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	if err != nil {
 		return nil, err
 	}
-	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	createdBy := req.CreatedBy
+	if createdBy == "" {
+		createdBy = taskActor(ctx)
+	}
+	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	group.ID = uuid.NewString()
 	group.Name = req.Name
 	group.Description = req.Description
@@ -376,6 +412,9 @@ func (s *taskCenterService) ListTaskSchedules(ctx context.Context, req *iapiserv
 	if err != nil {
 		return nil, err
 	}
+	for _, item := range items {
+		item.TargetSummary = scheduleTemplateSummary(item)
+	}
 	return &iapiserver.TaskScheduleListResponse{Total: total, Items: items}, nil
 }
 func (s *taskCenterService) GetTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
@@ -386,14 +425,19 @@ func (s *taskCenterService) GetTaskSchedule(ctx context.Context, id string) (*ia
 	if !canReadTaskSchedule(ctx, item) {
 		return nil, errors.NewStatus(code.ErrTaskScheduleNotFound, "task schedule not found")
 	}
+	item.TargetSummary = scheduleTemplateSummary(item)
 	return item, nil
 }
 func (s *taskCenterService) ListScheduleExecutions(ctx context.Context, req *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error) {
-	if _, err := s.GetTaskSchedule(ctx, req.ScheduleID); err != nil {
+	schedule, err := s.GetTaskSchedule(ctx, req.ScheduleID)
+	if err != nil {
 		return nil, err
 	}
 	items, total, err := s.store.ListScheduleExecutions(ctx, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.attachExecutionTargets(ctx, schedule, items); err != nil {
 		return nil, err
 	}
 	return &iapiserver.ScheduleExecutionListResponse{Total: total, Items: items}, nil
@@ -455,6 +499,7 @@ func (s *taskCenterService) CreateTaskSchedule(ctx context.Context, req *iapiser
 		_, _ = s.store.UpdateTaskSchedule(ctx, schedule)
 		return created, runtimeError(err)
 	}
+	created.TargetSummary = scheduleTemplateSummary(created)
 	return created, nil
 }
 
@@ -498,6 +543,7 @@ func (s *taskCenterService) UpdateTaskSchedule(ctx context.Context, req *iapiser
 			return nil, runtimeError(err)
 		}
 	}
+	schedule.TargetSummary = scheduleTemplateSummary(schedule)
 	return s.store.UpdateTaskSchedule(ctx, schedule)
 }
 func (s *taskCenterService) DeleteTaskSchedule(ctx context.Context, id string) error {
@@ -529,6 +575,7 @@ func (s *taskCenterService) PauseTaskSchedule(ctx context.Context, id string) (*
 		}
 	}
 	schedule.Status = iapiserver.TaskScheduleStatusPaused
+	schedule.TargetSummary = scheduleTemplateSummary(schedule)
 	return s.store.UpdateTaskSchedule(ctx, schedule)
 }
 func (s *taskCenterService) ResumeTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
@@ -545,6 +592,7 @@ func (s *taskCenterService) ResumeTaskSchedule(ctx context.Context, id string) (
 		}
 	}
 	schedule.Status = iapiserver.TaskScheduleStatusActive
+	schedule.TargetSummary = scheduleTemplateSummary(schedule)
 	return s.store.UpdateTaskSchedule(ctx, schedule)
 }
 
@@ -644,7 +692,7 @@ func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapi
 }
 
 func atomicTaskFromRequest(req *iapiserver.AtomicTaskCreateRequest, createdBy string) *iapiserver.AtomicTask {
-	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
+	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, OwnerType: req.OwnerType, OwnerID: req.OwnerID, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	task.Name = req.Name
 	if task.Name == "" {
 		task.Name = req.Key
@@ -824,6 +872,128 @@ func definitionHash(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func atomicTaskIDs(items []*iapiserver.AtomicTask) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func taskGroupIDs(items []*iapiserver.TaskGroup) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func dagTaskGroupIDs(items []*iapiserver.DAGTaskGroup) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func scheduleTemplateSummary(schedule *iapiserver.TaskSchedule) *iapiserver.TaskTargetSummary {
+	summary := &iapiserver.TaskTargetSummary{Type: schedule.Target.Type, Name: schedule.Name}
+	raw, err := json.Marshal(schedule.Target.Template)
+	if err != nil {
+		return summary
+	}
+	switch schedule.Target.Type {
+	case iapiserver.TaskScheduleTargetAtomic:
+		var target iapiserver.AtomicTaskCreateRequest
+		if json.Unmarshal(raw, &target) == nil {
+			summary.Name = target.Name
+			if summary.Name == "" {
+				summary.Name = target.Key
+			}
+			summary.FunctionRef = target.FunctionRef
+			summary.ApplicationRunID = target.ApplicationRunID
+			summary.CanvasRunID = target.CanvasRunID
+			summary.CanvasNodeRunID = target.CanvasNodeRunID
+		}
+	case iapiserver.TaskScheduleTargetGroup:
+		var target iapiserver.TaskGroupCreateRequest
+		if json.Unmarshal(raw, &target) == nil {
+			summary.Name = target.Name
+			summary.TaskCount = len(target.Tasks)
+		}
+	case iapiserver.TaskScheduleTargetDAG:
+		var target iapiserver.DAGTaskGroupCreateRequest
+		if json.Unmarshal(raw, &target) == nil {
+			summary.Name = target.Name
+			summary.TaskCount = len(target.Nodes)
+		}
+	}
+	if summary.Name == "" {
+		summary.Name = schedule.Name
+	}
+	return summary
+}
+
+func atomicTargetSummary(item *iapiserver.AtomicTask) *iapiserver.TaskTargetSummary {
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetAtomic, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef, ApplicationRunID: item.ApplicationRunID, CanvasRunID: item.CanvasRunID, CanvasNodeRunID: item.CanvasNodeRunID}
+}
+
+func groupTargetSummary(item *iapiserver.TaskGroup) *iapiserver.TaskTargetSummary {
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetGroup, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
+}
+
+func dagTargetSummary(item *iapiserver.DAGTaskGroup) *iapiserver.TaskTargetSummary {
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetDAG, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
+}
+
+func (s *taskCenterService) attachExecutionTargets(ctx context.Context, schedule *iapiserver.TaskSchedule, executions []*iapiserver.TaskScheduleExecution) error {
+	idsByType := map[string][]string{
+		iapiserver.TaskScheduleTargetAtomic: {},
+		iapiserver.TaskScheduleTargetGroup:  {},
+		iapiserver.TaskScheduleTargetDAG:    {},
+	}
+	for _, execution := range executions {
+		if execution.TargetID != "" {
+			idsByType[execution.TargetType] = append(idsByType[execution.TargetType], execution.TargetID)
+		}
+	}
+
+	targets := make(map[string]*iapiserver.TaskTargetSummary)
+	atomicTasks, err := s.store.GetAtomicTasksByIDs(ctx, idsByType[iapiserver.TaskScheduleTargetAtomic])
+	if err != nil {
+		return err
+	}
+	for _, item := range atomicTasks {
+		targets[item.ID] = atomicTargetSummary(item)
+	}
+	groups, err := s.store.GetTaskGroupsByIDs(ctx, idsByType[iapiserver.TaskScheduleTargetGroup])
+	if err != nil {
+		return err
+	}
+	for _, item := range groups {
+		targets[item.ID] = groupTargetSummary(item)
+	}
+	dags, err := s.store.GetDAGTaskGroupsByIDs(ctx, idsByType[iapiserver.TaskScheduleTargetDAG])
+	if err != nil {
+		return err
+	}
+	for _, item := range dags {
+		targets[item.ID] = dagTargetSummary(item)
+	}
+
+	for _, execution := range executions {
+		if target := targets[execution.TargetID]; target != nil {
+			execution.TargetSummary = target
+			continue
+		}
+		fallback := scheduleTemplateSummary(schedule)
+		fallback.ID = execution.TargetID
+		fallback.Type = execution.TargetType
+		execution.TargetSummary = fallback
+	}
+	return nil
+}
+
 var _ TaskCenterSrv = (*taskCenterService)(nil)
 
 func taskActor(ctx context.Context) string {
@@ -850,6 +1020,10 @@ func applyTaskScheduleScope(ctx context.Context, req *iapiserver.TaskScheduleLis
 }
 
 func canReadTaskSchedule(ctx context.Context, schedule *iapiserver.TaskSchedule) bool {
+	return canReadTaskCreatedBy(ctx, schedule.CreatedBy)
+}
+
+func canReadTaskCreatedBy(ctx context.Context, createdBy string) bool {
 	actor := taskActor(ctx)
-	return schedule.CreatedBy == actor || (actor == "system-admin" && schedule.CreatedBy == iapiserver.DefaultTaskCenterCreatedBy)
+	return createdBy == actor || (actor == "system-admin" && createdBy == iapiserver.DefaultTaskCenterCreatedBy)
 }

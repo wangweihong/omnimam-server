@@ -4,12 +4,13 @@ import "github.com/wangweihong/omnimam/backend/apis/imachinery"
 
 type AtomicTaskListRequest struct {
 	imachinery.BasicQueryParam
-	Status     string `form:"status" binding:"omitempty,oneof=PENDING BLOCKED READY RUNNING RETRYING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT SKIPPED"`
-	RootTaskID string `form:"root_task_id"`
-	OwnerID    string `form:"owner_id"`
-	ProjectID  string `form:"-" json:"-"`
-	Namespace  string `form:"-" json:"-"`
-	CreatedBy  string `form:"-" json:"-"`
+	Status        string `form:"status" binding:"omitempty,oneof=PENDING BLOCKED READY RUNNING RETRYING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT SKIPPED"`
+	RootTaskID    string `form:"root_task_id"`
+	OwnerID       string `form:"owner_id"`
+	ProjectID     string `form:"-" json:"-"`
+	Namespace     string `form:"-" json:"-"`
+	CreatedBy     string `form:"-" json:"-"`
+	IncludeSystem bool   `form:"-" json:"-"` // 系统管理员列表是否包含系统调度创建的任务。
 }
 
 type AtomicTaskCreateRequest struct {
@@ -28,6 +29,9 @@ type AtomicTaskCreateRequest struct {
 	ApplicationRunID     string         `json:"application_run_id" binding:"omitempty,max=64"`
 	CanvasRunID          string         `json:"canvas_run_id" binding:"omitempty,max=64"`
 	CanvasNodeRunID      string         `json:"canvas_node_run_id" binding:"omitempty,max=64"`
+	CreatedBy            string         `json:"-"` // 内部调度触发时显式传递的计划创建者。
+	OwnerType            string         `json:"-"` // 内部调度目标的归属类型，HTTP 客户端不可设置。
+	OwnerID              string         `json:"-"` // 内部调度目标的来源计划 ID。
 }
 
 type TaskAttemptListRequest struct {
@@ -41,10 +45,11 @@ type ActionReasonRequest struct {
 
 type TaskGroupListRequest struct {
 	imachinery.BasicQueryParam
-	Status    string `form:"status" binding:"omitempty,oneof=PENDING RUNNING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT"`
-	ProjectID string `form:"-" json:"-"`
-	Namespace string `form:"-" json:"-"`
-	CreatedBy string `form:"-" json:"-"`
+	Status        string `form:"status" binding:"omitempty,oneof=PENDING RUNNING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT"`
+	ProjectID     string `form:"-" json:"-"`
+	Namespace     string `form:"-" json:"-"`
+	CreatedBy     string `form:"-" json:"-"`
+	IncludeSystem bool   `form:"-" json:"-"` // 系统管理员列表是否包含系统调度创建的组合。
 }
 
 type TaskGroupCreateRequest struct {
@@ -57,14 +62,16 @@ type TaskGroupCreateRequest struct {
 	Namespace        string               `json:"namespace" binding:"required,max=128"`
 	IdempotencyScope string               `json:"idempotency_scope" binding:"omitempty,max=256"`
 	IdempotencyKey   string               `json:"idempotency_key" binding:"omitempty,max=256"`
+	CreatedBy        string               `json:"-"` // 内部调度触发时显式传递的计划创建者。
 }
 
 type DAGTaskGroupListRequest struct {
 	imachinery.BasicQueryParam
-	Status    string `form:"status" binding:"omitempty,oneof=PENDING RUNNING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT"`
-	ProjectID string `form:"-" json:"-"`
-	Namespace string `form:"-" json:"-"`
-	CreatedBy string `form:"-" json:"-"`
+	Status        string `form:"status" binding:"omitempty,oneof=PENDING RUNNING CANCEL_REQUESTED SUCCESS FAILED CANCELED TIMEOUT"`
+	ProjectID     string `form:"-" json:"-"`
+	Namespace     string `form:"-" json:"-"`
+	CreatedBy     string `form:"-" json:"-"`
+	IncludeSystem bool   `form:"-" json:"-"` // 系统管理员列表是否包含系统调度创建的 DAG。
 }
 
 type DAGTaskGroupCreateRequest struct {
@@ -79,6 +86,7 @@ type DAGTaskGroupCreateRequest struct {
 	Namespace        string         `json:"namespace" binding:"required,max=128"`
 	IdempotencyScope string         `json:"idempotency_scope" binding:"omitempty,max=256"`
 	IdempotencyKey   string         `json:"idempotency_key" binding:"omitempty,max=256"`
+	CreatedBy        string         `json:"-"` // 内部调度触发时显式传递的计划创建者。
 }
 
 type TaskScheduleListRequest struct {

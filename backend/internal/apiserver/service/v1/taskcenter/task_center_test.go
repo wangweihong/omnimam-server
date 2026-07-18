@@ -9,8 +9,47 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
+
+type scheduleTargetStoreStub struct {
+	store.TaskCenterStore
+	atomicCalls     int
+	groupCalls      int
+	dagCalls        int
+	seenAtomicList  *iapiserver.AtomicTaskListRequest
+	scheduleSources map[string]*iapiserver.ScheduleSourceSummary
+}
+
+func (s *scheduleTargetStoreStub) ListAtomicTasks(_ context.Context, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
+	s.seenAtomicList = req
+	item := &iapiserver.AtomicTask{}
+	item.ID = "atomic-1"
+	return []*iapiserver.AtomicTask{item}, 1, nil
+}
+
+func (s *scheduleTargetStoreStub) ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+	return s.scheduleSources, nil
+}
+
+func (s *scheduleTargetStoreStub) GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error) {
+	s.atomicCalls++
+	item := &iapiserver.AtomicTask{FunctionRef: "asset.thumbnail", Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1}
+	item.ID = "atomic-1"
+	item.Name = "Generate thumbnail"
+	return []*iapiserver.AtomicTask{item}, nil
+}
+
+func (s *scheduleTargetStoreStub) GetTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.TaskGroup, error) {
+	s.groupCalls++
+	return []*iapiserver.TaskGroup{}, nil
+}
+
+func (s *scheduleTargetStoreStub) GetDAGTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.DAGTaskGroup, error) {
+	s.dagCalls++
+	return []*iapiserver.DAGTaskGroup{}, nil
+}
 
 func TestValidateDAGRejectsCycle(t *testing.T) {
 	service := &taskCenterService{functions: map[string]struct{}{"test.run": {}}}
@@ -116,6 +155,79 @@ func TestScheduleLauncherPassesSchedulerMetadataAsWorkerArguments(t *testing.T) 
 	}
 	if arguments["task_schedule_id"] != "${workflow.input.task_schedule_id}" || arguments["scheduled_at"] != "${workflow.input._scheduledTime}" {
 		t.Fatalf("arguments = %#v", arguments)
+	}
+}
+
+func TestScheduleTemplateSummary(t *testing.T) {
+	schedule := &iapiserver.TaskSchedule{Target: iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetAtomic, Template: map[string]any{"key": "thumbnail", "name": "Generate thumbnail", "function_ref": "asset.thumbnail", "application_run_id": "run-1"}}}
+	summary := scheduleTemplateSummary(schedule)
+	if summary.Type != iapiserver.TaskScheduleTargetAtomic || summary.Name != "Generate thumbnail" || summary.FunctionRef != "asset.thumbnail" || summary.ApplicationRunID != "run-1" {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestAttachExecutionTargetsUsesBoundedBatchQueriesAndFallback(t *testing.T) {
+	stub := &scheduleTargetStoreStub{}
+	service := &taskCenterService{store: stub}
+	schedule := &iapiserver.TaskSchedule{Target: iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetDAG, Template: map[string]any{"name": "Engine health", "nodes": []any{map[string]any{"key": "plan"}}}}}
+	executions := []*iapiserver.TaskScheduleExecution{
+		{TargetType: iapiserver.TaskScheduleTargetAtomic, TargetID: "atomic-1"},
+		{TargetType: iapiserver.TaskScheduleTargetGroup, Status: iapiserver.ScheduleExecutionStatusTriggerFailed, Reason: "invalid target"},
+		{TargetType: iapiserver.TaskScheduleTargetDAG, TargetID: "missing-dag"},
+	}
+
+	if err := service.attachExecutionTargets(context.Background(), schedule, executions); err != nil {
+		t.Fatal(err)
+	}
+	if stub.atomicCalls != 1 || stub.groupCalls != 1 || stub.dagCalls != 1 {
+		t.Fatalf("batch calls = atomic:%d group:%d dag:%d", stub.atomicCalls, stub.groupCalls, stub.dagCalls)
+	}
+	if executions[0].TargetSummary == nil || executions[0].TargetSummary.Name != "Generate thumbnail" || executions[0].TargetSummary.Status != iapiserver.AtomicTaskStatusSuccess {
+		t.Fatalf("actual target summary = %#v", executions[0].TargetSummary)
+	}
+	if executions[1].TargetSummary == nil || executions[1].TargetSummary.ID != "" || executions[1].TargetSummary.Name != "Engine health" {
+		t.Fatalf("trigger failure fallback = %#v", executions[1].TargetSummary)
+	}
+	if executions[2].TargetSummary == nil || executions[2].TargetSummary.ID != "missing-dag" || executions[2].TargetSummary.Name != "Engine health" {
+		t.Fatalf("missing target fallback = %#v", executions[2].TargetSummary)
+	}
+}
+
+func TestListAtomicTasksIncludesScheduleSourceAndKeepsUserScope(t *testing.T) {
+	source := &iapiserver.ScheduleSourceSummary{ScheduleID: "schedule-1", ScheduleName: "Nightly", ScheduleExecutionID: "execution-1"}
+	stub := &scheduleTargetStoreStub{scheduleSources: map[string]*iapiserver.ScheduleSourceSummary{"atomic-1": source}}
+	service := &taskCenterService{store: stub}
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	response, err := service.ListAtomicTasks(ctx, &iapiserver.AtomicTaskListRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.seenAtomicList == nil || stub.seenAtomicList.CreatedBy != "user-1" || stub.seenAtomicList.IncludeSystem {
+		t.Fatalf("atomic list scope = %#v", stub.seenAtomicList)
+	}
+	if len(response.Items) != 1 || response.Items[0].ScheduleSource != source {
+		t.Fatalf("atomic list response = %#v", response)
+	}
+}
+
+func TestListAtomicTasksIncludesSystemRunsForSystemAdmin(t *testing.T) {
+	stub := &scheduleTargetStoreStub{}
+	service := &taskCenterService{store: stub}
+	admin := &iapiserver.User{}
+	admin.ID = "system-admin"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, admin)
+
+	if _, err := service.ListAtomicTasks(ctx, &iapiserver.AtomicTaskListRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if stub.seenAtomicList == nil || !stub.seenAtomicList.IncludeSystem {
+		t.Fatalf("system admin atomic list scope = %#v", stub.seenAtomicList)
+	}
+	if !canReadTaskCreatedBy(ctx, iapiserver.DefaultTaskCenterCreatedBy) {
+		t.Fatal("system administrator cannot open system schedule target")
 	}
 }
 

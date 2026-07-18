@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 33cacdc0ec8118c9ffe80460f37c794f8f1d6bbd
-contract_version: spec-v1.0.0
-updated_at: 2026-07-17
+commit: abf219fec0678bea98f5428406b116dc86ac98ed
+contract_version: spec-v1.0.3
+updated_at: 2026-07-18
 status: released
-note: Conductor-driven AtomicTask, TaskGroup/DAGTaskGroup, TaskSchedule, workflow-canvas, application binding, and asset outbox contracts released as spec-v1.0.0.
+note: TaskSchedule run summaries, recurring owner constraints, and response-only schedule sources released under spec-v1.0.3.
