@@ -22,15 +22,13 @@ func (s *assetLibrary) List(
 	param *iapiserver.AssetLibraryListRequest,
 ) ([]*iapiserver.AssetLibrary, int64, error) {
 	var meta []*iapiserver.AssetLibrary
-	var total int64
 
 	resourceSpecificFilter := func(q *gorm.DB) *gorm.DB {
 		return q
 	}
 
-	err := param.ToQuery(ctx, s.ds.db, resourceSpecificFilter).
-		Find(&meta).Count(&total).Error
-
+	query := param.ToUnpaginatedQuery(ctx, s.ds.db, resourceSpecificFilter)
+	total, err := CountAndFindPage(query, param.PagingParams, &meta)
 	return meta, total, err
 }
 

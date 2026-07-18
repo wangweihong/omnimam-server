@@ -129,7 +129,6 @@ func (s *aiChatStore) ListTopics(
 	req *iapiserver.AIChatTopicListRequest,
 ) ([]*iapiserver.AIChatTopic, int64, error) {
 	var items []*iapiserver.AIChatTopic
-	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
 		q = q.Where("owner_user_id = ? AND deleted_at = ?", ownerUserID, "")
 		if req.Q != "" {
@@ -141,20 +140,9 @@ func (s *aiChatStore) ListTopics(
 		return q
 	}
 	query := filter(s.ds.db.WithContext(ctx).Model(&iapiserver.AIChatTopic{}))
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
 	query = query.Order("pinned DESC, last_active_at DESC")
-	if req.PageNum > 0 && req.PageSize > 0 {
-		if req.PageSize > 1000 {
-			req.PageSize = 1000
-		}
-		query = query.Offset((req.PageNum - 1) * req.PageSize).Limit(req.PageSize)
-	}
-	if err := query.Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *aiChatStore) GetTopic(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatTopic, error) {

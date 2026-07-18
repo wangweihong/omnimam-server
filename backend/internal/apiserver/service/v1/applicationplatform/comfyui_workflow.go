@@ -142,7 +142,11 @@ func (s *applicationPlatformService) ListComfyUIWorkflowNodes(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.ComfyUIWorkflowNodeListResponse{Total: len(workflow.ParsedNodes), Items: pageSlice(workflow.ParsedNodes, pageNum, pageSize)}, nil
+	window, err := (imachinery.PagingParams{PageNum: pageNum, PageSize: pageSize}).Normalize()
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ComfyUIWorkflowNodeListResponse{Total: len(workflow.ParsedNodes), Items: imachinery.PaginateSlice(workflow.ParsedNodes, window)}, nil
 }
 func (s *applicationPlatformService) ListComfyUIWorkflowInputCandidates(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowInputCandidateListResponse, error) {
 	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, "read_input_candidates")

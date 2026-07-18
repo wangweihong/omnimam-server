@@ -24,6 +24,12 @@ type BasicQueryParam struct {
 	SpecificFilterShadow map[string]string `json:"-"`
 }
 
+// Validate 在 controller 边界统一校验分页参数和 offset 溢出。
+func (params BasicQueryParam) Validate() error {
+	_, err := params.PagingParams.Normalize()
+	return err
+}
+
 /*
 resourceSpecificFilter example:
 
@@ -38,6 +44,21 @@ resourceSpecificFilter example:
 	    }
 */
 func (params BasicQueryParam) ToQuery(
+	ctx context.Context,
+	db *gorm.DB,
+	resourceSpecificFilter func(*gorm.DB) *gorm.DB,
+) *gorm.DB {
+	query := params.ToUnpaginatedQuery(ctx, db, resourceSpecificFilter)
+	window, err := params.PagingParams.Normalize()
+	if err != nil {
+		query.AddError(err)
+		return query
+	}
+	return ApplyPagination(query, window)
+}
+
+// ToUnpaginatedQuery 构建仅包含过滤和排序的查询，供计数后再分页的列表接口使用。
+func (params BasicQueryParam) ToUnpaginatedQuery(
 	ctx context.Context,
 	db *gorm.DB,
 	resourceSpecificFilter func(*gorm.DB) *gorm.DB,
@@ -91,16 +112,12 @@ func (params BasicQueryParam) ToQuery(
 	} else {
 		query = query.Order("created_at DESC")
 	}
-	// 5. 分页处理
-	if params.PageNum > 0 && params.PageSize > 0 {
-		// 限制最大页大小
-		if params.PageSize > 1000 {
-			params.PageSize = 1000
-		}
-		offset := (params.PageNum - 1) * params.PageSize
-		query = query.Offset(offset).Limit(params.PageSize)
-	}
 	return query
+}
+
+// ApplyPagination 将已归一化的分页窗口应用到 GORM 查询。
+func ApplyPagination(query *gorm.DB, window PageWindow) *gorm.DB {
+	return query.Offset(window.Offset).Limit(window.Limit)
 }
 
 func isValidFieldName(field string) bool {

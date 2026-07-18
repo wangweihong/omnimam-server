@@ -22,14 +22,9 @@ func (s *workflowCanvasStore) ListWorkflowCanvases(ctx context.Context, req *iap
 	filter := func(q *gorm.DB) *gorm.DB {
 		return q.Where("project_id = ? AND namespace = ? AND created_by = ? AND deleted_at IS NULL", projectID, namespace, userID)
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvas{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvas{}), filter).Order("updated_at DESC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvas{}), filter).Order("updated_at DESC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *workflowCanvasStore) GetWorkflowCanvas(ctx context.Context, id string) (*iapiserver.WorkflowCanvas, error) {
@@ -93,14 +88,9 @@ func (s *workflowCanvasStore) PublishWorkflowCanvas(ctx context.Context, canvas 
 func (s *workflowCanvasStore) ListCanvasVersions(ctx context.Context, req *iapiserver.CanvasVersionListRequest) ([]*iapiserver.CanvasVersion, int64, error) {
 	var items []*iapiserver.CanvasVersion
 	filter := func(q *gorm.DB) *gorm.DB { return q.Where("canvas_id = ?", req.CanvasID) }
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.CanvasVersion{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.CanvasVersion{}), filter).Order("version DESC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.CanvasVersion{}), filter).Order("version DESC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *workflowCanvasStore) GetCanvasVersion(ctx context.Context, id string) (*iapiserver.CanvasVersion, error) {
@@ -126,14 +116,9 @@ func (s *workflowCanvasStore) ListWorkflowCanvasRuns(ctx context.Context, req *i
 		}
 		return q
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvasRun{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvasRun{}), filter).Order("created_at DESC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvasRun{}), filter).Order("created_at DESC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *workflowCanvasStore) GetWorkflowCanvasRun(ctx context.Context, id string) (*iapiserver.WorkflowCanvasRun, error) {
@@ -202,14 +187,9 @@ func (s *workflowCanvasStore) ListCanvasNodeRuns(ctx context.Context, req *iapis
 		}
 		return q
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.CanvasNodeRun{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.CanvasNodeRun{}), filter).Order("node_key ASC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.CanvasNodeRun{}), filter).Order("node_key ASC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 var _ storeWorkflowCanvasContract = (*workflowCanvasStore)(nil)

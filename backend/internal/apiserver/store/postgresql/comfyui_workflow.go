@@ -40,7 +40,7 @@ func (s *applicationPlatformStore) ListComfyUIWorkflows(ctx context.Context, req
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -78,7 +78,7 @@ func (s *applicationPlatformStore) ListComfyUIWorkflowDuplicateIDs(ctx context.C
 func (s *applicationPlatformStore) ListComfyUIWorkflowValidations(ctx context.Context, req *iapiserver.ComfyUIWorkflowValidationListRequest) ([]*iapiserver.ComfyUIWorkflowValidation, int64, error) {
 	var items []*iapiserver.ComfyUIWorkflowValidation
 	query := appQuery(ctx, s.ds.db.Model(&iapiserver.ComfyUIWorkflowValidation{}), req.BasicQueryParam, func(q *gorm.DB) *gorm.DB { return q.Where("workflow_id = ?", req.WorkflowID) })
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 

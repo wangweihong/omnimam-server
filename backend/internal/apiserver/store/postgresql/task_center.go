@@ -37,15 +37,9 @@ func (s *taskCenterStore) ListAtomicTasks(ctx context.Context, req *iapiserver.A
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	query := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
-	if err := query.Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) GetAtomicTask(ctx context.Context, id string) (*iapiserver.AtomicTask, error) {
@@ -97,15 +91,9 @@ func (s *taskCenterStore) UpdateAtomicTask(ctx context.Context, data *iapiserver
 func (s *taskCenterStore) ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error) {
 	var items []*iapiserver.TaskAttempt
 	filter := func(query *gorm.DB) *gorm.DB { return query.Where("atomic_task_id = ?", req.AtomicTaskID) }
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	query := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), filter)
-	if err := query.Order("attempt_no ASC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), filter).Order("attempt_no ASC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error) {
@@ -117,14 +105,9 @@ func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.Ta
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter).Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) GetTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
@@ -188,14 +171,9 @@ func (s *taskCenterStore) ListDAGTaskGroups(ctx context.Context, req *iapiserver
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter).Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) GetDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
@@ -260,14 +238,9 @@ func (s *taskCenterStore) ListOwnedTasks(ctx context.Context, ownerType, ownerID
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter).Order("child_order ASC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter).Order("child_order ASC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) AddOwnedAtomicTasks(ctx context.Context, ownerType, ownerID string, tasks []*iapiserver.AtomicTask) error {
@@ -304,14 +277,9 @@ func (s *taskCenterStore) ListTaskSchedules(ctx context.Context, req *iapiserver
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter).Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 func (s *taskCenterStore) GetTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
 	var item iapiserver.TaskSchedule
@@ -342,14 +310,9 @@ func (s *taskCenterStore) ListScheduleExecutions(ctx context.Context, req *iapis
 		}
 		return query
 	}
-	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter)
-	if err != nil {
-		return nil, 0, err
-	}
-	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter).Order("scheduled_at DESC").Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter).Order("scheduled_at DESC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *taskCenterStore) AddProjectionEventIdempotent(ctx context.Context, data *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error) {
@@ -653,17 +616,6 @@ func (s *taskCenterStore) UpdateScheduleExecution(ctx context.Context, data *iap
 
 func mustJSON(value any) string { data, _ := json.Marshal(value); return string(data) }
 
-func countQuery(ctx context.Context, query *gorm.DB, filter func(*gorm.DB) *gorm.DB) (int64, error) {
-	var total int64
-	query = query.WithContext(ctx)
-	if filter != nil {
-		query = filter(query)
-	}
-	if err := query.Count(&total).Error; err != nil {
-		return 0, errors.WithStack(err)
-	}
-	return total, nil
-}
 func mapNotFound(err error, errorCode int, message string) error {
 	if stderrors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.NewStatus(errorCode, message)

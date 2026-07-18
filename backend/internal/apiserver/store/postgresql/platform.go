@@ -24,7 +24,6 @@ func (s *providerStore) List(
 	req *iapiserver.ProviderListRequest,
 ) ([]*iapiserver.Provider, int64, error) {
 	var items []*iapiserver.Provider
-	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
 		q = q.Where("deleted_at = ''")
 		if req.OwnerUserID != "" {
@@ -39,13 +38,8 @@ func (s *providerStore) List(
 		return q
 	}
 	query := modelManagementQuery(ctx, s.ds.db.Model(&iapiserver.Provider{}), req.BasicQueryParam, filter)
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	if err := modelManagementPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *providerStore) Get(ctx context.Context, id string) (*iapiserver.Provider, error) {
@@ -110,7 +104,6 @@ func (s *providerModelStore) List(
 	req *iapiserver.ProviderModelListRequest,
 ) ([]*iapiserver.ProviderModel, int64, error) {
 	var items []*iapiserver.ProviderModel
-	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
 		q = q.Where("deleted_at = ''")
 		if req.OwnerUserID != "" {
@@ -128,13 +121,8 @@ func (s *providerModelStore) List(
 		return q
 	}
 	query := modelManagementQuery(ctx, s.ds.db.Model(&iapiserver.ProviderModel{}), req.BasicQueryParam, filter)
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	if err := modelManagementPaginate(query, req.PageNum, req.PageSize).Find(&items).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func modelManagementQuery(
@@ -159,16 +147,6 @@ func modelManagementQuery(
 	}
 	query = query.Order(modelManagementOrder(params.SortField, params.SortOrder))
 	return query
-}
-
-func modelManagementPaginate(query *gorm.DB, pageNum, pageSize int) *gorm.DB {
-	if pageNum <= 0 || pageSize <= 0 {
-		return query
-	}
-	if pageSize > 1000 {
-		pageSize = 1000
-	}
-	return query.Offset((pageNum - 1) * pageSize).Limit(pageSize)
 }
 
 func modelManagementOrder(sortField, sortOrder string) clause.OrderByColumn {
@@ -321,7 +299,6 @@ func (s *storageBackendStore) List(
 	req *iapiserver.StorageBackendListRequest,
 ) ([]*iapiserver.StorageBackend, int64, error) {
 	var items []*iapiserver.StorageBackend
-	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
 		if req.Type != "" {
 			q = q.Where("type = ?", req.Type)
@@ -331,11 +308,9 @@ func (s *storageBackendStore) List(
 		}
 		return q
 	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.StorageBackend{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.StorageBackend{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *storageBackendStore) Get(ctx context.Context, id string) (*iapiserver.StorageBackend, error) {
@@ -387,7 +362,6 @@ func (s *platformAssetStore) List(
 	req *iapiserver.AssetListRequest,
 ) ([]*iapiserver.Asset, int64, error) {
 	var items []*iapiserver.Asset
-	var total int64
 	filter := func(q *gorm.DB) *gorm.DB {
 		if req.Status == "deleted" || (req.Deleted != nil && *req.Deleted) {
 			q = q.Where("deleted_at > 0")
@@ -448,11 +422,9 @@ func (s *platformAssetStore) List(
 		}
 		return q
 	}
-	query := req.ToQuery(ctx, s.ds.db.Model(&iapiserver.Asset{}), filter)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
+	query := req.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.Asset{}), filter)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
 }
 
 func (s *platformAssetStore) Get(ctx context.Context, id string) (*iapiserver.Asset, error) {

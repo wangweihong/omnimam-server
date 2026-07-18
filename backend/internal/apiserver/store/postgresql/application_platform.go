@@ -35,7 +35,7 @@ func (s *applicationPlatformStore) ListEngineInstances(ctx context.Context, req 
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -92,7 +92,7 @@ func (s *applicationPlatformStore) ListEngineBindings(ctx context.Context, req *
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -133,7 +133,7 @@ func (s *applicationPlatformStore) ListTemplates(ctx context.Context, req *iapis
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -165,7 +165,7 @@ func (s *applicationPlatformStore) ListTemplateVersions(ctx context.Context, req
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -241,7 +241,7 @@ func (s *applicationPlatformStore) ListApplications(ctx context.Context, req *ia
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -273,7 +273,7 @@ func (s *applicationPlatformStore) ListApplicationVersions(ctx context.Context, 
 		}
 		return q
 	})
-	total, err := countAndFind(query, req.PageNum, req.PageSize, &items)
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
@@ -420,28 +420,7 @@ func (s *applicationPlatformStore) UpdateArtifactRegistration(ctx context.Contex
 }
 
 func appQuery(ctx context.Context, db *gorm.DB, params imachinery.BasicQueryParam, filter func(*gorm.DB) *gorm.DB) *gorm.DB {
-	params.PageNum, params.PageSize = 0, 0
-	return params.ToQuery(ctx, db, filter)
-}
-
-func countAndFind[T any](query *gorm.DB, pageNum, pageSize int, items *[]T) (int64, error) {
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return 0, errors.WithStack(err)
-	}
-	if pageNum < 0 {
-		pageNum = 0
-	}
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	if pageSize > 200 {
-		pageSize = 200
-	}
-	if err := query.Offset(pageNum * pageSize).Limit(pageSize).Find(items).Error; err != nil {
-		return 0, errors.WithStack(err)
-	}
-	return total, nil
+	return params.ToUnpaginatedQuery(ctx, db, filter)
 }
 
 func optimisticUpdate(ctx context.Context, db *gorm.DB, data any, id string, expected int64) error {

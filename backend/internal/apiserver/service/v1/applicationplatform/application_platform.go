@@ -234,7 +234,11 @@ func (s *applicationPlatformService) ListProviderCapabilities(ctx context.Contex
 		}
 		filtered = append(filtered, item)
 	}
-	page := pageSlice(filtered, req.PageNum, req.PageSize)
+	window, err := req.PagingParams.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	page := imachinery.PaginateSlice(filtered, window)
 	return &iapiserver.ProviderCapabilityListResponse{Total: len(filtered), RegistryStatus: s.Capabilities.Status(), Items: page}, nil
 }
 
@@ -260,7 +264,11 @@ func (s *applicationPlatformService) ListProviderCapabilityLoadResults(ctx conte
 			filtered = append(filtered, item)
 		}
 	}
-	return &iapiserver.ProviderCapabilityLoadResultListResponse{Total: len(filtered), RegistryStatus: s.Capabilities.Status(), Items: pageSlice(filtered, req.PageNum, req.PageSize)}, nil
+	window, err := req.PagingParams.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ProviderCapabilityLoadResultListResponse{Total: len(filtered), RegistryStatus: s.Capabilities.Status(), Items: imachinery.PaginateSlice(filtered, window)}, nil
 }
 
 func (s *applicationPlatformService) ListApplicationEngineTypes(ctx context.Context, req *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error) {
@@ -274,7 +282,11 @@ func (s *applicationPlatformService) ListApplicationEngineTypes(ctx context.Cont
 			filtered = append(filtered, item)
 		}
 	}
-	return &iapiserver.ApplicationEngineTypeListResponse{Total: len(filtered), Items: pageSlice(filtered, req.PageNum, req.PageSize)}, nil
+	window, err := req.PagingParams.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ApplicationEngineTypeListResponse{Total: len(filtered), Items: imachinery.PaginateSlice(filtered, window)}, nil
 }
 
 func (s *applicationPlatformService) ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error) {
@@ -1125,26 +1137,6 @@ func matchesKeyword(keyword string, values ...string) bool {
 		}
 	}
 	return false
-}
-func pageSlice[T any](items []T, pageNum, pageSize int) []T {
-	if pageNum < 0 {
-		pageNum = 0
-	}
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	if pageSize > 200 {
-		pageSize = 200
-	}
-	start := pageNum * pageSize
-	if start >= len(items) {
-		return []T{}
-	}
-	end := start + pageSize
-	if end > len(items) {
-		end = len(items)
-	}
-	return items[start:end]
 }
 func defaultInt(value, fallback int) int {
 	if value <= 0 {

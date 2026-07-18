@@ -23,7 +23,6 @@ func (s *serviceProvider) List(
 	param *iapiserver.ServiceProviderListRequest,
 ) ([]*iapiserver.ServiceProvider, int64, error) {
 	var meta []*iapiserver.ServiceProvider
-	var total int64
 
 	resourceSpecificFilter := func(q *gorm.DB) *gorm.DB {
 		if param.Protocol != "" {
@@ -32,9 +31,8 @@ func (s *serviceProvider) List(
 		return q
 	}
 
-	err := param.ToQuery(ctx, s.ds.db, resourceSpecificFilter).
-		Find(&meta).Count(&total).Error
-
+	query := param.ToUnpaginatedQuery(ctx, s.ds.db, resourceSpecificFilter)
+	total, err := CountAndFindPage(query, param.PagingParams, &meta)
 	return meta, total, err
 }
 
