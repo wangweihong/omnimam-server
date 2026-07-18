@@ -9,6 +9,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill"
 	wmsql "github.com/ThreeDotsLabs/watermill-sql/v4/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -34,12 +35,20 @@ func (ds *datastore) ensureOutboxScheme() error {
 	return nil
 }
 
-func publishOutbox(tx *gorm.DB, topic, id string, payload map[string]any) error {
+const outboxIdempotencyKeyMetadata = "idempotency_key"
+
+func newOutboxMessage(idempotencyKey string, payload []byte) *message.Message {
+	msg := message.NewMessage(uuid.NewString(), payload)
+	msg.Metadata.Set(outboxIdempotencyKeyMetadata, idempotencyKey)
+	return msg
+}
+
+func publishOutbox(tx *gorm.DB, topic, idempotencyKey string, payload map[string]any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	msg := message.NewMessage(id, raw)
+	msg := newOutboxMessage(idempotencyKey, raw)
 	msg.SetContext(context.Background())
 	query, err := outboxSchema.InsertQuery(wmsql.InsertQueryParams{Topic: topic, Msgs: message.Messages{msg}})
 	if err != nil {

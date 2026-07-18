@@ -1,9 +1,12 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -79,6 +82,42 @@ func TestLocalObjectPathRejectsEscape(t *testing.T) {
 	}
 	if _, err := localObjectPath(backend, "assets/file.txt"); err != nil {
 		t.Fatalf("expected safe path: %v", err)
+	}
+}
+
+func TestCreateAssetFromReaderRemovesObjectWhenPersistenceFails(t *testing.T) {
+	root := t.TempDir()
+	factory := &testFactory{
+		storage: &testStorageBackendStore{item: &iapiserver.StorageBackend{
+			Type: iapiserver.StorageBackendTypeLocal,
+			Root: root,
+		}},
+		assets: &testFailingAssetStore{},
+	}
+	svc := &platformService{store: factory}
+
+	_, err := svc.createAssetFromReader(
+		context.Background(),
+		bytes.NewBufferString("complete upload"),
+		"image.png",
+		nil,
+		iapiserver.AssetSourceUserUpload,
+	)
+	if err == nil {
+		t.Fatal("expected persistence failure")
+	}
+
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			t.Fatalf("orphaned upload object: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk storage root: %v", err)
 	}
 }
 
@@ -502,6 +541,8 @@ type testFactory struct {
 	configs     *testSystemLLMConfigStore
 	flags       *testFeatureFlagStore
 	permissions *testPermissionStore
+	storage     store.StorageBackendStore
+	assets      store.AssetStore
 }
 
 func (f *testFactory) IdentityProviders() store.IdentityProviderStore { return nil }
@@ -525,8 +566,8 @@ func (f *testFactory) ProviderCapabilities() store.ProviderCapabilityStore {
 	return nil
 }
 func (f *testFactory) SystemLLMConfigs() store.SystemLLMConfigStore   { return f.configs }
-func (f *testFactory) StorageBackends() store.StorageBackendStore     { return nil }
-func (f *testFactory) AssetsV2() store.AssetStore                     { return nil }
+func (f *testFactory) StorageBackends() store.StorageBackendStore     { return f.storage }
+func (f *testFactory) AssetsV2() store.AssetStore                     { return f.assets }
 func (f *testFactory) AssetsV1() store.AssetV1Store                   { return nil }
 func (f *testFactory) AssetThumbnails() store.AssetThumbnailStore     { return nil }
 func (f *testFactory) Tags() store.TagStore                           { return nil }
@@ -545,6 +586,56 @@ func (f *testFactory) UserRoles() store.UserRoleStore       { return nil }
 func (f *testFactory) AIChat() store.AIChatStore            { return nil }
 func (f *testFactory) EnsureScheme(metaTypes ...any) error  { return nil }
 func (f *testFactory) Close() error                         { return nil }
+
+type testStorageBackendStore struct {
+	item *iapiserver.StorageBackend
+}
+
+func (s *testStorageBackendStore) List(context.Context, *iapiserver.StorageBackendListRequest) ([]*iapiserver.StorageBackend, int64, error) {
+	return []*iapiserver.StorageBackend{s.item}, 1, nil
+}
+
+func (s *testStorageBackendStore) Get(context.Context, string) (*iapiserver.StorageBackend, error) {
+	return s.item, nil
+}
+
+func (s *testStorageBackendStore) Add(_ context.Context, data *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error) {
+	s.item = data
+	return data, nil
+}
+
+func (s *testStorageBackendStore) Update(_ context.Context, data *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error) {
+	s.item = data
+	return data, nil
+}
+
+func (s *testStorageBackendStore) GetDefaultLocal(context.Context) (*iapiserver.StorageBackend, error) {
+	return s.item, nil
+}
+
+type testFailingAssetStore struct{}
+
+func (*testFailingAssetStore) List(context.Context, *iapiserver.AssetListRequest) ([]*iapiserver.Asset, int64, error) {
+	return nil, 0, nil
+}
+
+func (*testFailingAssetStore) Get(context.Context, string) (*iapiserver.Asset, error) {
+	return nil, errors.Errorf("not found")
+}
+
+func (*testFailingAssetStore) Add(context.Context, *iapiserver.Asset) (*iapiserver.Asset, error) {
+	return nil, errors.Errorf("persistence failed")
+}
+
+func (*testFailingAssetStore) AddWithUploadEvent(context.Context, *iapiserver.Asset, *iapiserver.AssetThumbnail, map[string]any) (*iapiserver.Asset, *iapiserver.AssetThumbnail, error) {
+	return nil, nil, errors.Errorf("outbox persistence failed")
+}
+
+func (*testFailingAssetStore) Update(context.Context, *iapiserver.Asset) (*iapiserver.Asset, error) {
+	return nil, errors.Errorf("persistence failed")
+}
+
+func (*testFailingAssetStore) Delete(context.Context, string) error { return nil }
 
 type testFeatureFlagStore struct {
 	items []*iapiserver.FeatureFlag

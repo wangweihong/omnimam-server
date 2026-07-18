@@ -181,8 +181,11 @@ services:
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
       APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
+      # 缩略图 Worker 必须与 API Server 读取同一素材根目录。
+      OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
     volumes:
       - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
+      - omnimam_assets:/var/lib/omnimam/assets
     entrypoint: [/bin/sh, -ec]
     command:
       - |

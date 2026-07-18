@@ -1300,6 +1300,13 @@ func (s *platformService) createAssetFromReader(
 		return nil, errors.WithStack(err)
 	}
 	defer dst.Close()
+	assetPersisted := false
+	// 本地对象存储无法加入 PostgreSQL 事务；素材或 outbox 回滚时需补偿删除完整文件。
+	defer func() {
+		if !assetPersisted {
+			_ = os.Remove(absPath)
+		}
+	}()
 
 	hasher := sha256.New()
 	head := make([]byte, 512)
@@ -1316,9 +1323,13 @@ func (s *platformService) createAssetFromReader(
 	}
 	size, err := io.Copy(w, src)
 	if err != nil {
+		_ = dst.Close()
 		return nil, errors.WithStack(err)
 	}
 	size += int64(n)
+	if err := dst.Close(); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	mediaType, format := mediaTypeFromFile(mimeType, filename)
@@ -1357,6 +1368,7 @@ func (s *platformService) createAssetFromReader(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	assetPersisted = true
 	if len(tagNames) > 0 {
 		if err := s.replaceAssetTags(ctx, created.ID, tagNames, iapiserver.TagSourceUser); err != nil {
 			return nil, err
