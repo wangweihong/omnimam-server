@@ -99,3 +99,70 @@ backend/AGENTS.md
 私自新增 SSOT 未定义的事件类型
 绕过 backend/AGENTS.md 实现后端逻辑
 ```
+# Completion & Session Rules
+
+These rules are mandatory for every task.
+
+## Task Completion
+
+Before declaring any task complete, ALWAYS perform the following steps:
+
+1. Update `docs/HANDOFF.md`.
+2. Record:
+   - Objective of the task.
+   - What was completed.
+   - Files added, modified, or removed.
+   - Important architectural or design decisions.
+   - API, schema, or configuration changes.
+   - Remaining work.
+   - Known issues or technical debt.
+   - Recommended next task.
+3. If any design decision changed, also update the corresponding project documentation.
+4. Do not mark the task as completed until the documentation has been updated.
+
+---
+
+## Session Ending
+
+If the conversation is ending, the context is becoming large, or the session may continue in a new chat:
+
+You MUST refresh `docs/HANDOFF.md` with the latest project state.
+
+The handoff must contain:
+
+- Current project goal.
+- Completed work in this session.
+- Files modified.
+- Key architectural decisions.
+- Outstanding tasks.
+- Known issues and risks.
+- Suggested next implementation step.
+- A **Next Prompt** section containing a ready-to-use prompt for the next Codex session.
+
+The goal is that another Codex session can continue immediately by reading only `docs/HANDOFF.md`.
+
+---
+
+## Handoff Quality
+
+`docs/HANDOFF.md` must be:
+
+- Accurate.
+- Concise.
+- Chronological.
+- Actionable.
+- Free of duplicated or obsolete information.
+
+It should describe the current project state rather than the entire project history.
+
+---
+
+## Next Prompt
+
+Always end the handoff with:
+
+```text
+Next Prompt:
+
+Read docs/HANDOFF.md, verify the current implementation, and continue with the next outstanding task. Do not repeat completed work.
+```
