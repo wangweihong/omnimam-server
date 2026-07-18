@@ -1958,6 +1958,7 @@ func defaultPermissions() []string {
 		iapiserver.AIAppComfyUIWorkflowManage,
 		iapiserver.AIAppComfyUIWorkflowValidate,
 		iapiserver.AIAppComfyUIWorkflowConvert,
+		iapiserver.AIAppComfyUIWorkflowTest,
 		iapiserver.AIAppApplicationRead,
 		iapiserver.AIAppApplicationManage,
 		iapiserver.AIAppApplicationRun,

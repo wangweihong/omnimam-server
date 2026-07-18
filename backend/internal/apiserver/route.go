@@ -121,8 +121,14 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		workflows.GET("/:workflow_id/validations", controller.ListComfyUIWorkflowValidations)
 		workflows.POST("/:workflow_id/validations", controller.ValidateComfyUIWorkflow)
 		workflows.POST("/:workflow_id/convert-to-application-template", controller.ConvertComfyUIWorkflow)
+		workflows.POST("/:workflow_id/convert-to-api-workflow", controller.ConvertComfyUIWorkflowToAPI)
+		workflows.GET("/:workflow_id/test-runs", controller.ListComfyUIWorkflowTestRuns)
+		workflows.POST("/:workflow_id/test-runs", controller.CreateComfyUIWorkflowTestRun)
 	}
 	rg.GET("/comfyui-workflow-validations/:workflow_validation_id", controller.GetComfyUIWorkflowValidation)
+	rg.GET("/comfyui-workflow-test-runs/:test_run_id", controller.GetComfyUIWorkflowTestRun)
+	rg.POST("/comfyui-workflow-test-runs/:test_run_id/cancel", controller.CancelComfyUIWorkflowTestRun)
+	rg.GET("/comfyui-workflow-test-runs/:test_run_id/outputs/:output_id/content", controller.GetComfyUIWorkflowTestOutputContent)
 
 	templates := rg.Group("/application-templates")
 	{

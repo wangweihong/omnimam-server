@@ -27,14 +27,18 @@ type ComfyUIWorkflowImportRequest struct {
 	Name        string `form:"name" binding:"required,max=255"`
 	Description string `form:"description"`
 	// SourceEngineInstanceID 指定服务端读取 object_info 的 ComfyUI 实例。
-	SourceEngineInstanceID string `form:"source_engine_instance_id" binding:"required"`
+	SourceEngineInstanceID string                `form:"source_engine_instance_id" binding:"required"`
+	WorkflowFile           *multipart.FileHeader `form:"workflow_file"`
 	// APIWorkflowFile 是必填执行文件；VisualWorkflowFile 仅提供展示位置和标题。
 	APIWorkflowFile    *multipart.FileHeader `form:"api_workflow_file"`
 	VisualWorkflowFile *multipart.FileHeader `form:"visual_workflow_file"`
 	// APIWorkflow、原始字节和 VisualWorkflow 是 Controller 安全解析后的内部传递字段。
-	APIWorkflow    map[string]any `json:"-"`
-	APIWorkflowRaw []byte         `json:"-"`
-	VisualWorkflow map[string]any `json:"-"`
+	APIWorkflow       map[string]any `json:"-"`
+	APIWorkflowRaw    []byte         `json:"-"`
+	VisualWorkflow    map[string]any `json:"-"`
+	SourceWorkflow    map[string]any `json:"-"`
+	SourceWorkflowRaw []byte         `json:"-"`
+	SourceType        string         `json:"-"`
 }
 
 func (r *ComfyUIWorkflowImportRequest) Validate() error {
@@ -44,8 +48,8 @@ func (r *ComfyUIWorkflowImportRequest) Validate() error {
 	if r.SourceEngineInstanceID == "" {
 		return errors.New("source_engine_instance_id is required")
 	}
-	if r.APIWorkflowFile == nil && r.APIWorkflow == nil {
-		return errors.New("api_workflow_file is required")
+	if r.WorkflowFile == nil && r.APIWorkflowFile == nil && r.SourceWorkflow == nil && r.APIWorkflow == nil {
+		return errors.New("workflow_file or api_workflow_file is required")
 	}
 	return nil
 }
@@ -76,6 +80,21 @@ type ComfyUIWorkflowValidationListRequest struct {
 }
 type ComfyUIWorkflowValidationCreateRequest struct {
 	EngineInstanceID string `json:"engine_instance_id" binding:"required"`
+}
+type ComfyUIWorkflowTestRunListRequest struct {
+	imachinery.BasicQueryParam
+	WorkflowID  string `form:"-"`
+	OwnerUserID string `form:"-"`
+}
+type ComfyUIWorkflowTestParameter struct {
+	NodeID    string `json:"node_id" binding:"required"`
+	InputName string `json:"input_name" binding:"required"`
+	Value     any    `json:"value"`
+}
+type ComfyUIWorkflowTestRunCreateRequest struct {
+	EngineInstanceID string                         `json:"engine_instance_id" binding:"required"`
+	Parameters       []ComfyUIWorkflowTestParameter `json:"parameters" binding:"max=256,dive"`
+	IdempotencyKey   string                         `json:"idempotency_key" binding:"required,max=256"`
 }
 type ComfyUIWorkflowConvertRequest struct {
 	Name                   string         `json:"name" binding:"required"`

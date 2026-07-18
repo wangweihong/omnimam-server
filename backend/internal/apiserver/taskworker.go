@@ -53,7 +53,8 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	tasks := taskcentersvc.NewServiceWithFunctions(storeIns, runtime,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"application-platform.engine-health-plan", "application-platform.engine-health-check")
+		"application-platform.engine-health-plan", "application-platform.engine-health-check",
+		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
 	events := appsvc.NoopEventPublisher{}
@@ -65,6 +66,22 @@ func RunTaskWorker(cfg *config.Config) error {
 	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
 	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: assetRegistrar, Events: events})
 	if err != nil {
+		return err
+	}
+	comfyTestExecutor := appsvc.NewComfyUITestExecutor(storeIns)
+	if err := runtime.RegisterHandler("comfyui.submit", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		return comfyTestExecutor.Submit(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+	}); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler("comfyui.poll", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		return comfyTestExecutor.Poll(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+	}); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler("comfyui.collect_preview", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		return comfyTestExecutor.Collect(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+	}); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler("application-platform.run", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {

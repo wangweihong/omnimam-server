@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -79,6 +80,23 @@ func (c *Controller) ListComfyUIWorkflows(ctx *gin.Context) {
 }
 func (c *Controller) ImportComfyUIWorkflow(ctx *gin.Context) {
 	req := &iapiserver.ComfyUIWorkflowImportRequest{Name: ctx.PostForm("name"), Description: ctx.PostForm("description"), SourceEngineInstanceID: ctx.PostForm("source_engine_instance_id")}
+	if sourceHeader, sourceErr := ctx.FormFile("workflow_file"); sourceErr == nil {
+		req.WorkflowFile = sourceHeader
+		req.SourceWorkflow, req.SourceWorkflowRaw, sourceErr = decodeWorkflowFile(sourceHeader)
+		if sourceErr != nil {
+			writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, sourceErr.Error()), nil)
+			return
+		}
+	}
+	if req.WorkflowFile != nil {
+		if validationErr := req.Validate(); validationErr != nil {
+			writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, validationErr.Error()), nil)
+			return
+		}
+		result, importErr := c.service.ImportComfyUIWorkflow(ctx, req)
+		writeResponse(ctx, importErr, result)
+		return
+	}
 	apiHeader, err := ctx.FormFile("api_workflow_file")
 	if err != nil {
 		writeResponse(ctx, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "api_workflow_file is required"), nil)
@@ -164,6 +182,36 @@ func (c *Controller) ConvertComfyUIWorkflow(ctx *gin.Context) {
 	run(ctx, &iapiserver.ComfyUIWorkflowConvertRequest{}, func(r *iapiserver.ComfyUIWorkflowConvertRequest) (any, error) {
 		return c.service.ConvertComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r)
 	})
+}
+func (c *Controller) ConvertComfyUIWorkflowToAPI(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
+		return c.service.ConvertComfyUIWorkflowToAPI(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
+	})
+}
+func (c *Controller) ListComfyUIWorkflowTestRuns(ctx *gin.Context) {
+	req := &iapiserver.ComfyUIWorkflowTestRunListRequest{WorkflowID: ctx.Param("workflow_id")}
+	run(ctx, req, func(r *iapiserver.ComfyUIWorkflowTestRunListRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowTestRuns(ctx, r)
+	})
+}
+func (c *Controller) CreateComfyUIWorkflowTestRun(ctx *gin.Context) {
+	run(ctx, &iapiserver.ComfyUIWorkflowTestRunCreateRequest{}, func(r *iapiserver.ComfyUIWorkflowTestRunCreateRequest) (any, error) {
+		return c.service.CreateComfyUIWorkflowTestRun(ctx, ctx.Param("workflow_id"), r)
+	})
+}
+func (c *Controller) GetComfyUIWorkflowTestRun(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.GetComfyUIWorkflowTestRun(ctx, ctx.Param("test_run_id")) })
+}
+func (c *Controller) CancelComfyUIWorkflowTestRun(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) { return c.service.CancelComfyUIWorkflowTestRun(ctx, ctx.Param("test_run_id")) })
+}
+func (c *Controller) GetComfyUIWorkflowTestOutputContent(ctx *gin.Context) {
+	content, contentType, err := c.service.GetComfyUIWorkflowTestOutputContent(ctx, ctx.Param("test_run_id"), ctx.Param("output_id"))
+	if err != nil {
+		writeResponse(ctx, err, nil)
+		return
+	}
+	ctx.Data(http.StatusOK, contentType, content)
 }
 
 func decodeWorkflowFile(header *multipart.FileHeader) (map[string]any, []byte, error) {

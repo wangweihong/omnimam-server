@@ -265,6 +265,9 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 }
 
 func (ds *datastore) ensureApplicationPlatformScheme() error {
+	if err := ds.db.Exec(`UPDATE aiapp_comfyui_workflows SET source_type='api_workflow' WHERE source_type IS NULL OR source_type=''; UPDATE aiapp_comfyui_workflows SET api_conversion_status='ready' WHERE api_conversion_status IS NULL OR api_conversion_status=''; UPDATE aiapp_comfyui_workflows SET source_checksum=workflow_checksum WHERE source_checksum IS NULL OR source_checksum=''; UPDATE aiapp_comfyui_workflows SET api_workflow_checksum=workflow_checksum WHERE api_conversion_status='ready' AND api_workflow_checksum IS NULL;`).Error; err != nil {
+		return err
+	}
 	return ds.db.Exec(applicationPlatformConstraintsSQL).Error
 }
 

@@ -108,7 +108,8 @@ func createServer(cfg *config.Config) (*server, error) {
 	}
 	taskCenterService := taskcentersvc.NewServiceWithFunctions(storeIns, workflowRuntime,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"application-platform.engine-health-plan", "application-platform.engine-health-check")
+		"application-platform.engine-health-plan", "application-platform.engine-health-check",
+		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
 		Adapters: adapters, Executors: executors, Tasks: taskCenterService, Assets: assets, Events: events,
@@ -209,6 +210,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.EngineCapabilityBinding{},
 		&iapiserver.ComfyUIWorkflow{},
 		&iapiserver.ComfyUIWorkflowValidation{},
+		&iapiserver.ComfyUIWorkflowTestRun{},
 		&iapiserver.ApplicationTemplate{},
 		&iapiserver.ApplicationTemplateVersion{},
 		&iapiserver.Application{},

@@ -21,7 +21,7 @@ import (
 
 func TestDefaultPermissionsIncludeComfyUIWorkflowContract(t *testing.T) {
 	permissions := sets.NewString(defaultPermissions()...)
-	for _, key := range []string{iapiserver.AIAppEngineInstanceRead, iapiserver.AIAppComfyUIWorkflowRead, iapiserver.AIAppComfyUIWorkflowManage, iapiserver.AIAppComfyUIWorkflowValidate, iapiserver.AIAppComfyUIWorkflowConvert} {
+	for _, key := range []string{iapiserver.AIAppEngineInstanceRead, iapiserver.AIAppComfyUIWorkflowRead, iapiserver.AIAppComfyUIWorkflowManage, iapiserver.AIAppComfyUIWorkflowValidate, iapiserver.AIAppComfyUIWorkflowConvert, iapiserver.AIAppComfyUIWorkflowTest} {
 		if !permissions.Has(key) {
 			t.Fatalf("default permissions missing %s", key)
 		}

@@ -549,7 +549,16 @@ const (
 	// @HTTP 200
 	// @CN 当前用户无权访问或代管该 ComfyUI 工作流。
 	// @EN The current user is not allowed to access or administer this ComfyUI workflow.
-	ErrAIAppComfyUIWorkflowAccessDenied int = 131233
+	ErrAIAppComfyUIWorkflowAccessDenied   int = 131233
+	ErrAIAppComfyUIWorkflowSourceInvalid  int = 131234
+	ErrAIAppComfyUIAPIConversionBlocked   int = 131235
+	ErrAIAppComfyUIAPINotReady            int = 131236
+	ErrAIAppComfyUITestEngineUnavailable  int = 131237
+	ErrAIAppComfyUITestIncompatible       int = 131238
+	ErrAIAppComfyUITestParameterInvalid   int = 131239
+	ErrAIAppComfyUITestRunNotFound        int = 131240
+	ErrAIAppComfyUITestPreviewUnavailable int = 131241
+	ErrAIAppComfyUITestRunStateBlocked    int = 131242
 )
 
 // task-center: SSOT scoped business errors.

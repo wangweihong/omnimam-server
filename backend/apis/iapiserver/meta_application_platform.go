@@ -60,6 +60,7 @@ const (
 	AIAppComfyUIWorkflowManage             = "aiapp.comfyui_workflow.manage"
 	AIAppComfyUIWorkflowValidate           = "aiapp.comfyui_workflow.validate"
 	AIAppComfyUIWorkflowConvert            = "aiapp.comfyui_workflow.convert"
+	AIAppComfyUIWorkflowTest               = "aiapp.comfyui_workflow.test"
 	AIAppApplicationRead                   = "aiapp.application.read"
 	AIAppApplicationManage                 = "aiapp.application.manage"
 	AIAppApplicationRun                    = "aiapp.application.run"
@@ -235,13 +236,15 @@ type EngineInstanceSummary struct {
 	Name                    string `json:"name"`
 	Description             string `json:"description,omitempty"`
 	ApplicationEngineTypeID string `json:"application_engine_type_id"`
-	Enabled                 bool   `json:"enabled"`
-	HealthStatus            string `json:"health_status"`
-	Region                  string `json:"region,omitempty"`
+	// BaseURL 是列表展示和实例选择使用的执行端点；摘要不得包含 AuthConfig。
+	BaseURL      string `json:"base_url"`
+	Enabled      bool   `json:"enabled"`
+	HealthStatus string `json:"health_status"`
+	Region       string `json:"region,omitempty"`
 }
 
 func (e *EngineInstance) Summary() *EngineInstanceSummary {
-	return &EngineInstanceSummary{ID: e.ID, Name: e.Name, Description: e.Description, ApplicationEngineTypeID: e.ApplicationEngineTypeID, Enabled: e.Enabled, HealthStatus: e.HealthStatus, Region: e.Region}
+	return &EngineInstanceSummary{ID: e.ID, Name: e.Name, Description: e.Description, ApplicationEngineTypeID: e.ApplicationEngineTypeID, BaseURL: e.BaseURL, Enabled: e.Enabled, HealthStatus: e.HealthStatus, Region: e.Region}
 }
 
 type EngineHealthCheckResult struct {
@@ -442,7 +445,7 @@ type ApplicationRun struct {
 	ApplicationID                  string                 `json:"application_id" gorm:"column:application_id;type:text;not null;index"`
 	ApplicationVersionID           string                 `json:"application_version_id" gorm:"column:application_version_id;type:text;not null;index"`
 	ApplicationTemplateVersionID   string                 `json:"application_template_version_id" gorm:"column:application_template_version_id;type:text;not null;index"`
-	AtomicTaskID                      *string                `json:"atomic_task_id" gorm:"column:atomic_task_id;type:text;uniqueIndex"`
+	AtomicTaskID                   *string                `json:"atomic_task_id" gorm:"column:atomic_task_id;type:text;uniqueIndex"`
 	EngineInstanceID               string                 `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
 	CapabilitySourceType           string                 `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
 	SourceRevision                 string                 `json:"source_revision" gorm:"column:source_revision;type:text;not null"`

@@ -51,7 +51,7 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppApplicationRunCreateFailed:                 {name: "ERR_AIAPP_APPLICATION_RUN_CREATE_FAILED", retryable: true},
 	code.ErrAIAppTaskProjectionStale:                        {name: "ERR_AIAPP_TASK_PROJECTION_STALE"},
 	code.ErrAIAppProviderRuntimeCapabilityMismatch:          {name: "ERR_AIAPP_PROVIDER_RUNTIME_CAPABILITY_MISMATCH"},
-	code.ErrAIAppAtomicTaskCreateFailed:                        {name: "ERR_AIAPP_TASK_RUN_CREATE_FAILED", retryable: true},
+	code.ErrAIAppAtomicTaskCreateFailed:                     {name: "ERR_AIAPP_TASK_RUN_CREATE_FAILED", retryable: true},
 	code.ErrAIAppArtifactRegistrationFailed:                 {name: "ERR_AIAPP_ARTIFACT_REGISTRATION_FAILED", retryable: true},
 	code.ErrAIAppApplicationRunNotFound:                     {name: "ERR_AIAPP_APPLICATION_RUN_NOT_FOUND"},
 	code.ErrAIAppPermissionDenied:                           {name: "ERR_AIAPP_PERMISSION_DENIED"},
@@ -69,6 +69,15 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppComfyUIConversionIdempotencyConflict:       {name: "ERR_AIAPP_COMFYUI_CONVERSION_IDEMPOTENCY_CONFLICT"},
 	code.ErrAIAppComfyUIResourceVersionConflict:             {name: "ERR_AIAPP_COMFYUI_RESOURCE_VERSION_CONFLICT", retryable: true},
 	code.ErrAIAppComfyUIWorkflowAccessDenied:                {name: "ERR_AIAPP_COMFYUI_WORKFLOW_ACCESS_DENIED"},
+	code.ErrAIAppComfyUIWorkflowSourceInvalid:               {name: "ERR_AIAPP_COMFYUI_WORKFLOW_SOURCE_INVALID"},
+	code.ErrAIAppComfyUIAPIConversionBlocked:                {name: "ERR_AIAPP_COMFYUI_API_CONVERSION_BLOCKED"},
+	code.ErrAIAppComfyUIAPINotReady:                         {name: "ERR_AIAPP_COMFYUI_API_NOT_READY"},
+	code.ErrAIAppComfyUITestEngineUnavailable:               {name: "ERR_AIAPP_COMFYUI_TEST_ENGINE_UNAVAILABLE", retryable: true},
+	code.ErrAIAppComfyUITestIncompatible:                    {name: "ERR_AIAPP_COMFYUI_TEST_INCOMPATIBLE"},
+	code.ErrAIAppComfyUITestParameterInvalid:                {name: "ERR_AIAPP_COMFYUI_TEST_PARAMETER_INVALID"},
+	code.ErrAIAppComfyUITestRunNotFound:                     {name: "ERR_AIAPP_COMFYUI_TEST_RUN_NOT_FOUND"},
+	code.ErrAIAppComfyUITestPreviewUnavailable:              {name: "ERR_AIAPP_COMFYUI_TEST_PREVIEW_UNAVAILABLE", retryable: true},
+	code.ErrAIAppComfyUITestRunStateBlocked:                 {name: "ERR_AIAPP_COMFYUI_TEST_RUN_STATE_BLOCKED"},
 }
 
 type applicationPlatformErrorResponse struct {

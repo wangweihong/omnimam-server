@@ -181,8 +181,26 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 	if _, exists := r.registeredTasks[functionRef]; exists {
 		return fmt.Errorf("function ref %s is already registered", functionRef)
 	}
-	typed := worker.NewTypedWorker[workerInput, map[string]any](functionRef, func(ctx worker.TaskContext, input workerInput) (map[string]any, error) {
-		return handler(ctx, WorkerTask{AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef, RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments})
+	typed := worker.NewTypedWorker[workerInput, any](functionRef, func(ctx worker.TaskContext, input workerInput) (any, error) {
+		output, err := handler(ctx, WorkerTask{AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef, RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments})
+		if err != nil {
+			return nil, err
+		}
+		if inProgress, _ := output["in_progress"].(bool); inProgress {
+			seconds := int64(1)
+			switch value := output["callback_after_seconds"].(type) {
+			case int:
+				seconds = int64(value)
+			case int64:
+				seconds = value
+			case float64:
+				seconds = int64(value)
+			}
+			delete(output, "in_progress")
+			delete(output, "callback_after_seconds")
+			return &model.TaskResult{WorkflowInstanceId: ctx.WorkflowInstanceID(), TaskId: ctx.TaskID(), Status: model.InProgressTask, CallbackAfterSeconds: seconds, OutputData: output}, nil
+		}
+		return output, nil
 	}, worker.WithBatchSize(concurrency), worker.WithPollInterval(r.pollInterval))
 	if err := r.runner.RegisterWorker(typed); err != nil {
 		return fmt.Errorf("register conductor worker: %w", err)
