@@ -342,11 +342,11 @@ func (s *applicationPlatformStore) AddApplicationRun(ctx context.Context, data *
 	return data, nil
 }
 
-func (s *applicationPlatformStore) BindApplicationRunTask(ctx context.Context, id, taskRunID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error) {
+func (s *applicationPlatformStore) BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error) {
 	values := map[string]any{"task_creation_status": status, "task_creation_failure": failure, "resource_version": gorm.Expr("resource_version + 1")}
-	if taskRunID != "" {
-		values["task_run_id"] = taskRunID
-		values["task_status_projection"] = iapiserver.TaskRunStatusReady
+	if atomicTaskID != "" {
+		values["atomic_task_id"] = atomicTaskID
+		values["task_status_projection"] = iapiserver.AtomicTaskStatusReady
 		values["task_resource_version"] = taskVersion
 	}
 	result := s.ds.db.WithContext(ctx).Model(&iapiserver.ApplicationRun{}).Where("id = ?", id).Updates(values)

@@ -8,14 +8,16 @@
 - 图片、视频、音频、PDF 等 heavy asset 列表必须使用 thumbnail、placeholder 或 derived preview，不能直接渲染原始文件。
 - 凡是 provider、remote client、auth mode、storage、queue、cache、scheduler、policy、strategy 等可替换边界，必须采用“消费方 interface + adapter 实现 + bootstrap 注入/registry 选择”的结构。业务层不得直接依赖具体实现，不得在 service 中硬编码 provider switch。不要滥用 interface，DTO、稳定内部 helper、无替换需求的实现不需要抽象。新增边界时同时提供 fake/mock/noop 测试替身，并说明后续如何扩展第二种实现。
 
-## Task Center 与 Dispatcher
+## Task Center 与 WorkflowRuntime
 
-- Task Center 是 TaskRun、TaskAttempt、ExecutionLease、进度和状态事件的事实源；具体业务执行器只解释所属领域的任务语义，不得把缩略图、Provider 或 AppEngine 等业务实现放进通用 Dispatcher。
-- 每个 API Server 进程只能在 bootstrap/server 装配阶段创建一个 Dispatcher。必须先注册全部 executor/capability，再显式启动，并在优雅退出时统一关闭；禁止在 Controller、Service、请求处理函数或定时任务中调用 `taskexecutor.NewDispatcher`。
-- 所有需要触发任务执行的 Controller/Service 必须通过消费方最小接口接收同一个 Dispatcher 实例；构造函数不得提供“未注入时自行创建 Dispatcher”的 fallback。
-- Dispatcher 必须是有并发上限、可取消、可等待退出的常驻 Worker。启动后应主动领取可恢复 TaskRun，不能只依赖请求触发临时 goroutine，否则服务重启后 READY 任务无法恢复。
-- Worker 的 Claim、进度、完成、失败和续租必须经过 Task Center service/worker protocol，以保留状态事件和审计副作用；不得为了方便直接调用 store 绕过 service。
-- 新增或调整 Dispatcher 装配时，至少测试 bootstrap 单实例注入、Service 不隐式创建 Dispatcher、启动后遗留任务恢复、并发上限、取消和优雅退出。
+- Task Center 是 AtomicTask、TaskAttempt、TaskGroup、DAGTaskGroup、TaskSchedule、ScheduleExecution 和业务状态投影的事实源；Conductor OSS 负责内部调度、自动重试、超时、Worker 分发、DAG 状态机和运行历史。
+- 业务层只能依赖消费方 `WorkflowRuntime` 接口；生产环境注入 `ConductorRuntime`，测试提供 fake。Controller、Service 和业务模块不得直接调用 Conductor API、数据库或原生 UI。
+- Worker handler 只执行 AtomicTask，并按已注册 `functionRef` 路由业务 executor。TaskGroup、DAGTaskGroup 和 TaskSchedule 不得注册为 Worker handler，也不得把业务逻辑放进通用 runtime adapter。
+- 禁止新增或恢复 TaskRun、ExecutionLease、Worker claim/heartbeat 协议、自研 Dispatcher、watchdog 或自研 DAG 调度状态机；运行时不可用时保留可恢复业务状态，不允许回退到进程内 goroutine 执行。
+- 自动重试在同一 AtomicTask 下新增 TaskAttempt；手动重试创建新 AtomicTask。外部异步任务必须保存并优先使用 `external_job_id` 恢复，不能因 Worker/API 重启重复提交。
+- 运行时事件必须幂等投影并按版本单调推进；reconciler 定期对账全部非终态 execution。业务创建与 outbox 同事务提交，Conductor 使用独立数据库或 schema。
+- TaskSchedule 的 cron 使用六段表达式和显式时区；V1 不 catch-up，重叠轮次记录 `SKIPPED_OVERLAP`。SERIAL/PARALLEL/DAG/Dynamic Fork 必须遵守 SSOT 的失败传播、并发和规模限制。
+- 新增或调整任务路径时，至少覆盖自动/手动重试、取消、幂等启动、Group/DAG 汇总、Schedule 历史与禁止重叠，以及 Worker、Conductor、API Server 和 PostgreSQL 重启恢复。
 
 ## 响应与错误码
 

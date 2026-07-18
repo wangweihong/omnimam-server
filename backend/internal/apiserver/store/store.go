@@ -147,6 +147,24 @@ type CanvasStore interface {
 	CleanupExpiredTrash(ctx context.Context, retentionDays int) error
 }
 
+// WorkflowCanvasStore owns spec-v1.0.0 canvas drafts, immutable versions, and run projections.
+type WorkflowCanvasStore interface {
+	ListWorkflowCanvases(context.Context, *iapiserver.WorkflowCanvasListRequest, string, string, string) ([]*iapiserver.WorkflowCanvas, int64, error)
+	GetWorkflowCanvas(context.Context, string) (*iapiserver.WorkflowCanvas, error)
+	AddWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas) (*iapiserver.WorkflowCanvas, error)
+	UpdateWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas, int64) (*iapiserver.WorkflowCanvas, error)
+	DeleteWorkflowCanvas(context.Context, string) error
+	PublishWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas, *iapiserver.CanvasVersion, int64) (*iapiserver.CanvasVersion, error)
+	ListCanvasVersions(context.Context, *iapiserver.CanvasVersionListRequest) ([]*iapiserver.CanvasVersion, int64, error)
+	GetCanvasVersion(context.Context, string) (*iapiserver.CanvasVersion, error)
+	ListWorkflowCanvasRuns(context.Context, *iapiserver.WorkflowCanvasRunListRequest, string, string, string) ([]*iapiserver.WorkflowCanvasRun, int64, error)
+	GetWorkflowCanvasRun(context.Context, string) (*iapiserver.WorkflowCanvasRun, error)
+	AddWorkflowCanvasRunIdempotent(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, bool, error)
+	BindWorkflowCanvasRun(context.Context, string, string, []*iapiserver.CanvasNodeRun) (*iapiserver.WorkflowCanvasRun, error)
+	UpdateWorkflowCanvasRun(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, error)
+	ListCanvasNodeRuns(context.Context, *iapiserver.CanvasNodeRunListRequest) ([]*iapiserver.CanvasNodeRun, int64, error)
+}
+
 type ProviderStore interface {
 	List(ctx context.Context, req *iapiserver.ProviderListRequest) ([]*iapiserver.Provider, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.Provider, error)
@@ -193,9 +211,15 @@ type AssetStore interface {
 	List(ctx context.Context, req *iapiserver.AssetListRequest) ([]*iapiserver.Asset, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.Asset, error)
 	Add(ctx context.Context, data *iapiserver.Asset) (*iapiserver.Asset, error)
+	AddWithUploadEvent(ctx context.Context, data *iapiserver.Asset, thumbnail *iapiserver.AssetThumbnail, event map[string]any) (*iapiserver.Asset, *iapiserver.AssetThumbnail, error)
 	Update(ctx context.Context, data *iapiserver.Asset) (*iapiserver.Asset, error)
 	// Delete marks the asset as deleted. It does not remove asset objects, thumbnails, or relation rows.
 	Delete(ctx context.Context, id string) error
+}
+
+type AssetV1Store interface {
+	RegisterArtifact(context.Context, *iapiserver.ArtifactRegistrationRequest) (*iapiserver.UserAsset, bool, error)
+	ApplyLabels(context.Context, string, string, map[string]string, []string, []string) (*iapiserver.BatchLabelData, error)
 }
 
 type AssetThumbnailStore interface {
@@ -287,25 +311,34 @@ type AssetRelationStore interface {
 }
 
 type TaskCenterStore interface {
-	ListDefinitions(ctx context.Context, req *iapiserver.TaskDefinitionListRequest) ([]*iapiserver.TaskDefinition, int64, error)
-	GetDefinition(ctx context.Context, definitionType, id string) (*iapiserver.TaskDefinition, error)
-	AddDefinition(ctx context.Context, data *iapiserver.TaskDefinition) (*iapiserver.TaskDefinition, error)
-	ListRuns(ctx context.Context, req *iapiserver.TaskRunListRequest) ([]*iapiserver.TaskRun, int64, error)
-	GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error)
-	AddRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
-	AddRunIdempotent(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, bool, error)
-	UpdateRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error)
-	SoftDeleteRun(ctx context.Context, id string) error
+	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
+	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
+	AddAtomicTaskIdempotent(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error)
+	UpdateAtomicTask(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error)
 	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
-	RegisterWorker(ctx context.Context, data *iapiserver.Worker) (*iapiserver.Worker, error)
-	HeartbeatWorker(ctx context.Context, req *iapiserver.WorkerHeartbeatRequest) (*iapiserver.Worker, error)
-	ClaimRun(ctx context.Context, req *iapiserver.ClaimTaskRunRequest) (*iapiserver.ClaimTaskRunResponse, error)
-	UpdateProgress(ctx context.Context, req *iapiserver.ProgressUpdateRequest) (*iapiserver.TaskRun, error)
-	CompleteRun(ctx context.Context, req *iapiserver.TaskRunCompleteRequest) (*iapiserver.TaskRun, error)
-	FailRun(ctx context.Context, req *iapiserver.TaskRunFailRequest) (*iapiserver.TaskRun, error)
-	RenewLease(ctx context.Context, req *iapiserver.LeaseRenewRequest) (*iapiserver.ExecutionLease, error)
-	Health(ctx context.Context) (*iapiserver.TaskCenterHealth, error)
-	AddEvent(ctx context.Context, data *iapiserver.TaskRunEvent) (*iapiserver.TaskRunEvent, error)
+	ListTaskGroups(context.Context, *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error)
+	GetTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
+	AddTaskGroupWithTasks(context.Context, *iapiserver.TaskGroup, []*iapiserver.AtomicTask) (*iapiserver.TaskGroup, bool, error)
+	UpdateTaskGroup(context.Context, *iapiserver.TaskGroup) (*iapiserver.TaskGroup, error)
+	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) ([]*iapiserver.DAGTaskGroup, int64, error)
+	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	AddDAGTaskGroupWithTasks(context.Context, *iapiserver.DAGTaskGroup, []*iapiserver.AtomicTask) (*iapiserver.DAGTaskGroup, bool, error)
+	UpdateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroup) (*iapiserver.DAGTaskGroup, error)
+	ListOwnedTasks(context.Context, string, string, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
+	AddOwnedAtomicTasks(context.Context, string, string, []*iapiserver.AtomicTask) error
+	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error)
+	GetTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	AddTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
+	UpdateTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
+	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) ([]*iapiserver.TaskScheduleExecution, int64, error)
+	AddProjectionEventIdempotent(context.Context, *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error)
+	ListNonTerminalAtomicTasks(context.Context, int) ([]*iapiserver.AtomicTask, error)
+	ListNonTerminalTaskGroups(context.Context, int) ([]*iapiserver.TaskGroup, error)
+	ListNonTerminalDAGTaskGroups(context.Context, int) ([]*iapiserver.DAGTaskGroup, error)
+	ListActiveScheduleExecutions(context.Context, int) ([]*iapiserver.TaskScheduleExecution, error)
+	ApplyRuntimeProjection(context.Context, *iapiserver.AtomicTask, []*iapiserver.TaskAttempt, *iapiserver.RuntimeProjectionEvent) (bool, error)
+	AcquireScheduleExecution(context.Context, *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, bool, error)
+	UpdateScheduleExecution(context.Context, *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, error)
 }
 
 type ApplicationPlatformStore interface {
@@ -347,7 +380,7 @@ type ApplicationPlatformStore interface {
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
-	BindApplicationRunTask(ctx context.Context, id, taskRunID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
+	BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
 	ProjectApplicationRun(ctx context.Context, id string, taskVersion int64, status, failure string, outputs []map[string]any) (*iapiserver.ApplicationRun, error)
 	ListArtifactsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifact, error)
 	UpsertArtifact(ctx context.Context, data *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error)

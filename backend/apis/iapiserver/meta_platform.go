@@ -339,7 +339,7 @@ type AssetThumbnail struct {
 	MimeType string `json:"mime_type"          gorm:"column:mime_type;type:varchar(128)"`
 	// Size 保存缩略图对象大小，便于列表响应避免访问对象存储。
 	Size int64 `json:"size"               gorm:"column:size"`
-	// Status 表示缩略图任务状态，pending/processing 由 TaskRun 推进，unsupported/failed/ready 为可展示结果。
+	// Status 表示缩略图任务状态，pending/processing 由 AtomicTask 推进，unsupported/failed/ready 为可展示结果。
 	Status string `json:"status"             gorm:"column:status;type:varchar(32);not null;default:pending;index"`
 }
 

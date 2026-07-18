@@ -442,7 +442,7 @@ type ApplicationRun struct {
 	ApplicationID                  string                 `json:"application_id" gorm:"column:application_id;type:text;not null;index"`
 	ApplicationVersionID           string                 `json:"application_version_id" gorm:"column:application_version_id;type:text;not null;index"`
 	ApplicationTemplateVersionID   string                 `json:"application_template_version_id" gorm:"column:application_template_version_id;type:text;not null;index"`
-	TaskRunID                      *string                `json:"task_run_id" gorm:"column:task_run_id;type:text;uniqueIndex"`
+	AtomicTaskID                      *string                `json:"atomic_task_id" gorm:"column:atomic_task_id;type:text;uniqueIndex"`
 	EngineInstanceID               string                 `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
 	CapabilitySourceType           string                 `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
 	SourceRevision                 string                 `json:"source_revision" gorm:"column:source_revision;type:text;not null"`

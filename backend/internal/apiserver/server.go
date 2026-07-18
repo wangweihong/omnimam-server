@@ -14,10 +14,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
+	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskexecutor"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
 )
@@ -29,7 +30,8 @@ type server struct {
 	gracefulShutdown    *shutdown.GracefulShutdown
 	assetUpload         *options.AssetUploadOptions
 	applicationPlatform appsvc.ApplicationPlatformSrv
-	dispatcher          *taskexecutor.Dispatcher
+	taskCenter          taskcentersvc.TaskCenterSrv
+	workflowRuntime     workflowruntime.WorkflowRuntime
 	authOptions         *options.AuthOptions
 	serverMode          string
 }
@@ -93,20 +95,23 @@ func createServer(cfg *config.Config) (*server, error) {
 	executors := appsvc.NewOperationExecutors()
 	assets := appsvc.NoopAssetRegistrar{}
 	events := appsvc.NoopEventPublisher{}
-	dispatcher := taskexecutor.NewDispatcher(storeIns)
-	dispatcher.RegisterCapability(
-		platformsvc.FunctionAssetThumbnailGenerate,
-		platformsvc.CapabilityAssetThumbnail,
-		platformsvc.NewThumbnailExecutor(storeIns),
-	)
-	applicationExecutor, err := appsvc.NewApplicationRunExecutor(storeIns, runtimeRegistry, capabilityRegistry, adapters, executors, assets, events)
-	if err != nil {
-		return nil, errors.Wrap(err, "construct application platform task executor")
+	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
+	if cfg.WorkflowRuntimeOptions != nil && cfg.WorkflowRuntimeOptions.Enabled {
+		workflowRuntime, err = workflowruntime.NewConductor(workflowruntime.ConductorConfig{
+			BaseURL: cfg.WorkflowRuntimeOptions.BaseURL, AuthKey: cfg.WorkflowRuntimeOptions.AuthKey,
+			AuthSecret: cfg.WorkflowRuntimeOptions.AuthSecret, HTTPTimeout: cfg.WorkflowRuntimeOptions.HTTPTimeout,
+			PollInterval: cfg.WorkflowRuntimeOptions.PollInterval,
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "construct workflow runtime")
+		}
 	}
-	dispatcher.RegisterCapability("application-platform.run", "application-platform", applicationExecutor)
+	taskCenterService := taskcentersvc.NewServiceWithFunctions(storeIns, workflowRuntime,
+		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
+		"application-platform.engine-health-plan", "application-platform.engine-health-check")
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
-		Adapters: adapters, Executors: executors, Dispatcher: dispatcher, Assets: assets, Events: events,
+		Adapters: adapters, Executors: executors, Tasks: taskCenterService, Assets: assets, Events: events,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct application platform service")
@@ -117,7 +122,8 @@ func createServer(cfg *config.Config) (*server, error) {
 		gracefulShutdown:    gs,
 		assetUpload:         cfg.AssetUploadOptions,
 		applicationPlatform: applicationPlatformService,
-		dispatcher:          dispatcher,
+		taskCenter:          taskCenterService,
+		workflowRuntime:     workflowRuntime,
 		authOptions:         cfg.AuthOptions,
 		serverMode:          cfg.GenericServerRunOptions.Mode,
 	}
@@ -164,7 +170,10 @@ func (c *CompletedExtraConfig) New() error {
 
 		// canvases
 		&iapiserver.Project{},
-		&iapiserver.Canvas{},
+		&iapiserver.WorkflowCanvas{},
+		&iapiserver.CanvasVersion{},
+		&iapiserver.WorkflowCanvasRun{},
+		&iapiserver.CanvasNodeRun{},
 
 		// platform contracts
 		&iapiserver.Provider{},
@@ -179,13 +188,17 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.AssetGroup{},
 		&iapiserver.AssetGroupMember{},
 		&iapiserver.AssetRelation{},
-		&iapiserver.TaskDefinition{},
-		&iapiserver.TaskRun{},
+		&iapiserver.UserAsset{},
+		&iapiserver.ArtifactAssetRegistration{},
+		&iapiserver.UserAssetLabel{},
+		&iapiserver.UserAssetTag{},
+		&iapiserver.AtomicTask{},
 		&iapiserver.TaskAttempt{},
-		&iapiserver.Worker{},
-		&iapiserver.ExecutionLease{},
-		&iapiserver.TaskRunEvent{},
-		&iapiserver.WatchdogRecord{},
+		&iapiserver.TaskGroup{},
+		&iapiserver.DAGTaskGroup{},
+		&iapiserver.TaskSchedule{},
+		&iapiserver.TaskScheduleExecution{},
+		&iapiserver.RuntimeProjectionEvent{},
 		&iapiserver.FeatureFlag{},
 		&iapiserver.Role{},
 		&iapiserver.Permission{},
@@ -215,6 +228,15 @@ func (c *CompletedExtraConfig) New() error {
 	}
 	store.SetClient(storeIns)
 	return nil
+}
+
+// InitializeStore initializes the shared PostgreSQL store and spec-v1.0.0 schema for non-HTTP processes.
+func InitializeStore(cfg *config.Config) error {
+	extraConfig, err := buildExtraConfig(cfg)
+	if err != nil {
+		return err
+	}
+	return extraConfig.Complete().New()
 }
 
 // 根据服务器配置应用到通用服务器配置上.
@@ -252,11 +274,11 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.dispatcher, s.authOptions, s.serverMode)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.serverMode)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
-		if s.dispatcher != nil {
-			s.dispatcher.Close()
+		if s.workflowRuntime != nil {
+			_ = s.workflowRuntime.Close()
 		}
 		dataStore, _ := postgresql.GetPostgresSQLFactoryOr(nil)
 		if dataStore != nil {
@@ -270,9 +292,6 @@ func (s *server) PrepareRun() preparedServer {
 }
 
 func (s preparedServer) Run(stopCh <-chan struct{}) error {
-	if err := s.dispatcher.Start(); err != nil {
-		return errors.Wrap(err, "start task dispatcher")
-	}
 	if s.assetUpload != nil {
 		platformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
 		platformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)

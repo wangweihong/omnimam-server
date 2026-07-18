@@ -4,157 +4,119 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	srvv1 "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
-type Controller struct {
-	srv srvv1.Service
+type Controller struct{ service taskcenter.TaskCenterSrv }
+
+func NewController(service taskcenter.TaskCenterSrv) *Controller {
+	return &Controller{service: service}
 }
 
-func NewController(storeIns store.Factory) *Controller {
-	return &Controller{srv: srvv1.NewService(storeIns)}
+func (c *Controller) ListAtomicTasks(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AtomicTaskListRequest{}, func(req *iapiserver.AtomicTaskListRequest) (any, error) { return c.service.ListAtomicTasks(ctx, req) })
 }
-
-// ListTaskDefinitions 查询任务定义列表；只返回 metadata/definition，不创建 async run。
-func (tc *Controller) ListTaskDefinitions(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskDefinitionListRequest{}, func(r *iapiserver.TaskDefinitionListRequest) (any, error) {
-		return tc.srv.TaskCenters().ListDefinitions(c, r)
+func (c *Controller) CreateAtomicTask(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AtomicTaskCreateRequest{}, func(req *iapiserver.AtomicTaskCreateRequest) (any, error) {
+		return c.service.CreateAtomicTask(ctx, req)
+	})
+}
+func (c *Controller) GetAtomicTask(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetAtomicTask(ctx, ctx.Param("atomic_task_id")) })
+}
+func (c *Controller) ListAtomicTaskAttempts(ctx *gin.Context) {
+	req := &iapiserver.TaskAttemptListRequest{AtomicTaskID: ctx.Param("atomic_task_id")}
+	core.Run(ctx, req, func(value *iapiserver.TaskAttemptListRequest) (any, error) { return c.service.ListAttempts(ctx, value) })
+}
+func (c *Controller) CancelAtomicTask(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ActionReasonRequest{}, func(req *iapiserver.ActionReasonRequest) (any, error) {
+		return c.service.CancelAtomicTask(ctx, ctx.Param("atomic_task_id"), req)
+	})
+}
+func (c *Controller) RetryAtomicTask(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.ActionReasonRequest{}, func(req *iapiserver.ActionReasonRequest) (any, error) {
+		return c.service.RetryAtomicTask(ctx, ctx.Param("atomic_task_id"), req)
 	})
 }
 
-// CreateAtomicTask 创建 AtomicTask 定义；不会直接执行 functionRef 或调用 AppEngine。
-func (tc *Controller) CreateAtomicTask(c *gin.Context) {
-	core.Run(c, &iapiserver.AtomicTaskCreateRequest{}, func(r *iapiserver.AtomicTaskCreateRequest) (any, error) {
-		return tc.srv.TaskCenters().CreateAtomicTask(c, r)
+func (c *Controller) ListTaskGroups(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.TaskGroupListRequest{}, func(req *iapiserver.TaskGroupListRequest) (any, error) { return c.service.ListTaskGroups(ctx, req) })
+}
+func (c *Controller) CreateTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.TaskGroupCreateRequest{}, func(req *iapiserver.TaskGroupCreateRequest) (any, error) { return c.service.CreateTaskGroup(ctx, req) })
+}
+func (c *Controller) GetTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetTaskGroup(ctx, ctx.Param("task_group_id")) })
+}
+func (c *Controller) ListTaskGroupTasks(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AtomicTaskListRequest{}, func(req *iapiserver.AtomicTaskListRequest) (any, error) {
+		return c.service.ListTaskGroupTasks(ctx, ctx.Param("task_group_id"), req)
 	})
 }
-
-// CreateTaskGroup 创建 SERIAL/PARALLEL 任务组定义；只保存组合定义。
-func (tc *Controller) CreateTaskGroup(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskGroupCreateRequest{}, func(r *iapiserver.TaskGroupCreateRequest) (any, error) {
-		return tc.srv.TaskCenters().CreateTaskGroup(c, r)
-	})
+func (c *Controller) CancelTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.CancelTaskGroup(ctx, ctx.Param("task_group_id")) })
+}
+func (c *Controller) RetryTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.RetryTaskGroup(ctx, ctx.Param("task_group_id")) })
 }
 
-// CreateDAGFlowTask 创建 DAGFlowTask 定义；保存前会校验 DAG 无环。
-func (tc *Controller) CreateDAGFlowTask(c *gin.Context) {
-	core.Run(c, &iapiserver.DAGFlowTaskCreateRequest{}, func(r *iapiserver.DAGFlowTaskCreateRequest) (any, error) {
-		return tc.srv.TaskCenters().CreateDAGFlowTask(c, r)
+func (c *Controller) ListDAGTaskGroups(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.DAGTaskGroupListRequest{}, func(req *iapiserver.DAGTaskGroupListRequest) (any, error) {
+		return c.service.ListDAGTaskGroups(ctx, req)
 	})
 }
-
-// ListTaskRuns 查询 TaskRun 列表；不返回原始 asset 内容。
-func (tc *Controller) ListTaskRuns(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskRunListRequest{}, func(r *iapiserver.TaskRunListRequest) (any, error) {
-		return tc.srv.TaskCenters().ListRuns(c, r)
+func (c *Controller) CreateDAGTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.DAGTaskGroupCreateRequest{}, func(req *iapiserver.DAGTaskGroupCreateRequest) (any, error) {
+		return c.service.CreateDAGTaskGroup(ctx, req)
 	})
 }
-
-// CreateTaskRun 创建 TaskRun 运行实例；实际执行由 Worker 协议异步推进。
-func (tc *Controller) CreateTaskRun(c *gin.Context) {
-	core.Run(c, &iapiserver.TaskRunCreateRequest{}, func(r *iapiserver.TaskRunCreateRequest) (any, error) {
-		return tc.srv.TaskCenters().CreateRun(c, r)
+func (c *Controller) GetDAGTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetDAGTaskGroup(ctx, ctx.Param("dag_task_group_id")) })
+}
+func (c *Controller) ListDAGTaskGroupTasks(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AtomicTaskListRequest{}, func(req *iapiserver.AtomicTaskListRequest) (any, error) {
+		return c.service.ListDAGTaskGroupTasks(ctx, ctx.Param("dag_task_group_id"), req)
 	})
 }
-
-// GetTaskRun 获取 TaskRun 详情；返回任务状态、进度和结果引用。
-func (tc *Controller) GetTaskRun(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return tc.srv.TaskCenters().GetRun(c, c.Param("run_id"))
-	})
+func (c *Controller) CancelDAGTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.CancelDAGTaskGroup(ctx, ctx.Param("dag_task_group_id")) })
+}
+func (c *Controller) RetryDAGTaskGroup(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.RetryDAGTaskGroup(ctx, ctx.Param("dag_task_group_id")) })
 }
 
-// DeleteTaskRun 软删除终态 TaskRun；不会物理删除 Attempt 或事件历史。
-func (tc *Controller) DeleteTaskRun(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return tc.srv.TaskCenters().DeleteRun(c, c.Param("run_id"))
+func (c *Controller) ListTaskSchedules(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.TaskScheduleListRequest{}, func(req *iapiserver.TaskScheduleListRequest) (any, error) {
+		return c.service.ListTaskSchedules(ctx, req)
 	})
 }
-
-// ListTaskAttempts 查询指定 TaskRun 的执行尝试历史。
-func (tc *Controller) ListTaskAttempts(c *gin.Context) {
-	req := &iapiserver.TaskAttemptListRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.TaskAttemptListRequest) (any, error) {
-		return tc.srv.TaskCenters().ListAttempts(c, r)
+func (c *Controller) CreateTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.TaskScheduleCreateRequest{}, func(req *iapiserver.TaskScheduleCreateRequest) (any, error) {
+		return c.service.CreateTaskSchedule(ctx, req)
 	})
 }
-
-// CancelTaskRun 请求协作式取消 TaskRun；最终状态由 Worker/外部执行器回写。
-func (tc *Controller) CancelTaskRun(c *gin.Context) {
-	req := &iapiserver.CancelTaskRunRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.CancelTaskRunRequest) (any, error) {
-		return tc.srv.TaskCenters().CancelRun(c, r)
+func (c *Controller) GetTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetTaskSchedule(ctx, ctx.Param("task_schedule_id")) })
+}
+func (c *Controller) UpdateTaskSchedule(ctx *gin.Context) {
+	req := &iapiserver.TaskScheduleUpdateRequest{ID: ctx.Param("task_schedule_id")}
+	core.Run(ctx, req, func(value *iapiserver.TaskScheduleUpdateRequest) (any, error) {
+		return c.service.UpdateTaskSchedule(ctx, value)
 	})
 }
-
-// RetryTaskRun 将允许重试的失败 TaskRun 放回 READY 队列。
-func (tc *Controller) RetryTaskRun(c *gin.Context) {
-	req := &iapiserver.RetryTaskRunRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.RetryTaskRunRequest) (any, error) {
-		return tc.srv.TaskCenters().RetryRun(c, r)
-	})
+func (c *Controller) DeleteTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return nil, c.service.DeleteTaskSchedule(ctx, ctx.Param("task_schedule_id")) })
 }
-
-// RegisterWorker 注册 Worker 协议主体及其能力声明。
-func (tc *Controller) RegisterWorker(c *gin.Context) {
-	core.Run(c, &iapiserver.WorkerRegisterRequest{}, func(r *iapiserver.WorkerRegisterRequest) (any, error) {
-		return tc.srv.TaskCenters().RegisterWorker(c, r)
-	})
+func (c *Controller) PauseTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.PauseTaskSchedule(ctx, ctx.Param("task_schedule_id")) })
 }
-
-// HeartbeatWorker 更新 Worker 心跳、状态和当前运行数量。
-func (tc *Controller) HeartbeatWorker(c *gin.Context) {
-	req := &iapiserver.WorkerHeartbeatRequest{WorkerID: c.Param("worker_id")}
-	core.Run(c, req, func(r *iapiserver.WorkerHeartbeatRequest) (any, error) {
-		return tc.srv.TaskCenters().HeartbeatWorker(c, r)
-	})
+func (c *Controller) ResumeTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.ResumeTaskSchedule(ctx, ctx.Param("task_schedule_id")) })
 }
-
-// ClaimTaskRun 由 Worker 领取一个可执行 TaskRun，并创建 Attempt 与 ExecutionLease。
-func (tc *Controller) ClaimTaskRun(c *gin.Context) {
-	req := &iapiserver.ClaimTaskRunRequest{WorkerID: c.Param("worker_id")}
-	core.Run(c, req, func(r *iapiserver.ClaimTaskRunRequest) (any, error) {
-		return tc.srv.TaskCenters().ClaimRun(c, r)
-	})
-}
-
-// UpdateTaskRunProgress 校验 lease 后更新 TaskRun 进度和 Attempt 快照。
-func (tc *Controller) UpdateTaskRunProgress(c *gin.Context) {
-	req := &iapiserver.ProgressUpdateRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.ProgressUpdateRequest) (any, error) {
-		return tc.srv.TaskCenters().UpdateProgress(c, r)
-	})
-}
-
-// CompleteTaskRun 校验 lease 后提交成功结果并释放 ExecutionLease。
-func (tc *Controller) CompleteTaskRun(c *gin.Context) {
-	req := &iapiserver.TaskRunCompleteRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.TaskRunCompleteRequest) (any, error) {
-		return tc.srv.TaskCenters().CompleteRun(c, r)
-	})
-}
-
-// FailTaskRun 校验 lease 后提交失败结果，并按 retry policy 决定是否等待重试。
-func (tc *Controller) FailTaskRun(c *gin.Context) {
-	req := &iapiserver.TaskRunFailRequest{RunID: c.Param("run_id")}
-	core.Run(c, req, func(r *iapiserver.TaskRunFailRequest) (any, error) {
-		return tc.srv.TaskCenters().FailRun(c, r)
-	})
-}
-
-// RenewExecutionLease 续约 Worker 当前持有的 ExecutionLease。
-func (tc *Controller) RenewExecutionLease(c *gin.Context) {
-	req := &iapiserver.LeaseRenewRequest{LeaseID: c.Param("lease_id")}
-	core.Run(c, req, func(r *iapiserver.LeaseRenewRequest) (any, error) {
-		return tc.srv.TaskCenters().RenewLease(c, r)
-	})
-}
-
-// GetTaskCenterHealth 返回任务中心健康摘要和队列/Worker/Lease 统计。
-func (tc *Controller) GetTaskCenterHealth(c *gin.Context) {
-	core.Run(c, nil, func(_ any) (any, error) {
-		return tc.srv.TaskCenters().Health(c)
+func (c *Controller) ListScheduleExecutions(ctx *gin.Context) {
+	req := &iapiserver.ScheduleExecutionListRequest{ScheduleID: ctx.Param("task_schedule_id")}
+	core.Run(ctx, req, func(value *iapiserver.ScheduleExecutionListRequest) (any, error) {
+		return c.service.ListScheduleExecutions(ctx, value)
 	})
 }

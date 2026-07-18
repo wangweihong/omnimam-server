@@ -8,24 +8,26 @@ import (
 	aiappctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/canvas"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
+	workflowcanvasctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/workflowcanvas"
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
+	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, dispatcher platformsvc.TaskDispatcher, authOptions *options.AuthOptions, mode string) {
+func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, taskCenter taskcentersvc.TaskCenterSrv, authOptions *options.AuthOptions, mode string) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, dispatcher, authOptions, mode)
+	installApis(g, applicationPlatform, taskCenter, authOptions, mode)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -37,15 +39,15 @@ func InstallMiddleware(g *gin.Engine) {
 func InstallApis(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
-	dispatcher platformsvc.TaskDispatcher,
+	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, dispatcher, options.NewAuthOptions(), "release")
+	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), "release")
 }
 
 func installApis(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
-	dispatcher platformsvc.TaskDispatcher,
+	taskCenter taskcentersvc.TaskCenterSrv,
 	authOptions *options.AuthOptions,
 	mode string,
 ) *gin.Engine {
@@ -57,13 +59,15 @@ func installApis(
 		v1 := g.Group("/api/v1")
 		{
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
-			installPlatformApis(v1, storeIns, dispatcher)
+			installPlatformApis(v1, storeIns, nil)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)
 			installAssetApis(v1, storeIns)
 			installPromptApis(v1, storeIns)
-			installCanvasApis(v1, storeIns)
-			installTaskCenterApis(v1, storeIns)
+			if taskCenter != nil {
+				installTaskCenterApis(v1, taskCenter)
+				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter))
+			}
 			installAIChatApis(v1, storeIns)
 			if applicationPlatform != nil {
 				installApplicationPlatformApis(v1, applicationPlatform)
@@ -151,36 +155,46 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 	}
 }
 
-func installTaskCenterApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	taskCenterController := taskcenterctrl.NewController(storeIns)
-	rg.GET("/task-definitions", taskCenterController.ListTaskDefinitions)
-	rg.POST("/atomic-tasks", taskCenterController.CreateAtomicTask)
-	rg.POST("/task-groups", taskCenterController.CreateTaskGroup)
-	rg.POST("/dag-flow-tasks", taskCenterController.CreateDAGFlowTask)
-
-	taskRuns := rg.Group("/task-runs")
+func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenterSrv) {
+	taskCenterController := taskcenterctrl.NewController(service)
+	atomicTasks := rg.Group("/atomic-tasks")
 	{
-		taskRuns.GET("", taskCenterController.ListTaskRuns)
-		taskRuns.POST("", taskCenterController.CreateTaskRun)
-		taskRuns.GET("/:run_id", taskCenterController.GetTaskRun)
-		taskRuns.DELETE("/:run_id", taskCenterController.DeleteTaskRun)
-		taskRuns.GET("/:run_id/attempts", taskCenterController.ListTaskAttempts)
-		taskRuns.POST("/:run_id/cancel", taskCenterController.CancelTaskRun)
-		taskRuns.POST("/:run_id/retry", taskCenterController.RetryTaskRun)
-		taskRuns.POST("/:run_id/progress", taskCenterController.UpdateTaskRunProgress)
-		taskRuns.POST("/:run_id/complete", taskCenterController.CompleteTaskRun)
-		taskRuns.POST("/:run_id/fail", taskCenterController.FailTaskRun)
+		atomicTasks.GET("", taskCenterController.ListAtomicTasks)
+		atomicTasks.POST("", taskCenterController.CreateAtomicTask)
+		atomicTasks.GET("/:atomic_task_id", taskCenterController.GetAtomicTask)
+		atomicTasks.GET("/:atomic_task_id/attempts", taskCenterController.ListAtomicTaskAttempts)
+		atomicTasks.POST("/:atomic_task_id/cancel", taskCenterController.CancelAtomicTask)
+		atomicTasks.POST("/:atomic_task_id/retry", taskCenterController.RetryAtomicTask)
 	}
-
-	workers := rg.Group("/workers")
+	taskGroups := rg.Group("/task-groups")
 	{
-		workers.POST("", taskCenterController.RegisterWorker)
-		workers.POST("/:worker_id/heartbeat", taskCenterController.HeartbeatWorker)
-		workers.POST("/:worker_id/claim", taskCenterController.ClaimTaskRun)
+		taskGroups.GET("", taskCenterController.ListTaskGroups)
+		taskGroups.POST("", taskCenterController.CreateTaskGroup)
+		taskGroups.GET("/:task_group_id", taskCenterController.GetTaskGroup)
+		taskGroups.GET("/:task_group_id/tasks", taskCenterController.ListTaskGroupTasks)
+		taskGroups.POST("/:task_group_id/cancel", taskCenterController.CancelTaskGroup)
+		taskGroups.POST("/:task_group_id/retry", taskCenterController.RetryTaskGroup)
 	}
-
-	rg.POST("/leases/:lease_id/renew", taskCenterController.RenewExecutionLease)
-	rg.GET("/task-center/health", taskCenterController.GetTaskCenterHealth)
+	dagGroups := rg.Group("/dag-task-groups")
+	{
+		dagGroups.GET("", taskCenterController.ListDAGTaskGroups)
+		dagGroups.POST("", taskCenterController.CreateDAGTaskGroup)
+		dagGroups.GET("/:dag_task_group_id", taskCenterController.GetDAGTaskGroup)
+		dagGroups.GET("/:dag_task_group_id/tasks", taskCenterController.ListDAGTaskGroupTasks)
+		dagGroups.POST("/:dag_task_group_id/cancel", taskCenterController.CancelDAGTaskGroup)
+		dagGroups.POST("/:dag_task_group_id/retry", taskCenterController.RetryDAGTaskGroup)
+	}
+	schedules := rg.Group("/task-schedules")
+	{
+		schedules.GET("", taskCenterController.ListTaskSchedules)
+		schedules.POST("", taskCenterController.CreateTaskSchedule)
+		schedules.GET("/:task_schedule_id", taskCenterController.GetTaskSchedule)
+		schedules.PATCH("/:task_schedule_id", taskCenterController.UpdateTaskSchedule)
+		schedules.DELETE("/:task_schedule_id", taskCenterController.DeleteTaskSchedule)
+		schedules.POST("/:task_schedule_id/pause", taskCenterController.PauseTaskSchedule)
+		schedules.POST("/:task_schedule_id/resume", taskCenterController.ResumeTaskSchedule)
+		schedules.GET("/:task_schedule_id/executions", taskCenterController.ListScheduleExecutions)
+	}
 }
 
 func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
@@ -262,7 +276,9 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 		assets.DELETE("/:asset_id", platformController.DeleteAsset)
 		assets.GET("/:asset_id/content", platformController.GetAssetContent)
 		assets.GET("/:asset_id/thumbnail", platformController.GetAssetThumbnail)
+		assets.POST("/batch-labels", platformController.BatchApplyAssetLabels)
 	}
+	rg.POST("/artifact-registrations", platformController.RegisterArtifact)
 
 	rg.POST("/asset-groups", platformController.CreateAssetGroup)
 
@@ -273,8 +289,6 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 		canvasAssets.POST("/register-output", platformController.RegisterCanvasOutput)
 	}
 
-	rg.POST("/canvases/:canvas_id/run", platformController.RunCanvas)
-	rg.POST("/canvases/:canvas_id/nodes/:node_id/run", platformController.RunCanvasNode)
 }
 
 func installAuthApis(rg *gin.RouterGroup, storeIns store.Factory) {
@@ -397,36 +411,26 @@ func installPromptApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	}
 }
 
-func installCanvasApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	canvasController := canvas.NewController(storeIns)
-
+func installCanvasApis(rg *gin.RouterGroup, service workflowcanvassvc.Service) {
+	canvasController := workflowcanvasctrl.NewController(service)
 	canvasv1 := rg.Group("/canvases")
 	{
-		canvasv1.GET("", canvasController.ListCanvases)
-		canvasv1.GET("/trash", canvasController.ListTrash)
-		canvasv1.POST("", canvasController.CreateCanvas)
-		canvasv1.POST("/import", canvasController.ImportCanvas)
-		canvasv1.GET("/:canvas_id", canvasController.GetCanvas)
-		canvasv1.GET("/:canvas_id/export", canvasController.ExportCanvas)
-		canvasv1.PATCH("/:canvas_id", canvasController.UpdateCanvasMeta)
-		canvasv1.GET("/:canvas_id/meta", canvasController.GetCanvasMeta)
-		canvasv1.POST("/:canvas_id/meta", canvasController.UpdateCanvasMeta)
-		canvasv1.PUT("/:canvas_id", canvasController.SaveCanvas)
-		canvasv1.POST("/:canvas_id/workflows/export", canvasController.ExportWorkflow)
-		canvasv1.POST("/:canvas_id/workflows/import", canvasController.ImportWorkflow)
-		canvasv1.POST("/:canvas_id/workflows/export-package", canvasController.ExportWorkflowPackage)
-		canvasv1.POST("/:canvas_id/workflows/import-package", canvasController.ImportWorkflowPackage)
-		canvasv1.POST("/:canvas_id/touch", canvasController.TouchCanvas)
-		canvasv1.DELETE("/:canvas_id", canvasController.DeleteCanvas)
-		canvasv1.POST("/:canvas_id/restore", canvasController.RestoreCanvas)
-		canvasv1.DELETE("/:canvas_id/purge", canvasController.PurgeCanvas)
+		canvasv1.GET("", canvasController.List)
+		canvasv1.POST("", canvasController.Create)
+		canvasv1.GET("/:canvas_id", canvasController.Get)
+		canvasv1.PATCH("/:canvas_id", canvasController.Update)
+		canvasv1.DELETE("/:canvas_id", canvasController.Delete)
+		canvasv1.POST("/:canvas_id/publish", canvasController.Publish)
+		canvasv1.GET("/:canvas_id/versions", canvasController.ListVersions)
 	}
-
-	projectv1 := rg.Group("/projects")
+	rg.GET("/canvas-versions/:canvas_version_id", canvasController.GetVersion)
+	runs := rg.Group("/canvas-runs")
 	{
-		projectv1.GET("", canvasController.ListProjects)
-		projectv1.POST("", canvasController.CreateProject)
-		projectv1.POST("/:project_id", canvasController.UpdateProject)
-		projectv1.DELETE("/:project_id", canvasController.DeleteProject)
+		runs.GET("", canvasController.ListRuns)
+		runs.POST("", canvasController.CreateRun)
+		runs.GET("/:canvas_run_id", canvasController.GetRun)
+		runs.GET("/:canvas_run_id/nodes", canvasController.ListNodeRuns)
+		runs.POST("/:canvas_run_id/cancel", canvasController.CancelRun)
+		runs.POST("/:canvas_run_id/retry", canvasController.RetryRun)
 	}
 }

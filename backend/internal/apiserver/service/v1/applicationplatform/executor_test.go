@@ -131,7 +131,7 @@ func TestApplicationRunExecutorUsesRegistriesAndEngineConcurrency(t *testing.T) 
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			if _, executeErr := executor.Execute(context.Background(), &iapiserver.TaskRun{ApplicationRunID: "run-1"}); executeErr != nil {
+			if _, executeErr := executor.Execute(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"}); executeErr != nil {
 				t.Errorf("execute failed: %v", executeErr)
 			}
 		}()
@@ -154,8 +154,8 @@ func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := &iapiserver.TaskRun{
-		ApplicationRunID: "run-1", Status: iapiserver.TaskRunStatusSuccess, Progress: 1,
+	task := &iapiserver.AtomicTask{
+		ApplicationRunID: "run-1", Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1,
 		Output: map[string]any{"values": map[string]any{"video_url": "https://example.com/video.mp4"}, "artifacts": []any{map[string]any{"output_key": "video", "media_type": "video", "content_ref": "https://example.com/video.mp4"}}},
 	}
 	task.ID = "task-1"

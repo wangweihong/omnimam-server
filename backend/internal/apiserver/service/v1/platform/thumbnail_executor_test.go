@@ -46,7 +46,7 @@ func TestThumbnailExecutorImageSuccess(t *testing.T) {
 	}
 	factory.assets.item.ID = "asset-1"
 	factory.thumbnails.item.ID = "thumbnail-1"
-	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.TaskRun{Input: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"}})
+	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.AtomicTask{Arguments: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"}})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestThumbnailExecutorUnsupportedMedia(t *testing.T) {
 	}
 	factory.assets.item.ID = "asset-1"
 	factory.thumbnails.item.ID = "thumbnail-1"
-	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.TaskRun{Input: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"}})
+	output, err := NewThumbnailExecutor(factory).Execute(context.Background(), &iapiserver.AtomicTask{Arguments: map[string]any{"asset_id": "asset-1", "thumbnail_id": "thumbnail-1"}})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

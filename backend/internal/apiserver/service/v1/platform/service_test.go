@@ -518,6 +518,7 @@ func (f *testFactory) PromptCategories() store.PromptCategoryStore    { return n
 func (f *testFactory) PromptItems() store.PromptItemStore             { return nil }
 func (f *testFactory) Projects() store.ProjectStore                   { return nil }
 func (f *testFactory) Canvases() store.CanvasStore                    { return nil }
+func (f *testFactory) WorkflowCanvases() store.WorkflowCanvasStore    { return nil }
 func (f *testFactory) Providers() store.ProviderStore                 { return f.providers }
 func (f *testFactory) ProviderModels() store.ProviderModelStore       { return f.models }
 func (f *testFactory) ProviderCapabilities() store.ProviderCapabilityStore {
@@ -526,6 +527,7 @@ func (f *testFactory) ProviderCapabilities() store.ProviderCapabilityStore {
 func (f *testFactory) SystemLLMConfigs() store.SystemLLMConfigStore   { return f.configs }
 func (f *testFactory) StorageBackends() store.StorageBackendStore     { return nil }
 func (f *testFactory) AssetsV2() store.AssetStore                     { return nil }
+func (f *testFactory) AssetsV1() store.AssetV1Store                   { return nil }
 func (f *testFactory) AssetThumbnails() store.AssetThumbnailStore     { return nil }
 func (f *testFactory) Tags() store.TagStore                           { return nil }
 func (f *testFactory) AssetTags() store.AssetTagStore                 { return nil }

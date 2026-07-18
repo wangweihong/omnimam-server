@@ -109,11 +109,14 @@
 | ErrAIAppApplicationSemanticVersionDuplicated | 130630 | 200 | The Application already has the same semantic version. | 同一 Application 已存在相同语义版本。 |
 | ErrAIAppResourceVersionConflict | 130631 | 200 | The resource version changed; refresh and retry. | 资源版本已变化，请刷新后重试。 |
 | ErrAIAppApplicationRunCreateFailed | 130820 | 200 | The ApplicationRun could not be created. | ApplicationRun 创建失败。 |
-| ErrAIAppTaskProjectionStale | 130821 | 200 | The TaskRun status projection version is stale. | TaskRun 状态投影版本过旧。 |
+| ErrAIAppTaskProjectionStale | 130821 | 200 | The AtomicTask status projection version is stale. | AtomicTask 状态投影版本过旧。 |
 | ErrAIAppProviderRuntimeCapabilityMismatch | 130822 | 200 | The provider rejected a capability combination declared by ProviderCapability. | 外部平台拒绝了当前 ProviderCapability 声明的能力组合。 |
-| ErrAIAppTaskRunCreateFailed | 130823 | 200 | TaskRun creation failed; the ApplicationRun snapshot was retained. | TaskRun 创建失败，ApplicationRun 快照已保留。 |
+| ErrAIAppTaskRunCreateFailed | 130823 | 200 | AtomicTask creation failed; the ApplicationRun snapshot was retained. | AtomicTask 创建失败，ApplicationRun 快照已保留。 |
 | ErrAIAppArtifactRegistrationFailed | 130824 | 200 | Artifact registration as a UserAsset failed. | Artifact 登记 UserAsset 失败。 |
 | ErrAIAppApplicationRunNotFound | 130825 | 200 | The ApplicationRun does not exist or is not visible to the current user. | ApplicationRun 不存在或当前用户不可见。 |
+| ErrAIAppAtomicTaskCreateFailed | 130826 | 200 | AtomicTask creation failed; the ApplicationRun snapshot is retained and may be retried with the same idempotency key. | AtomicTask 创建暂时失败，ApplicationRun 快照已保留，可使用相同幂等键重试。 |
+| ErrAIAppAtomicTaskProjectionStale | 130827 | 200 | The AtomicTask projection event is older than the current ApplicationRun projection. | AtomicTask 投影事件版本早于当前 ApplicationRun 投影。 |
+| ErrAIAppArtifactRegistrationAtomicTaskUnchanged | 130828 | 200 | The Artifact could not be registered as a UserAsset; the AtomicTask terminal state is unchanged. | Artifact 未能登记为 UserAsset，AtomicTask 终态不受影响。 |
 | ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
 | ErrAIAppComfyUIWorkflowFileInvalid | 131220 | 200 | The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure. | API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。 |
 | ErrAIAppComfyUIEngineTypeInvalid | 131221 | 200 | The selected source or target EngineInstance is not a ComfyUI engine. | 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。 |
@@ -130,13 +133,39 @@
 | ErrAIAppComfyUIResourceVersionConflict | 131232 | 200 | The ComfyUI workflow resource version has changed; refresh and retry. | ComfyUI 工作流资源版本已变化，请刷新后重试。 |
 | ErrAIAppComfyUIWorkflowAccessDenied | 131233 | 200 | The current user is not allowed to access or administer this ComfyUI workflow. | 当前用户无权访问或代管该 ComfyUI 工作流。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
-| ErrTaskDAGCycleDetected | 140201 | 200 | DAGFlowTask contains a cyclic dependency. | DAGFlowTask 存在环形依赖。 |
+| ErrTaskDAGCycleDetected | 140201 | 200 | DAGTaskGroup contains a cyclic dependency. | DAGTaskGroup 存在环形依赖。 |
+| ErrTaskGroupInvalid | 140202 | 200 | TaskGroup template or execution policy is invalid. | TaskGroup 模板或执行策略不合法。 |
+| ErrDAGTaskGroupInvalid | 140203 | 200 | DAGTaskGroup nodes, edges, or input references are invalid. | DAGTaskGroup 节点、边或输入引用不合法。 |
+| ErrTaskFunctionRefNotRegistered | 140204 | 200 | functionRef is not registered or is unavailable to the caller. | functionRef 未注册或当前调用方不可使用。 |
 | ErrTaskRunNotFound | 140400 | 200 | Task run does not exist or is not visible to the current user. | 任务运行不存在或当前用户不可见。 |
 | ErrTaskRunStateBlocked | 140401 | 200 | Current task run status does not allow this operation. | 任务当前状态不允许执行该操作。 |
 | ErrTaskRetryPolicyInvalid | 140402 | 200 | Task retry policy is invalid. | 任务重试策略不合法。 |
 | ErrTaskRunIdempotencyConflict | 140403 | 200 | The same application run and idempotency key were used with a different task run creation request. | 相同应用运行和幂等键已用于不同的任务运行创建请求。 |
+| ErrAtomicTaskNotFound | 140405 | 200 | AtomicTask does not exist or is not visible to the caller. | AtomicTask 不存在或当前调用方不可见。 |
+| ErrAtomicTaskStateBlocked | 140406 | 200 | Current AtomicTask status does not allow this operation. | AtomicTask 当前状态不允许该操作。 |
+| ErrAtomicTaskIdempotencyConflict | 140407 | 200 | AtomicTask idempotency key was used for a different request. | AtomicTask 幂等键已用于不同请求。 |
+| ErrTaskGroupNotFound | 140408 | 200 | TaskGroup does not exist or is not visible to the caller. | TaskGroup 不存在或当前调用方不可见。 |
+| ErrDAGTaskGroupNotFound | 140409 | 200 | DAGTaskGroup does not exist or is not visible to the caller. | DAGTaskGroup 不存在或当前调用方不可见。 |
 | ErrTaskWorkerNotAvailable | 140600 | 200 | Worker does not exist, is unavailable, or capability does not match. | Worker 不存在、不可用或能力不匹配。 |
+| ErrWorkflowRuntimeUnavailable | 140601 | 200 | Workflow runtime is currently unavailable. | 工作流运行时当前不可用。 |
+| ErrWorkflowRuntimeRejected | 140602 | 200 | Workflow runtime rejected the register, start, cancel, or retry request. | 工作流运行时拒绝注册、启动、取消或重试请求。 |
 | ErrTaskLeaseInvalid | 140800 | 200 | ExecutionLease is invalid, expired, or does not belong to current worker. | ExecutionLease 无效、已过期或不属于当前 Worker。 |
 | ErrTaskAttemptUpdateRejected | 141000 | 200 | Current task attempt is not allowed to update task result. | 当前执行尝试不允许更新任务结果。 |
+| ErrTaskAttemptNotFound | 141001 | 200 | TaskAttempt does not exist or does not belong to the AtomicTask. | TaskAttempt 不存在或不属于指定 AtomicTask。 |
 | ErrTaskPermissionDenied | 141200 | 200 | Current user does not have task center permission. | 当前用户缺少任务中心操作权限。 |
+| ErrTaskScheduleInvalid | 141400 | 200 | TaskSchedule target, cron, timezone, or runAt is invalid. | TaskSchedule 的目标、cron、时区或 runAt 不合法。 |
+| ErrTaskScheduleNotFound | 141401 | 200 | TaskSchedule does not exist or is not visible to the caller. | TaskSchedule 不存在或当前调用方不可见。 |
+| ErrTaskScheduleStateBlocked | 141402 | 200 | Current TaskSchedule status does not allow this operation. | TaskSchedule 当前状态不允许该操作。 |
+| ErrCanvasNotFound | 160200 | 200 | Canvas does not exist or is not visible to the caller. | Canvas 不存在或当前调用方不可见。 |
+| ErrCanvasRevisionConflict | 160201 | 200 | Canvas draft revision has changed; refresh before retrying. | Canvas 草稿 revision 已变化，请刷新后重试。 |
+| ErrCanvasGraphInvalid | 160202 | 200 | Canvas graph nodes, edges, ports, or input bindings are invalid. | Canvas 图的节点、边、端口或输入绑定不合法。 |
+| ErrCanvasCycleDetected | 160203 | 200 | Canvas graph contains a cyclic dependency. | Canvas 图存在环形依赖。 |
+| ErrCanvasLimitExceeded | 160204 | 200 | Canvas node, edge, or dynamic expansion limit is exceeded. | Canvas 节点、边或动态展开上限超出允许范围。 |
+| ErrCanvasNodeReferenceInvalid | 160205 | 200 | ApplicationVersion or functionRef referenced by the node is unavailable. | 节点引用的 ApplicationVersion 或 functionRef 不可用。 |
+| ErrCanvasVersionNotFound | 160400 | 200 | CanvasVersion does not exist or is not visible to the caller. | CanvasVersion 不存在或当前调用方不可见。 |
+| ErrCanvasPublishFailed | 160401 | 200 | CanvasVersion compilation or runtime definition registration failed. | CanvasVersion 编译或运行时定义注册失败。 |
+| ErrCanvasRunNotFound | 160600 | 200 | CanvasRun does not exist or is not visible to the caller. | CanvasRun 不存在或当前调用方不可见。 |
+| ErrCanvasRunStateBlocked | 160601 | 200 | Current CanvasRun status does not allow this operation. | CanvasRun 当前状态不允许该操作。 |
+| ErrCanvasRunIdempotencyConflict | 160602 | 200 | CanvasRun idempotency key was used for a different version or input. | CanvasRun 幂等键已用于不同的版本或输入。 |
+| ErrCanvasPermissionDenied | 160800 | 200 | Caller does not have the required workflow canvas permission. | 当前调用方缺少工作流画布操作权限。 |
 | ErrUserNotFound | 110001 | 500 | Unset error message | 错误信息未设置 |

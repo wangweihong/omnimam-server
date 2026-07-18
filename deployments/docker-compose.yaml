@@ -10,6 +10,26 @@
 # Override OMNIMAM_IMAGE_TAG when needed, for example latest-arm64.
 
 services:
+  conductor:
+    image: conductoross/conductor:3.31.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CONFIG_PROP: config-postgres.properties
+      CONDUCTOR_POSTGRES_USER: ${OMNIMAM_CONDUCTOR_POSTGRES_USER:-conductor}
+      CONDUCTOR_POSTGRES_PASSWORD: ${OMNIMAM_CONDUCTOR_POSTGRES_PASSWORD:-conductor}
+    volumes:
+      - ./conductor/config-postgres.properties:/app/config/config-postgres.properties:ro
+    ports:
+      - "${OMNIMAM_CONDUCTOR_PORT:-8081}:8080"
+    healthcheck:
+      # TaskSchedule 依赖 Scheduler API；仅检查通用 health 会把不支持调度的旧镜像判为可用。
+      test: [CMD-SHELL, "curl -fsS http://localhost:8080/health >/dev/null && curl -fsS http://localhost:8080/api/scheduler/schedules >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
   postgres:
     image: postgres:16-alpine
     container_name: omnimam-postgres
@@ -18,10 +38,14 @@ services:
       POSTGRES_DB: ${OMNIMAM_POSTGRES_DB:-omnimam}
       POSTGRES_USER: ${OMNIMAM_POSTGRES_USER:-omnimam}
       POSTGRES_PASSWORD: ${OMNIMAM_POSTGRES_PASSWORD:-omnimam}
+      CONDUCTOR_POSTGRES_DB: conductor
+      CONDUCTOR_POSTGRES_USER: ${OMNIMAM_CONDUCTOR_POSTGRES_USER:-conductor}
+      CONDUCTOR_POSTGRES_PASSWORD: ${OMNIMAM_CONDUCTOR_POSTGRES_PASSWORD:-conductor}
     ports:
       - "${OMNIMAM_POSTGRES_PORT:-5432}:5432"
     volumes:
       - omnimam_postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-conductor.sh:/docker-entrypoint-initdb.d/10-init-conductor.sh:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -37,6 +61,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      conductor:
         condition: service_healthy
     environment:
       omnimam_LOG_DIR: /var/log/omnimam
@@ -59,6 +85,11 @@ services:
       APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR: /var/lib/omnimam/upload-parts
       APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS: ${OMNIMAM_UPLOAD_CHUNK_CLEANUP_HOURS:-24}
       APISERVER_PROVIDER_CAPABILITY_DIRECTORY: /opt/omnimam/provider-capabilities
+      APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
+      APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
+      APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
+      APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
+      APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
       OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
     ports:
       - "${OMNIMAM_APISERVER_PORT:-8080}:8080"
@@ -83,6 +114,11 @@ services:
             APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR \
             APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS \
             APISERVER_PROVIDER_CAPABILITY_DIRECTORY \
+            APISERVER_ENGINE_HEALTH_INTERVAL \
+            APISERVER_WORKFLOW_RUNTIME_ENABLED \
+            APISERVER_CONDUCTOR_BASE_URL \
+            APISERVER_CONDUCTOR_AUTH_KEY \
+            APISERVER_CONDUCTOR_AUTH_SECRET \
             APISERVER_DATABASE_TYPE \
             APISERVER_DATABASE_NAME \
             APISERVER_POSTGRES_HOST \
@@ -104,6 +140,87 @@ services:
       - omnimam_logs:/var/log/omnimam
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
+
+  taskworker:
+    image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/taskworker:${OMNIMAM_IMAGE_TAG:-latest-amd64}
+    container_name: omnimam-taskworker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+      # API Server 先完成 schema 初始化；Worker 随后再连接同一业务数据库，避免并发 AutoMigrate。
+      apiserver:
+        condition: service_started
+    environment:
+      omnimam_LOG_DIR: /var/log/omnimam
+      APISERVER_RUNTIME_DEBUG_OUTPUT_DIR: /var/lib/omnimam/debug/taskworker
+      # TaskWorker 复用 API Server Options；即使不监听 HTTP，也必须解析完整模板中的服务字段。
+      APISERVER_INSECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_INSECURE_BIND_PORT: 8080
+      APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_TLS_CERT_FILE: ""
+      APISERVER_SECURE_TLS_CERT_KEY: ""
+      APISERVER_DATABASE_TYPE: postgresql
+      APISERVER_DATABASE_NAME: ${OMNIMAM_POSTGRES_DB:-omnimam}
+      APISERVER_POSTGRES_HOST: postgres
+      APISERVER_POSTGRES_PORT: 5432
+      APISERVER_POSTGRES_USER: ${OMNIMAM_POSTGRES_USER:-omnimam}
+      APISERVER_POSTGRES_PASSWORD: ${OMNIMAM_POSTGRES_PASSWORD:-omnimam}
+      APISERVER_MYSQL_HOST: mysql
+      APISERVER_MYSQL_USER: omnimam
+      APISERVER_MYSQL_PASSWORD: omnimam
+      APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR: /var/lib/omnimam/upload-parts
+      APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS: ${OMNIMAM_UPLOAD_CHUNK_CLEANUP_HOURS:-24}
+      # API 与 Worker 必须加载同一份 ProviderCapability，只读清单用于校验 Provider 模型、operation 和参数约束。
+      APISERVER_PROVIDER_CAPABILITY_DIRECTORY: /opt/omnimam/provider-capabilities
+      APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
+      APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
+      APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
+      APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
+      APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
+    volumes:
+      - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        until /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080'; do
+          sleep 1
+        done
+        cp /etc/omnimam-template/apiserver.yaml /tmp/taskworker.yaml
+        for name in \
+          omnimam_LOG_DIR \
+          APISERVER_RUNTIME_DEBUG_OUTPUT_DIR \
+          APISERVER_INSECURE_BIND_ADDRESS \
+          APISERVER_INSECURE_BIND_PORT \
+          APISERVER_SECURE_BIND_ADDRESS \
+          APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_TLS_CERT_FILE \
+          APISERVER_SECURE_TLS_CERT_KEY \
+          APISERVER_DATABASE_TYPE \
+          APISERVER_DATABASE_NAME \
+          APISERVER_POSTGRES_HOST \
+          APISERVER_POSTGRES_PORT \
+          APISERVER_POSTGRES_USER \
+          APISERVER_POSTGRES_PASSWORD \
+          APISERVER_MYSQL_HOST \
+          APISERVER_MYSQL_USER \
+          APISERVER_MYSQL_PASSWORD \
+          APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR \
+          APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS \
+          APISERVER_PROVIDER_CAPABILITY_DIRECTORY \
+          APISERVER_ENGINE_HEALTH_INTERVAL \
+          APISERVER_WORKFLOW_RUNTIME_ENABLED \
+          APISERVER_CONDUCTOR_BASE_URL \
+          APISERVER_CONDUCTOR_AUTH_KEY \
+          APISERVER_CONDUCTOR_AUTH_SECRET; do
+          value="$$(printenv "$$name" || true)"
+          escaped="$$(printf '%s' "$$value" | sed 's/[\/&]/\\&/g')"
+          sed -i "s/\$${$$name}/$$escaped/g" /tmp/taskworker.yaml
+        done
+        exec /opt/omnimam/bin/taskworker -c /tmp/taskworker.yaml
 
 volumes:
   omnimam_postgres_data:

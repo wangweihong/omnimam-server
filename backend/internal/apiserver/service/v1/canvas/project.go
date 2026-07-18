@@ -2,13 +2,11 @@ package canvas
 
 import (
 	"context"
-	"time"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/pkg/general"
 )
@@ -77,7 +75,7 @@ func NewService(str store.Factory) *canvasService {
 	return &canvasService{store: str}
 }
 
-type taskRunSpec struct {
+type atomicTaskSpec struct {
 	DefinitionID         string
 	Name                 string
 	Description          string
@@ -87,69 +85,19 @@ type taskRunSpec struct {
 	Tags                 string
 }
 
-func (s *canvasService) createTaskRun(ctx context.Context, spec taskRunSpec) (*iapiserver.TaskRun, error) {
-	definition, err := s.ensureAtomicTaskDefinition(ctx, spec)
-	if err != nil {
-		return nil, err
+func (s *canvasService) createAtomicTask(ctx context.Context, spec atomicTaskSpec) (*iapiserver.AtomicTask, error) {
+	task := &iapiserver.AtomicTask{
+		FunctionRef: spec.FunctionRef, Arguments: spec.Input, RequiredCapabilities: spec.RequiredCapabilities,
+		Status: iapiserver.AtomicTaskStatusPending, ProjectID: iapiserver.DefaultTaskCenterProjectID,
+		Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy,
+		ChildKey: spec.DefinitionID, Tags: spec.Tags,
 	}
-	run := &iapiserver.TaskRun{
-		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:   definition.ID,
-		Status:         iapiserver.TaskRunStatusReady,
-		Input:          spec.Input,
-		MaxAttempts:    1,
-		ProjectID:      definition.ProjectID,
-		Namespace:      definition.Namespace,
-		Tags:           spec.Tags,
-		CreatedBy:      iapiserver.DefaultTaskCenterCreatedBy,
-	}
-	run.Name = definition.Name + "-run"
-	created, err := s.store.TaskCenters().AddRun(ctx, run)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	event := &iapiserver.TaskRunEvent{
-		RunID:      created.ID,
-		EventType:  iapiserver.TaskCenterEventRunCreated,
-		ToStatus:   created.Status,
-		Payload:    map[string]any{"definition_id": created.DefinitionID},
-		OccurredAt: imachinery.NewTime(time.Now()),
-	}
-	event.Name = iapiserver.TaskCenterEventRunCreated
-	if _, err := s.store.TaskCenters().AddEvent(ctx, event); err != nil {
-		log.Errorf("record task run event failed: run_id=%s error=%v", created.ID, err)
-	}
-	return created, nil
-}
-
-func (s *canvasService) ensureAtomicTaskDefinition(
-	ctx context.Context,
-	spec taskRunSpec,
-) (*iapiserver.TaskDefinition, error) {
-	definition, err := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
-	if err == nil {
-		return definition, nil
-	}
-	definition = &iapiserver.TaskDefinition{
-		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
-		FunctionRef:          spec.FunctionRef,
-		RequiredCapabilities: spec.RequiredCapabilities,
-		ProjectID:            iapiserver.DefaultTaskCenterProjectID,
-		Namespace:            iapiserver.DefaultTaskCenterNamespace,
-		CreatedBy:            iapiserver.DefaultTaskCenterCreatedBy,
-	}
-	definition.ID = spec.DefinitionID
-	definition.Name = spec.Name
-	definition.Description = spec.Description
-	created, createErr := s.store.TaskCenters().AddDefinition(ctx, definition)
-	if createErr == nil {
-		return created, nil
-	}
-	definition, getErr := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
-	if getErr != nil {
-		return nil, errors.WithStack(createErr)
-	}
-	return definition, nil
+	task.ID = uuid.NewString()
+	task.RootTaskID = task.ID
+	task.Name = spec.Name
+	task.Description = spec.Description
+	created, _, err := s.store.TaskCenters().AddAtomicTaskIdempotent(ctx, task)
+	return created, errors.WithStack(err)
 }
 
 func (s *canvasService) ensureDefaultProject(ctx context.Context) error {
@@ -591,7 +539,7 @@ func (s *canvasService) CanvasWorkflowPackageExport(
 		}
 		assets = append(assets, &iapiserver.AssetRecord{Asset: asset})
 	}
-	taskRun, err := s.createTaskRun(ctx, taskRunSpec{
+	atomicTask, err := s.createAtomicTask(ctx, atomicTaskSpec{
 		DefinitionID:         "canvas-workflow-package-export",
 		Name:                 "canvas-workflow-package-export",
 		Description:          "Export a canvas workflow package.",
@@ -604,8 +552,8 @@ func (s *canvasService) CanvasWorkflowPackageExport(
 		return nil, errors.WithStack(err)
 	}
 	return &iapiserver.CanvasWorkflowPackageExportResponse{
-		Package: iapiserver.CanvasWorkflowPackage{Workflow: workflow.Workflow, Assets: assets, Metadata: req.Metadata},
-		TaskRun: taskRun,
+		Package:    iapiserver.CanvasWorkflowPackage{Workflow: workflow.Workflow, Assets: assets, Metadata: req.Metadata},
+		AtomicTask: atomicTask,
 	}, nil
 }
 
@@ -622,7 +570,7 @@ func (s *canvasService) CanvasWorkflowPackageImport(
 	if err != nil {
 		return nil, err
 	}
-	taskRun, err := s.createTaskRun(ctx, taskRunSpec{
+	atomicTask, err := s.createAtomicTask(ctx, atomicTaskSpec{
 		DefinitionID:         "canvas-workflow-package-import",
 		Name:                 "canvas-workflow-package-import",
 		Description:          "Import a canvas workflow package.",
@@ -634,7 +582,7 @@ func (s *canvasService) CanvasWorkflowPackageImport(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.CanvasWorkflowPackageImportResponse{Canvas: imported.Canvas, TaskRun: taskRun}, nil
+	return &iapiserver.CanvasWorkflowPackageImportResponse{Canvas: imported.Canvas, AtomicTask: atomicTask}, nil
 }
 
 func (s *canvasService) CanvasTouch(ctx context.Context, id string) (*iapiserver.CanvasTouchResponse, error) {

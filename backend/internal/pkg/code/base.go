@@ -459,16 +459,16 @@ const (
 	// @EN The ApplicationRun could not be created.
 	ErrAIAppApplicationRunCreateFailed int = 130820
 	// @HTTP 200
-	// @CN TaskRun 状态投影版本过旧。
-	// @EN The TaskRun status projection version is stale.
+	// @CN AtomicTask 状态投影版本过旧。
+	// @EN The AtomicTask status projection version is stale.
 	ErrAIAppTaskProjectionStale int = 130821
 	// @HTTP 200
 	// @CN 外部平台拒绝了当前 ProviderCapability 声明的能力组合。
 	// @EN The provider rejected a capability combination declared by ProviderCapability.
 	ErrAIAppProviderRuntimeCapabilityMismatch int = 130822
 	// @HTTP 200
-	// @CN TaskRun 创建失败，ApplicationRun 快照已保留。
-	// @EN TaskRun creation failed; the ApplicationRun snapshot was retained.
+	// @CN AtomicTask 创建失败，ApplicationRun 快照已保留。
+	// @EN AtomicTask creation failed; the ApplicationRun snapshot was retained.
 	ErrAIAppTaskRunCreateFailed int = 130823
 	// @HTTP 200
 	// @CN Artifact 登记 UserAsset 失败。
@@ -478,6 +478,18 @@ const (
 	// @CN ApplicationRun 不存在或当前用户不可见。
 	// @EN The ApplicationRun does not exist or is not visible to the current user.
 	ErrAIAppApplicationRunNotFound int = 130825
+	// @HTTP 200
+	// @CN AtomicTask 创建暂时失败，ApplicationRun 快照已保留，可使用相同幂等键重试。
+	// @EN AtomicTask creation failed; the ApplicationRun snapshot is retained and may be retried with the same idempotency key.
+	ErrAIAppAtomicTaskCreateFailed int = 130826
+	// @HTTP 200
+	// @CN AtomicTask 投影事件版本早于当前 ApplicationRun 投影。
+	// @EN The AtomicTask projection event is older than the current ApplicationRun projection.
+	ErrAIAppAtomicTaskProjectionStale int = 130827
+	// @HTTP 200
+	// @CN Artifact 未能登记为 UserAsset，AtomicTask 终态不受影响。
+	// @EN The Artifact could not be registered as a UserAsset; the AtomicTask terminal state is unchanged.
+	ErrAIAppArtifactRegistrationAtomicTaskUnchanged int = 130828
 	// @HTTP 200
 	// @CN 当前用户缺少所需的应用平台权限。
 	// @EN The current user lacks the required application-platform permission.
@@ -548,9 +560,21 @@ const (
 	ErrTaskDefinitionInvalid int = 140200
 
 	// @HTTP 200
-	// @CN DAGFlowTask 存在环形依赖。
-	// @EN DAGFlowTask contains a cyclic dependency.
+	// @CN DAGTaskGroup 存在环形依赖。
+	// @EN DAGTaskGroup contains a cyclic dependency.
 	ErrTaskDAGCycleDetected int = 140201
+	// @HTTP 200
+	// @CN TaskGroup 模板或执行策略不合法。
+	// @EN TaskGroup template or execution policy is invalid.
+	ErrTaskGroupInvalid int = 140202
+	// @HTTP 200
+	// @CN DAGTaskGroup 节点、边或输入引用不合法。
+	// @EN DAGTaskGroup nodes, edges, or input references are invalid.
+	ErrDAGTaskGroupInvalid int = 140203
+	// @HTTP 200
+	// @CN functionRef 未注册或当前调用方不可使用。
+	// @EN functionRef is not registered or is unavailable to the caller.
+	ErrTaskFunctionRefNotRegistered int = 140204
 
 	// @HTTP 200
 	// @CN 任务运行不存在或当前用户不可见。
@@ -571,11 +595,39 @@ const (
 	// @CN 相同应用运行和幂等键已用于不同的任务运行创建请求。
 	// @EN The same application run and idempotency key were used with a different task run creation request.
 	ErrTaskRunIdempotencyConflict int = 140403
+	// @HTTP 200
+	// @CN AtomicTask 不存在或当前调用方不可见。
+	// @EN AtomicTask does not exist or is not visible to the caller.
+	ErrAtomicTaskNotFound int = 140405
+	// @HTTP 200
+	// @CN AtomicTask 当前状态不允许该操作。
+	// @EN Current AtomicTask status does not allow this operation.
+	ErrAtomicTaskStateBlocked int = 140406
+	// @HTTP 200
+	// @CN AtomicTask 幂等键已用于不同请求。
+	// @EN AtomicTask idempotency key was used for a different request.
+	ErrAtomicTaskIdempotencyConflict int = 140407
+	// @HTTP 200
+	// @CN TaskGroup 不存在或当前调用方不可见。
+	// @EN TaskGroup does not exist or is not visible to the caller.
+	ErrTaskGroupNotFound int = 140408
+	// @HTTP 200
+	// @CN DAGTaskGroup 不存在或当前调用方不可见。
+	// @EN DAGTaskGroup does not exist or is not visible to the caller.
+	ErrDAGTaskGroupNotFound int = 140409
 
 	// @HTTP 200
 	// @CN Worker 不存在、不可用或能力不匹配。
 	// @EN Worker does not exist, is unavailable, or capability does not match.
 	ErrTaskWorkerNotAvailable int = 140600
+	// @HTTP 200
+	// @CN 工作流运行时当前不可用。
+	// @EN Workflow runtime is currently unavailable.
+	ErrWorkflowRuntimeUnavailable int = 140601
+	// @HTTP 200
+	// @CN 工作流运行时拒绝注册、启动、取消或重试请求。
+	// @EN Workflow runtime rejected the register, start, cancel, or retry request.
+	ErrWorkflowRuntimeRejected int = 140602
 
 	// @HTTP 200
 	// @CN ExecutionLease 无效、已过期或不属于当前 Worker。
@@ -586,9 +638,77 @@ const (
 	// @CN 当前执行尝试不允许更新任务结果。
 	// @EN Current task attempt is not allowed to update task result.
 	ErrTaskAttemptUpdateRejected int = 141000
+	// @HTTP 200
+	// @CN TaskAttempt 不存在或不属于指定 AtomicTask。
+	// @EN TaskAttempt does not exist or does not belong to the AtomicTask.
+	ErrTaskAttemptNotFound int = 141001
 
 	// @HTTP 200
 	// @CN 当前用户缺少任务中心操作权限。
 	// @EN Current user does not have task center permission.
 	ErrTaskPermissionDenied int = 141200
+	// @HTTP 200
+	// @CN TaskSchedule 的目标、cron、时区或 runAt 不合法。
+	// @EN TaskSchedule target, cron, timezone, or runAt is invalid.
+	ErrTaskScheduleInvalid int = 141400
+	// @HTTP 200
+	// @CN TaskSchedule 不存在或当前调用方不可见。
+	// @EN TaskSchedule does not exist or is not visible to the caller.
+	ErrTaskScheduleNotFound int = 141401
+	// @HTTP 200
+	// @CN TaskSchedule 当前状态不允许该操作。
+	// @EN Current TaskSchedule status does not allow this operation.
+	ErrTaskScheduleStateBlocked int = 141402
+)
+
+// workflow-canvas: spec-v1.0.0 business errors.
+const (
+	// @HTTP 200
+	// @CN Canvas 不存在或当前调用方不可见。
+	// @EN Canvas does not exist or is not visible to the caller.
+	ErrCanvasNotFound int = 160200
+	// @HTTP 200
+	// @CN Canvas 草稿 revision 已变化，请刷新后重试。
+	// @EN Canvas draft revision has changed; refresh before retrying.
+	ErrCanvasRevisionConflict int = 160201
+	// @HTTP 200
+	// @CN Canvas 图的节点、边、端口或输入绑定不合法。
+	// @EN Canvas graph nodes, edges, ports, or input bindings are invalid.
+	ErrCanvasGraphInvalid int = 160202
+	// @HTTP 200
+	// @CN Canvas 图存在环形依赖。
+	// @EN Canvas graph contains a cyclic dependency.
+	ErrCanvasCycleDetected int = 160203
+	// @HTTP 200
+	// @CN Canvas 节点、边或动态展开上限超出允许范围。
+	// @EN Canvas node, edge, or dynamic expansion limit is exceeded.
+	ErrCanvasLimitExceeded int = 160204
+	// @HTTP 200
+	// @CN 节点引用的 ApplicationVersion 或 functionRef 不可用。
+	// @EN ApplicationVersion or functionRef referenced by the node is unavailable.
+	ErrCanvasNodeReferenceInvalid int = 160205
+	// @HTTP 200
+	// @CN CanvasVersion 不存在或当前调用方不可见。
+	// @EN CanvasVersion does not exist or is not visible to the caller.
+	ErrCanvasVersionNotFound int = 160400
+	// @HTTP 200
+	// @CN CanvasVersion 编译或运行时定义注册失败。
+	// @EN CanvasVersion compilation or runtime definition registration failed.
+	ErrCanvasPublishFailed int = 160401
+	// @HTTP 200
+	// @CN CanvasRun 不存在或当前调用方不可见。
+	// @EN CanvasRun does not exist or is not visible to the caller.
+	ErrCanvasRunNotFound int = 160600
+	// @HTTP 200
+	// @CN CanvasRun 当前状态不允许该操作。
+	// @EN Current CanvasRun status does not allow this operation.
+	ErrCanvasRunStateBlocked int = 160601
+	// @HTTP 200
+	// @CN CanvasRun 幂等键已用于不同的版本或输入。
+	// @EN CanvasRun idempotency key was used for a different version or input.
+	ErrCanvasRunIdempotencyConflict int = 160602
+	// @HTTP 200
+	// @CN 当前调用方缺少工作流画布操作权限。
+	// @EN Caller does not have the required workflow canvas permission.
+	ErrCanvasPermissionDenied int = 160800
 )

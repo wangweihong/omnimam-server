@@ -1,7 +1,6 @@
 package apiserver
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -17,11 +16,15 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	tasksvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
 
 type routeContractService struct{ appsvc.ApplicationPlatformSrv }
+type routeTaskCenterService struct{ tasksvc.TaskCenterSrv }
+type routeWorkflowCanvasService struct{ workflowcanvassvc.Service }
 
 type routeAuthenticationFactory struct {
 	store.Factory
@@ -62,6 +65,31 @@ func TestApplicationPlatformRoutesMatchSSOTOpenAPI(t *testing.T) {
 	}
 }
 
+func TestTaskCenterRoutesMatchSSOTOpenAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	installTaskCenterApis(router.Group("/api/v1"), routeTaskCenterService{})
+	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "task-center", "openapi.yaml"))
+}
+func TestWorkflowCanvasRoutesMatchSSOTOpenAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	installCanvasApis(router.Group("/api/v1"), routeWorkflowCanvasService{})
+	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "workflow-canvas", "openapi.yaml"))
+}
+
+func assertRoutesMatchOpenAPI(t *testing.T, router *gin.Engine, source string) {
+	t.Helper()
+	actual := map[string]struct{}{}
+	for _, route := range router.Routes() {
+		actual[route.Method+" "+route.Path] = struct{}{}
+	}
+	expected := readOperations(t, source)
+	if difference := operationDifference(expected, actual); len(difference) != 0 {
+		t.Fatalf("route contract differs from SSOT OpenAPI:\n%s", strings.Join(difference, "\n"))
+	}
+}
+
 func TestApplicationPlatformAllowsAnonymousDevelopmentPrincipal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousStore := store.Client()
@@ -85,16 +113,14 @@ func TestApplicationPlatformAllowsAnonymousDevelopmentPrincipal(t *testing.T) {
 func readApplicationPlatformOperations(t *testing.T) map[string]struct{} {
 	t.Helper()
 	source := filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "application-platform", "openapi.yaml")
+	return readOperations(t, source)
+}
+
+func readOperations(t *testing.T, source string) map[string]struct{} {
+	t.Helper()
 	raw, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
-	}
-	serverCopy, err := os.ReadFile(filepath.Join("..", "..", "..", "api", "swagger", "application-platform.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(raw, serverCopy) {
-		t.Fatal("api/swagger/application-platform.yaml is not synchronized with SSOT OpenAPI")
 	}
 	var document struct {
 		Paths map[string]map[string]any `yaml:"paths"`

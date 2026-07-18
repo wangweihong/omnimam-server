@@ -32,9 +32,9 @@ func NewThumbnailExecutor(store store.Factory) *ThumbnailExecutor {
 	return &ThumbnailExecutor{store: store}
 }
 
-// Execute 生成图片或视频缩略图，TaskRun 输出只保存派生对象引用和轻量 metadata。
-func (e *ThumbnailExecutor) Execute(ctx context.Context, run *iapiserver.TaskRun) (map[string]any, error) {
-	assetID, _ := run.Input["asset_id"].(string)
+// Execute 生成图片或视频缩略图，AtomicTask 输出只保存派生对象引用和轻量 metadata。
+func (e *ThumbnailExecutor) Execute(ctx context.Context, run *iapiserver.AtomicTask) (map[string]any, error) {
+	assetID, _ := run.Arguments["asset_id"].(string)
 	if assetID == "" {
 		return nil, errors.Errorf("asset_id is required")
 	}
@@ -111,8 +111,8 @@ func (e *ThumbnailExecutor) Execute(ctx context.Context, run *iapiserver.TaskRun
 	}, nil
 }
 
-func (e *ThumbnailExecutor) thumbnail(ctx context.Context, run *iapiserver.TaskRun, assetID string) (*iapiserver.AssetThumbnail, error) {
-	thumbnailID, _ := run.Input["thumbnail_id"].(string)
+func (e *ThumbnailExecutor) thumbnail(ctx context.Context, run *iapiserver.AtomicTask, assetID string) (*iapiserver.AssetThumbnail, error) {
+	thumbnailID, _ := run.Arguments["thumbnail_id"].(string)
 	thumbnail, err := e.store.AssetThumbnails().GetByAsset(ctx, assetID)
 	if err != nil {
 		return nil, errors.WithStack(err)

@@ -96,6 +96,8 @@ type PlatformSrv interface {
 		tagNames []string,
 		sourceType string,
 	) (*iapiserver.AssetUploadResponse, error)
+	RegisterArtifact(context.Context, *iapiserver.ArtifactRegistrationRequest) (*iapiserver.ArtifactRegistrationResponse, error)
+	BatchApplyAssetLabels(context.Context, *iapiserver.BatchLabelRequest) (*iapiserver.BatchLabelResponse, error)
 	// AssetChunkUploadInit prepares a checksum-scoped resumable upload directory and reports uploaded chunks.
 	AssetChunkUploadInit(
 		ctx context.Context,
@@ -148,6 +150,78 @@ type PlatformSrv interface {
 		canvasID, nodeID string,
 		req *iapiserver.CanvasNodeRunRequest,
 	) (*iapiserver.CanvasRunResponse, error)
+}
+
+func (s *platformService) RegisterArtifact(ctx context.Context, req *iapiserver.ArtifactRegistrationRequest) (*iapiserver.ArtifactRegistrationResponse, error) {
+	asset, created, err := s.store.AssetsV1().RegisterArtifact(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	result := "already_registered"
+	if created {
+		result = "created"
+	}
+	return &iapiserver.ArtifactRegistrationResponse{ArtifactID: req.ArtifactID, ApplicationRunID: req.ApplicationRunID, RegistrationResult: result, Asset: asset}, nil
+}
+
+func (s *platformService) BatchApplyAssetLabels(ctx context.Context, req *iapiserver.BatchLabelRequest) (*iapiserver.BatchLabelResponse, error) {
+	if err := validateBatchLabels(req); err != nil {
+		return nil, err
+	}
+	owner := iapiserver.DefaultTaskCenterCreatedBy
+	if user, userErr := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser); userErr == nil && user != nil && user.ID != "" {
+		owner = user.ID
+	}
+	response := &iapiserver.BatchLabelResponse{Total: len(req.Items), Results: make([]iapiserver.BatchLabelResult, 0, len(req.Items))}
+	for _, item := range req.Items {
+		data, err := s.store.AssetsV1().ApplyLabels(ctx, owner, item.ID, req.LabelsToUpsert, req.TagsToAdd, req.TagsToRemove)
+		result := iapiserver.BatchLabelResult{ID: item.ID, Success: err == nil, Data: data}
+		if err != nil {
+			response.Fail++
+			result.Error = map[string]any{"code": "ERR_ASSET_NOT_FOUND", "message": err.Error(), "retryable": false}
+		} else {
+			response.Success++
+		}
+		response.Results = append(response.Results, result)
+	}
+	return response, nil
+}
+
+func validateBatchLabels(req *iapiserver.BatchLabelRequest) error {
+	if len(req.LabelsToUpsert) == 0 && len(req.TagsToAdd) == 0 && len(req.TagsToRemove) == 0 {
+		return errors.NewStatusF(code.ErrValidation, "at least one label change is required")
+	}
+	if len(req.LabelsToUpsert) > 20 {
+		return errors.NewStatusF(code.ErrValidation, "labels exceed limit")
+	}
+	seen := map[string]struct{}{}
+	for _, item := range req.Items {
+		if _, ok := seen[item.ID]; ok {
+			return errors.NewStatusF(code.ErrValidation, "asset ids must be unique")
+		}
+		seen[item.ID] = struct{}{}
+	}
+	add := map[string]struct{}{}
+	for _, tag := range req.TagsToAdd {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || len([]rune(tag)) > 64 {
+			return errors.NewStatusF(code.ErrValidation, "tag is invalid")
+		}
+		add[tag] = struct{}{}
+	}
+	for _, tag := range req.TagsToRemove {
+		tag = strings.TrimSpace(tag)
+		if _, ok := add[tag]; ok {
+			return errors.NewStatusF(code.ErrValidation, "tag cannot be added and removed together")
+		}
+	}
+	for key, value := range req.LabelsToUpsert {
+		key = strings.TrimSpace(key)
+		if key == "" || len([]rune(key)) > 63 || strings.ContainsAny(key, ",;()=!\"#@ \t\r\n") || len([]rune(strings.TrimSpace(value))) > 63 {
+			return errors.NewStatusF(code.ErrValidation, "label is invalid")
+		}
+	}
+	return nil
 }
 
 type platformService struct {
@@ -1269,18 +1343,17 @@ func (s *platformService) createAssetFromReader(
 	}
 	asset.ID = assetID
 	asset.Name = safeObjectName(filename, "asset")
-	created, err := s.store.AssetsV2().Add(ctx, asset)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
 	thumbnail := &iapiserver.AssetThumbnail{
-		AssetID:          created.ID,
+		AssetID:          asset.ID,
 		StorageBackendID: backend.ID,
 		Status:           thumbnailInitialStatus(mediaType),
 	}
-	thumbnail.Name = safeObjectName(created.ID+"-thumbnail", "thumbnail")
-	thumb, err := s.store.AssetThumbnails().Add(ctx, thumbnail)
+	thumbnail.Name = safeObjectName(asset.ID+"-thumbnail", "thumbnail")
+	owner := iapiserver.DefaultTaskCenterCreatedBy
+	if user, userErr := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser); userErr == nil && user != nil && user.ID != "" {
+		owner = user.ID
+	}
+	created, thumb, err := s.store.AssetsV2().AddWithUploadEvent(ctx, asset, thumbnail, map[string]any{"asset_id": asset.ID, "owner_user_id": owner, "project_id": iapiserver.DefaultTaskCenterProjectID, "namespace": iapiserver.DefaultTaskCenterNamespace, "media_type": mediaType, "content_ref": objectKey, "profile_version": "v1", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano)})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -1290,30 +1363,12 @@ func (s *platformService) createAssetFromReader(
 		}
 	}
 
-	var taskRuns []*iapiserver.TaskRun
-	if mediaType == iapiserver.AssetMediaTypeImage || mediaType == iapiserver.AssetMediaTypeVideo {
-		run, err := s.createTaskRun(ctx, taskRunSpec{
-			DefinitionID:         AssetThumbnailDefinitionID,
-			Name:                 "asset-thumbnail-generate",
-			Description:          "Generate asset thumbnail from image or video content.",
-			FunctionRef:          FunctionAssetThumbnailGenerate,
-			RequiredCapabilities: CapabilityAssetThumbnail,
-			Input:                map[string]any{"asset_id": created.ID, "thumbnail_id": thumb.ID},
-			Tags:                 "asset,thumbnail",
-		})
-		if err != nil {
-			return nil, err
-		}
-		taskRuns = append(taskRuns, run)
-		if s.dispatcher != nil {
-			s.dispatcher.DispatchAsync(ctx, run.ID)
-		}
-	}
+	_ = thumb
 	record, err := s.assetRecord(ctx, created)
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.AssetUploadResponse{Asset: record, TaskRuns: taskRuns}, nil
+	return &iapiserver.AssetUploadResponse{Asset: record, AtomicTasks: []*iapiserver.AtomicTask{}}, nil
 }
 
 func (s *platformService) AssetChunkUploadInit(
@@ -1504,7 +1559,7 @@ func (s *platformService) AssetSearchParse(
 	req *iapiserver.AssetSearchParseRequest,
 ) (*iapiserver.AssetSearchParseResponse, error) {
 	query := parseNaturalAssetQuery(req.Text)
-	run, err := s.createTaskRun(ctx, taskRunSpec{
+	run, err := s.createAtomicTask(ctx, atomicTaskSpec{
 		DefinitionID:         "asset-search-parse",
 		Name:                 "asset-search-parse",
 		Description:          "Parse a natural-language asset search query.",
@@ -1516,7 +1571,7 @@ func (s *platformService) AssetSearchParse(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.AssetSearchParseResponse{Query: query, TaskRunID: run.ID}, nil
+	return &iapiserver.AssetSearchParseResponse{Query: query, AtomicTaskID: run.ID}, nil
 }
 
 func (s *platformService) AssetGet(ctx context.Context, id string) (*iapiserver.AssetRecord, error) {
@@ -1648,7 +1703,7 @@ func (s *platformService) CanvasAssetRegisterOutput(
 	if err != nil {
 		return nil, err
 	}
-	run, err := s.createTaskRun(ctx, taskRunSpec{
+	run, err := s.createAtomicTask(ctx, atomicTaskSpec{
 		DefinitionID:         "canvas-output-register",
 		Name:                 "canvas-output-register",
 		Description:          "Register a canvas output asset reference.",
@@ -1665,7 +1720,7 @@ func (s *platformService) CanvasAssetRegisterOutput(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return &iapiserver.CanvasAssetRegisterOutputResponse{Asset: record, TaskRun: run}, nil
+	return &iapiserver.CanvasAssetRegisterOutputResponse{Asset: record, AtomicTask: run}, nil
 }
 
 func (s *platformService) CanvasAssetDownloadZip(
@@ -1716,7 +1771,7 @@ func (s *platformService) CanvasNodeRun(
 	req *iapiserver.CanvasNodeRunRequest,
 ) (*iapiserver.CanvasRunResponse, error) {
 	functionRef := canvasNodeFunctionRef(req.Node)
-	run, err := s.createTaskRun(ctx, taskRunSpec{
+	run, err := s.createAtomicTask(ctx, atomicTaskSpec{
 		DefinitionID:         safeTaskDefinitionID(functionRef),
 		Name:                 "canvas-node-run",
 		Description:          "Execute one canvas node through Task Center.",
@@ -1733,7 +1788,7 @@ func (s *platformService) CanvasNodeRun(
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.CanvasRunResponse{TaskRun: run}, nil
+	return &iapiserver.CanvasRunResponse{AtomicTask: run}, nil
 }
 
 func (s *platformService) ensureDefaultLocalBackend(ctx context.Context) (*iapiserver.StorageBackend, error) {
@@ -1819,7 +1874,7 @@ func (s *platformService) replaceAssetTags(
 	return s.store.AssetTags().Replace(ctx, assetID, tags, source)
 }
 
-type taskRunSpec struct {
+type atomicTaskSpec struct {
 	DefinitionID         string
 	Name                 string
 	Description          string
@@ -1829,73 +1884,19 @@ type taskRunSpec struct {
 	Tags                 string
 }
 
-func (s *platformService) createTaskRun(ctx context.Context, spec taskRunSpec) (*iapiserver.TaskRun, error) {
-	definition, err := s.ensureAtomicTaskDefinition(ctx, spec)
-	if err != nil {
-		return nil, err
+func (s *platformService) createAtomicTask(ctx context.Context, spec atomicTaskSpec) (*iapiserver.AtomicTask, error) {
+	task := &iapiserver.AtomicTask{
+		FunctionRef: spec.FunctionRef, Arguments: spec.Input, RequiredCapabilities: spec.RequiredCapabilities,
+		Status: iapiserver.AtomicTaskStatusPending, ProjectID: iapiserver.DefaultTaskCenterProjectID,
+		Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy,
+		ChildKey: spec.DefinitionID, Tags: spec.Tags,
 	}
-	run := &iapiserver.TaskRun{
-		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:   definition.ID,
-		Status:         iapiserver.TaskRunStatusReady,
-		Input:          spec.Input,
-		MaxAttempts:    1,
-		ProjectID:      definition.ProjectID,
-		Namespace:      definition.Namespace,
-		Tags:           spec.Tags,
-		CreatedBy:      iapiserver.DefaultTaskCenterCreatedBy,
-	}
-	run.Name = definition.Name + "-run"
-	created, err := s.store.TaskCenters().AddRun(ctx, run)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	event := &iapiserver.TaskRunEvent{
-		RunID:      created.ID,
-		EventType:  iapiserver.TaskCenterEventRunCreated,
-		ToStatus:   created.Status,
-		Payload:    map[string]any{"definition_id": created.DefinitionID},
-		OccurredAt: imachinery.NewTime(time.Now()),
-	}
-	event.Name = iapiserver.TaskCenterEventRunCreated
-	if _, err := s.store.TaskCenters().AddEvent(ctx, event); err != nil {
-		log.Errorf("record task run event failed: run_id=%s error=%v", created.ID, err)
-	}
-	return created, nil
-}
-
-func (s *platformService) ensureAtomicTaskDefinition(
-	ctx context.Context,
-	spec taskRunSpec,
-) (*iapiserver.TaskDefinition, error) {
-	definition, err := s.store.TaskCenters().GetDefinition(
-		ctx,
-		iapiserver.TaskDefinitionTypeAtomic,
-		spec.DefinitionID,
-	)
-	if err == nil {
-		return definition, nil
-	}
-	definition = &iapiserver.TaskDefinition{
-		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
-		FunctionRef:          spec.FunctionRef,
-		RequiredCapabilities: spec.RequiredCapabilities,
-		ProjectID:            iapiserver.DefaultTaskCenterProjectID,
-		Namespace:            iapiserver.DefaultTaskCenterNamespace,
-		CreatedBy:            iapiserver.DefaultTaskCenterCreatedBy,
-	}
-	definition.ID = spec.DefinitionID
-	definition.Name = spec.Name
-	definition.Description = spec.Description
-	created, createErr := s.store.TaskCenters().AddDefinition(ctx, definition)
-	if createErr == nil {
-		return created, nil
-	}
-	definition, getErr := s.store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, spec.DefinitionID)
-	if getErr != nil {
-		return nil, errors.WithStack(createErr)
-	}
-	return definition, nil
+	task.ID = uuid.NewString()
+	task.RootTaskID = task.ID
+	task.Name = spec.Name
+	task.Description = spec.Description
+	created, _, err := s.store.TaskCenters().AddAtomicTaskIdempotent(ctx, task)
+	return created, errors.WithStack(err)
 }
 
 func defaultFeatureFlags() map[string]bool {

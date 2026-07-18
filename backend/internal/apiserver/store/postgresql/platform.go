@@ -470,6 +470,22 @@ func (s *platformAssetStore) Add(ctx context.Context, data *iapiserver.Asset) (*
 	return data, nil
 }
 
+func (s *platformAssetStore) AddWithUploadEvent(ctx context.Context, data *iapiserver.Asset, thumbnail *iapiserver.AssetThumbnail, event map[string]any) (*iapiserver.Asset, *iapiserver.AssetThumbnail, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(data).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(thumbnail).Error; err != nil {
+			return err
+		}
+		return publishOutbox(tx, OutboxTopicAssetUploaded, data.ID+":uploaded", event)
+	})
+	if err != nil {
+		return nil, nil, errors.WithStack(err)
+	}
+	return data, thumbnail, nil
+}
+
 func (s *platformAssetStore) Update(ctx context.Context, data *iapiserver.Asset) (*iapiserver.Asset, error) {
 	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
 		return nil, errors.WithStack(err)

@@ -49,7 +49,7 @@ func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRe
 }
 
 // Execute resolves the engine adapter from Runtime Registry and honors engine task timeout/concurrency.
-func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.TaskRun) (map[string]any, error) {
+func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.AtomicTask) (map[string]any, error) {
 	if task == nil || task.ApplicationRunID == "" {
 		return nil, errors.NewStatus(code.ErrAIAppApplicationRunNotFound, "application run id is required")
 	}
@@ -165,8 +165,8 @@ func restrictionAllows(restrictions map[string]any, key, selected string) bool {
 	return contains(allowed, selected)
 }
 
-// Completed applies only a newer TaskRun resource version, then creates and registers output Artifacts idempotently.
-func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver.TaskRun) error {
+// Completed applies only a newer AtomicTask resource version, then creates and registers output Artifacts idempotently.
+func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver.AtomicTask) error {
 	if task == nil || task.ApplicationRunID == "" {
 		return nil
 	}
@@ -184,14 +184,14 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 	}
 	e.publish(ctx, "application_run_projection_changed", task.ID+":"+fmt.Sprint(task.ResourceVersion), map[string]any{
 		"application_run_id":    projected.ID,
-		"task_run_id":           task.ID,
+		"atomic_task_id":           task.ID,
 		"task_resource_version": task.ResourceVersion,
 		"task_status":           task.Status,
 		"progress":              map[string]any{"value": task.Progress},
 		"output_values":         outputValues,
 		"failure_summary":       task.LastError.Message,
 	})
-	if task.Status != iapiserver.TaskRunStatusSuccess {
+	if task.Status != iapiserver.AtomicTaskStatusSuccess {
 		return nil
 	}
 	for _, item := range taskArtifacts(task.Output) {

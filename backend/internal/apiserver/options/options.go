@@ -1,6 +1,8 @@
 package options
 
 import (
+	"time"
+
 	"github.com/spf13/pflag"
 	"github.com/wangweihong/gotoolbox/pkg/json"
 	"github.com/wangweihong/gotoolbox/pkg/log"
@@ -29,6 +31,7 @@ type Options struct {
 	AssetUploadOptions         *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
 	ApplicationPlatformOptions *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
 	AuthOptions                *AuthOptions                    `json:"auth"             mapstructure:"auth"`
+	WorkflowRuntimeOptions     *WorkflowRuntimeOptions         `json:"workflow-runtime" mapstructure:"workflow-runtime"`
 }
 
 // AuthOptions 控制用户系统完成前的开发态认证兼容路径。
@@ -45,16 +48,44 @@ type AssetUploadOptions struct {
 
 // ApplicationPlatformOptions configures the immutable provider capability snapshot loaded at startup.
 type ApplicationPlatformOptions struct {
-	ProviderCapabilityDirectory string `json:"provider-capability-directory" mapstructure:"provider-capability-directory"`
+	ProviderCapabilityDirectory string        `json:"provider-capability-directory" mapstructure:"provider-capability-directory"`
+	EngineHealthInterval        time.Duration `json:"engine-health-interval" mapstructure:"engine-health-interval"`
 }
 
 func NewApplicationPlatformOptions() *ApplicationPlatformOptions {
-	return &ApplicationPlatformOptions{ProviderCapabilityDirectory: "./provider-capabilities"}
+	return &ApplicationPlatformOptions{ProviderCapabilityDirectory: "./provider-capabilities", EngineHealthInterval: 30 * time.Second}
 }
 
 func (o *ApplicationPlatformOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.ProviderCapabilityDirectory, "application-platform.provider-capability-directory", o.ProviderCapabilityDirectory,
 		"directory containing immutable ProviderCapability YAML manifests")
+	fs.DurationVar(&o.EngineHealthInterval, "application-platform.engine-health-interval", o.EngineHealthInterval,
+		"interval for Task Center managed EngineInstance health checks; zero disables automatic checks")
+}
+
+// WorkflowRuntimeOptions configures the internal Conductor boundary used by Task Center.
+type WorkflowRuntimeOptions struct {
+	Enabled           bool          `json:"enabled" mapstructure:"enabled"`
+	BaseURL           string        `json:"base-url" mapstructure:"base-url"`
+	AuthKey           string        `json:"auth-key" mapstructure:"auth-key"`
+	AuthSecret        string        `json:"auth-secret" mapstructure:"auth-secret"`
+	HTTPTimeout       time.Duration `json:"http-timeout" mapstructure:"http-timeout"`
+	PollInterval      time.Duration `json:"poll-interval" mapstructure:"poll-interval"`
+	ReconcileInterval time.Duration `json:"reconcile-interval" mapstructure:"reconcile-interval"`
+}
+
+func NewWorkflowRuntimeOptions() *WorkflowRuntimeOptions {
+	return &WorkflowRuntimeOptions{HTTPTimeout: 30 * time.Second, PollInterval: 250 * time.Millisecond, ReconcileInterval: 15 * time.Second}
+}
+
+func (o *WorkflowRuntimeOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.BoolVar(&o.Enabled, "workflow-runtime.enabled", o.Enabled, "enable the Conductor workflow runtime")
+	fs.StringVar(&o.BaseURL, "workflow-runtime.base-url", o.BaseURL, "Conductor API base URL")
+	fs.StringVar(&o.AuthKey, "workflow-runtime.auth-key", o.AuthKey, "Conductor authentication key")
+	fs.StringVar(&o.AuthSecret, "workflow-runtime.auth-secret", o.AuthSecret, "Conductor authentication secret")
+	fs.DurationVar(&o.HTTPTimeout, "workflow-runtime.http-timeout", o.HTTPTimeout, "Conductor HTTP timeout")
+	fs.DurationVar(&o.PollInterval, "workflow-runtime.poll-interval", o.PollInterval, "Conductor worker poll interval")
+	fs.DurationVar(&o.ReconcileInterval, "workflow-runtime.reconcile-interval", o.ReconcileInterval, "runtime projection reconcile interval")
 }
 
 func NewAssetUploadOptions() *AssetUploadOptions {
@@ -86,6 +117,7 @@ func NewOptions() *Options {
 		AssetUploadOptions:         NewAssetUploadOptions(),
 		ApplicationPlatformOptions: NewApplicationPlatformOptions(),
 		AuthOptions:                NewAuthOptions(),
+		WorkflowRuntimeOptions:     NewWorkflowRuntimeOptions(),
 	}
 
 	return &s
@@ -103,6 +135,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.DatabaseOptions.AddFlags(fss.FlagSet("database"))
 	o.AssetUploadOptions.AddFlags(fss.FlagSet("asset upload"))
 	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
+	o.WorkflowRuntimeOptions.AddFlags(fss.FlagSet("workflow runtime"))
 	fs := fss.FlagSet("authentication")
 	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
 		"allow anonymous development authentication for unfinished user management")
@@ -138,6 +171,9 @@ func (o *Options) Complete() error {
 	}
 	if o.AuthOptions == nil {
 		o.AuthOptions = NewAuthOptions()
+	}
+	if o.WorkflowRuntimeOptions == nil {
+		o.WorkflowRuntimeOptions = NewWorkflowRuntimeOptions()
 	}
 	if o.ApplicationPlatformOptions.ProviderCapabilityDirectory == "" {
 		o.ApplicationPlatformOptions.ProviderCapabilityDirectory = "./provider-capabilities"

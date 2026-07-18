@@ -2,901 +2,715 @@ package postgresql
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	stderrors "errors"
-	"reflect"
-	"strings"
+	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-const (
-	taskCenterCreatedAtColumn = "created_at"
-	taskCenterUpdatedAtColumn = "updated_at"
-)
-
 type taskCenterStore struct{ ds *datastore }
 
-func newTaskCenter(ds *datastore) *taskCenterStore { return &taskCenterStore{ds: ds} }
+func newTaskCenterStore(ds *datastore) *taskCenterStore { return &taskCenterStore{ds: ds} }
 
-func (s *taskCenterStore) ListDefinitions(
-	ctx context.Context,
-	req *iapiserver.TaskDefinitionListRequest,
-) ([]*iapiserver.TaskDefinition, int64, error) {
-	var items []*iapiserver.TaskDefinition
-	var total int64
-	filter := func(q *gorm.DB) *gorm.DB {
-		q = q.Where("deleted_at IS NULL OR deleted_at = ?", time.Time{})
-		if req.DefinitionType != "" {
-			q = q.Where("definition_type = ?", req.DefinitionType)
-		}
-		if req.ProjectID != "" {
-			q = q.Where("project_id = ?", req.ProjectID)
-		}
-		if req.Namespace != "" {
-			q = q.Where("namespace = ?", req.Namespace)
-		}
-		return q
-	}
-	query := taskCenterListQuery(
-		ctx,
-		s.ds.db.Model(&iapiserver.TaskDefinition{}),
-		req.BasicQueryParam,
-		map[string]string{
-			"name": "name", "created_at": taskCenterCreatedAtColumn, "updated_at": taskCenterUpdatedAtColumn,
-			"definition_type": "definition_type", "project_id": "project_id", "namespace": "namespace",
-		},
-		taskCenterCreatedAtColumn,
-		filter,
-	)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
-		return nil, 0, errors.WithStack(err)
-	}
-	return items, total, nil
-}
-
-func (s *taskCenterStore) GetDefinition(
-	ctx context.Context,
-	definitionType, id string,
-) (*iapiserver.TaskDefinition, error) {
-	var item iapiserver.TaskDefinition
-	query := s.ds.db.WithContext(ctx).Where("id = ?", id)
-	if definitionType != "" {
-		query = query.Where("definition_type = ?", definitionType)
-	}
-	if err := query.First(&item).Error; err != nil {
-		return nil, mapTaskDefinitionError(err)
-	}
-	return &item, nil
-}
-
-func (s *taskCenterStore) AddDefinition(
-	ctx context.Context,
-	data *iapiserver.TaskDefinition,
-) (*iapiserver.TaskDefinition, error) {
-	fillTaskDefinitionDefaults(data)
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-func (s *taskCenterStore) ListRuns(
-	ctx context.Context,
-	req *iapiserver.TaskRunListRequest,
-) ([]*iapiserver.TaskRun, int64, error) {
-	var items []*iapiserver.TaskRun
-	var total int64
-	filter := func(q *gorm.DB) *gorm.DB {
-		q = q.Where("deleted_at IS NULL OR deleted_at = ?", time.Time{})
+func (s *taskCenterStore) ListAtomicTasks(ctx context.Context, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
+	var items []*iapiserver.AtomicTask
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
 		if req.Status != "" {
-			q = q.Where("status = ?", req.Status)
+			query = query.Where("status = ?", req.Status)
 		}
-		if req.DefinitionType != "" {
-			q = q.Where("definition_type = ?", req.DefinitionType)
+		if req.RootTaskID != "" {
+			query = query.Where("root_task_id = ?", req.RootTaskID)
 		}
-		if req.RootRunID != "" {
-			q = q.Where("root_run_id = ?", req.RootRunID)
+		if req.OwnerID != "" {
+			query = query.Where("owner_id = ?", req.OwnerID)
 		}
-		if req.ProjectID != "" {
-			q = q.Where("project_id = ?", req.ProjectID)
-		}
-		return q
+		return query
 	}
-	query := taskCenterListQuery(
-		ctx,
-		s.ds.db.Model(&iapiserver.TaskRun{}),
-		req.BasicQueryParam,
-		map[string]string{
-			"name": "name", "created_at": taskCenterCreatedAtColumn, "started_at": "started_at",
-			"completed_at": "completed_at", "status": "status", "definition_type": "definition_type",
-			"project_id": "project_id",
-		},
-		taskCenterCreatedAtColumn,
-		filter,
-	)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	query := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
+	if err := query.Find(&items).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	return items, total, nil
 }
 
-func (s *taskCenterStore) GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error) {
-	var item iapiserver.TaskRun
-	if err := s.ds.db.WithContext(ctx).
-		Where("id = ?", id).
-		Where("deleted_at IS NULL OR deleted_at = ?", time.Time{}).
-		First(&item).Error; err != nil {
-		return nil, mapTaskRunError(err)
+func (s *taskCenterStore) GetAtomicTask(ctx context.Context, id string) (*iapiserver.AtomicTask, error) {
+	var item iapiserver.AtomicTask
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
 	return &item, nil
 }
 
-func (s *taskCenterStore) AddRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error) {
-	fillTaskRunDefaults(data)
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-// AddRunIdempotent 创建 TaskRun；应用运行重复提交时返回已有记录，并拒绝同键不同请求。
-func (s *taskCenterStore) AddRunIdempotent(
-	ctx context.Context,
-	data *iapiserver.TaskRun,
-) (*iapiserver.TaskRun, bool, error) {
-	fillTaskRunDefaults(data)
-	if data.ApplicationRunID == "" {
-		if data.IdempotencyKey != "" {
-			return nil, false, errors.NewStatusF(
-				code.ErrTaskRunIdempotencyConflict,
-				"application run id and idempotency key must be provided together",
-			)
-		}
+func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error) {
+	if data.IdempotencyScope == "" || data.IdempotencyKey == "" {
 		if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
 			return nil, false, errors.WithStack(err)
 		}
 		return data, true, nil
 	}
-	if data.IdempotencyKey == "" {
-		return nil, false, errors.NewStatusF(
-			code.ErrTaskRunIdempotencyConflict,
-			"application run id and idempotency key must be provided together",
-		)
-	}
-
-	existing, err := s.getRunByApplicationIdempotency(ctx, data.ApplicationRunID, data.IdempotencyKey)
-	if err == nil {
-		return resolveIdempotentTaskRun(existing, data)
-	}
-	if !stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, false, errors.WithStack(err)
-	}
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err == nil {
-		return data, true, nil
-	} else {
-		// 唯一索引解决并发竞争；等待冲突事务提交后读取胜出的 TaskRun 再比对请求。
-		existing, lookupErr := s.getRunByApplicationIdempotency(ctx, data.ApplicationRunID, data.IdempotencyKey)
-		if lookupErr != nil {
-			return nil, false, errors.WithStack(err)
+	var result *iapiserver.AtomicTask
+	created := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing iapiserver.AtomicTask
+		err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", data.ProjectID, data.Namespace, data.IdempotencyScope, data.IdempotencyKey).First(&existing).Error
+		if err == nil {
+			if atomicTaskFingerprint(&existing) != atomicTaskFingerprint(data) {
+				return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "atomic task idempotency request differs")
+			}
+			result = &existing
+			return nil
 		}
-		return resolveIdempotentTaskRun(existing, data)
-	}
+		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.WithStack(err)
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		result, created = data, true
+		return nil
+	})
+	return result, created, err
 }
 
-func (s *taskCenterStore) getRunByApplicationIdempotency(
-	ctx context.Context,
-	applicationRunID, idempotencyKey string,
-) (*iapiserver.TaskRun, error) {
-	var item iapiserver.TaskRun
-	err := s.ds.db.WithContext(ctx).
-		Where("application_run_id = ? AND idempotency_key = ?", applicationRunID, idempotencyKey).
-		First(&item).Error
-	return &item, err
-}
-
-func resolveIdempotentTaskRun(
-	existing, requested *iapiserver.TaskRun,
-) (*iapiserver.TaskRun, bool, error) {
-	if sameTaskRunCreateRequest(existing, requested) {
-		return existing, false, nil
-	}
-	return nil, false, errors.NewStatusF(
-		code.ErrTaskRunIdempotencyConflict,
-		"idempotency key was used with a different task run creation request",
-	)
-}
-
-func sameTaskRunCreateRequest(a, b *iapiserver.TaskRun) bool {
-	return a.DefinitionType == b.DefinitionType &&
-		a.DefinitionID == b.DefinitionID &&
-		a.ApplicationRunID == b.ApplicationRunID &&
-		a.IdempotencyKey == b.IdempotencyKey &&
-		a.ParentRunID == b.ParentRunID &&
-		a.RootRunID == b.RootRunID &&
-		a.ScheduleAt.Time.Equal(b.ScheduleAt.Time) &&
-		a.AdapterKey == b.AdapterKey &&
-		a.OperationKey == b.OperationKey &&
-		a.OperationVersion == b.OperationVersion &&
-		a.RequestedEngineID == b.RequestedEngineID &&
-		a.ResolvedEngineID == b.ResolvedEngineID &&
-		reflect.DeepEqual(a.Input, b.Input) &&
-		a.MaxAttempts == b.MaxAttempts &&
-		a.ProjectID == b.ProjectID &&
-		a.Namespace == b.Namespace &&
-		a.Tags == b.Tags &&
-		a.CreatedBy == b.CreatedBy
-}
-
-func (s *taskCenterStore) UpdateRun(ctx context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error) {
+func (s *taskCenterStore) UpdateAtomicTask(ctx context.Context, data *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error) {
 	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
 }
 
-func (s *taskCenterStore) SoftDeleteRun(ctx context.Context, id string) error {
-	now := imachinery.NewTime(time.Now())
-	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.TaskRun{}).
-		Where("id = ?", id).
-		Update("deleted_at", now).Error; err != nil {
-		return errors.WithStack(err)
-	}
-	return nil
-}
-
-func (s *taskCenterStore) ListAttempts(
-	ctx context.Context,
-	req *iapiserver.TaskAttemptListRequest,
-) ([]*iapiserver.TaskAttempt, int64, error) {
+func (s *taskCenterStore) ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error) {
 	var items []*iapiserver.TaskAttempt
-	var total int64
-	filter := func(q *gorm.DB) *gorm.DB {
-		if req.RunID != "" {
-			q = q.Where("run_id = ?", req.RunID)
-		}
-		return q
+	filter := func(query *gorm.DB) *gorm.DB { return query.Where("atomic_task_id = ?", req.AtomicTaskID) }
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), filter)
+	if err != nil {
+		return nil, 0, err
 	}
-	query := taskCenterListQuery(
-		ctx,
-		s.ds.db.Model(&iapiserver.TaskAttempt{}),
-		req.BasicQueryParam,
-		map[string]string{
-			"attempt_no": "attempt_no", "started_at": "started_at", "heartbeat_at": "heartbeat_at",
-			"progress_at": "progress_at", "completed_at": "completed_at", "status": "status", "worker_id": "worker_id",
-		},
-		"attempt_no",
-		filter,
-	)
-	if err := query.Find(&items).Count(&total).Error; err != nil {
+	query := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskAttempt{}), filter)
+	if err := query.Order("attempt_no ASC").Find(&items).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	return items, total, nil
 }
 
-func (s *taskCenterStore) RegisterWorker(ctx context.Context, data *iapiserver.Worker) (*iapiserver.Worker, error) {
-	now := imachinery.NewTime(time.Now())
-	if data.Status == "" {
-		data.Status = iapiserver.WorkerStatusOnline
-	}
-	if data.MaxConcurrency <= 0 {
-		data.MaxConcurrency = 1
-	}
-	if data.Name == "" {
-		data.Name = data.WorkerType
-	}
-	data.HeartbeatAt = now
-	data.RegisteredAt = now
-	data.LastSeenAt = now
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-func (s *taskCenterStore) HeartbeatWorker(
-	ctx context.Context,
-	req *iapiserver.WorkerHeartbeatRequest,
-) (*iapiserver.Worker, error) {
-	now := imachinery.NewTime(time.Now())
-	observedAt := req.ObservedAt
-	if observedAt.IsZero() {
-		observedAt = now
-	}
-	var worker iapiserver.Worker
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", req.WorkerID).
-			First(&worker).Error; err != nil {
-			return mapWorkerError(err)
-		}
+func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error) {
+	var items []*iapiserver.TaskGroup
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
 		if req.Status != "" {
-			worker.Status = req.Status
+			query = query.Where("status = ?", req.Status)
 		}
-		worker.RunningCount = req.RunningCount
-		worker.HeartbeatAt = observedAt
-		worker.LastSeenAt = now
-		return errors.WithStack(tx.Save(&worker).Error)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &worker, nil
-}
-
-func (s *taskCenterStore) ClaimRun(
-	ctx context.Context,
-	req *iapiserver.ClaimTaskRunRequest,
-) (*iapiserver.ClaimTaskRunResponse, error) {
-	var ret iapiserver.ClaimTaskRunResponse
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var worker iapiserver.Worker
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", req.WorkerID).
-			First(&worker).Error; err != nil {
-			return mapWorkerError(err)
-		}
-		if worker.Status != iapiserver.WorkerStatusOnline && worker.Status != iapiserver.WorkerStatusBusy {
-			return errors.NewStatusF(code.ErrTaskWorkerNotAvailable, "worker is not available")
-		}
-		if worker.MaxConcurrency > 0 && worker.RunningCount >= worker.MaxConcurrency {
-			return errors.NewStatusF(code.ErrTaskWorkerNotAvailable, "worker concurrency is full")
-		}
-
-		var candidates []*iapiserver.TaskRun
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status IN ?", []string{
-				iapiserver.TaskRunStatusReady,
-				iapiserver.TaskRunStatusPending,
-				iapiserver.TaskRunStatusRetrying,
-			}).
-			Where("deleted_at IS NULL OR deleted_at = ?", time.Time{}).
-			Order(clause.OrderByColumn{Column: clause.Column{Name: taskCenterCreatedAtColumn}, Desc: false}).
-			Limit(maxClaimScanLimit(req.MaxCount)).
-			Find(&candidates).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		for _, run := range candidates {
-			definition, err := getTaskDefinitionForUpdate(tx, run.DefinitionType, run.DefinitionID)
-			if err != nil {
-				return err
-			}
-			if !capabilityMatches(req.Capabilities, definition.RequiredCapabilities) {
-				continue
-			}
-			now := time.Now()
-			run.CurrentAttempt++
-			run.Status = iapiserver.TaskRunStatusClaimed
-			if run.MaxAttempts == 0 {
-				run.MaxAttempts = 1
-			}
-			attempt := &iapiserver.TaskAttempt{
-				RunID:         run.ID,
-				AttemptNo:     run.CurrentAttempt,
-				WorkerID:      worker.ID,
-				Status:        iapiserver.TaskAttemptStatusClaimed,
-				InputSnapshot: run.Input,
-				StartedAt:     imachinery.NewTime(now),
-			}
-			attempt.Name = run.Name + "-attempt"
-			if err := tx.Create(attempt).Error; err != nil {
-				return errors.WithStack(err)
-			}
-			lease := &iapiserver.ExecutionLease{
-				RunID:      run.ID,
-				AttemptID:  attempt.ID,
-				WorkerID:   worker.ID,
-				AcquiredAt: imachinery.NewTime(now),
-				ExpireAt:   imachinery.NewTime(now.Add(iapiserver.DefaultTaskCenterLeaseDuration)),
-				Status:     iapiserver.LeaseStatusActive,
-			}
-			lease.Name = run.Name + "-lease"
-			if err := tx.Create(lease).Error; err != nil {
-				return errors.WithStack(err)
-			}
-			attempt.LeaseID = lease.ID
-			if err := tx.Save(attempt).Error; err != nil {
-				return errors.WithStack(err)
-			}
-			if err := tx.Save(run).Error; err != nil {
-				return errors.WithStack(err)
-			}
-			worker.RunningCount++
-			if worker.RunningCount >= worker.MaxConcurrency {
-				worker.Status = iapiserver.WorkerStatusBusy
-			}
-			if err := tx.Save(&worker).Error; err != nil {
-				return errors.WithStack(err)
-			}
-			ret.TaskRun = run
-			ret.Attempt = attempt
-			ret.Lease = lease
-			return nil
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &ret, nil
-}
-
-func (s *taskCenterStore) UpdateProgress(
-	ctx context.Context,
-	req *iapiserver.ProgressUpdateRequest,
-) (*iapiserver.TaskRun, error) {
-	var run iapiserver.TaskRun
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		lease, attempt, loadedRun, err := loadActiveTaskLease(tx, req.RunID, req.AttemptID, req.LeaseID, req.WorkerID)
-		if err != nil {
-			return err
-		}
-		now := imachinery.NewTime(time.Now())
-		loadedRun.Status = iapiserver.TaskRunStatusRunning
-		loadedRun.Progress = req.Progress
-		attempt.Status = iapiserver.TaskAttemptStatusRunning
-		attempt.OutputSnapshot = req.OutputSnapshot
-		attempt.ExternalJobID = req.ExternalJobID
-		attempt.ProgressAt = now
-		attempt.HeartbeatAt = now
-		if err := tx.Save(attempt).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(lease).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(loadedRun).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		run = *loadedRun
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &run, nil
-}
-
-func (s *taskCenterStore) CompleteRun(
-	ctx context.Context,
-	req *iapiserver.TaskRunCompleteRequest,
-) (*iapiserver.TaskRun, error) {
-	var run iapiserver.TaskRun
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		lease, attempt, loadedRun, err := loadActiveTaskLease(tx, req.RunID, req.AttemptID, req.LeaseID, req.WorkerID)
-		if err != nil {
-			return err
-		}
-		now := imachinery.NewTime(time.Now())
-		loadedRun.Status = iapiserver.TaskRunStatusSuccess
-		loadedRun.Progress = 1
-		loadedRun.Output = req.Output
-		loadedRun.CompletedAt = now
-		attempt.Status = iapiserver.TaskAttemptStatusSuccess
-		attempt.OutputSnapshot = req.Output
-		attempt.CompletedAt = now
-		attempt.ExternalJobID = req.ExternalJobID
-		attempt.DurationMS = durationMS(attempt.StartedAt, now)
-		lease.Status = iapiserver.LeaseStatusReleased
-		if err := decrementWorkerRunning(tx, req.WorkerID); err != nil {
-			return err
-		}
-		if err := tx.Save(attempt).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(lease).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(loadedRun).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		run = *loadedRun
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &run, nil
-}
-
-func (s *taskCenterStore) FailRun(
-	ctx context.Context,
-	req *iapiserver.TaskRunFailRequest,
-) (*iapiserver.TaskRun, error) {
-	var run iapiserver.TaskRun
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		lease, attempt, loadedRun, err := loadActiveTaskLease(tx, req.RunID, req.AttemptID, req.LeaseID, req.WorkerID)
-		if err != nil {
-			return err
-		}
-		now := imachinery.NewTime(time.Now())
-		taskErr := req.Error
-		if taskErr.OccurredAt.IsZero() {
-			taskErr.OccurredAt = now
-		}
-		attempt.Error = taskErr
-		attempt.FailureType = taskErr.FailureType
-		attempt.Retryable = taskErr.Retryable
-		attempt.LogsRef = req.LogsRef
-		attempt.ExternalJobID = req.ExternalJobID
-		attempt.CompletedAt = now
-		attempt.DurationMS = durationMS(attempt.StartedAt, now)
-		loadedRun.LastError = taskErr
-		loadedRun.Progress = 1
-		loadedRun.CompletedAt = now
-		applyTaskFailureStatus(loadedRun, attempt, taskErr, now)
-		lease.Status = iapiserver.LeaseStatusReleased
-		if err := decrementWorkerRunning(tx, req.WorkerID); err != nil {
-			return err
-		}
-		if err := tx.Save(attempt).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(lease).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		if err := tx.Save(loadedRun).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		run = *loadedRun
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &run, nil
-}
-
-func applyTaskFailureStatus(run *iapiserver.TaskRun, attempt *iapiserver.TaskAttempt, taskErr iapiserver.TaskError, now imachinery.Time) {
-	attempt.Status = iapiserver.TaskAttemptStatusFailed
-	switch taskErr.FailureType {
-	case iapiserver.FailureTypeCanceled:
-		attempt.Status = iapiserver.TaskAttemptStatusCanceled
-		run.Status = iapiserver.TaskRunStatusCanceled
-		if run.CanceledAt.IsZero() {
-			run.CanceledAt = now
-		}
-	case iapiserver.FailureTypeTimeout:
-		attempt.Status = iapiserver.TaskAttemptStatusTimeout
-		run.Status = iapiserver.TaskRunStatusTimeout
-	case iapiserver.FailureTypeFunctionError, iapiserver.FailureTypeExternalExecutorError, iapiserver.FailureTypeSystemError:
-		if taskErr.Retryable && (run.MaxAttempts < 0 || run.CurrentAttempt < run.MaxAttempts) {
-			run.Status = iapiserver.TaskRunStatusRetrying
-			run.Progress = 0
-			run.CompletedAt = imachinery.Time{}
-		} else {
-			run.Status = iapiserver.TaskRunStatusFailed
-		}
-	default:
-		run.Status = iapiserver.TaskRunStatusFailed
-	}
-}
-
-func (s *taskCenterStore) RenewLease(
-	ctx context.Context,
-	req *iapiserver.LeaseRenewRequest,
-) (*iapiserver.ExecutionLease, error) {
-	var lease iapiserver.ExecutionLease
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		loadedLease, _, _, err := loadActiveTaskLease(tx, req.RunID, req.AttemptID, req.LeaseID, req.WorkerID)
-		if err != nil {
-			return err
-		}
-		now := time.Now()
-		loadedLease.Status = iapiserver.LeaseStatusRenewed
-		loadedLease.RenewedAt = imachinery.NewTime(now)
-		loadedLease.ExpireAt = imachinery.NewTime(now.Add(iapiserver.DefaultTaskCenterLeaseDuration))
-		if err := tx.Save(loadedLease).Error; err != nil {
-			return errors.WithStack(err)
-		}
-		lease = *loadedLease
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &lease, nil
-}
-
-func (s *taskCenterStore) Health(ctx context.Context) (*iapiserver.TaskCenterHealth, error) {
-	ret := &iapiserver.TaskCenterHealth{
-		SchedulerStatus: "ok",
-		WatchdogStatus:  "not_started",
-	}
-	counts := []struct {
-		model any
-		where string
-		args  []any
-		dst   *int64
-	}{
-		{model: &iapiserver.Worker{}, where: "status = ?", args: []any{iapiserver.WorkerStatusOnline}, dst: &ret.WorkerOnlineTotal},
-		{model: &iapiserver.Worker{}, where: "status = ?", args: []any{iapiserver.WorkerStatusLost}, dst: &ret.WorkerLostTotal},
-		{model: &iapiserver.TaskRun{}, where: "status IN ?", args: []any{[]string{iapiserver.TaskRunStatusReady, iapiserver.TaskRunStatusPending}}, dst: &ret.QueueReadyTotal},
-		{model: &iapiserver.TaskRun{}, where: "status = ?", args: []any{iapiserver.TaskRunStatusRunning}, dst: &ret.TaskRunningTotal},
-		{model: &iapiserver.TaskRun{}, where: "status = ?", args: []any{iapiserver.TaskRunStatusRetrying}, dst: &ret.TaskRetryingTotal},
-		{model: &iapiserver.ExecutionLease{}, where: "status = ? OR expire_at < ?", args: []any{iapiserver.LeaseStatusExpired, time.Now()}, dst: &ret.LeaseExpiredTotal},
-	}
-	for _, count := range counts {
-		if err := s.ds.db.WithContext(ctx).Model(count.model).Where(count.where, count.args...).Count(count.dst).Error; err != nil {
-			return nil, errors.WithStack(err)
-		}
-	}
-	return ret, nil
-}
-
-func (s *taskCenterStore) AddEvent(
-	ctx context.Context,
-	data *iapiserver.TaskRunEvent,
-) (*iapiserver.TaskRunEvent, error) {
-	if data.Name == "" {
-		data.Name = data.EventType
-	}
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return data, nil
-}
-
-func fillTaskDefinitionDefaults(data *iapiserver.TaskDefinition) {
-	if data.ProjectID == "" {
-		data.ProjectID = iapiserver.DefaultTaskCenterProjectID
-	}
-	if data.Namespace == "" {
-		data.Namespace = iapiserver.DefaultTaskCenterNamespace
-	}
-	if data.CreatedBy == "" {
-		data.CreatedBy = iapiserver.DefaultTaskCenterCreatedBy
-	}
-	if data.Name == "" {
-		data.Name = strings.ToLower(strings.ReplaceAll(data.DefinitionType, "_", "-"))
-	}
-}
-
-func fillTaskRunDefaults(data *iapiserver.TaskRun) {
-	if data.ProjectID == "" {
-		data.ProjectID = iapiserver.DefaultTaskCenterProjectID
-	}
-	if data.Namespace == "" {
-		data.Namespace = iapiserver.DefaultTaskCenterNamespace
-	}
-	if data.CreatedBy == "" {
-		data.CreatedBy = iapiserver.DefaultTaskCenterCreatedBy
-	}
-	if data.Status == "" {
-		data.Status = iapiserver.TaskRunStatusReady
-	}
-	if data.MaxAttempts == 0 {
-		data.MaxAttempts = 1
-	}
-	if data.Name == "" {
-		data.Name = strings.ToLower(strings.ReplaceAll(data.DefinitionType, "_", "-")) + "-run"
-	}
-	if data.Input == nil {
-		data.Input = map[string]any{}
-	}
-	if data.Output == nil {
-		data.Output = map[string]any{}
-	}
-}
-
-func mapTaskDefinitionError(err error) error {
-	if stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "task definition not found")
-	}
-	return errors.WithStack(err)
-}
-
-func mapTaskRunError(err error) error {
-	if stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.NewStatusF(code.ErrTaskRunNotFound, "task run not found")
-	}
-	return errors.WithStack(err)
-}
-
-func mapWorkerError(err error) error {
-	if stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.NewStatusF(code.ErrTaskWorkerNotAvailable, "worker not found")
-	}
-	return errors.WithStack(err)
-}
-
-func maxClaimScanLimit(maxCount int) int {
-	if maxCount <= 0 {
-		return 1
-	}
-	if maxCount > 50 {
-		return 50
-	}
-	return maxCount
-}
-
-func getTaskDefinitionForUpdate(
-	tx *gorm.DB,
-	definitionType, id string,
-) (*iapiserver.TaskDefinition, error) {
-	var definition iapiserver.TaskDefinition
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ? AND definition_type = ?", id, definitionType).
-		First(&definition).Error; err != nil {
-		return nil, mapTaskDefinitionError(err)
-	}
-	return &definition, nil
-}
-
-func capabilityMatches(workerCapabilities, requiredCapabilities string) bool {
-	requiredCapabilities = strings.TrimSpace(requiredCapabilities)
-	if requiredCapabilities == "" {
-		return true
-	}
-	workerSet := splitCapabilitySet(workerCapabilities)
-	for _, required := range strings.Split(requiredCapabilities, ",") {
-		required = strings.TrimSpace(required)
-		if required == "" {
-			continue
-		}
-		if !workerSet[required] {
-			return false
-		}
-	}
-	return true
-}
-
-func splitCapabilitySet(value string) map[string]bool {
-	ret := map[string]bool{}
-	for _, item := range strings.Split(value, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			ret[item] = true
-		}
-	}
-	return ret
-}
-
-func loadActiveTaskLease(
-	tx *gorm.DB,
-	runID, attemptID, leaseID, workerID string,
-) (*iapiserver.ExecutionLease, *iapiserver.TaskAttempt, *iapiserver.TaskRun, error) {
-	var lease iapiserver.ExecutionLease
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ? AND run_id = ? AND attempt_id = ? AND worker_id = ?", leaseID, runID, attemptID, workerID).
-		First(&lease).Error; err != nil {
-		return nil, nil, nil, mapLeaseError(err)
-	}
-	if lease.Status != iapiserver.LeaseStatusActive && lease.Status != iapiserver.LeaseStatusRenewed {
-		return nil, nil, nil, errors.NewStatusF(code.ErrTaskLeaseInvalid, "task lease is not active")
-	}
-	if !lease.ExpireAt.IsZero() && lease.ExpireAt.Time.Before(time.Now()) {
-		return nil, nil, nil, errors.NewStatusF(code.ErrTaskLeaseInvalid, "task lease expired")
-	}
-	var attempt iapiserver.TaskAttempt
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ? AND run_id = ? AND worker_id = ?", attemptID, runID, workerID).
-		First(&attempt).Error; err != nil {
-		return nil, nil, nil, mapAttemptError(err)
-	}
-	var run iapiserver.TaskRun
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ?", runID).
-		First(&run).Error; err != nil {
-		return nil, nil, nil, mapTaskRunError(err)
-	}
-	return &lease, &attempt, &run, nil
-}
-
-func mapLeaseError(err error) error {
-	if stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.NewStatusF(code.ErrTaskLeaseInvalid, "task lease invalid")
-	}
-	return errors.WithStack(err)
-}
-
-func mapAttemptError(err error) error {
-	if stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.NewStatusF(code.ErrTaskAttemptUpdateRejected, "task attempt update rejected")
-	}
-	return errors.WithStack(err)
-}
-
-func decrementWorkerRunning(tx *gorm.DB, workerID string) error {
-	var worker iapiserver.Worker
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", workerID).First(&worker).Error; err != nil {
-		return mapWorkerError(err)
-	}
-	if worker.RunningCount > 0 {
-		worker.RunningCount--
-	}
-	if worker.Status == iapiserver.WorkerStatusBusy && worker.RunningCount < worker.MaxConcurrency {
-		worker.Status = iapiserver.WorkerStatusOnline
-	}
-	return errors.WithStack(tx.Save(&worker).Error)
-}
-
-func durationMS(start, end imachinery.Time) int64 {
-	if start.IsZero() || end.IsZero() {
-		return 0
-	}
-	return end.Sub(start.Time).Milliseconds()
-}
-
-func taskCenterListQuery(
-	ctx context.Context,
-	db *gorm.DB,
-	params imachinery.BasicQueryParam,
-	orderFields map[string]string,
-	defaultOrderField string,
-	resourceSpecificFilter func(*gorm.DB) *gorm.DB,
-) *gorm.DB {
-	query := db.WithContext(ctx)
-	if params.Keyword != "" {
-		query = applyTaskCenterKeywordFilter(query, params)
-	}
-	if resourceSpecificFilter != nil {
-		query = resourceSpecificFilter(query)
-	}
-	if params.CreatedAfter != 0 {
-		query = query.Where(`"created_at" >= ?`, time.Unix(params.CreatedAfter, 0))
-	}
-	if params.CreatedBefore != 0 {
-		query = query.Where(`"created_at" <= ?`, time.Unix(params.CreatedBefore, 0))
-	}
-	query = query.Order(taskCenterOrderBy(params, orderFields, defaultOrderField))
-	if params.PageNum > 0 && params.PageSize > 0 {
-		pageSize := params.PageSize
-		if pageSize > 1000 {
-			pageSize = 1000
-		}
-		query = query.Offset((params.PageNum - 1) * pageSize).Limit(pageSize)
-	}
-	return query
-}
-
-func applyTaskCenterKeywordFilter(query *gorm.DB, params imachinery.BasicQueryParam) *gorm.DB {
-	allowedFields := map[string]string{
-		"id":              "id",
-		"name":            "name",
-		"description":     "description",
-		"definition_type": "definition_type",
-		"status":          "status",
-		"project_id":      "project_id",
-		"namespace":       "namespace",
-	}
-	fields := params.SearchFields
-	if len(fields) == 0 {
-		fields = []string{"name", "description"}
-	}
-	conditions := make([]string, 0, len(fields))
-	args := make([]any, 0, len(fields))
-	for _, field := range fields {
-		column, ok := allowedFields[field]
-		if !ok {
-			continue
-		}
-		conditions = append(conditions, column+" LIKE ?")
-		args = append(args, "%"+params.Keyword+"%")
-	}
-	if len(conditions) == 0 {
 		return query
 	}
-	return query.Where(strings.Join(conditions, " OR "), args...)
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter).Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
 }
 
-func taskCenterOrderBy(
-	params imachinery.BasicQueryParam,
-	allowedFields map[string]string,
-	defaultField string,
-) clause.OrderByColumn {
-	column := defaultField
-	if mapped, ok := allowedFields[params.SortField]; ok {
-		column = mapped
+func (s *taskCenterStore) GetTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
+	var item iapiserver.TaskGroup
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskGroupNotFound, "task group not found")
 	}
-	return clause.OrderByColumn{
-		Column: clause.Column{Name: column},
-		Desc:   strings.EqualFold(params.SortOrder, "desc"),
-	}
+	return &item, nil
 }
+
+func (s *taskCenterStore) AddTaskGroupWithTasks(ctx context.Context, group *iapiserver.TaskGroup, tasks []*iapiserver.AtomicTask) (*iapiserver.TaskGroup, bool, error) {
+	if group.ID == "" {
+		group.ID = uuid.NewString()
+	}
+	returnGroup := group
+	created := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if group.IdempotencyScope != "" && group.IdempotencyKey != "" {
+			var existing iapiserver.TaskGroup
+			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).First(&existing).Error
+			if err == nil {
+				if taskGroupFingerprint(&existing) != taskGroupFingerprint(group) {
+					return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "task group idempotency request differs")
+				}
+				returnGroup = &existing
+				return nil
+			}
+			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.WithStack(err)
+			}
+		}
+		if err := tx.Create(group).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		for _, task := range tasks {
+			task.OwnerType = iapiserver.TaskOwnerTypeGroup
+			task.OwnerID = group.ID
+			if err := tx.Create(task).Error; err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		created = true
+		return nil
+	})
+	return returnGroup, created, err
+}
+
+func (s *taskCenterStore) UpdateTaskGroup(ctx context.Context, data *iapiserver.TaskGroup) (*iapiserver.TaskGroup, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func (s *taskCenterStore) ListDAGTaskGroups(ctx context.Context, req *iapiserver.DAGTaskGroupListRequest) ([]*iapiserver.DAGTaskGroup, int64, error) {
+	var items []*iapiserver.DAGTaskGroup
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ? AND created_by = ?", req.ProjectID, req.Namespace, req.CreatedBy)
+		if req.Status != "" {
+			query = query.Where("status = ?", req.Status)
+		}
+		return query
+	}
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.DAGTaskGroup{}), filter).Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+
+func (s *taskCenterStore) GetDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
+	var item iapiserver.DAGTaskGroup
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrDAGTaskGroupNotFound, "dag task group not found")
+	}
+	return &item, nil
+}
+
+func (s *taskCenterStore) AddDAGTaskGroupWithTasks(ctx context.Context, group *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTask) (*iapiserver.DAGTaskGroup, bool, error) {
+	if group.ID == "" {
+		group.ID = uuid.NewString()
+	}
+	returnGroup := group
+	created := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if group.IdempotencyScope != "" && group.IdempotencyKey != "" {
+			var existing iapiserver.DAGTaskGroup
+			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).First(&existing).Error
+			if err == nil {
+				if dagTaskGroupFingerprint(&existing) != dagTaskGroupFingerprint(group) {
+					return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "dag task group idempotency request differs")
+				}
+				returnGroup = &existing
+				return nil
+			}
+			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.WithStack(err)
+			}
+		}
+		if err := tx.Create(group).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		for _, task := range tasks {
+			task.OwnerType = iapiserver.TaskOwnerTypeDAGGroup
+			task.OwnerID = group.ID
+			if err := tx.Create(task).Error; err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		created = true
+		return nil
+	})
+	return returnGroup, created, err
+}
+
+func (s *taskCenterStore) UpdateDAGTaskGroup(ctx context.Context, data *iapiserver.DAGTaskGroup) (*iapiserver.DAGTaskGroup, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func (s *taskCenterStore) ListOwnedTasks(ctx context.Context, ownerType, ownerID string, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
+	req.OwnerID = ownerID
+	var items []*iapiserver.AtomicTask
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("owner_type = ? AND owner_id = ? AND deleted_at IS NULL", ownerType, ownerID)
+		if req.Status != "" {
+			query = query.Where("status = ?", req.Status)
+		}
+		return query
+	}
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.AtomicTask{}), filter).Order("child_order ASC").Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+
+func (s *taskCenterStore) AddOwnedAtomicTasks(ctx context.Context, ownerType, ownerID string, tasks []*iapiserver.AtomicTask) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, task := range tasks {
+			var count int64
+			if err := tx.Model(&iapiserver.AtomicTask{}).Where("owner_type = ? AND owner_id = ? AND child_key = ?", ownerType, ownerID, task.ChildKey).Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				continue
+			}
+			task.OwnerType = ownerType
+			task.OwnerID = ownerID
+			if err := tx.Create(task).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
+func (s *taskCenterStore) ListTaskSchedules(ctx context.Context, req *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error) {
+	var items []*iapiserver.TaskSchedule
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("deleted_at IS NULL AND project_id = ? AND namespace = ?", req.ProjectID, req.Namespace)
+		if req.IncludeSystem {
+			query = query.Where("created_by IN ?", []string{req.CreatedBy, iapiserver.DefaultTaskCenterCreatedBy})
+		} else {
+			query = query.Where("created_by = ?", req.CreatedBy)
+		}
+		if req.Status != "" {
+			query = query.Where("status = ?", req.Status)
+		}
+		return query
+	}
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter).Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+func (s *taskCenterStore) GetTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
+	var item iapiserver.TaskSchedule
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskScheduleNotFound, "task schedule not found")
+	}
+	return &item, nil
+}
+func (s *taskCenterStore) AddTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error) {
+	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+func (s *taskCenterStore) UpdateTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func (s *taskCenterStore) ListScheduleExecutions(ctx context.Context, req *iapiserver.ScheduleExecutionListRequest) ([]*iapiserver.TaskScheduleExecution, int64, error) {
+	var items []*iapiserver.TaskScheduleExecution
+	filter := func(query *gorm.DB) *gorm.DB {
+		query = query.Where("schedule_id = ?", req.ScheduleID)
+		if req.Status != "" {
+			query = query.Where("status = ?", req.Status)
+		}
+		return query
+	}
+	total, err := countQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := req.BasicQueryParam.ToQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter).Order("scheduled_at DESC").Find(&items).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	return items, total, nil
+}
+
+func (s *taskCenterStore) AddProjectionEventIdempotent(ctx context.Context, data *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error) {
+	var existing iapiserver.RuntimeProjectionEvent
+	err := s.ds.db.WithContext(ctx).Where("runtime_event_id = ?", data.RuntimeEventID).First(&existing).Error
+	if err == nil {
+		return &existing, false, nil
+	}
+	if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, errors.WithStack(err)
+	}
+	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+		return nil, false, errors.WithStack(err)
+	}
+	return data, true, nil
+}
+
+func (s *taskCenterStore) ListNonTerminalAtomicTasks(ctx context.Context, limit int) ([]*iapiserver.AtomicTask, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var items []*iapiserver.AtomicTask
+	err := s.ds.db.WithContext(ctx).Where("runtime_execution_id <> '' AND (owner_type IS NULL OR owner_type = '') AND status IN ?", []string{
+		iapiserver.AtomicTaskStatusPending, iapiserver.AtomicTaskStatusBlocked, iapiserver.AtomicTaskStatusReady,
+		iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusRetrying, iapiserver.AtomicTaskStatusCancelRequested,
+	}).Order("updated_at ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+func (s *taskCenterStore) ListNonTerminalTaskGroups(ctx context.Context, limit int) ([]*iapiserver.TaskGroup, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var items []*iapiserver.TaskGroup
+	err := s.ds.db.WithContext(ctx).Where("runtime_execution_id <> '' AND status IN ?", []string{
+		iapiserver.TaskGroupStatusPending, iapiserver.TaskGroupStatusRunning, iapiserver.TaskGroupStatusCancelRequested,
+	}).Order("updated_at ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+func (s *taskCenterStore) ListNonTerminalDAGTaskGroups(ctx context.Context, limit int) ([]*iapiserver.DAGTaskGroup, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var items []*iapiserver.DAGTaskGroup
+	err := s.ds.db.WithContext(ctx).Where("runtime_execution_id <> '' AND status IN ?", []string{
+		iapiserver.TaskGroupStatusPending, iapiserver.TaskGroupStatusRunning, iapiserver.TaskGroupStatusCancelRequested,
+	}).Order("updated_at ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+func (s *taskCenterStore) ListActiveScheduleExecutions(ctx context.Context, limit int) ([]*iapiserver.TaskScheduleExecution, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var items []*iapiserver.TaskScheduleExecution
+	err := s.ds.db.WithContext(ctx).Where("status IN ?", []string{
+		iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusRunning,
+	}).Order("updated_at ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, event *iapiserver.RuntimeProjectionEvent) (bool, error) {
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&iapiserver.RuntimeProjectionEvent{}).Where("runtime_event_id = ?", event.RuntimeEventID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := tx.Create(event).Error; err != nil {
+			return err
+		}
+		for _, attempt := range attempts {
+			var existing iapiserver.TaskAttempt
+			err := tx.Where("atomic_task_id = ? AND attempt_no = ?", attempt.AtomicTaskID, attempt.AttemptNo).First(&existing).Error
+			switch {
+			case err == nil:
+				attempt.ID = existing.ID
+				attempt.CreatedAt = existing.CreatedAt
+				if err := tx.Save(attempt).Error; err != nil {
+					return err
+				}
+			case stderrors.Is(err, gorm.ErrRecordNotFound):
+				if err := tx.Create(attempt).Error; err != nil {
+					return err
+				}
+			default:
+				return err
+			}
+		}
+		if err := tx.Save(task).Error; err != nil {
+			return err
+		}
+		if task.CanvasNodeRunID != "" {
+			if err := projectCanvasNode(tx, task); err != nil {
+				return err
+			}
+		}
+		if task.OwnerID != "" {
+			if err := recalculateOwner(tx, task.OwnerType, task.OwnerID); err != nil {
+				return err
+			}
+		}
+		event.ProjectionStatus = iapiserver.RuntimeProjectionStatusApplied
+		event.ProjectedAt = imachinery.Now()
+		if err := tx.Save(event).Error; err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	return applied, errors.WithStack(err)
+}
+
+func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
+	status := task.Status
+	if status == iapiserver.AtomicTaskStatusCancelRequested {
+		status = iapiserver.AtomicTaskStatusRunning
+	}
+	values := map[string]any{"atomic_task_id": task.ID, "status": status, "progress": task.Progress, "output_json": mustJSON(task.Output), "last_error_json": mustJSON(task.LastError), "task_resource_version": task.ResourceVersion, "updated_at": time.Now()}
+	if iapiserver.IsAtomicTaskTerminal(task.Status) {
+		values["finished_at"] = time.Now()
+	}
+	result := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ? AND task_resource_version < ?", task.CanvasNodeRunID, task.ResourceVersion).Updates(values)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil
+	}
+	var nodes []*iapiserver.CanvasNodeRun
+	if err := tx.Where("canvas_run_id = ?", task.CanvasRunID).Find(&nodes).Error; err != nil {
+		return err
+	}
+	summary := iapiserver.TaskSummary{Total: len(nodes)}
+	progress := 0.0
+	terminal := true
+	failed := false
+	canceled := false
+	timedOut := false
+	output := map[string]any{}
+	for _, node := range nodes {
+		progress += node.Progress
+		switch node.Status {
+		case iapiserver.AtomicTaskStatusPending:
+			summary.Pending++
+			terminal = false
+		case iapiserver.AtomicTaskStatusBlocked:
+			summary.Blocked++
+			terminal = false
+		case iapiserver.AtomicTaskStatusReady, iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusRetrying:
+			summary.Running++
+			terminal = false
+		case iapiserver.AtomicTaskStatusSuccess:
+			summary.Success++
+			output[node.NodeKey] = node.Output
+		case iapiserver.AtomicTaskStatusFailed:
+			summary.Failed++
+			failed = true
+		case iapiserver.AtomicTaskStatusCanceled:
+			summary.Canceled++
+			canceled = true
+		case iapiserver.AtomicTaskStatusTimeout:
+			summary.Failed++
+			timedOut = true
+		case iapiserver.AtomicTaskStatusSkipped:
+			summary.Skipped++
+		}
+	}
+	if len(nodes) > 0 {
+		progress /= float64(len(nodes))
+	}
+	runStatus := iapiserver.CanvasRunStatusRunning
+	if terminal {
+		switch {
+		case failed:
+			runStatus = iapiserver.CanvasRunStatusFailed
+		case timedOut:
+			runStatus = iapiserver.CanvasRunStatusTimeout
+		case canceled:
+			runStatus = iapiserver.CanvasRunStatusCanceled
+		default:
+			runStatus = iapiserver.CanvasRunStatusSuccess
+		}
+	}
+	runValues := map[string]any{"status": runStatus, "progress": progress, "summary_json": mustJSON(summary), "output_json": mustJSON(output), "task_resource_version": task.ResourceVersion, "updated_at": time.Now()}
+	if terminal {
+		runValues["finished_at"] = time.Now()
+	}
+	return tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ? AND task_resource_version < ?", task.CanvasRunID, task.ResourceVersion).Updates(runValues).Error
+}
+
+func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
+	var tasks []*iapiserver.AtomicTask
+	if err := tx.Where("owner_type = ? AND owner_id = ?", ownerType, ownerID).Find(&tasks).Error; err != nil {
+		return err
+	}
+	summary := iapiserver.TaskSummary{Total: len(tasks)}
+	progress := 0.0
+	result := map[string]any{}
+	terminal := true
+	failed := false
+	canceled := false
+	timedOut := false
+	for _, task := range tasks {
+		progress += task.Progress
+		switch task.Status {
+		case iapiserver.AtomicTaskStatusPending:
+			summary.Pending++
+			terminal = false
+		case iapiserver.AtomicTaskStatusBlocked:
+			summary.Blocked++
+			terminal = false
+		case iapiserver.AtomicTaskStatusReady, iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusRetrying, iapiserver.AtomicTaskStatusCancelRequested:
+			summary.Running++
+			terminal = false
+		case iapiserver.AtomicTaskStatusSuccess:
+			summary.Success++
+			result[task.ChildKey] = task.Output
+		case iapiserver.AtomicTaskStatusFailed:
+			summary.Failed++
+			failed = true
+		case iapiserver.AtomicTaskStatusCanceled:
+			summary.Canceled++
+			canceled = true
+		case iapiserver.AtomicTaskStatusTimeout:
+			summary.Failed++
+			timedOut = true
+		case iapiserver.AtomicTaskStatusSkipped:
+			summary.Skipped++
+		}
+	}
+	if len(tasks) > 0 {
+		progress /= float64(len(tasks))
+	}
+	status := iapiserver.TaskGroupStatusRunning
+	if terminal {
+		switch {
+		case failed:
+			status = iapiserver.TaskGroupStatusFailed
+		case timedOut:
+			status = iapiserver.TaskGroupStatusTimeout
+		case canceled:
+			status = iapiserver.TaskGroupStatusCanceled
+		default:
+			status = iapiserver.TaskGroupStatusSuccess
+		}
+	}
+	values := map[string]any{"summary_json": mustJSON(summary), "result_json": mustJSON(result), "progress": progress, "status": status, "updated_at": time.Now()}
+	switch ownerType {
+	case iapiserver.TaskOwnerTypeGroup:
+		return tx.Model(&iapiserver.TaskGroup{}).Where("id = ?", ownerID).Updates(values).Error
+	case iapiserver.TaskOwnerTypeDAGGroup:
+		return tx.Model(&iapiserver.DAGTaskGroup{}).Where("id = ?", ownerID).Updates(values).Error
+	}
+	return nil
+}
+
+func (s *taskCenterStore) AcquireScheduleExecution(ctx context.Context, data *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, bool, error) {
+	var result *iapiserver.TaskScheduleExecution
+	acquired := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing iapiserver.TaskScheduleExecution
+		err := tx.Where("schedule_id = ? AND scheduled_at = ?", data.ScheduleID, data.ScheduledAt.Time).First(&existing).Error
+		if err == nil {
+			result = &existing
+			return nil
+		}
+		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		var active int64
+		if err := tx.Model(&iapiserver.TaskScheduleExecution{}).Where("schedule_id = ? AND status IN ?", data.ScheduleID, []string{iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusRunning}).Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			data.Status = iapiserver.ScheduleExecutionStatusSkippedOverlap
+			data.Reason = "previous schedule execution is still active"
+			data.CompletedAt = imachinery.Now()
+		} else {
+			acquired = true
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return err
+		}
+		result = data
+		return nil
+	})
+	return result, acquired, errors.WithStack(err)
+}
+
+func (s *taskCenterStore) UpdateScheduleExecution(ctx context.Context, data *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, error) {
+	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
+func mustJSON(value any) string { data, _ := json.Marshal(value); return string(data) }
+
+func countQuery(ctx context.Context, query *gorm.DB, filter func(*gorm.DB) *gorm.DB) (int64, error) {
+	var total int64
+	query = query.WithContext(ctx)
+	if filter != nil {
+		query = filter(query)
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return 0, errors.WithStack(err)
+	}
+	return total, nil
+}
+func mapNotFound(err error, errorCode int, message string) error {
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.NewStatus(errorCode, message)
+	}
+	return errors.WithStack(err)
+}
+func fingerprint(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("marshal-error:%T", value)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func atomicTaskFingerprint(task *iapiserver.AtomicTask) string {
+	return fingerprint(map[string]any{
+		"name": task.Name, "description": task.Description, "function_ref": task.FunctionRef,
+		"arguments": task.Arguments, "required_capabilities": task.RequiredCapabilities,
+		"retry_policy": task.RetryPolicy, "timeout_policy": task.TimeoutPolicy, "cancel_policy": task.CancelPolicy,
+		"child_key": task.ChildKey, "application_run_id": task.ApplicationRunID,
+		"canvas_run_id": task.CanvasRunID, "canvas_node_run_id": task.CanvasNodeRunID,
+		"idempotency_scope": task.IdempotencyScope, "idempotency_key": task.IdempotencyKey,
+		"project_id": task.ProjectID, "namespace": task.Namespace, "created_by": task.CreatedBy, "tags": task.Tags,
+	})
+}
+
+func taskGroupFingerprint(group *iapiserver.TaskGroup) string {
+	return fingerprint(map[string]any{
+		"name": group.Name, "description": group.Description, "mode": group.Mode, "tasks": group.Tasks,
+		"strategy": group.Strategy, "idempotency_scope": group.IdempotencyScope,
+		"idempotency_key": group.IdempotencyKey, "project_id": group.ProjectID,
+		"namespace": group.Namespace, "created_by": group.CreatedBy,
+	})
+}
+
+func dagTaskGroupFingerprint(group *iapiserver.DAGTaskGroup) string {
+	return fingerprint(map[string]any{
+		"name": group.Name, "description": group.Description, "nodes": group.Nodes, "edges": group.Edges,
+		"input": group.Input, "output_mapping": group.OutputMapping, "canvas_version_id": group.CanvasVersionID,
+		"idempotency_scope": group.IdempotencyScope, "idempotency_key": group.IdempotencyKey,
+		"project_id": group.ProjectID, "namespace": group.Namespace, "created_by": group.CreatedBy,
+	})
+}
+
+var _ interface {
+	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
+} = (*taskCenterStore)(nil)
+
+var _ = imachinery.BasicQueryParam{}

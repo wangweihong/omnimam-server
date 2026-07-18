@@ -81,7 +81,17 @@ asset-upload:
 
 application-platform:
   provider-capability-directory: ${APISERVER_PROVIDER_CAPABILITY_DIRECTORY}
+  engine-health-interval: ${APISERVER_ENGINE_HEALTH_INTERVAL}
   chunk-cleanup-hours: ${APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS}
+
+workflow-runtime:
+  enabled: ${APISERVER_WORKFLOW_RUNTIME_ENABLED}
+  base-url: ${APISERVER_CONDUCTOR_BASE_URL}
+  auth-key: ${APISERVER_CONDUCTOR_AUTH_KEY}
+  auth-secret: ${APISERVER_CONDUCTOR_AUTH_SECRET}
+  http-timeout: 30s
+  poll-interval: 250ms
+  reconcile-interval: 15s
 
 auth:
   # 用户与权限系统完成前的开发兼容开关；release 模式下即使误配也不会启用匿名管理员。

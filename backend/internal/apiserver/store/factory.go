@@ -27,6 +27,7 @@ type Factory interface {
 	// canvases
 	Projects() ProjectStore
 	Canvases() CanvasStore
+	WorkflowCanvases() WorkflowCanvasStore
 
 	// platform contracts
 	Providers() ProviderStore
@@ -41,6 +42,7 @@ type Factory interface {
 	AssetGroups() AssetGroupStore
 	AssetGroupMembers() AssetGroupMemberStore
 	AssetRelations() AssetRelationStore
+	AssetsV1() AssetV1Store
 	TaskCenters() TaskCenterStore
 	ApplicationPlatforms() ApplicationPlatformStore
 	FeatureFlags() FeatureFlagStore

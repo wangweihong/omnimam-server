@@ -17,19 +17,31 @@ var (
 	once              sync.Once
 )
 
-const taskCenterActiveLeaseIndexSQL = `
-CREATE UNIQUE INDEX IF NOT EXISTS idx_task_execution_leases_active_run
-ON task_execution_leases(run_id)
-WHERE status IN ('ACTIVE', 'RENEWED')
+const taskCenterActiveScheduleIndexSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_executions_active
+ON task_schedule_executions(schedule_id)
+WHERE status IN ('TRIGGERED', 'RUNNING')
 `
 
 const taskCenterApplicationRunIndexesSQL = `
-CREATE INDEX IF NOT EXISTS idx_task_runs_application
-ON task_runs(application_run_id)
+CREATE INDEX IF NOT EXISTS idx_atomic_tasks_application
+ON atomic_tasks(application_run_id)
 WHERE application_run_id <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_application_idempotency
-ON task_runs(application_run_id, idempotency_key)
-WHERE application_run_id <> '' AND idempotency_key <> ''
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_idempotency
+ON atomic_tasks(project_id, namespace, idempotency_scope, idempotency_key)
+WHERE idempotency_scope <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_owner_child
+ON atomic_tasks(owner_type, owner_id, child_key)
+WHERE owner_type <> '' AND child_key <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_runtime_task
+ON atomic_tasks(runtime_task_id)
+WHERE runtime_task_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_groups_idempotency
+ON task_groups(project_id, namespace, idempotency_scope, idempotency_key)
+WHERE idempotency_scope <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dag_groups_idempotency
+ON dag_task_groups(project_id, namespace, idempotency_scope, idempotency_key)
+WHERE idempotency_scope <> '';
 `
 
 const applicationPlatformLegacySchemaSQL = `
@@ -109,7 +121,7 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_run_template_version') THEN ALTER TABLE aiapp_application_runs ADD CONSTRAINT fk_aiapp_run_template_version FOREIGN KEY (application_template_version_id) REFERENCES aiapp_application_template_versions(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_run_engine') THEN ALTER TABLE aiapp_application_runs ADD CONSTRAINT fk_aiapp_run_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_run_source') THEN ALTER TABLE aiapp_application_runs ADD CONSTRAINT ck_aiapp_run_source CHECK ((capability_source_type='provider_capability' AND provider_capability_id IS NOT NULL AND provider_capability_revision IS NOT NULL AND provider_operation_id IS NOT NULL AND workflow_contract_revision IS NULL) OR (capability_source_type='comfyui_workflow' AND provider_capability_id IS NULL AND provider_capability_revision IS NULL AND provider_operation_id IS NULL AND workflow_contract_revision IS NOT NULL)); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_run_task_creation') THEN ALTER TABLE aiapp_application_runs ADD CONSTRAINT ck_aiapp_run_task_creation CHECK ((task_creation_status='created' AND task_run_id IS NOT NULL AND task_status_projection IS NOT NULL) OR (task_creation_status IN ('pending','failed') AND task_run_id IS NULL AND task_status_projection IS NULL)); END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_run_task_creation') THEN ALTER TABLE aiapp_application_runs ADD CONSTRAINT ck_aiapp_run_task_creation CHECK ((task_creation_status='created' AND atomic_task_id IS NOT NULL AND task_status_projection IS NOT NULL) OR (task_creation_status IN ('pending','failed') AND atomic_task_id IS NULL AND task_status_projection IS NULL)); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_artifact_run') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT fk_aiapp_artifact_run FOREIGN KEY (application_run_id) REFERENCES aiapp_application_runs(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_artifact_media') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT ck_aiapp_artifact_media CHECK (media_type IN ('image','video','audio','text','pdf','other')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_artifact_registration') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT ck_aiapp_artifact_registration CHECK ((registration_status='registered' AND asset_id IS NOT NULL) OR (registration_status IN ('pending','failed') AND asset_id IS NULL)); END IF;
@@ -167,11 +179,14 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureApplicationPlatformScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureOutboxScheme(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (ds *datastore) ensureTaskCenterScheme() error {
-	if err := ds.db.Exec(taskCenterActiveLeaseIndexSQL).Error; err != nil {
+	if err := ds.db.Exec(taskCenterActiveScheduleIndexSQL).Error; err != nil {
 		return err
 	}
 	return ds.db.Exec(taskCenterApplicationRunIndexesSQL).Error
@@ -245,6 +260,10 @@ func (ds *datastore) Canvases() store.CanvasStore {
 	return newCanvas(ds)
 }
 
+func (ds *datastore) WorkflowCanvases() store.WorkflowCanvasStore {
+	return newWorkflowCanvasStore(ds)
+}
+
 /* ------ platform contracts ------- */
 func (ds *datastore) Providers() store.ProviderStore {
 	return newProvider(ds)
@@ -294,8 +313,10 @@ func (ds *datastore) AssetRelations() store.AssetRelationStore {
 	return newAssetRelation(ds)
 }
 
+func (ds *datastore) AssetsV1() store.AssetV1Store { return newAssetV1Store(ds) }
+
 func (ds *datastore) TaskCenters() store.TaskCenterStore {
-	return newTaskCenter(ds)
+	return newTaskCenterStore(ds)
 }
 
 func (ds *datastore) ApplicationPlatforms() store.ApplicationPlatformStore {

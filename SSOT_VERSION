@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 6d2cf826c4d5c0e3515b0ae89423fc03434e0067
-contract_version: 0.1.0-draft
-updated_at: 2026-07-16
-status: exploration-only
-note: current omnimam-spec commit has no release/tag; formal acceptance requires a released SSOT commit or tag.
+commit: 33cacdc0ec8118c9ffe80460f37c794f8f1d6bbd
+contract_version: spec-v1.0.0
+updated_at: 2026-07-17
+status: released
+note: Conductor-driven AtomicTask, TaskGroup/DAGTaskGroup, TaskSchedule, workflow-canvas, application binding, and asset outbox contracts released as spec-v1.0.0.

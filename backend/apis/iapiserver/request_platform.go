@@ -330,7 +330,7 @@ type (
 
 	AssetSearchParseResponse struct {
 		Query     AssetListRequest `json:"query"`
-		TaskRunID string           `json:"task_run_id,omitempty"`
+		AtomicTaskID string           `json:"atomic_task_id,omitempty"`
 	}
 
 	AssetListResponse struct {
@@ -346,7 +346,7 @@ type (
 
 	AssetUploadResponse struct {
 		Asset    *AssetRecord `json:"asset"`
-		TaskRuns []*TaskRun   `json:"task_runs,omitempty"`
+		AtomicTasks []*AtomicTask   `json:"atomic_tasks,omitempty"`
 	}
 
 	AssetChunkUploadInitRequest struct {

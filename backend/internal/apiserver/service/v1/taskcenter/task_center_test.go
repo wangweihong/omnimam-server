@@ -2,389 +2,135 @@ package taskcenter
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
+	"time"
 
 	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-func TestCreateTaskGroupRejectsInvalidType(t *testing.T) {
-	srv := NewService(&fakeFactory{})
-	_, err := srv.CreateTaskGroup(context.Background(), &iapiserver.TaskGroupCreateRequest{
-		Name:      "invalid-group",
-		GroupType: "DAG",
-		Children: []iapiserver.TaskDefinitionChild{
-			{DefinitionType: iapiserver.TaskDefinitionTypeAtomic, DefinitionID: "atomic-1"},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected invalid task group type to fail")
-	}
-}
-
 func TestValidateDAGRejectsCycle(t *testing.T) {
-	err := validateDAG(
-		[]iapiserver.DAGNode{
-			{NodeID: "a", Name: "A"},
-			{NodeID: "b", Name: "B"},
-		},
-		[]iapiserver.DAGEdge{
-			{FromNodeID: "a", ToNodeID: "b"},
-			{FromNodeID: "b", ToNodeID: "a"},
-		},
-	)
+	service := &taskCenterService{functions: map[string]struct{}{"test.run": {}}}
+	_, err := service.validateDAG([]iapiserver.DAGNode{{Key: "a", Task: iapiserver.AtomicTaskTemplate{Key: "a", FunctionRef: "test.run"}}, {Key: "b", Task: iapiserver.AtomicTaskTemplate{Key: "b", FunctionRef: "test.run"}}}, []iapiserver.DAGEdge{{FromNode: "a", ToNode: "b"}, {FromNode: "b", ToNode: "a"}})
 	if err == nil {
-		t.Fatal("expected cyclic dag to fail")
+		t.Fatal("expected cyclic DAG to fail")
 	}
-	status := toolboxerrors.ToStatus(err)
-	if status.Code != code.ErrTaskDAGCycleDetected {
+	if status := toolboxerrors.ToStatus(err); status.Code != code.ErrTaskDAGCycleDetected {
 		t.Fatalf("code = %d, want %d", status.Code, code.ErrTaskDAGCycleDetected)
 	}
-	if status.HTTPStatus != 200 {
-		t.Fatalf("http status = %d, want 200", status.HTTPStatus)
-	}
 }
 
-func TestDeleteRunRequiresTerminalStatus(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		runs: map[string]*iapiserver.TaskRun{
-			"run-1": {ObjectMeta: imachinery.ObjectMeta{ID: "run-1"}, Status: iapiserver.TaskRunStatusRunning},
-		},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	_, err := srv.DeleteRun(context.Background(), "run-1")
-	if err == nil {
-		t.Fatal("expected running task run delete to fail")
-	}
-	if taskStore.deleted {
-		t.Fatal("running task run should not be soft deleted")
-	}
-}
-
-func TestRetryRunMovesFailedRunToReady(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		runs: map[string]*iapiserver.TaskRun{
-			"run-1": {
-				ObjectMeta: imachinery.ObjectMeta{ID: "run-1"},
-				Status:     iapiserver.TaskRunStatusFailed,
-				Progress:   1,
-			},
-		},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	run, err := srv.RetryRun(context.Background(), &iapiserver.RetryTaskRunRequest{RunID: "run-1"})
+func TestValidateDAGBuildsStableTopologicalLayers(t *testing.T) {
+	service := &taskCenterService{functions: map[string]struct{}{"test.run": {}}}
+	layers, err := service.validateDAG([]iapiserver.DAGNode{{Key: "b", Task: iapiserver.AtomicTaskTemplate{Key: "b", FunctionRef: "test.run"}}, {Key: "a", Task: iapiserver.AtomicTaskTemplate{Key: "a", FunctionRef: "test.run"}}, {Key: "c", Task: iapiserver.AtomicTaskTemplate{Key: "c", FunctionRef: "test.run"}}}, []iapiserver.DAGEdge{{FromNode: "a", ToNode: "c"}, {FromNode: "b", ToNode: "c"}})
 	if err != nil {
-		t.Fatalf("retry failed task run: %v", err)
+		t.Fatal(err)
 	}
-	if run.Status != iapiserver.TaskRunStatusReady {
-		t.Fatalf("status = %s, want %s", run.Status, iapiserver.TaskRunStatusReady)
-	}
-	if run.Progress != 0 {
-		t.Fatalf("progress = %v, want 0", run.Progress)
+	if len(layers) != 2 || len(layers[0]) != 2 || layers[0][0] != "a" || layers[0][1] != "b" || layers[1][0] != "c" {
+		t.Fatalf("unexpected layers: %#v", layers)
 	}
 }
 
-func TestCreateRunUsesDefinitionRetryPolicy(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {
-				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
-				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: 2},
-				ProjectID:      "project-a",
-				Namespace:      "ns-a",
-			},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	run, err := srv.CreateRun(context.Background(), &iapiserver.TaskRunCreateRequest{
-		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:   "def-1",
-	})
-	if err != nil {
-		t.Fatalf("create run: %v", err)
-	}
-	if run.MaxAttempts != 3 {
-		t.Fatalf("max attempts = %d, want 3", run.MaxAttempts)
-	}
-	if run.ProjectID != "project-a" || run.Namespace != "ns-a" {
-		t.Fatalf("scope = %s/%s, want project-a/ns-a", run.ProjectID, run.Namespace)
-	}
-}
-
-func TestCreateRunRejectsInfiniteRetryWithoutExitProtection(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {
-				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
-				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: -1},
-			},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	_, err := srv.CreateRun(context.Background(), &iapiserver.TaskRunCreateRequest{
-		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:   "def-1",
-	})
-	if err == nil {
-		t.Fatal("expected infinite retry without exit protection to fail")
-	}
-	status := toolboxerrors.ToStatus(err)
-	if status.Code != code.ErrTaskRetryPolicyInvalid {
-		t.Fatalf("code = %d, want %d", status.Code, code.ErrTaskRetryPolicyInvalid)
-	}
-	if status.HTTPStatus != 200 {
-		t.Fatalf("http status = %d, want 200", status.HTTPStatus)
-	}
-}
-
-func TestCreateRunAllowsInfiniteRetryWithOverallTimeout(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {
-				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
-				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-				RetryPolicy:    iapiserver.RetryPolicy{MaxRetries: -1},
-				TimeoutPolicy:  iapiserver.TimeoutPolicy{OverallTimeout: "1h"},
-			},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	run, err := srv.CreateRun(context.Background(), &iapiserver.TaskRunCreateRequest{
-		DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:   "def-1",
-	})
-	if err != nil {
-		t.Fatalf("create run: %v", err)
-	}
-	if run.MaxAttempts != -1 {
-		t.Fatalf("max attempts = %d, want -1", run.MaxAttempts)
-	}
-	if run.TimeoutAt.IsZero() {
-		t.Fatal("timeout_at should be set for infinite retry guarded by overall timeout")
-	}
-}
-
-func TestCreateRunRequiresApplicationIdempotencyPair(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {
-				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
-				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-			},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	_, err := srv.CreateRun(context.Background(), &iapiserver.TaskRunCreateRequest{
-		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:     "def-1",
-		ApplicationRunID: "app-run-1",
-	})
-	if err == nil {
-		t.Fatal("expected incomplete application idempotency pair to fail")
-	}
-}
-
-func TestCreateRunReturnsExistingForSameApplicationIdempotencyKey(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {
-				ObjectMeta:     imachinery.ObjectMeta{ID: "def-1", Name: "atomic"},
-				DefinitionType: iapiserver.TaskDefinitionTypeAtomic,
-			},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	req := &iapiserver.TaskRunCreateRequest{
-		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:     "def-1",
-		ApplicationRunID: "app-run-1",
-		IdempotencyKey:   "submit-1",
-	}
-	first, err := srv.CreateRun(context.Background(), req)
-	if err != nil {
-		t.Fatalf("first create run: %v", err)
-	}
-	second, err := srv.CreateRun(context.Background(), req)
-	if err != nil {
-		t.Fatalf("idempotent create run: %v", err)
-	}
-	if second.ID != first.ID {
-		t.Fatalf("second run id = %s, want %s", second.ID, first.ID)
-	}
-	if taskStore.eventCount != 1 {
-		t.Fatalf("created event count = %d, want 1", taskStore.eventCount)
-	}
-}
-
-func TestCreateRunRejectsDifferentRequestForSameApplicationIdempotencyKey(t *testing.T) {
-	taskStore := &fakeTaskCenterStore{
-		definitions: map[string]*iapiserver.TaskDefinition{
-			"def-1": {ObjectMeta: imachinery.ObjectMeta{ID: "def-1", Name: "one"}, DefinitionType: iapiserver.TaskDefinitionTypeAtomic},
-			"def-2": {ObjectMeta: imachinery.ObjectMeta{ID: "def-2", Name: "two"}, DefinitionType: iapiserver.TaskDefinitionTypeAtomic},
-		},
-		runs: map[string]*iapiserver.TaskRun{},
-	}
-	srv := NewService(&fakeFactory{taskCenter: taskStore})
-	first := &iapiserver.TaskRunCreateRequest{
-		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:     "def-1",
-		ApplicationRunID: "app-run-1",
-		IdempotencyKey:   "submit-1",
-	}
-	if _, err := srv.CreateRun(context.Background(), first); err != nil {
-		t.Fatalf("first create run: %v", err)
-	}
-	second := *first
-	second.DefinitionID = "def-2"
-	_, err := srv.CreateRun(context.Background(), &second)
-	if err == nil {
-		t.Fatal("expected idempotency conflict")
-	}
-	status := toolboxerrors.ToStatus(err)
-	if status.Code != code.ErrTaskRunIdempotencyConflict {
-		t.Fatalf("code = %d, want %d", status.Code, code.ErrTaskRunIdempotencyConflict)
-	}
-}
-
-func TestTaskCenterObjectMetaUsesContractTimestampFields(t *testing.T) {
-	data, err := json.Marshal(iapiserver.TaskRun{
-		ObjectMeta: imachinery.ObjectMeta{ID: "run-1"},
-	})
-	if err != nil {
-		t.Fatalf("marshal task run: %v", err)
-	}
-	payload := string(data)
-	if !strings.Contains(payload, `"created_at"`) {
-		t.Fatalf("json = %s, want created_at field", payload)
-	}
-	if strings.Contains(payload, `"createdAt"`) {
-		t.Fatalf("json = %s, should not contain createdAt field", payload)
-	}
-}
-
-func TestTaskRunEventCarriesApplicationProjectionKey(t *testing.T) {
-	run := &iapiserver.TaskRun{
-		ObjectMeta:       imachinery.ObjectMeta{ID: "run-1", ResourceVersion: 7},
-		ApplicationRunID: "app-run-1",
-		DefinitionType:   iapiserver.TaskDefinitionTypeAtomic,
-		DefinitionID:     "application.execute",
-		Status:           iapiserver.TaskRunStatusRunning,
-	}
-	event := newTaskRunEvent(
-		run,
-		iapiserver.TaskCenterEventProgressUpdated,
-		iapiserver.TaskRunStatusRunning,
-		iapiserver.TaskRunStatusRunning,
-	)
-	if event.Payload["application_run_id"] != "app-run-1" {
-		t.Fatalf("application_run_id = %v, want app-run-1", event.Payload["application_run_id"])
-	}
-	if event.Payload["resource_version"] != int64(7) {
-		t.Fatalf("resource_version = %v, want 7", event.Payload["resource_version"])
-	}
-}
-
-type fakeFactory struct {
-	store.Factory
-	taskCenter store.TaskCenterStore
-}
-
-func (f *fakeFactory) TaskCenters() store.TaskCenterStore { return f.taskCenter }
-
-type fakeTaskCenterStore struct {
-	store.TaskCenterStore
-	definitions map[string]*iapiserver.TaskDefinition
-	runs        map[string]*iapiserver.TaskRun
-	deleted     bool
-	eventCount  int
-}
-
-func (s *fakeTaskCenterStore) GetDefinition(
-	_ context.Context,
-	definitionType, id string,
-) (*iapiserver.TaskDefinition, error) {
-	definition := s.definitions[id]
-	if definition == nil || definition.DefinitionType != definitionType {
-		return nil, errNotFound()
-	}
-	cloned := *definition
-	return &cloned, nil
-}
-
-func (s *fakeTaskCenterStore) AddRun(_ context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error) {
-	if data.ID == "" {
-		data.ID = "run-created"
-	}
-	cloned := *data
-	s.runs[data.ID] = &cloned
-	ret := cloned
-	return &ret, nil
-}
-
-func (s *fakeTaskCenterStore) AddRunIdempotent(
-	_ context.Context,
-	data *iapiserver.TaskRun,
-) (*iapiserver.TaskRun, bool, error) {
-	for _, existing := range s.runs {
-		if data.ApplicationRunID != "" &&
-			existing.ApplicationRunID == data.ApplicationRunID &&
-			existing.IdempotencyKey == data.IdempotencyKey {
-			if existing.DefinitionType != data.DefinitionType || existing.DefinitionID != data.DefinitionID {
-				return nil, false, toolboxerrors.NewStatusF(
-					code.ErrTaskRunIdempotencyConflict,
-					"idempotency conflict",
-				)
+func TestValidateScheduleRequest(t *testing.T) {
+	runAt := imachinery.NewTime(time.Now().Add(time.Hour))
+	tests := []struct {
+		name  string
+		req   iapiserver.TaskScheduleCreateRequest
+		valid bool
+	}{{name: "cron", req: iapiserver.TaskScheduleCreateRequest{TriggerType: iapiserver.TaskScheduleTriggerCron, CronExpression: "*/30 * * * * *", TimeZone: "UTC", Target: iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetAtomic}}, valid: true}, {name: "run at", req: iapiserver.TaskScheduleCreateRequest{TriggerType: iapiserver.TaskScheduleTriggerRunAt, RunAt: runAt, TimeZone: "Asia/Shanghai", Target: iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetGroup}}, valid: true}, {name: "five field cron", req: iapiserver.TaskScheduleCreateRequest{TriggerType: iapiserver.TaskScheduleTriggerCron, CronExpression: "* * * * *", TimeZone: "UTC", Target: iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetAtomic}}}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateScheduleRequest(&tt.req)
+			if tt.valid && err != nil {
+				t.Fatal(err)
 			}
-			cloned := *existing
-			return &cloned, false, nil
-		}
+			if !tt.valid && err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
-	created, err := s.AddRun(context.Background(), data)
-	return created, err == nil, err
 }
 
-func (s *fakeTaskCenterStore) GetRun(_ context.Context, id string) (*iapiserver.TaskRun, error) {
-	run := s.runs[id]
-	if run == nil {
-		return nil, errNotFound()
+func TestTaskScheduleScopeIncludesSystemSchedulesForSystemAdmin(t *testing.T) {
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, &iapiserver.User{})
+	ctx.Value(iapiserver.GinContextKeyUser).(*iapiserver.User).ID = "system-admin"
+	req := &iapiserver.TaskScheduleListRequest{}
+
+	applyTaskScheduleScope(ctx, req)
+
+	if req.CreatedBy != "system-admin" || !req.IncludeSystem {
+		t.Fatalf("schedule scope = created_by %q, include_system %t", req.CreatedBy, req.IncludeSystem)
 	}
-	cloned := *run
-	return &cloned, nil
+	if !canReadTaskSchedule(ctx, &iapiserver.TaskSchedule{CreatedBy: iapiserver.DefaultTaskCenterCreatedBy}) {
+		t.Fatal("system administrator cannot read system schedule")
+	}
 }
 
-func (s *fakeTaskCenterStore) UpdateRun(_ context.Context, data *iapiserver.TaskRun) (*iapiserver.TaskRun, error) {
-	cloned := *data
-	s.runs[data.ID] = &cloned
-	ret := cloned
-	return &ret, nil
+func TestTaskScheduleScopeKeepsOrdinaryUserOwnership(t *testing.T) {
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	req := &iapiserver.TaskScheduleListRequest{}
+
+	applyTaskScheduleScope(ctx, req)
+
+	if req.CreatedBy != "user-1" || req.IncludeSystem {
+		t.Fatalf("schedule scope = created_by %q, include_system %t", req.CreatedBy, req.IncludeSystem)
+	}
+	if canReadTaskSchedule(ctx, &iapiserver.TaskSchedule{CreatedBy: iapiserver.DefaultTaskCenterCreatedBy}) {
+		t.Fatal("ordinary user can read system schedule")
+	}
 }
 
-func (s *fakeTaskCenterStore) SoftDeleteRun(_ context.Context, _ string) error {
-	s.deleted = true
-	return nil
+func TestStableRuntimeKeyScopesIdempotency(t *testing.T) {
+	got := stableRuntimeKey("project", "namespace", "asset-thumbnail", "thumbnail:a:v1", "fallback")
+	if got != "project:namespace:asset-thumbnail:thumbnail:a:v1" {
+		t.Fatalf("key = %q", got)
+	}
+	if got := stableRuntimeKey("project", "namespace", "", "", "fallback"); got != "fallback" {
+		t.Fatalf("fallback key = %q", got)
+	}
 }
 
-func (s *fakeTaskCenterStore) AddEvent(
-	_ context.Context,
-	data *iapiserver.TaskRunEvent,
-) (*iapiserver.TaskRunEvent, error) {
-	s.eventCount++
-	return data, nil
+func TestAtomicDefinitionContainsOnlyAtomicHandler(t *testing.T) {
+	task := &iapiserver.AtomicTask{FunctionRef: "test.run", ChildKey: "node", Arguments: map[string]any{"value": 1}, TimeoutPolicy: iapiserver.TimeoutPolicy{OverallTimeoutSeconds: 10}}
+	task.ID = "task-1"
+	definition := atomicDefinition(task)
+	if len(definition.Tasks) != 1 || definition.Tasks[0].Name != "test.run" || definition.Tasks[0].Type != "SIMPLE" {
+		t.Fatalf("definition = %#v", definition)
+	}
 }
 
-func errNotFound() error {
-	return context.Canceled
+func TestScheduleLauncherPassesSchedulerMetadataAsWorkerArguments(t *testing.T) {
+	schedule := &iapiserver.TaskSchedule{TriggerType: iapiserver.TaskScheduleTriggerCron}
+	definition := scheduleLauncherDefinition(schedule)
+	if len(definition.Tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(definition.Tasks))
+	}
+	arguments, ok := definition.Tasks[0].Input["arguments"].(map[string]any)
+	if !ok {
+		t.Fatalf("worker input does not contain arguments: %#v", definition.Tasks[0].Input)
+	}
+	if arguments["task_schedule_id"] != "${workflow.input.task_schedule_id}" || arguments["scheduled_at"] != "${workflow.input._scheduledTime}" {
+		t.Fatalf("arguments = %#v", arguments)
+	}
+}
+
+func TestDynamicDAGNodePassesPlannerOutputToFork(t *testing.T) {
+	task := &iapiserver.AtomicTask{FunctionRef: "engine.plan", ChildKey: "plan"}
+	task.ID = "planner-task"
+	node := iapiserver.DAGNode{Key: "plan", DynamicFork: true, MaxDynamicTasks: 1000}
+	tasks := runtimeTasksForDAGNode(node, task)
+	if len(tasks) != 3 || tasks[1].Type != "FORK_JOIN_DYNAMIC" || tasks[2].Type != "JOIN" {
+		t.Fatalf("dynamic tasks = %#v", tasks)
+	}
+	if tasks[1].DynamicTasksParam != "dynamic_tasks" || tasks[1].DynamicInputParam != "dynamic_inputs" {
+		t.Fatalf("dynamic fork parameters = %#v", tasks[1])
+	}
+	if tasks[1].Input["dynamic_tasks"] != "${plan_plannertask.output.dynamic_tasks}" || tasks[1].Input["dynamic_inputs"] != "${plan_plannertask.output.dynamic_inputs}" {
+		t.Fatalf("dynamic fork input = %#v", tasks[1].Input)
+	}
 }

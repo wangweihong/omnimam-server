@@ -37,6 +37,7 @@ type ApplicationPlatformSrv interface {
 	UpdateEngineInstance(context.Context, *iapiserver.EngineInstanceUpdateRequest) (*iapiserver.EngineInstance, error)
 	DeleteEngineInstance(context.Context, string) (*iapiserver.DeleteResult, error)
 	CheckEngineInstanceHealth(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
+	CheckEngineInstanceHealthInternal(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
 	ListComfyUIWorkflows(context.Context, *iapiserver.ComfyUIWorkflowListRequest) (*iapiserver.ComfyUIWorkflowListResponse, error)
 	ImportComfyUIWorkflow(context.Context, *iapiserver.ComfyUIWorkflowImportRequest) (*iapiserver.ComfyUIWorkflowImportResult, error)
 	GetComfyUIWorkflow(context.Context, string) (*iapiserver.ComfyUIWorkflowDetail, error)
@@ -94,7 +95,6 @@ type OperationExecutor interface {
 	ID() string
 	Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error)
 }
-type TaskDispatcher interface{ DispatchAsync(context.Context, string) }
 type AssetRegistrar interface {
 	Register(context.Context, *iapiserver.ApplicationArtifact) (string, error)
 }
@@ -120,7 +120,7 @@ type Dependencies struct {
 	Principals    PrincipalResolver
 	Adapters      map[string]EngineAdapter
 	Executors     map[string]OperationExecutor
-	Dispatcher    TaskDispatcher
+	Tasks         taskcenter.TaskCenterSrv
 	Assets        AssetRegistrar
 	Events        EventPublisher
 	WorkflowAudit WorkflowAuditor
@@ -353,6 +353,15 @@ func (s *applicationPlatformService) CheckEngineInstanceHealth(ctx context.Conte
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
+	return s.checkEngineInstanceHealth(ctx, id)
+}
+
+// CheckEngineInstanceHealthInternal 为受信任的 TaskWorker 执行健康探测，不经过 HTTP 用户鉴权。
+func (s *applicationPlatformService) CheckEngineInstanceHealthInternal(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
+	return s.checkEngineInstanceHealth(ctx, id)
+}
+
+func (s *applicationPlatformService) checkEngineInstanceHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
 	item, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, id)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
@@ -785,8 +794,8 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 	if run.TaskCreationStatus == iapiserver.TaskCreationCreated {
 		return s.Store.ApplicationPlatforms().GetApplicationRun(ctx, run.ID)
 	}
-	if err := s.ensureApplicationTaskDefinition(ctx); err != nil {
-		return s.failTaskBinding(ctx, run, err)
+	if s.Tasks == nil {
+		return s.failTaskBinding(ctx, run, errors.New("task center is unavailable"))
 	}
 	version, err := s.Store.ApplicationPlatforms().GetApplicationVersion(ctx, run.ApplicationVersionID)
 	if err != nil {
@@ -800,7 +809,13 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 	if templateVersion.ProviderOperationID != nil {
 		operation = *templateVersion.ProviderOperationID
 	}
-	task, err := taskcenter.NewService(s.Store).CreateRun(ctx, &iapiserver.TaskRunCreateRequest{DefinitionType: iapiserver.TaskDefinitionTypeAtomic, DefinitionID: applicationRunTaskDefinitionID, ApplicationRunID: run.ID, IdempotencyKey: run.IdempotencyKey, AdapterKey: run.CapabilitySourceType, OperationKey: operation, OperationVersion: run.SourceRevision, ResolvedEngineID: run.EngineInstanceID, Input: run.ExecutionSnapshot, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: run.OwnerUserID})
+	task, err := s.Tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
+		Key: applicationRunTaskDefinitionID, Name: "Application Platform Run", Description: "Execute an immutable ApplicationRun snapshot",
+		FunctionRef: applicationRunTaskFunctionRef, Arguments: map[string]any{"application_run_id": run.ID, "operation": operation, "execution_snapshot": run.ExecutionSnapshot},
+		RequiredCapabilities: "application-platform", ApplicationRunID: run.ID,
+		IdempotencyScope: "application-run", IdempotencyKey: run.IdempotencyKey,
+		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
+	})
 	if err != nil {
 		return s.failTaskBinding(ctx, run, err)
 	}
@@ -808,10 +823,7 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 	if err != nil {
 		return nil, err
 	}
-	s.publish(ctx, "application_run_task_bound", run.ID+":"+task.ID, map[string]any{"application_run_id": run.ID, "task_run_id": task.ID, "task_creation_status": iapiserver.TaskCreationCreated, "task_resource_version": task.ResourceVersion})
-	if s.Dispatcher != nil {
-		s.Dispatcher.DispatchAsync(context.WithoutCancel(ctx), task.ID)
-	}
+	s.publish(ctx, "application_run_task_bound", run.ID+":"+task.ID, map[string]any{"application_run_id": run.ID, "atomic_task_id": task.ID, "task_creation_status": iapiserver.TaskCreationCreated, "task_resource_version": task.ResourceVersion})
 	return bound, nil
 }
 func (s *applicationPlatformService) failTaskBinding(ctx context.Context, run *iapiserver.ApplicationRun, cause error) (*iapiserver.ApplicationRun, error) {
@@ -819,7 +831,7 @@ func (s *applicationPlatformService) failTaskBinding(ctx context.Context, run *i
 	if storeErr != nil {
 		return nil, storeErr
 	}
-	return failed, errors.NewStatus(code.ErrAIAppTaskRunCreateFailed, cause.Error())
+	return failed, errors.NewStatus(code.ErrAIAppAtomicTaskCreateFailed, cause.Error())
 }
 func (s *applicationPlatformService) GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error) {
 	p, err := s.principal(ctx, false)
@@ -938,19 +950,6 @@ func (s *applicationPlatformService) validateTemplateVersion(version *iapiserver
 		return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "invalid capability source")
 	}
 	return nil
-}
-func (s *applicationPlatformService) ensureApplicationTaskDefinition(ctx context.Context) error {
-	if _, err := s.Store.TaskCenters().GetDefinition(ctx, iapiserver.TaskDefinitionTypeAtomic, applicationRunTaskDefinitionID); err == nil {
-		return nil
-	} else if !stderrors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-	definition := &iapiserver.TaskDefinition{DefinitionType: iapiserver.TaskDefinitionTypeAtomic, FunctionRef: applicationRunTaskFunctionRef, RequiredCapabilities: "application-platform", ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy}
-	definition.ID = applicationRunTaskDefinitionID
-	definition.Name = "Application Platform Run"
-	definition.Description = "Execute an immutable ApplicationRun snapshot"
-	_, err := s.Store.TaskCenters().AddDefinition(ctx, definition)
-	return err
 }
 func (s *applicationPlatformService) publish(ctx context.Context, eventType, key string, payload map[string]any) {
 	occurredAt := imachinery.Now()

@@ -66,7 +66,7 @@ build.multiarch:
 
 ## image: Build docker images for host arch.
 .PHONY: image
-image:
+image: configs
 	@$(MAKE) image.build
 
 .PHONY: compose

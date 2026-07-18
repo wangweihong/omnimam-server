@@ -351,6 +351,20 @@ func (pc *PlatformController) RunCanvasNode(c *gin.Context) {
 	})
 }
 
+// BatchApplyAssetLabels applies manual labels independently per asset and returns partial-success results.
+func (pc *PlatformController) BatchApplyAssetLabels(c *gin.Context) {
+	core.Run(c, &iapiserver.BatchLabelRequest{}, func(req *iapiserver.BatchLabelRequest) (any, error) {
+		return pc.srv.Platforms().BatchApplyAssetLabels(c, req)
+	})
+}
+
+// RegisterArtifact idempotently registers one ApplicationRun artifact as a UserAsset metadata record.
+func (pc *PlatformController) RegisterArtifact(c *gin.Context) {
+	core.Run(c, &iapiserver.ArtifactRegistrationRequest{}, func(req *iapiserver.ArtifactRegistrationRequest) (any, error) {
+		return pc.srv.Platforms().RegisterArtifact(c, req)
+	})
+}
+
 func splitTags(raw string) []string {
 	if raw == "" {
 		return nil

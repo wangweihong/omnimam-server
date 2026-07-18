@@ -2,533 +2,854 @@ package taskcenter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	stderrors "errors"
+	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
 
 type TaskCenterSrv interface {
-	ListDefinitions(ctx context.Context, req *iapiserver.TaskDefinitionListRequest) (*iapiserver.TaskDefinitionListResponse, error)
-	CreateAtomicTask(ctx context.Context, req *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
-	CreateTaskGroup(ctx context.Context, req *iapiserver.TaskGroupCreateRequest) (*iapiserver.TaskGroup, error)
-	CreateDAGFlowTask(ctx context.Context, req *iapiserver.DAGFlowTaskCreateRequest) (*iapiserver.DAGFlowTask, error)
-	ListRuns(ctx context.Context, req *iapiserver.TaskRunListRequest) (*iapiserver.TaskRunListResponse, error)
-	CreateRun(ctx context.Context, req *iapiserver.TaskRunCreateRequest) (*iapiserver.TaskRun, error)
-	GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error)
-	DeleteRun(ctx context.Context, id string) (*iapiserver.SuccessResponse, error)
-	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error)
-	CancelRun(ctx context.Context, req *iapiserver.CancelTaskRunRequest) (*iapiserver.TaskRun, error)
-	RetryRun(ctx context.Context, req *iapiserver.RetryTaskRunRequest) (*iapiserver.TaskRun, error)
-	RegisterWorker(ctx context.Context, req *iapiserver.WorkerRegisterRequest) (*iapiserver.Worker, error)
-	HeartbeatWorker(ctx context.Context, req *iapiserver.WorkerHeartbeatRequest) (*iapiserver.Worker, error)
-	ClaimRun(ctx context.Context, req *iapiserver.ClaimTaskRunRequest) (*iapiserver.ClaimTaskRunResponse, error)
-	UpdateProgress(ctx context.Context, req *iapiserver.ProgressUpdateRequest) (*iapiserver.TaskRun, error)
-	CompleteRun(ctx context.Context, req *iapiserver.TaskRunCompleteRequest) (*iapiserver.TaskRun, error)
-	FailRun(ctx context.Context, req *iapiserver.TaskRunFailRequest) (*iapiserver.TaskRun, error)
-	RenewLease(ctx context.Context, req *iapiserver.LeaseRenewRequest) (*iapiserver.ExecutionLease, error)
-	Health(ctx context.Context) (*iapiserver.TaskCenterHealth, error)
+	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
+	CreateAtomicTask(context.Context, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
+	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
+	ListAttempts(context.Context, *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error)
+	CancelAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
+	RetryAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
+	ListTaskGroups(context.Context, *iapiserver.TaskGroupListRequest) (*iapiserver.TaskGroupListResponse, error)
+	CreateTaskGroup(context.Context, *iapiserver.TaskGroupCreateRequest) (*iapiserver.TaskGroup, error)
+	GetTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
+	ListTaskGroupTasks(context.Context, string, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
+	CancelTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
+	RetryTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
+	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error)
+	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	ListDAGTaskGroupTasks(context.Context, string, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
+	CancelDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	RetryDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) (*iapiserver.TaskScheduleListResponse, error)
+	CreateTaskSchedule(context.Context, *iapiserver.TaskScheduleCreateRequest) (*iapiserver.TaskSchedule, error)
+	GetTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	UpdateTaskSchedule(context.Context, *iapiserver.TaskScheduleUpdateRequest) (*iapiserver.TaskSchedule, error)
+	DeleteTaskSchedule(context.Context, string) error
+	PauseTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	ResumeTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error)
+	// RegisterDAGDefinition validates and registers an immutable DAG definition for workflow-canvas publishing.
+	RegisterDAGDefinition(context.Context, string, int, *iapiserver.DAGTaskGroupCreateRequest) (*DefinitionBinding, error)
+}
+
+type DefinitionBinding struct {
+	Name     string
+	Version  int
+	Revision string
+	Hash     string
 }
 
 type taskCenterService struct {
-	store store.Factory
+	store     store.TaskCenterStore
+	runtime   workflowruntime.WorkflowRuntime
+	functions map[string]struct{}
 }
 
-func NewService(storeIns store.Factory) TaskCenterSrv {
-	return &taskCenterService{store: storeIns}
+func NewService(factory store.Factory, runtimes ...workflowruntime.WorkflowRuntime) TaskCenterSrv {
+	runtime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
+	if len(runtimes) > 0 && runtimes[0] != nil {
+		runtime = runtimes[0]
+	}
+	return &taskCenterService{store: factory.TaskCenters(), runtime: runtime, functions: make(map[string]struct{})}
 }
 
-func (s *taskCenterService) ListDefinitions(
-	ctx context.Context,
-	req *iapiserver.TaskDefinitionListRequest,
-) (*iapiserver.TaskDefinitionListResponse, error) {
-	items, total, err := s.store.TaskCenters().ListDefinitions(ctx, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
+func NewServiceWithFunctions(factory store.Factory, runtime workflowruntime.WorkflowRuntime, functionRefs ...string) TaskCenterSrv {
+	service := NewService(factory, runtime).(*taskCenterService)
+	for _, ref := range functionRefs {
+		if ref != "" {
+			service.functions[ref] = struct{}{}
+		}
 	}
-	return &iapiserver.TaskDefinitionListResponse{Total: total, Items: items}, nil
+	return service
 }
 
-// CreateAtomicTask 创建 AtomicTask 定义，只保存任务中心元数据，不执行具体 AppEngine 能力。
-func (s *taskCenterService) CreateAtomicTask(
-	ctx context.Context,
-	req *iapiserver.AtomicTaskCreateRequest,
-) (*iapiserver.AtomicTask, error) {
-	if err := validateRetryPolicy(req.RetryPolicy, req.TimeoutPolicy); err != nil {
-		return nil, err
-	}
-	definition := &iapiserver.TaskDefinition{
-		DefinitionType:       iapiserver.TaskDefinitionTypeAtomic,
-		FunctionRef:          req.FunctionRef,
-		AppID:                req.AppID,
-		EngineRef:            req.EngineRef,
-		DefaultArguments:     req.DefaultArguments,
-		TimeoutPolicy:        req.TimeoutPolicy,
-		RetryPolicy:          req.RetryPolicy,
-		CancelPolicy:         req.CancelPolicy,
-		RequiredCapabilities: req.RequiredCapabilities,
-		Tags:                 req.Tags,
-		ProjectID:            req.ProjectID,
-		Namespace:            req.Namespace,
-		CreatedBy:            req.CreatedBy,
-	}
-	definition.Name = req.Name
-	definition.Description = req.Description
-	ret, err := s.store.TaskCenters().AddDefinition(ctx, definition)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return ret, nil
-}
-
-// CreateTaskGroup 创建 SERIAL/PARALLEL 任务组定义；不展开执行子任务。
-func (s *taskCenterService) CreateTaskGroup(
-	ctx context.Context,
-	req *iapiserver.TaskGroupCreateRequest,
-) (*iapiserver.TaskGroup, error) {
-	if err := validateRetryPolicy(req.RetryPolicy, req.TimeoutPolicy); err != nil {
-		return nil, err
-	}
-	if req.GroupType != iapiserver.TaskGroupTypeSerial && req.GroupType != iapiserver.TaskGroupTypeParallel {
-		return nil, errors.NewStatusF(code.ErrTaskDefinitionInvalid, "task group type invalid")
-	}
-	if len(req.Children) == 0 {
-		return nil, errors.NewStatusF(code.ErrTaskDefinitionInvalid, "task group children empty")
-	}
-	definition := &iapiserver.TaskDefinition{
-		DefinitionType: iapiserver.TaskDefinitionTypeGroup,
-		GroupType:      req.GroupType,
-		Children:       req.Children,
-		StrategyConfig: req.StrategyConfig,
-		TimeoutPolicy:  req.TimeoutPolicy,
-		RetryPolicy:    req.RetryPolicy,
-		Tags:           req.Tags,
-		ProjectID:      req.ProjectID,
-		Namespace:      req.Namespace,
-		CreatedBy:      req.CreatedBy,
-	}
-	definition.Name = req.Name
-	definition.Description = req.Description
-	ret, err := s.store.TaskCenters().AddDefinition(ctx, definition)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return ret, nil
-}
-
-// CreateDAGFlowTask 创建 DAGFlowTask 定义，并在保存前校验节点依赖无环。
-func (s *taskCenterService) CreateDAGFlowTask(
-	ctx context.Context,
-	req *iapiserver.DAGFlowTaskCreateRequest,
-) (*iapiserver.DAGFlowTask, error) {
-	if err := validateRetryPolicy(req.RetryPolicy, req.TimeoutPolicy); err != nil {
-		return nil, err
-	}
-	if err := validateDAG(req.Nodes, req.Edges); err != nil {
-		return nil, err
-	}
-	definition := &iapiserver.TaskDefinition{
-		DefinitionType: iapiserver.TaskDefinitionTypeDAGFlow,
-		DAGNodes:       req.Nodes,
-		DAGEdges:       req.Edges,
-		InputMapping:   req.InputMapping,
-		OutputMapping:  req.OutputMapping,
-		StrategyConfig: req.StrategyConfig,
-		TimeoutPolicy:  req.TimeoutPolicy,
-		RetryPolicy:    req.RetryPolicy,
-		Tags:           req.Tags,
-		ProjectID:      req.ProjectID,
-		Namespace:      req.Namespace,
-		CreatedBy:      req.CreatedBy,
-	}
-	definition.Name = req.Name
-	definition.Description = req.Description
-	ret, err := s.store.TaskCenters().AddDefinition(ctx, definition)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return ret, nil
-}
-
-func (s *taskCenterService) ListRuns(
-	ctx context.Context,
-	req *iapiserver.TaskRunListRequest,
-) (*iapiserver.TaskRunListResponse, error) {
-	items, total, err := s.store.TaskCenters().ListRuns(ctx, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &iapiserver.TaskRunListResponse{Total: total, Items: items}, nil
-}
-
-// CreateRun 创建一次 TaskRun；具体业务执行由后续 Worker protocol 和 AppEngine 完成。
-func (s *taskCenterService) CreateRun(
-	ctx context.Context,
-	req *iapiserver.TaskRunCreateRequest,
-) (*iapiserver.TaskRun, error) {
-	if err := req.Validate(); err != nil {
-		return nil, errors.WithStack(err)
-	}
-	definition, err := s.store.TaskCenters().GetDefinition(ctx, req.DefinitionType, req.DefinitionID)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	timeoutPolicy := req.TimeoutPolicy
-	if timeoutPolicy == (iapiserver.TimeoutPolicy{}) {
-		timeoutPolicy = definition.TimeoutPolicy
-	}
-	retryPolicy := req.RetryPolicy
-	if retryPolicy == (iapiserver.RetryPolicy{}) {
-		retryPolicy = definition.RetryPolicy
-	}
-	if err := validateRetryPolicy(retryPolicy, timeoutPolicy); err != nil {
-		return nil, err
-	}
-	run := &iapiserver.TaskRun{
-		DefinitionType:    req.DefinitionType,
-		DefinitionID:      req.DefinitionID,
-		ApplicationRunID:  req.ApplicationRunID,
-		IdempotencyKey:    req.IdempotencyKey,
-		ParentRunID:       req.ParentRunID,
-		RootRunID:         req.RootRunID,
-		ScheduleAt:        req.ScheduleAt,
-		AdapterKey:        req.AdapterKey,
-		OperationKey:      req.OperationKey,
-		OperationVersion:  req.OperationVersion,
-		RequestedEngineID: req.RequestedEngineID,
-		ResolvedEngineID:  req.ResolvedEngineID,
-		Input:             req.Input,
-		TimeoutAt:         timeoutAt(req.ScheduleAt, timeoutPolicy),
-		MaxAttempts:       retryPolicyMaxAttempts(retryPolicy),
-		ProjectID:         fallbackString(req.ProjectID, definition.ProjectID),
-		Namespace:         fallbackString(req.Namespace, definition.Namespace),
-		Tags:              req.Tags,
-		CreatedBy:         req.CreatedBy,
-	}
-	run.Name = definition.Name + "-run"
-	if !req.ScheduleAt.IsZero() && req.ScheduleAt.Time.After(time.Now()) {
-		run.Status = iapiserver.TaskRunStatusPending
-	} else {
-		run.Status = iapiserver.TaskRunStatusReady
-	}
-	ret, created, err := s.store.TaskCenters().AddRunIdempotent(ctx, run)
+func (s *taskCenterService) ListAtomicTasks(ctx context.Context, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
+	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	items, total, err := s.store.ListAtomicTasks(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if created {
-		s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventRunCreated, "", ret.Status))
-	}
-	return ret, nil
+	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
 }
-
-func (s *taskCenterService) GetRun(ctx context.Context, id string) (*iapiserver.TaskRun, error) {
-	return s.store.TaskCenters().GetRun(ctx, id)
-}
-
-func (s *taskCenterService) DeleteRun(ctx context.Context, id string) (*iapiserver.SuccessResponse, error) {
-	run, err := s.store.TaskCenters().GetRun(ctx, id)
+func (s *taskCenterService) GetAtomicTask(ctx context.Context, id string) (*iapiserver.AtomicTask, error) {
+	item, err := s.store.GetAtomicTask(ctx, id)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
-	if !isTerminalRunStatus(run.Status) {
-		return nil, errors.NewStatusF(code.ErrTaskRunStateBlocked, "task run is not terminal")
+	if item.CreatedBy != taskActor(ctx) {
+		return nil, errors.NewStatus(code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
-	if err := s.store.TaskCenters().SoftDeleteRun(ctx, id); err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &iapiserver.SuccessResponse{Success: true}, nil
+	return item, nil
 }
-
-func (s *taskCenterService) ListAttempts(
-	ctx context.Context,
-	req *iapiserver.TaskAttemptListRequest,
-) (*iapiserver.TaskAttemptListResponse, error) {
-	items, total, err := s.store.TaskCenters().ListAttempts(ctx, req)
+func (s *taskCenterService) ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error) {
+	if _, err := s.GetAtomicTask(ctx, req.AtomicTaskID); err != nil {
+		return nil, err
+	}
+	items, total, err := s.store.ListAttempts(ctx, req)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return &iapiserver.TaskAttemptListResponse{Total: total, Items: items}, nil
 }
 
-func (s *taskCenterService) CancelRun(
-	ctx context.Context,
-	req *iapiserver.CancelTaskRunRequest,
-) (*iapiserver.TaskRun, error) {
-	run, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+func (s *taskCenterService) CreateAtomicTask(ctx context.Context, req *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error) {
+	if err := s.validateFunctionRef(req.FunctionRef); err != nil {
+		return nil, err
+	}
+	if (req.IdempotencyScope == "") != (req.IdempotencyKey == "") {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "idempotency scope and key must be provided together")
+	}
+	task := atomicTaskFromRequest(req, taskActor(ctx))
+	task.ID = uuid.NewString()
+	task.RootTaskID = task.ID
+	task.Status = iapiserver.AtomicTaskStatusPending
+	createdTask, created, err := s.store.AddAtomicTaskIdempotent(ctx, task)
+	if err != nil || !created {
+		return createdTask, err
+	}
+	definition := atomicDefinition(createdTask)
+	binding, err := s.runtime.RegisterDefinition(ctx, definition)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return createdTask, runtimeError(err)
 	}
-	if isTerminalRunStatus(run.Status) {
-		return nil, errors.NewStatusF(code.ErrTaskRunStateBlocked, "terminal task run cannot be canceled")
-	}
-	from := run.Status
-	run.Status = iapiserver.TaskRunStatusCancelRequested
-	run.CanceledAt = imachinery.NewTime(time.Now())
-	ret, err := s.store.TaskCenters().UpdateRun(ctx, run)
+	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: createdTask.ID, IdempotencyKey: stableRuntimeKey(createdTask.ProjectID, createdTask.Namespace, createdTask.IdempotencyScope, createdTask.IdempotencyKey, createdTask.ID), Input: map[string]any{"atomic_task_id": createdTask.ID, "arguments": createdTask.Arguments}})
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return createdTask, runtimeError(err)
 	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, from, ret.Status))
-	return ret, nil
+	createdTask.RuntimeExecutionID = execution.ID
+	createdTask.RuntimeRevision = binding.Revision
+	createdTask.Status = iapiserver.AtomicTaskStatusRunning
+	return s.store.UpdateAtomicTask(ctx, createdTask)
 }
 
-func (s *taskCenterService) RetryRun(
-	ctx context.Context,
-	req *iapiserver.RetryTaskRunRequest,
-) (*iapiserver.TaskRun, error) {
-	run, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if run.Status != iapiserver.TaskRunStatusFailed &&
-		run.Status != iapiserver.TaskRunStatusTimeout &&
-		run.Status != iapiserver.TaskRunStatusLost {
-		return nil, errors.NewStatusF(code.ErrTaskRunStateBlocked, "task run cannot be retried")
-	}
-	from := run.Status
-	run.Status = iapiserver.TaskRunStatusReady
-	run.Progress = 0
-	run.CompletedAt = imachinery.Time{}
-	ret, err := s.store.TaskCenters().UpdateRun(ctx, run)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, from, ret.Status))
-	return ret, nil
-}
-
-// RegisterWorker 注册 Worker 进程能力声明；不会执行具体业务任务。
-func (s *taskCenterService) RegisterWorker(
-	ctx context.Context,
-	req *iapiserver.WorkerRegisterRequest,
-) (*iapiserver.Worker, error) {
-	worker := &iapiserver.Worker{
-		WorkerType:     req.WorkerType,
-		Capabilities:   req.Capabilities,
-		Labels:         req.Labels,
-		MaxConcurrency: req.MaxConcurrency,
-		Status:         iapiserver.WorkerStatusOnline,
-	}
-	worker.Name = req.WorkerType
-	return s.store.TaskCenters().RegisterWorker(ctx, worker)
-}
-
-func (s *taskCenterService) HeartbeatWorker(
-	ctx context.Context,
-	req *iapiserver.WorkerHeartbeatRequest,
-) (*iapiserver.Worker, error) {
-	return s.store.TaskCenters().HeartbeatWorker(ctx, req)
-}
-
-func (s *taskCenterService) ClaimRun(
-	ctx context.Context,
-	req *iapiserver.ClaimTaskRunRequest,
-) (*iapiserver.ClaimTaskRunResponse, error) {
-	return s.store.TaskCenters().ClaimRun(ctx, req)
-}
-
-func (s *taskCenterService) UpdateProgress(
-	ctx context.Context,
-	req *iapiserver.ProgressUpdateRequest,
-) (*iapiserver.TaskRun, error) {
-	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+func (s *taskCenterService) CancelAtomicTask(ctx context.Context, id string, req *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error) {
+	task, err := s.GetAtomicTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := s.store.TaskCenters().UpdateProgress(ctx, req)
+	if iapiserver.IsAtomicTaskTerminal(task.Status) {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "terminal atomic task cannot be canceled")
+	}
+	if task.RuntimeExecutionID != "" {
+		if err := s.runtime.CancelExecution(ctx, task.RuntimeExecutionID, req.Reason); err != nil {
+			return nil, runtimeError(err)
+		}
+	}
+	task.Status = iapiserver.AtomicTaskStatusCancelRequested
+	return s.store.UpdateAtomicTask(ctx, task)
+}
+
+func (s *taskCenterService) RetryAtomicTask(ctx context.Context, id string, _ *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error) {
+	source, err := s.GetAtomicTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if before.Status != ret.Status {
-		s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
+	if source.Status != iapiserver.AtomicTaskStatusFailed && source.Status != iapiserver.AtomicTaskStatusTimeout && source.Status != iapiserver.AtomicTaskStatusCanceled {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "atomic task cannot be manually retried")
 	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventProgressUpdated, ret.Status, ret.Status))
-	return ret, nil
+	req := &iapiserver.AtomicTaskCreateRequest{Key: source.ChildKey, Name: source.Name, Description: source.Description, FunctionRef: source.FunctionRef, Arguments: source.Arguments, RequiredCapabilities: source.RequiredCapabilities, RetryPolicy: source.RetryPolicy, TimeoutPolicy: source.TimeoutPolicy, ProjectID: source.ProjectID, Namespace: source.Namespace}
+	retried, err := s.CreateAtomicTask(ctx, req)
+	if err != nil {
+		return retried, err
+	}
+	retried.RetryOfTaskID = source.ID
+	retried.RootTaskID = source.RootTaskID
+	if retried.RootTaskID == "" {
+		retried.RootTaskID = source.ID
+	}
+	return s.store.UpdateAtomicTask(ctx, retried)
 }
 
-func (s *taskCenterService) CompleteRun(
-	ctx context.Context,
-	req *iapiserver.TaskRunCompleteRequest,
-) (*iapiserver.TaskRun, error) {
-	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+func (s *taskCenterService) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) (*iapiserver.TaskGroupListResponse, error) {
+	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	items, total, err := s.store.ListTaskGroups(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := s.store.TaskCenters().CompleteRun(ctx, req)
+	return &iapiserver.TaskGroupListResponse{Total: total, Items: items}, nil
+}
+func (s *taskCenterService) GetTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
+	item, err := s.store.GetTaskGroup(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
-	return ret, nil
+	if item.CreatedBy != taskActor(ctx) {
+		return nil, errors.NewStatus(code.ErrTaskGroupNotFound, "task group not found")
+	}
+	return item, nil
 }
-
-func (s *taskCenterService) FailRun(
-	ctx context.Context,
-	req *iapiserver.TaskRunFailRequest,
-) (*iapiserver.TaskRun, error) {
-	before, err := s.store.TaskCenters().GetRun(ctx, req.RunID)
+func (s *taskCenterService) ListTaskGroupTasks(ctx context.Context, id string, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
+	if _, err := s.GetTaskGroup(ctx, id); err != nil {
+		return nil, err
+	}
+	items, total, err := s.store.ListOwnedTasks(ctx, iapiserver.TaskOwnerTypeGroup, id, req)
 	if err != nil {
 		return nil, err
 	}
-	ret, err := s.store.TaskCenters().FailRun(ctx, req)
+	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
+}
+
+func (s *taskCenterService) CreateTaskGroup(ctx context.Context, req *iapiserver.TaskGroupCreateRequest) (*iapiserver.TaskGroup, error) {
+	if err := s.validateTemplates(req.Tasks); err != nil {
+		return nil, err
+	}
+	if req.Strategy.MaxParallelism < 0 || req.Strategy.MaxParallelism > iapiserver.MaxTaskGraphNodes {
+		return nil, errors.NewStatusF(code.ErrTaskGroupInvalid, "max parallelism is invalid")
+	}
+	if req.Mode == iapiserver.TaskGroupModeSerial && !req.Strategy.FailFast {
+		req.Strategy.FailFast = true
+	}
+	group := &iapiserver.TaskGroup{Mode: req.Mode, Tasks: req.Tasks, Strategy: req.Strategy, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Tasks), Pending: len(req.Tasks)}, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	group.ID = uuid.NewString()
+	group.Name = req.Name
+	group.Description = req.Description
+	tasks := tasksFromTemplates(req.Tasks, group.ID, iapiserver.TaskOwnerTypeGroup, req.ProjectID, req.Namespace, group.CreatedBy)
+	createdGroup, created, err := s.store.AddTaskGroupWithTasks(ctx, group, tasks)
+	if err != nil || !created {
+		return createdGroup, err
+	}
+	definition := groupDefinition(createdGroup, tasks)
+	binding, err := s.runtime.RegisterDefinition(ctx, definition)
+	if err != nil {
+		return createdGroup, runtimeError(err)
+	}
+	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: createdGroup.ID, IdempotencyKey: stableRuntimeKey(createdGroup.ProjectID, createdGroup.Namespace, createdGroup.IdempotencyScope, createdGroup.IdempotencyKey, createdGroup.ID), Input: map[string]any{"task_group_id": createdGroup.ID}})
+	if err != nil {
+		return createdGroup, runtimeError(err)
+	}
+	createdGroup.RuntimeExecutionID = execution.ID
+	createdGroup.RuntimeDefinitionName = binding.DefinitionName
+	createdGroup.RuntimeDefinitionVersion = binding.DefinitionVersion
+	createdGroup.Status = iapiserver.TaskGroupStatusRunning
+	return s.store.UpdateTaskGroup(ctx, createdGroup)
+}
+
+func (s *taskCenterService) CancelTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
+	group, err := s.GetTaskGroup(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	s.recordTaskRunEvent(ctx, newTaskRunEvent(ret, iapiserver.TaskCenterEventStatusChanged, before.Status, ret.Status))
-	return ret, nil
+	if iapiserver.IsTaskGroupTerminal(group.Status) {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "terminal task group cannot be canceled")
+	}
+	if group.RuntimeExecutionID != "" {
+		if err := s.runtime.CancelExecution(ctx, group.RuntimeExecutionID, "task group canceled"); err != nil {
+			return nil, runtimeError(err)
+		}
+	}
+	group.Status = iapiserver.TaskGroupStatusCancelRequested
+	return s.store.UpdateTaskGroup(ctx, group)
+}
+func (s *taskCenterService) RetryTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
+	source, err := s.GetTaskGroup(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !iapiserver.IsTaskGroupTerminal(source.Status) {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "task group cannot be rerun")
+	}
+	created, err := s.CreateTaskGroup(ctx, &iapiserver.TaskGroupCreateRequest{Name: source.Name, Description: source.Description, Mode: source.Mode, Tasks: source.Tasks, Strategy: source.Strategy, ProjectID: source.ProjectID, Namespace: source.Namespace})
+	if err != nil {
+		return created, err
+	}
+	created.RetryOfID = source.ID
+	return s.store.UpdateTaskGroup(ctx, created)
 }
 
-func (s *taskCenterService) RenewLease(
-	ctx context.Context,
-	req *iapiserver.LeaseRenewRequest,
-) (*iapiserver.ExecutionLease, error) {
-	return s.store.TaskCenters().RenewLease(ctx, req)
+func (s *taskCenterService) ListDAGTaskGroups(ctx context.Context, req *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error) {
+	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	items, total, err := s.store.ListDAGTaskGroups(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.DAGTaskGroupListResponse{Total: total, Items: items}, nil
+}
+func (s *taskCenterService) GetDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
+	item, err := s.store.GetDAGTaskGroup(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item.CreatedBy != taskActor(ctx) {
+		return nil, errors.NewStatus(code.ErrDAGTaskGroupNotFound, "dag task group not found")
+	}
+	return item, nil
+}
+func (s *taskCenterService) ListDAGTaskGroupTasks(ctx context.Context, id string, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
+	if _, err := s.GetDAGTaskGroup(ctx, id); err != nil {
+		return nil, err
+	}
+	items, total, err := s.store.ListOwnedTasks(ctx, iapiserver.TaskOwnerTypeDAGGroup, id, req)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
 }
 
-func (s *taskCenterService) Health(ctx context.Context) (*iapiserver.TaskCenterHealth, error) {
-	return s.store.TaskCenters().Health(ctx)
+func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error) {
+	layers, err := s.validateDAG(req.Nodes, req.Edges)
+	if err != nil {
+		return nil, err
+	}
+	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	group.ID = uuid.NewString()
+	group.Name = req.Name
+	group.Description = req.Description
+	tasks := tasksFromDAG(req.Nodes, group.ID, req.ProjectID, req.Namespace, group.CreatedBy)
+	definition := dagDefinition(group, tasks, layers)
+	group.RuntimeDefinitionName = definition.Name
+	group.RuntimeDefinitionVersion = definition.Version
+	group.RuntimeDefinitionHash = definitionHash(definition)
+	createdGroup, created, err := s.store.AddDAGTaskGroupWithTasks(ctx, group, tasks)
+	if err != nil || !created {
+		return createdGroup, err
+	}
+	binding, err := s.runtime.RegisterDefinition(ctx, definition)
+	if err != nil {
+		return createdGroup, runtimeError(err)
+	}
+	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: createdGroup.ID, IdempotencyKey: stableRuntimeKey(createdGroup.ProjectID, createdGroup.Namespace, createdGroup.IdempotencyScope, createdGroup.IdempotencyKey, createdGroup.ID), Input: map[string]any{"dag_task_group_id": createdGroup.ID, "input": createdGroup.Input}})
+	if err != nil {
+		return createdGroup, runtimeError(err)
+	}
+	createdGroup.RuntimeExecutionID = execution.ID
+	createdGroup.Status = iapiserver.TaskGroupStatusRunning
+	return s.store.UpdateDAGTaskGroup(ctx, createdGroup)
 }
 
-func validateDAG(nodes []iapiserver.DAGNode, edges []iapiserver.DAGEdge) error {
-	if len(nodes) == 0 {
-		return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "dag nodes empty")
+func (s *taskCenterService) CancelDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
+	group, err := s.GetDAGTaskGroup(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	graph := make(map[string][]string, len(nodes))
-	visiting := make(map[string]bool, len(nodes))
-	visited := make(map[string]bool, len(nodes))
-	for _, node := range nodes {
-		nodeID := strings.TrimSpace(node.NodeID)
-		if nodeID == "" {
-			return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "dag node id empty")
-		}
-		if _, ok := graph[nodeID]; ok {
-			return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "dag node id duplicated")
-		}
-		graph[nodeID] = nil
+	if iapiserver.IsTaskGroupTerminal(group.Status) {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "terminal dag task group cannot be canceled")
 	}
-	for _, edge := range edges {
-		if _, ok := graph[edge.FromNodeID]; !ok {
-			return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "dag edge from node missing")
+	if group.RuntimeExecutionID != "" {
+		if err := s.runtime.CancelExecution(ctx, group.RuntimeExecutionID, "dag task group canceled"); err != nil {
+			return nil, runtimeError(err)
 		}
-		if _, ok := graph[edge.ToNodeID]; !ok {
-			return errors.NewStatusF(code.ErrTaskDefinitionInvalid, "dag edge to node missing")
-		}
-		graph[edge.FromNodeID] = append(graph[edge.FromNodeID], edge.ToNodeID)
 	}
-	var visit func(string) bool
-	visit = func(nodeID string) bool {
-		if visiting[nodeID] {
-			return true
-		}
-		if visited[nodeID] {
-			return false
-		}
-		visiting[nodeID] = true
-		for _, next := range graph[nodeID] {
-			if visit(next) {
-				return true
-			}
-		}
-		visiting[nodeID] = false
-		visited[nodeID] = true
-		return false
+	group.Status = iapiserver.TaskGroupStatusCancelRequested
+	return s.store.UpdateDAGTaskGroup(ctx, group)
+}
+func (s *taskCenterService) RetryDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
+	source, err := s.GetDAGTaskGroup(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	for nodeID := range graph {
-		if visit(nodeID) {
-			return errors.NewStatusF(code.ErrTaskDAGCycleDetected, "dag flow task contains cycle")
+	if !iapiserver.IsTaskGroupTerminal(source.Status) {
+		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "dag task group cannot be rerun")
+	}
+	created, err := s.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: source.Name, Description: source.Description, Nodes: source.Nodes, Edges: source.Edges, Input: source.Input, OutputMapping: source.OutputMapping, CanvasVersionID: source.CanvasVersionID, ProjectID: source.ProjectID, Namespace: source.Namespace})
+	if err != nil {
+		return created, err
+	}
+	created.RetryOfID = source.ID
+	return s.store.UpdateDAGTaskGroup(ctx, created)
+}
+
+func (s *taskCenterService) ListTaskSchedules(ctx context.Context, req *iapiserver.TaskScheduleListRequest) (*iapiserver.TaskScheduleListResponse, error) {
+	applyTaskScheduleScope(ctx, req)
+	items, total, err := s.store.ListTaskSchedules(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.TaskScheduleListResponse{Total: total, Items: items}, nil
+}
+func (s *taskCenterService) GetTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
+	item, err := s.store.GetTaskSchedule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !canReadTaskSchedule(ctx, item) {
+		return nil, errors.NewStatus(code.ErrTaskScheduleNotFound, "task schedule not found")
+	}
+	return item, nil
+}
+func (s *taskCenterService) ListScheduleExecutions(ctx context.Context, req *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error) {
+	if _, err := s.GetTaskSchedule(ctx, req.ScheduleID); err != nil {
+		return nil, err
+	}
+	items, total, err := s.store.ListScheduleExecutions(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ScheduleExecutionListResponse{Total: total, Items: items}, nil
+}
+
+func (s *taskCenterService) RegisterDAGDefinition(ctx context.Context, name string, version int, req *iapiserver.DAGTaskGroupCreateRequest) (*DefinitionBinding, error) {
+	if req == nil || name == "" || version <= 0 {
+		return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "runtime definition identity is invalid")
+	}
+	layers, err := s.validateDAG(req.Nodes, req.Edges)
+	if err != nil {
+		return nil, err
+	}
+	tasks := tasksFromDAG(req.Nodes, name, req.ProjectID, req.Namespace, iapiserver.DefaultTaskCenterCreatedBy)
+	definition := dagDefinition(&iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, OutputMapping: req.OutputMapping}, tasks, layers)
+	definition.Name = name
+	definition.Version = version
+	hash := definitionHash(definition)
+	binding, err := s.runtime.RegisterDefinition(ctx, definition)
+	if err != nil {
+		return nil, runtimeError(err)
+	}
+	return &DefinitionBinding{Name: binding.DefinitionName, Version: binding.DefinitionVersion, Revision: binding.Revision, Hash: hash}, nil
+}
+
+func (s *taskCenterService) CreateTaskSchedule(ctx context.Context, req *iapiserver.TaskScheduleCreateRequest) (*iapiserver.TaskSchedule, error) {
+	if err := validateScheduleRequest(req); err != nil {
+		return nil, err
+	}
+	schedule := &iapiserver.TaskSchedule{TriggerType: req.TriggerType, CronExpression: req.CronExpression, RunAt: req.RunAt, TimeZone: req.TimeZone, Target: req.Target, Status: iapiserver.TaskScheduleStatusActive, MisfirePolicy: iapiserver.TaskSchedulePolicySkip, OverlapPolicy: iapiserver.TaskSchedulePolicySkip, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	schedule.ID = uuid.NewString()
+	schedule.Name = req.Name
+	schedule.Description = req.Description
+	schedule.RuntimeScheduleName = "task_schedule_" + schedule.ID
+	definition := scheduleLauncherDefinition(schedule)
+	binding, err := s.runtime.RegisterDefinition(ctx, definition)
+	if err != nil {
+		return nil, runtimeError(err)
+	}
+	created, err := s.store.AddTaskSchedule(ctx, schedule)
+	if err != nil {
+		return nil, err
+	}
+	start := workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: schedule.ID + "-${scheduledTime}", Input: map[string]any{"task_schedule_id": schedule.ID, "run_at": schedule.RunAt.Time}}
+	if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+		err = s.runtime.SaveSchedule(ctx, runtimeSchedule(schedule, start))
+	} else {
+		start.CorrelationID = schedule.ID
+		start.IdempotencyKey = schedule.ID
+		_, err = s.runtime.StartExecution(ctx, start)
+	}
+	if err != nil {
+		// 外部运行时注册失败时隐藏尚未生效的本地记录，避免暴露假的 ACTIVE Schedule。
+		if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+			_ = s.runtime.DeleteSchedule(ctx, schedule.RuntimeScheduleName)
+		}
+		schedule.Status = iapiserver.TaskScheduleStatusDeleted
+		schedule.DeletedAt = imachinery.Now()
+		_, _ = s.store.UpdateTaskSchedule(ctx, schedule)
+		return created, runtimeError(err)
+	}
+	return created, nil
+}
+
+func (s *taskCenterService) UpdateTaskSchedule(ctx context.Context, req *iapiserver.TaskScheduleUpdateRequest) (*iapiserver.TaskSchedule, error) {
+	schedule, err := s.GetTaskSchedule(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if schedule.Status == iapiserver.TaskScheduleStatusDeleted || schedule.Status == iapiserver.TaskScheduleStatusCompleted {
+		return nil, errors.NewStatusF(code.ErrTaskScheduleStateBlocked, "task schedule cannot be updated")
+	}
+	if req.Name != nil {
+		schedule.Name = *req.Name
+	}
+	if req.Description != nil {
+		schedule.Description = *req.Description
+	}
+	if req.CronExpression != nil {
+		schedule.CronExpression = *req.CronExpression
+	}
+	if req.RunAt != nil {
+		schedule.RunAt = *req.RunAt
+	}
+	if req.TimeZone != nil {
+		schedule.TimeZone = *req.TimeZone
+	}
+	if req.Target != nil {
+		schedule.Target = *req.Target
+	}
+	validation := &iapiserver.TaskScheduleCreateRequest{TriggerType: schedule.TriggerType, CronExpression: schedule.CronExpression, RunAt: schedule.RunAt, TimeZone: schedule.TimeZone, Target: schedule.Target}
+	if err := validateScheduleRequest(validation); err != nil {
+		return nil, err
+	}
+	if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+		binding, err := s.runtime.RegisterDefinition(ctx, scheduleLauncherDefinition(schedule))
+		if err != nil {
+			return nil, runtimeError(err)
+		}
+		start := workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: schedule.ID + "-${scheduledTime}", Input: map[string]any{"task_schedule_id": schedule.ID}}
+		if err := s.runtime.SaveSchedule(ctx, runtimeSchedule(schedule, start)); err != nil {
+			return nil, runtimeError(err)
+		}
+	}
+	return s.store.UpdateTaskSchedule(ctx, schedule)
+}
+func (s *taskCenterService) DeleteTaskSchedule(ctx context.Context, id string) error {
+	schedule, err := s.GetTaskSchedule(ctx, id)
+	if err != nil {
+		return err
+	}
+	if schedule.RuntimeScheduleName != "" && schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+		if err := s.runtime.DeleteSchedule(ctx, schedule.RuntimeScheduleName); err != nil {
+			return runtimeError(err)
+		}
+	}
+	schedule.Status = iapiserver.TaskScheduleStatusDeleted
+	schedule.DeletedAt = imachinery.NewTime(time.Now())
+	_, err = s.store.UpdateTaskSchedule(ctx, schedule)
+	return err
+}
+func (s *taskCenterService) PauseTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
+	schedule, err := s.GetTaskSchedule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if schedule.Status != iapiserver.TaskScheduleStatusActive {
+		return nil, errors.NewStatusF(code.ErrTaskScheduleStateBlocked, "task schedule is not active")
+	}
+	if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+		if err := s.runtime.PauseSchedule(ctx, schedule.RuntimeScheduleName); err != nil {
+			return nil, runtimeError(err)
+		}
+	}
+	schedule.Status = iapiserver.TaskScheduleStatusPaused
+	return s.store.UpdateTaskSchedule(ctx, schedule)
+}
+func (s *taskCenterService) ResumeTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
+	schedule, err := s.GetTaskSchedule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if schedule.Status != iapiserver.TaskScheduleStatusPaused {
+		return nil, errors.NewStatusF(code.ErrTaskScheduleStateBlocked, "task schedule is not paused")
+	}
+	if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
+		if err := s.runtime.ResumeSchedule(ctx, schedule.RuntimeScheduleName); err != nil {
+			return nil, runtimeError(err)
+		}
+	}
+	schedule.Status = iapiserver.TaskScheduleStatusActive
+	return s.store.UpdateTaskSchedule(ctx, schedule)
+}
+
+func (s *taskCenterService) validateFunctionRef(ref string) error {
+	if ref == "" {
+		return errors.NewStatusF(code.ErrTaskFunctionRefNotRegistered, "function ref is required")
+	}
+	if len(s.functions) == 0 {
+		return nil
+	}
+	if _, ok := s.functions[ref]; !ok {
+		return errors.NewStatusF(code.ErrTaskFunctionRefNotRegistered, "function ref is not registered")
+	}
+	return nil
+}
+func (s *taskCenterService) validateTemplates(templates []iapiserver.AtomicTaskTemplate) error {
+	if len(templates) == 0 || len(templates) > iapiserver.MaxTaskGraphNodes {
+		return errors.NewStatusF(code.ErrTaskGroupInvalid, "task group size is invalid")
+	}
+	keys := make(map[string]struct{}, len(templates))
+	for _, template := range templates {
+		if template.Key == "" {
+			return errors.NewStatusF(code.ErrTaskGroupInvalid, "child key is required")
+		}
+		if _, exists := keys[template.Key]; exists {
+			return errors.NewStatusF(code.ErrTaskGroupInvalid, "child key must be unique")
+		}
+		keys[template.Key] = struct{}{}
+		if err := s.validateFunctionRef(template.FunctionRef); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func isTerminalRunStatus(status string) bool {
-	switch status {
-	case iapiserver.TaskRunStatusSuccess,
-		iapiserver.TaskRunStatusFailed,
-		iapiserver.TaskRunStatusCanceled,
-		iapiserver.TaskRunStatusTimeout,
-		iapiserver.TaskRunStatusLost:
-		return true
+func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapiserver.DAGEdge) ([][]string, error) {
+	if len(nodes) == 0 || len(nodes) > iapiserver.MaxTaskGraphNodes || len(edges) > iapiserver.MaxTaskGraphEdges {
+		return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag graph size is invalid")
+	}
+	keys := make(map[string]iapiserver.DAGNode, len(nodes))
+	indegree := make(map[string]int, len(nodes))
+	adjacency := make(map[string][]string, len(nodes))
+	for _, node := range nodes {
+		if node.Key == "" {
+			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag node key is required")
+		}
+		if _, exists := keys[node.Key]; exists {
+			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag node key must be unique")
+		}
+		if err := s.validateFunctionRef(node.Task.FunctionRef); err != nil {
+			return nil, err
+		}
+		if node.DynamicFork && (node.MaxDynamicTasks < 1 || node.MaxDynamicTasks > iapiserver.MaxDynamicForkTasks) {
+			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dynamic fork limit is invalid")
+		}
+		keys[node.Key] = node
+		indegree[node.Key] = 0
+	}
+	for _, edge := range edges {
+		if _, ok := keys[edge.FromNode]; !ok {
+			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag edge source is missing")
+		}
+		if _, ok := keys[edge.ToNode]; !ok {
+			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag edge target is missing")
+		}
+		adjacency[edge.FromNode] = append(adjacency[edge.FromNode], edge.ToNode)
+		indegree[edge.ToNode]++
+	}
+	current := make([]string, 0)
+	for key, degree := range indegree {
+		if degree == 0 {
+			current = append(current, key)
+		}
+	}
+	layers := make([][]string, 0)
+	visited := 0
+	for len(current) > 0 {
+		sort.Strings(current)
+		layer := append([]string(nil), current...)
+		layers = append(layers, layer)
+		next := make([]string, 0)
+		for _, key := range current {
+			visited++
+			for _, child := range adjacency[key] {
+				indegree[child]--
+				if indegree[child] == 0 {
+					next = append(next, child)
+				}
+			}
+		}
+		current = next
+	}
+	if visited != len(nodes) {
+		return nil, errors.NewStatusF(code.ErrTaskDAGCycleDetected, "dag contains a cycle")
+	}
+	return layers, nil
+}
+
+func atomicTaskFromRequest(req *iapiserver.AtomicTaskCreateRequest, createdBy string) *iapiserver.AtomicTask {
+	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
+	task.Name = req.Name
+	if task.Name == "" {
+		task.Name = req.Key
+	}
+	task.Description = req.Description
+	if task.Arguments == nil {
+		task.Arguments = map[string]any{}
+	}
+	return task
+}
+func tasksFromTemplates(templates []iapiserver.AtomicTaskTemplate, ownerID, ownerType, projectID, namespace, createdBy string) []*iapiserver.AtomicTask {
+	tasks := make([]*iapiserver.AtomicTask, 0, len(templates))
+	for index, template := range templates {
+		task := &iapiserver.AtomicTask{FunctionRef: template.FunctionRef, Arguments: template.Arguments, RequiredCapabilities: template.RequiredCapabilities, RetryPolicy: template.RetryPolicy, TimeoutPolicy: template.TimeoutPolicy, Status: iapiserver.AtomicTaskStatusBlocked, OwnerType: ownerType, OwnerID: ownerID, ChildKey: template.Key, ChildOrder: index, ProjectID: projectID, Namespace: namespace, CreatedBy: createdBy}
+		task.ID = uuid.NewString()
+		task.RootTaskID = task.ID
+		task.Name = template.Name
+		if task.Name == "" {
+			task.Name = template.Key
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks
+}
+func tasksFromDAG(nodes []iapiserver.DAGNode, ownerID, projectID, namespace, createdBy string) []*iapiserver.AtomicTask {
+	templates := make([]iapiserver.AtomicTaskTemplate, len(nodes))
+	for i, node := range nodes {
+		templates[i] = node.Task
+		templates[i].Key = node.Key
+	}
+	return tasksFromTemplates(templates, ownerID, iapiserver.TaskOwnerTypeDAGGroup, projectID, namespace, createdBy)
+}
+
+func atomicDefinition(task *iapiserver.AtomicTask) workflowruntime.Definition {
+	name := "atomic_" + safeName(task.FunctionRef) + "_" + shortID(task.ID)
+	return workflowruntime.Definition{Name: name, Version: 1, Description: task.Description, TimeoutSeconds: max(task.TimeoutPolicy.OverallTimeoutSeconds, 1), Tasks: []workflowruntime.Task{simpleRuntimeTask(task)}}
+}
+func groupDefinition(group *iapiserver.TaskGroup, tasks []*iapiserver.AtomicTask) workflowruntime.Definition {
+	definition := workflowruntime.Definition{Name: "task_group_" + shortID(group.ID), Version: 1, Description: group.Description, TimeoutSeconds: 86400}
+	if group.Mode == iapiserver.TaskGroupModeSerial {
+		for _, task := range tasks {
+			definition.Tasks = append(definition.Tasks, simpleRuntimeTask(task))
+		}
+		return definition
+	}
+	branches := make([][]workflowruntime.Task, 0, len(tasks))
+	joins := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		runtimeTask := simpleRuntimeTask(task)
+		branches = append(branches, []workflowruntime.Task{runtimeTask})
+		joins = append(joins, runtimeTask.ReferenceName)
+	}
+	definition.Tasks = []workflowruntime.Task{{Name: "fork", ReferenceName: "fork", Type: "FORK_JOIN", ForkTasks: branches}, {Name: "join", ReferenceName: "join", Type: "JOIN", JoinOn: joins}}
+	return definition
+}
+func dagDefinition(group *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTask, layers [][]string) workflowruntime.Definition {
+	byKey := make(map[string]*iapiserver.AtomicTask, len(tasks))
+	for _, task := range tasks {
+		byKey[task.ChildKey] = task
+	}
+	definition := workflowruntime.Definition{Name: "dag_" + shortID(group.ID), Version: 1, Description: group.Description, TimeoutSeconds: 86400, Output: group.OutputMapping}
+	nodesByKey := make(map[string]iapiserver.DAGNode, len(group.Nodes))
+	for _, node := range group.Nodes {
+		nodesByKey[node.Key] = node
+	}
+	for layerIndex, layer := range layers {
+		if len(layer) == 1 {
+			definition.Tasks = append(definition.Tasks, runtimeTasksForDAGNode(nodesByKey[layer[0]], byKey[layer[0]])...)
+			continue
+		}
+		branches := make([][]workflowruntime.Task, 0, len(layer))
+		joins := make([]string, 0, len(layer))
+		for _, key := range layer {
+			tasks := runtimeTasksForDAGNode(nodesByKey[key], byKey[key])
+			branches = append(branches, tasks)
+			joins = append(joins, tasks[len(tasks)-1].ReferenceName)
+		}
+		forkRef := fmt.Sprintf("layer_%d_fork", layerIndex)
+		definition.Tasks = append(definition.Tasks, workflowruntime.Task{Name: forkRef, ReferenceName: forkRef, Type: "FORK_JOIN", ForkTasks: branches}, workflowruntime.Task{Name: fmt.Sprintf("layer_%d_join", layerIndex), ReferenceName: fmt.Sprintf("layer_%d_join", layerIndex), Type: "JOIN", JoinOn: joins})
+	}
+	return definition
+}
+func runtimeTasksForDAGNode(node iapiserver.DAGNode, task *iapiserver.AtomicTask) []workflowruntime.Task {
+	planner := simpleRuntimeTask(task)
+	if !node.DynamicFork {
+		return []workflowruntime.Task{planner}
+	}
+	dynamicRef := safeName(node.Key + "_dynamic_fork")
+	joinRef := safeName(node.Key + "_dynamic_join")
+	planner.Input["max_dynamic_tasks"] = node.MaxDynamicTasks
+	dynamicTasksParam := "dynamic_tasks"
+	dynamicInputParam := "dynamic_inputs"
+	return []workflowruntime.Task{planner, {
+		Name: dynamicRef, ReferenceName: dynamicRef, Type: "FORK_JOIN_DYNAMIC",
+		Input:             map[string]any{dynamicTasksParam: "${" + planner.ReferenceName + ".output." + dynamicTasksParam + "}", dynamicInputParam: "${" + planner.ReferenceName + ".output." + dynamicInputParam + "}"},
+		DynamicTasksParam: dynamicTasksParam, DynamicInputParam: dynamicInputParam,
+	}, {Name: joinRef, ReferenceName: joinRef, Type: "JOIN", JoinOn: []string{dynamicRef}}}
+}
+func scheduleLauncherDefinition(schedule *iapiserver.TaskSchedule) workflowruntime.Definition {
+	tasks := make([]workflowruntime.Task, 0, 2)
+	if schedule.TriggerType == iapiserver.TaskScheduleTriggerRunAt {
+		tasks = append(tasks, workflowruntime.Task{Name: "wait", ReferenceName: "wait_until", Type: "WAIT", Input: map[string]any{"until": "${workflow.input.run_at}"}})
+	}
+	tasks = append(tasks, workflowruntime.Task{Name: "task.schedule.acquire", ReferenceName: "schedule_acquire", Type: "SIMPLE", Input: map[string]any{"arguments": map[string]any{"task_schedule_id": "${workflow.input.task_schedule_id}", "scheduled_at": "${workflow.input._scheduledTime}"}}})
+	return workflowruntime.Definition{Name: "task_schedule_launcher", Version: 1, Description: "Task Center schedule launcher", TimeoutSeconds: 31536000, Tasks: tasks}
+}
+
+func runtimeSchedule(schedule *iapiserver.TaskSchedule, start workflowruntime.StartRequest) workflowruntime.Schedule {
+	return workflowruntime.Schedule{
+		Name: schedule.RuntimeScheduleName, CronExpression: schedule.CronExpression,
+		TimeZone: schedule.TimeZone,
+		Paused:   schedule.Status == iapiserver.TaskScheduleStatusPaused, RunCatchup: false,
+		StartAt: time.Now(), StartRequest: start,
+	}
+}
+func simpleRuntimeTask(task *iapiserver.AtomicTask) workflowruntime.Task {
+	return workflowruntime.Task{Name: task.FunctionRef, ReferenceName: safeName(task.ChildKey + "_" + shortID(task.ID)), Type: "SIMPLE", Input: map[string]any{"atomic_task_id": task.ID, "arguments": task.Arguments}}
+}
+
+func validateScheduleRequest(req *iapiserver.TaskScheduleCreateRequest) error {
+	if req.Target.Type != iapiserver.TaskScheduleTargetAtomic && req.Target.Type != iapiserver.TaskScheduleTargetGroup && req.Target.Type != iapiserver.TaskScheduleTargetDAG {
+		return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule target is invalid")
+	}
+	if req.TimeZone == "" {
+		return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule time zone is required")
+	}
+	if _, err := time.LoadLocation(req.TimeZone); err != nil {
+		return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule time zone is invalid")
+	}
+	switch req.TriggerType {
+	case iapiserver.TaskScheduleTriggerCron:
+		if len(strings.Fields(req.CronExpression)) != 6 || !req.RunAt.IsZero() {
+			return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule cron must use six fields")
+		}
+	case iapiserver.TaskScheduleTriggerRunAt:
+		if req.RunAt.IsZero() || req.CronExpression != "" {
+			return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule run at is invalid")
+		}
 	default:
-		return false
+		return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule trigger type is invalid")
 	}
+	return nil
+}
+func runtimeError(err error) error {
+	if stderrors.Is(err, workflowruntime.ErrUnavailable) {
+		return errors.NewStatus(code.ErrWorkflowRuntimeUnavailable, err.Error())
+	}
+	return errors.NewStatus(code.ErrWorkflowRuntimeRejected, err.Error())
+}
+func stableRuntimeKey(projectID, namespace, scope, key, fallback string) string {
+	if scope == "" || key == "" {
+		return fallback
+	}
+	return strings.Join([]string{projectID, namespace, scope, key}, ":")
 }
 
-func fallbackString(value, fallback string) string {
-	if value != "" {
-		return value
+var unsafeName = regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+
+func safeName(value string) string {
+	value = unsafeName.ReplaceAllString(value, "_")
+	value = strings.Trim(value, "_")
+	if value == "" {
+		return "task"
 	}
-	return fallback
+	return value
+}
+func shortID(value string) string {
+	value = strings.ReplaceAll(value, "-", "")
+	if len(value) > 12 {
+		return value[:12]
+	}
+	return value
+}
+func definitionHash(value any) string {
+	data, _ := json.Marshal(value)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
-func retryPolicyMaxAttempts(policy iapiserver.RetryPolicy) int {
-	if policy.MaxRetries < 0 {
-		return -1
+var _ TaskCenterSrv = (*taskCenterService)(nil)
+
+func taskActor(ctx context.Context) string {
+	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
+	if err == nil && user != nil && user.ID != "" {
+		return user.ID
 	}
-	return policy.MaxRetries + 1
+	return iapiserver.DefaultTaskCenterCreatedBy
+}
+func applyTaskScope(ctx context.Context, projectID, namespace, createdBy *string) {
+	if *projectID == "" {
+		*projectID = iapiserver.DefaultTaskCenterProjectID
+	}
+	if *namespace == "" {
+		*namespace = iapiserver.DefaultTaskCenterNamespace
+	}
+	*createdBy = taskActor(ctx)
 }
 
-func validateRetryPolicy(policy iapiserver.RetryPolicy, timeoutPolicy iapiserver.TimeoutPolicy) error {
-	if policy.MaxRetries >= 0 {
-		return nil
-	}
-	if timeoutPolicy.OverallTimeout != "" || policy.MaxRetryDuration != "" {
-		return nil
-	}
-	return errors.NewStatusF(code.ErrTaskRetryPolicyInvalid, "infinite retry requires exit protection")
+func applyTaskScheduleScope(ctx context.Context, req *iapiserver.TaskScheduleListRequest) {
+	applyTaskScope(ctx, &req.ProjectID, &req.Namespace, &req.CreatedBy)
+	// 系统健康计划归 TaskWorker 所有；系统管理员需要在同一计划列表中查看和排障。
+	req.IncludeSystem = req.CreatedBy == "system-admin"
 }
 
-func timeoutAt(scheduleAt imachinery.Time, policy iapiserver.TimeoutPolicy) imachinery.Time {
-	if policy.OverallTimeout == "" {
-		return imachinery.Time{}
-	}
-	duration, err := time.ParseDuration(policy.OverallTimeout)
-	if err != nil {
-		return imachinery.Time{}
-	}
-	base := time.Now()
-	if !scheduleAt.IsZero() {
-		base = scheduleAt.Time
-	}
-	return imachinery.NewTime(base.Add(duration))
-}
-
-func newTaskRunEvent(run *iapiserver.TaskRun, eventType, from, to string) *iapiserver.TaskRunEvent {
-	event := &iapiserver.TaskRunEvent{
-		RunID:      run.ID,
-		EventType:  eventType,
-		FromStatus: from,
-		ToStatus:   to,
-		Payload: map[string]any{
-			"run_id":              run.ID,
-			"application_run_id":  run.ApplicationRunID,
-			"resource_version":    run.ResourceVersion,
-			"definition_type":     run.DefinitionType,
-			"definition_id":       run.DefinitionID,
-			"status":              run.Status,
-			"adapter_key":         run.AdapterKey,
-			"operation_key":       run.OperationKey,
-			"operation_version":   run.OperationVersion,
-			"requested_engine_id": run.RequestedEngineID,
-			"resolved_engine_id":  run.ResolvedEngineID,
-			"project_id":          run.ProjectID,
-			"namespace":           run.Namespace,
-			"created_by":          run.CreatedBy,
-		},
-		OccurredAt: imachinery.NewTime(time.Now()),
-	}
-	event.Name = eventType
-	return event
-}
-
-func (s *taskCenterService) recordTaskRunEvent(ctx context.Context, event *iapiserver.TaskRunEvent) {
-	if _, err := s.store.TaskCenters().AddEvent(ctx, event); err != nil {
-		log.Errorf("task center event record failed: run_id=%s event_type=%s err=%v", event.RunID, event.EventType, err)
-	}
+func canReadTaskSchedule(ctx context.Context, schedule *iapiserver.TaskSchedule) bool {
+	actor := taskActor(ctx)
+	return schedule.CreatedBy == actor || (actor == "system-admin" && schedule.CreatedBy == iapiserver.DefaultTaskCenterCreatedBy)
 }
