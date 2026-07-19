@@ -46,17 +46,11 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	engine, reader, err := s.comfyUIReader(ctx, req.SourceEngineInstanceID)
+	_, catalog, err := s.usableComfyUIObjectInfo(ctx, req.SourceEngineInstanceID)
 	if err != nil {
 		return nil, err
 	}
-	objectInfo, err := reader.ReadObjectInfo(ctx, engine)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, err.Error())
-	}
-	if len(objectInfo) == 0 {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info is empty")
-	}
+	objectInfo := catalog.ObjectInfo
 	sourceType := req.SourceType
 	source := req.SourceWorkflow
 	sourceRaw := req.SourceWorkflowRaw
@@ -79,17 +73,12 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 		}
 		conversionStatus = iapiserver.ComfyUIAPIConversionPending
 	}
-	parsed, err := parseComfyUIWorkflow(apiWorkflow, visualWorkflow, objectInfo)
-	if err != nil {
+	if _, err := parseComfyUIWorkflow(apiWorkflow, visualWorkflow, objectInfo); err != nil {
 		return nil, err
 	}
 	sourceChecksum, err := canonicalJSONRawDigest(sourceRaw, source)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, err.Error())
-	}
-	objectChecksum, err := canonicalJSONDigest(objectInfo)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, err.Error())
 	}
 	duplicates, err := s.Store.ApplicationPlatforms().ListComfyUIWorkflowDuplicateIDs(ctx, p.UserID, sourceChecksum)
 	if err != nil {
@@ -98,11 +87,11 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 	var apiChecksum *string
 	persistedAPI := apiWorkflow
 	if conversionStatus == iapiserver.ComfyUIAPIConversionPending {
-		persistedAPI = map[string]any{}
+		persistedAPI = nil
 	} else if digest, digestErr := canonicalJSONDigest(apiWorkflow); digestErr == nil {
 		apiChecksum = &digest
 	}
-	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: p.UserID, CreatedByUserID: p.UserID, UpdatedByUserID: p.UserID, SourceEngineInstanceID: req.SourceEngineInstanceID, SourceType: sourceType, APIConversionStatus: conversionStatus, SourceChecksum: sourceChecksum, APIWorkflowChecksum: apiChecksum, APIWorkflow: persistedAPI, VisualWorkflow: visualWorkflow, WorkflowChecksum: sourceChecksum, ImportObjectInfo: objectInfo, ImportObjectInfoChecksum: objectChecksum, ParseStatus: parsed.status, ParseSummary: parsed.summary, ParsedNodes: parsed.nodes, InputCandidates: parsed.inputs, OutputCandidates: parsed.outputs, Dependencies: parsed.dependencies, LatestValidationStatus: iapiserver.ComfyUIValidationNotValidated, LifecycleStatus: iapiserver.ComfyUIWorkflowActive}
+	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: p.UserID, CreatedByUserID: p.UserID, UpdatedByUserID: p.UserID, SourceEngineInstanceID: req.SourceEngineInstanceID, SourceType: sourceType, APIConversionStatus: conversionStatus, SourceChecksum: sourceChecksum, APIWorkflowChecksum: apiChecksum, APIWorkflow: persistedAPI, VisualWorkflow: visualWorkflow}
 	workflow.Name, workflow.Description = req.Name, req.Description
 	created, err := s.Store.ApplicationPlatforms().AddComfyUIWorkflow(ctx, workflow)
 	if err != nil {
@@ -124,21 +113,21 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
-	if workflow.LifecycleStatus != iapiserver.ComfyUIWorkflowActive {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowArchived, "workflow is archived")
-	}
 	if workflow.APIConversionStatus == iapiserver.ComfyUIAPIConversionReady {
 		return workflow.Detail(), nil
 	}
 	if workflow.SourceType != iapiserver.ComfyUIWorkflowSourceVisual || len(workflow.VisualWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "visual workflow source is unavailable")
 	}
-	api, err := (comfy2GoWorkflowParser{}).VisualToAPI(workflow.VisualWorkflow, workflow.ImportObjectInfo)
+	_, catalog, err := s.usableComfyUIObjectInfo(ctx, workflow.SourceEngineInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	api, err := (comfy2GoWorkflowParser{}).VisualToAPI(workflow.VisualWorkflow, catalog.ObjectInfo)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPIConversionBlocked, err.Error())
 	}
-	parsed, err := parseComfyUIWorkflow(api, workflow.VisualWorkflow, workflow.ImportObjectInfo)
-	if err != nil {
+	if _, err := parseComfyUIWorkflow(api, workflow.VisualWorkflow, catalog.ObjectInfo); err != nil {
 		return nil, err
 	}
 	digest, err := canonicalJSONDigest(api)
@@ -146,9 +135,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, err.Error())
 	}
 	workflow.APIWorkflow, workflow.APIWorkflowChecksum = api, &digest
-	workflow.APIConversionStatus, workflow.WorkflowChecksum = iapiserver.ComfyUIAPIConversionReady, digest
-	workflow.ParseStatus, workflow.ParseSummary, workflow.ParsedNodes = parsed.status, parsed.summary, parsed.nodes
-	workflow.InputCandidates, workflow.OutputCandidates, workflow.Dependencies = parsed.inputs, parsed.outputs, parsed.dependencies
+	workflow.APIConversionStatus = iapiserver.ComfyUIAPIConversionReady
 	workflow.UpdatedByUserID = principal.UserID
 	updated, err := s.Store.ApplicationPlatforms().UpdateComfyUIWorkflow(ctx, workflow, version)
 	if err != nil {
@@ -171,70 +158,52 @@ func (s *applicationPlatformService) UpdateComfyUIWorkflow(ctx context.Context, 
 	}
 	return updated.Summary(), nil
 }
-func (s *applicationPlatformService) ArchiveComfyUIWorkflow(ctx context.Context, id string, version int64) (*iapiserver.ComfyUIWorkflowSummary, error) {
-	return s.setComfyUIWorkflowLifecycle(ctx, id, version, true)
-}
-func (s *applicationPlatformService) RestoreComfyUIWorkflow(ctx context.Context, id string, version int64) (*iapiserver.ComfyUIWorkflowSummary, error) {
-	return s.setComfyUIWorkflowLifecycle(ctx, id, version, false)
-}
-func (s *applicationPlatformService) setComfyUIWorkflowLifecycle(ctx context.Context, id string, version int64, archive bool) (*iapiserver.ComfyUIWorkflowSummary, error) {
-	action := "restore"
-	if archive {
-		action = "archive"
-	}
-	workflow, p, err := s.visibleComfyUIWorkflow(ctx, id, action)
+func (s *applicationPlatformService) ListComfyUIWorkflowNodes(ctx context.Context, id string, req *iapiserver.ComfyUIWorkflowDeriveRequest) (*iapiserver.ComfyUIWorkflowNodeListResponse, error) {
+	parsed, err := s.deriveComfyUIWorkflow(ctx, id, req.EngineInstanceID, "read_nodes")
 	if err != nil {
 		return nil, err
 	}
-	if archive {
-		now := imachinery.Now()
-		workflow.LifecycleStatus = iapiserver.ComfyUIWorkflowArchived
-		workflow.ArchivedAt = &now
-		workflow.ArchivedByUserID = stringPtr(p.UserID)
-	} else {
-		workflow.LifecycleStatus = iapiserver.ComfyUIWorkflowActive
-		workflow.ArchivedAt = nil
-		workflow.ArchivedByUserID = nil
-	}
-	workflow.UpdatedByUserID = p.UserID
-	updated, err := s.Store.ApplicationPlatforms().UpdateComfyUIWorkflow(ctx, workflow, version)
+	window, err := req.PagingParams.Normalize()
 	if err != nil {
 		return nil, err
 	}
-	return updated.Summary(), nil
+	return &iapiserver.ComfyUIWorkflowNodeListResponse{Total: len(parsed.nodes), Items: imachinery.PaginateSlice(parsed.nodes, window)}, nil
+}
+func (s *applicationPlatformService) ListComfyUIWorkflowInputCandidates(ctx context.Context, id, engineID string) (*iapiserver.ComfyUIWorkflowInputCandidateListResponse, error) {
+	parsed, err := s.deriveComfyUIWorkflow(ctx, id, engineID, "read_input_candidates")
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ComfyUIWorkflowInputCandidateListResponse{Total: len(parsed.inputs), Items: parsed.inputs}, nil
+}
+func (s *applicationPlatformService) ListComfyUIWorkflowOutputCandidates(ctx context.Context, id, engineID string) (*iapiserver.ComfyUIWorkflowOutputCandidateListResponse, error) {
+	parsed, err := s.deriveComfyUIWorkflow(ctx, id, engineID, "read_output_candidates")
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ComfyUIWorkflowOutputCandidateListResponse{Total: len(parsed.outputs), Items: parsed.outputs}, nil
+}
+func (s *applicationPlatformService) ListComfyUIWorkflowDependencies(ctx context.Context, id, engineID string) (*iapiserver.ComfyUIWorkflowDependencyListResponse, error) {
+	parsed, err := s.deriveComfyUIWorkflow(ctx, id, engineID, "read_dependencies")
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.ComfyUIWorkflowDependencyListResponse{Total: len(parsed.dependencies), Items: parsed.dependencies}, nil
 }
 
-func (s *applicationPlatformService) ListComfyUIWorkflowNodes(ctx context.Context, id string, pageNum, pageSize int) (*iapiserver.ComfyUIWorkflowNodeListResponse, error) {
-	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, "read_nodes")
+func (s *applicationPlatformService) deriveComfyUIWorkflow(ctx context.Context, id, engineID, action string) (*parsedComfyUIWorkflow, error) {
+	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, action)
 	if err != nil {
 		return nil, err
 	}
-	window, err := (imachinery.PagingParams{PageNum: pageNum, PageSize: pageSize}).Normalize()
+	if workflow.APIConversionStatus != iapiserver.ComfyUIAPIConversionReady || len(workflow.APIWorkflow) == 0 {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
+	}
+	_, catalog, err := s.usableComfyUIObjectInfo(ctx, engineID)
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.ComfyUIWorkflowNodeListResponse{Total: len(workflow.ParsedNodes), Items: imachinery.PaginateSlice(workflow.ParsedNodes, window)}, nil
-}
-func (s *applicationPlatformService) ListComfyUIWorkflowInputCandidates(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowInputCandidateListResponse, error) {
-	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, "read_input_candidates")
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ComfyUIWorkflowInputCandidateListResponse{Total: len(workflow.InputCandidates), Items: workflow.InputCandidates}, nil
-}
-func (s *applicationPlatformService) ListComfyUIWorkflowOutputCandidates(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowOutputCandidateListResponse, error) {
-	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, "read_output_candidates")
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ComfyUIWorkflowOutputCandidateListResponse{Total: len(workflow.OutputCandidates), Items: workflow.OutputCandidates}, nil
-}
-func (s *applicationPlatformService) ListComfyUIWorkflowDependencies(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowDependencyListResponse, error) {
-	workflow, _, err := s.visibleComfyUIWorkflow(ctx, id, "read_dependencies")
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ComfyUIWorkflowDependencyListResponse{Total: len(workflow.Dependencies), Items: workflow.Dependencies}, nil
+	return parseComfyUIWorkflow(workflow.APIWorkflow, workflow.VisualWorkflow, catalog.ObjectInfo)
 }
 
 func (s *applicationPlatformService) ListComfyUIWorkflowValidations(ctx context.Context, req *iapiserver.ComfyUIWorkflowValidationListRequest) (*iapiserver.ComfyUIWorkflowValidationListResponse, error) {
@@ -263,31 +232,26 @@ func (s *applicationPlatformService) ValidateComfyUIWorkflow(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	if workflow.LifecycleStatus == iapiserver.ComfyUIWorkflowArchived {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowArchived, "workflow is archived")
-	}
-	engine, reader, err := s.comfyUIReader(ctx, req.EngineInstanceID)
-	if err != nil {
-		return nil, err
-	}
 	now := imachinery.Now()
-	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: id, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, ValidatedAt: now, NodeSummary: map[string]any{"total_nodes": len(workflow.ParsedNodes)}, DependencySummary: map[string]any{"total_dependencies": len(workflow.Dependencies)}, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
+	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: id, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: req.EngineInstanceID, ValidatedAt: now, NodeSummary: map[string]any{}, DependencySummary: map[string]any{}, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
 	validation.Name = "Compatibility check for " + workflow.Name
-	objectInfo, readErr := reader.ReadObjectInfo(ctx, engine)
-	if readErr != nil || len(objectInfo) == 0 {
+	_, catalog, catalogErr := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	if catalogErr != nil {
+		if errors.ToStatus(catalogErr).Code != code.ErrAIAppComfyUIObjectInfoUnavailable {
+			return nil, catalogErr
+		}
 		validation.Status = iapiserver.ComfyUIValidationFailed
-		validation.Errors = []iapiserver.ComfyUIWorkflowDiagnostic{{Code: "OBJECT_INFO_UNAVAILABLE", Message: "target object_info could not be read"}}
+		validation.Errors = []iapiserver.ComfyUIWorkflowDiagnostic{{Code: "OBJECT_INFO_UNAVAILABLE", Message: "current object_info is unavailable"}}
 	} else {
-		validation.ObjectInfo = objectInfo
-		checksum, digestErr := canonicalJSONDigest(objectInfo)
-		if digestErr != nil {
-			return nil, digestErr
+		parsed, parseErr := parseComfyUIWorkflow(workflow.APIWorkflow, workflow.VisualWorkflow, catalog.ObjectInfo)
+		if parseErr != nil {
+			return nil, parseErr
 		}
-		validation.ObjectInfoChecksum = &checksum
-		validation.Errors = compatibilityDiagnostics(workflow, objectInfo)
-		if checksum != workflow.ImportObjectInfoChecksum {
-			validation.Warnings = append(validation.Warnings, iapiserver.ComfyUIWorkflowDiagnostic{Code: "OBJECT_INFO_CHANGED", Message: "target object_info differs from the import snapshot"})
-		}
+		workflow.ParsedNodes, workflow.Dependencies = parsed.nodes, parsed.dependencies
+		validation.ComfyUIVersion = catalog.ComfyUIVersion
+		validation.NodeSummary["total_nodes"] = len(parsed.nodes)
+		validation.DependencySummary["total_dependencies"] = len(parsed.dependencies)
+		validation.Errors = compatibilityDiagnostics(workflow, catalog.ObjectInfo)
 		validation.NodeSummary["blocking_errors"] = len(validation.Errors)
 		validation.NodeSummary["warnings"] = len(validation.Warnings)
 		validation.DependencySummary["blocking_errors"] = dependencyDiagnosticCount(validation.Errors)
@@ -311,9 +275,6 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 		}
 		return s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, p.UserID, req.IdempotencyKey, &iapiserver.ApplicationTemplate{}, &iapiserver.ApplicationTemplateVersion{})
 	}
-	if workflow.LifecycleStatus != iapiserver.ComfyUIWorkflowActive {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowArchived, "workflow is archived")
-	}
 	validation, err := s.Store.ApplicationPlatforms().GetComfyUIWorkflowValidation(ctx, req.WorkflowValidationID)
 	if err != nil || validation.WorkflowID != id || validation.OwnerUserID != workflow.OwnerUserID {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIValidationNotFound, "validation not found")
@@ -324,22 +285,44 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 	if _, ok := s.Runtime.Capability(req.CapabilityDefinitionID); !ok {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "capability definition is not registered")
 	}
-	engineType, _ := s.Runtime.EngineType("comfyui")
+	engineType, registered := s.Runtime.EngineType("comfyui")
+	if !registered {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "ComfyUI engine type is not registered")
+	}
 	if _, ok := engineType.OperationExecutors[req.CapabilityDefinitionID]; !ok {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "ComfyUI executor is not registered for capability")
 	}
-	if err := validateImportedComfyUITemplateContract(workflow, req.TemplateContract); err != nil {
-		return nil, err
-	}
-	snapshot := map[string]any{"api_workflow": workflow.APIWorkflow, "object_info": validation.ObjectInfo, "dependencies": workflow.Dependencies, "template_contract": req.TemplateContract}
-	revision, err := canonicalJSONDigest(snapshot)
-	if err != nil {
-		return nil, err
-	}
-	template := &iapiserver.ApplicationTemplate{OwnerUserID: workflow.OwnerUserID, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, CapabilityDefinitionID: req.CapabilityDefinitionID}
-	template.Name, template.Description = req.Name, req.Description
-	version := &iapiserver.ApplicationTemplateVersion{Status: iapiserver.VersionStatusDraft, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, SourceRevision: revision, WorkflowContractRevision: &revision, SourceComfyUIWorkflowID: stringPtr(id), SourceWorkflowValidationID: stringPtr(validation.ID), TemplateContract: req.TemplateContract, ComfyUIAPIWorkflow: workflow.APIWorkflow, ComfyUIObjectInfo: validation.ObjectInfo, ComfyUIDependencies: workflow.Dependencies}
-	result, err := s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, p.UserID, req.IdempotencyKey, template, version)
+	var result *iapiserver.ComfyUIWorkflowConvertResult
+	var revision string
+	err = s.Store.ApplicationPlatforms().WithEngineInstanceLock(ctx, validation.EngineInstanceID, func() error {
+		engine, catalog, lockErr := s.usableComfyUIObjectInfo(ctx, validation.EngineInstanceID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if !engineMatchesComfyUITemplateRestrictions(engine, req.TemplateContract) {
+			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "validation engine does not satisfy template restrictions")
+		}
+		parsed, lockErr := parseComfyUIWorkflow(workflow.APIWorkflow, workflow.VisualWorkflow, catalog.ObjectInfo)
+		if lockErr != nil {
+			return lockErr
+		}
+		workflow.ParsedNodes, workflow.InputCandidates, workflow.OutputCandidates, workflow.Dependencies = parsed.nodes, parsed.inputs, parsed.outputs, parsed.dependencies
+		if diagnostics := compatibilityDiagnostics(workflow, catalog.ObjectInfo); len(diagnostics) != 0 {
+			return errors.NewStatus(code.ErrAIAppComfyUIWorkflowIncompatible, "workflow is incompatible with the current object_info")
+		}
+		if lockErr := validateImportedComfyUITemplateContract(workflow, req.TemplateContract); lockErr != nil {
+			return lockErr
+		}
+		revision, lockErr = canonicalJSONDigest(map[string]any{"api_workflow": workflow.APIWorkflow, "template_contract": req.TemplateContract})
+		if lockErr != nil {
+			return lockErr
+		}
+		template := &iapiserver.ApplicationTemplate{OwnerUserID: workflow.OwnerUserID, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, CapabilityDefinitionID: req.CapabilityDefinitionID}
+		template.Name, template.Description = req.Name, req.Description
+		version := &iapiserver.ApplicationTemplateVersion{Status: iapiserver.VersionStatusDraft, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, SourceRevision: revision, WorkflowContractRevision: &revision, SourceComfyUIWorkflowID: stringPtr(id), SourceWorkflowValidationID: stringPtr(validation.ID), TemplateContract: req.TemplateContract, ComfyUIAPIWorkflow: workflow.APIWorkflow}
+		result, lockErr = s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, p.UserID, req.IdempotencyKey, template, version)
+		return lockErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -373,24 +356,6 @@ func (s *applicationPlatformService) auditManagedWorkflow(ctx context.Context, p
 		auditor = StructuredWorkflowAuditor{}
 	}
 	return auditor.Record(ctx, WorkflowAuditRecord{Action: action, ActorUserID: p.UserID, OwnerUserID: workflow.OwnerUserID, WorkflowID: workflow.ID, Result: "success", OccurredAt: imachinery.Now()})
-}
-func (s *applicationPlatformService) comfyUIReader(ctx context.Context, id string) (*iapiserver.EngineInstance, ComfyUIObjectInfoReader, error) {
-	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, id)
-	if err != nil {
-		return nil, nil, errors.NewStatus(code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-	}
-	if engine.ApplicationEngineTypeID != "comfyui" {
-		return nil, nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine instance is not ComfyUI")
-	}
-	typeDef, ok := s.Runtime.EngineType(engine.ApplicationEngineTypeID)
-	if !ok {
-		return nil, nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "ComfyUI engine type is not registered")
-	}
-	reader, ok := s.Adapters[typeDef.EngineAdapterID].(ComfyUIObjectInfoReader)
-	if !ok {
-		return nil, nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info reader is unavailable")
-	}
-	return engine, reader, nil
 }
 
 type parsedComfyUIWorkflow struct {

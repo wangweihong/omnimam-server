@@ -16,6 +16,7 @@ func TestApplicationPlatformLegacyMigrationIsConditional(t *testing.T) {
 func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 	markers := []string{
 		"idx_aiapp_engine_instances_name",
+		"fk_aiapp_comfyui_object_info_engine",
 		"idx_aiapp_binding_engine_capability",
 		"idx_aiapp_comfyui_workflows_conversion_key",
 		"idx_aiapp_comfyui_validations_engine_status",
@@ -27,6 +28,7 @@ func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 		"ck_aiapp_template_version_published_at",
 		"ck_aiapp_template_version_source",
 		"ck_aiapp_comfyui_workflow_checksums",
+		"ck_aiapp_comfyui_workflow_source",
 		"ck_aiapp_comfyui_workflow_conversion",
 		"ck_aiapp_comfyui_validation_status",
 		"fk_aiapp_comfyui_workflow_converted_version",

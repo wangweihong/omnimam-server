@@ -2,66 +2,76 @@
 
 ## Current project goal
 
-Complete and prepare the released `spec-v1.3.0` Task Center RECONCILE and Application Platform EngineInstance health implementation for staging/commit.
+Complete the backend alignment for released `spec-v1.4.0`, replacing persisted ComfyUI object-info snapshots with the EngineInstance one-to-one current catalog.
 
 ## Completed in this session
 
-- Verified `SSOT_VERSION.commit` and the checked-out `ssot` submodule both point to released commit `34e1994c9170553f3bcceb7b01b9d640a3698361`.
-- Rebuilt and ran the isolated `omnimam-reconcile-verify` stack with PostgreSQL metadata/history and AOF-enabled Redis Conductor queues.
-- Fixed Conductor 3.31 startup: `management.health.redis.enabled=true` incorrectly loads the redis-lock health indicator without a RedissonClient. Redis remains independently covered by the Compose healthcheck.
-- Proved 30-second `:00/:30` cadence, `runCatchupScheduleInstances=false`, one unique SYSTEM schedule, fixed controller version 1, enabled EngineInstance scanning, persisted admin parameters, bounded history, and no materialized health tasks.
-- Created one controlled enabled ComfyUI EngineInstance at an unreachable local endpoint. The first check persisted `offline` with safe summary `provider is unavailable` and atomically wrote one `engine_instance_health_changed` outbox row; later unchanged checks did not duplicate the event.
-- Updated the SYSTEM schedule to `maxParallelism=7`, `maxItemsPerRun=17`, `perItemTimeoutSeconds=2`, and `overallTimeoutSeconds=6`; API and Worker restarts did not restore defaults.
-- Completed controlled Worker, API Server, Conductor, PostgreSQL, and Redis restart tests. The schedule, parameters, Engine health state, cumulative reconcile state, Redis AOF queue, and outbox survived.
-- Runtime testing exposed that Redis AOF restores an already-enqueued overdue scheduler message even when Conductor catch-up generation is disabled. Added a Task Center misfire guard with a 5-second jitter allowance: a first late trigger is skipped without business history, while an existing `scheduleId + scheduledAt` continues through the recovery path.
-- Rebuilt the images and proved the fix: Conductor missed the 16:51:30 UTC tick, recovered at 16:51:47, did not backfill 16:51:30, and executed the next 16:52:00 tick normally.
-- Added explicit `integration` build isolation and PostgreSQL coverage for lookup-by-schedule-time, overlap, and retention.
+- Updated the `ssot` submodule to released tag `spec-v1.4.0` at `6f75b7dd187bb0d05e3e42fc2d720f026df47c85` and synchronized `SSOT_VERSION`.
+- Added `aiapp_comfyui_engine_object_info`, a current-fact extension keyed by `engine_instance_id`, with atomic upsert and `ON DELETE CASCADE`.
+- Added current object-info read and manual refresh APIs. Read supports gzip negotiation; refresh requires an enabled, online ComfyUI instance and preserves the last success on failure.
+- Added database row-lock serialization shared by manual refresh, scheduled refresh, and template conversion revalidation.
+- Added the `application-platform.comfyui-object-info-refresh` SYSTEM RECONCILE handler and the unique daily `0 0 3 * * *` UTC schedule.
+- Added EngineInstance list summary fields for object-info availability, refresh time, and derived 48-hour stale state.
+- Removed Workflow lifecycle/archive/restore behavior, persisted parse caches, Validation object-info snapshots/checksums, TemplateVersion object-info/dependency snapshots, and WorkflowTestRun object-info snapshots.
+- Changed nodes, input-candidates, output-candidates, and dependencies to require `engine_instance_id` and derive results from that instance's current usable catalog.
+- Changed import, API conversion, validation, template conversion/publish, RuntimeForm resolution, test runs, ApplicationRun creation, and Worker execution to revalidate against current object-info where applicable.
+- Regenerated application-platform error code source and documentation for errors `131243` and `131244`.
+- Updated TaskWorker architecture documentation to describe the two SYSTEM RECONCILE paths.
 
-## Files added or modified in this session
+## Files added or modified
 
-- Added/updated Task Center misfire behavior and tests in `backend/internal/apiserver/service/v1/taskcenter/reconcile.go` and `reconcile_test.go`.
-- Added `GetScheduleExecutionAt` to the store contract and PostgreSQL adapter; used it in RECONCILE and MATERIALIZED trigger paths.
-- Updated `backend/internal/apiserver/store/postgresql/task_center_reconcile_integration_test.go` with an integration build tag and lookup coverage.
-- Updated `deployments/conductor/config-postgres.properties` and `deployments/README.md` for the Redis queue/health configuration.
-- Refreshed this handoff. The broader uncommitted `spec-v1.3.0` implementation remains across Task Center, Application Platform, runtime, schema migration, generated errors, deployment files, `SSOT_VERSION`, and the `ssot` pointer.
+- SSOT pin: `ssot`, `SSOT_VERSION`.
+- API/meta/request models: `backend/apis/iapiserver/meta_application_platform.go`, `meta_comfyui_workflow.go`, `request_application_platform.go`, and `request_comfyui_workflow.go`.
+- Service/runtime: application-platform object-info, workflow, test-run, runtime-form, executor, adapters, and reconcile files under `backend/internal/apiserver/service/v1/applicationplatform/`.
+- Store/schema: `backend/internal/apiserver/store/store.go` and PostgreSQL application-platform/schema files.
+- HTTP/bootstrap: application-platform controller, response mapping, routes, API Server bootstrap, and TaskWorker bootstrap.
+- Generated errors and docs: `backend/internal/pkg/code/*`, `docs/guide/zh-CN/api/error_code_generated.md`.
+- Architecture and handoff docs under `docs/guide/zh-CN/architecture/` and `docs/HANDOFF.md`.
+- Added focused unit, race-safe reconcile, gzip, forbidden-field, and PostgreSQL integration tests.
 
-## Key architectural and design decisions
+## Key architectural decisions
 
-- PostgreSQL remains the business fact store, outbox, Conductor metadata store, and workflow history store; Redis is only the low-latency persistent Conductor queue.
-- Task Center, not Conductor queue recovery, enforces final V1 no-catch-up semantics.
-- Misfire detection allows 5 seconds of ordinary scheduler/worker jitter. It skips only when no business execution exists; existing executions remain recoverable after Worker failure or redelivery.
-- Engine health changes update EngineInstance and write the status-change outbox message in one PostgreSQL transaction. Unchanged health only advances check metadata.
+- PostgreSQL stores exactly one current object-info body per ComfyUI EngineInstance. It has no ObjectMeta, checksum, resource version, status machine, or history because it is an EngineInstance fact extension.
+- Refresh obtains an EngineInstance row lock before the provider call and retains it through atomic upsert. Conversion uses the same lock while revalidating and committing the first template version.
+- Stale is derived at read time from `refreshed_at`; catalogs older than 48 hours remain readable for diagnosis but are rejected by all execution-capable paths.
+- Workflow parse results are request-local only. Template revision covers API Workflow plus template contract, never object-info or derived dependencies.
+- Per user direction, this work targets a fresh v1.4.0 schema. No legacy data backfill, dual read/write, or in-place compatibility migration was added.
 
-## API, schema, and configuration changes present
+## API, schema, and configuration changes
 
-- TaskSchedule supports MATERIALIZED/RECONCILE and USER/SYSTEM modes, reconcile limits/config, history retention, reconcile summaries, and ScheduleReconcileState.
-- Added `GET /api/v1/task-schedules/{task_schedule_id}/reconcile-state` and RECONCILE list/update fields.
-- Added Task Center PostgreSQL columns, constraints, indexes, and `task_schedule_reconcile_states`; no new schema was required for the misfire fix.
-- Conductor uses `conductor.queue.type=redis_standalone`; Redis runs with AOF/everysec. The incompatible Conductor redis-lock health indicator is disabled.
+- Added `GET /api/v1/engine-instances/{engine_instance_id}/object-info`.
+- Added `POST /api/v1/engine-instances/{engine_instance_id}/object-info/refresh`.
+- Removed ComfyUI Workflow archive and restore routes.
+- Workflow derive routes now require query `engine_instance_id`.
+- Added EngineInstance summary fields `object_info_available`, `object_info_refreshed_at`, and `object_info_stale`.
+- Added errors `ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_NOT_ALLOWED` and `ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_FAILED`.
+- Added daily SYSTEM RECONCILE schedule `application-platform.comfyui-object-info-refresh` at `03:00 UTC`.
 
 ## Verification results
 
-- Passed focused unit tests, `go vet`, and race tests for Task Center, Application Platform, PostgreSQL store, and WorkflowRuntime.
-- Passed real PostgreSQL integration test with `-tags=integration`: lookup by schedule time, overlap, and retention.
-- `git diff --check` passed.
-- `go test ./...` remains red only in unrelated baseline areas: `backend/apis/imachinery`, `backend/pkg/validator`, `backend/pkg/grpccli`, `backend/pkg/grpcsvr`, `third_party/k8s.io/utils/exec`, and `tools/ssot-s1-live` (missing `skills/ssot-product-workflow/SKILL.md`).
+- Passed focused application-platform model, service, controller, and PostgreSQL store tests.
+- Passed `go test ./backend/internal/apiserver/...`.
+- Passed focused race tests for application-platform service, controller, and PostgreSQL store.
+- Passed `go vet ./backend/apis/iapiserver ./backend/internal/apiserver/...`.
+- Passed real PostgreSQL 16 integration coverage for current-catalog upsert, failure retention, and cascade deletion.
+- Passed `git diff --check`, exact SSOT tag verification, and `SSOT_VERSION.commit` equality.
+- Full `go test ./backend/...` still fails only in unrelated baseline packages: `backend/apis/imachinery`, `backend/pkg/validator`, `backend/pkg/grpccli`, and `backend/pkg/grpcsvr`.
 
 ## Outstanding tasks
 
-1. Decide whether to fix the unrelated full-suite baseline failures now or track them separately.
-2. Review and stage the released SSOT submodule pointer plus the complete implementation. The parent index still differs from working submodule commit `34e1994...`.
-3. Commit/push only after reviewing the full uncommitted feature diff; no files are staged or committed.
-4. Remove the controlled verification EngineInstance or tear down the isolated stack when it is no longer needed. The stack is intentionally still running for inspection.
+1. Review the complete v1.4.0 diff and stage/commit it when ready.
+2. Decide separately whether to repair the unrelated full-suite baseline failures.
+3. Run deployment-level ComfyUI verification against a reachable instance if one is available, including version extraction and a real daily reconcile execution.
 
 ## Known issues and risks
 
-- The 5-second misfire allowance is an internal implementation constant because SSOT defines SKIP semantics but no configurable grace period. Changing it should remain an implementation-only decision unless exposed as a contract field.
-- The verification database contains the fixture `reconcile-verification-offline`; it is isolated under the `omnimam-reconcile-verify` Compose project.
-- The complete feature and SSOT pointer remain unstaged/uncommitted.
+- Existing pre-v1.4.0 databases are not upgraded or backfilled by design; use a fresh schema or a separately reviewed destructive reset.
+- ComfyUI version is read best-effort from `/system_stats`; a valid object-info refresh can succeed with an empty version when the upstream omits it.
+- No reachable ComfyUI instance was available in this session, so provider-level object-info payload compatibility was covered with contract-shaped fixtures rather than a live endpoint.
 
 ## Recommended next task
 
-Review the complete diff, isolate or fix the unrelated baseline failures, then stage the released SSOT pointer and `spec-v1.3.0` implementation as one coherent change.
+Review and stage the complete `spec-v1.4.0` backend change, then perform a live ComfyUI smoke test before deployment.
 
 Next Prompt:
 

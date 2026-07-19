@@ -6,8 +6,6 @@ import (
 )
 
 const (
-	ComfyUIWorkflowActive       = "active"
-	ComfyUIWorkflowArchived     = "archived"
 	ComfyUIWorkflowSourceVisual = "visual_workflow"
 	ComfyUIWorkflowSourceAPI    = "api_workflow"
 	ComfyUIAPIConversionPending = "pending"
@@ -18,13 +16,12 @@ const (
 	ComfyUIParseManualConfigurationRequired = "manual_configuration_required"
 	ComfyUIParseUnsupported                 = "unsupported"
 
-	ComfyUIValidationNotValidated = "not_validated"
 	ComfyUIValidationCompatible   = "compatible"
 	ComfyUIValidationIncompatible = "incompatible"
 	ComfyUIValidationFailed       = "failed"
 )
 
-// ComfyUIWorkflow 保存用户导入的不可变执行源和服务端派生解析结果。
+// ComfyUIWorkflow 保存用户导入的不可变执行源；解析结果按目标实例当前目录即时计算。
 type ComfyUIWorkflow struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 是唯一资源所有者，普通用户查询必须以此字段隔离。
@@ -40,33 +37,16 @@ type ComfyUIWorkflow struct {
 	APIWorkflowChecksum    *string `json:"api_workflow_checksum" gorm:"column:api_workflow_checksum;type:text;index"`
 	// APIWorkflow 是执行事实；VisualWorkflow 只保存可选展示信息，二者导入后不可修改。
 	APIWorkflow          map[string]any `json:"-" gorm:"-"`
-	APIWorkflowShadow    string         `json:"-" gorm:"column:api_workflow_json;type:text;not null"`
+	APIWorkflowShadow    *string        `json:"-" gorm:"column:api_workflow_json;type:text"`
 	VisualWorkflow       map[string]any `json:"-" gorm:"-"`
 	VisualWorkflowShadow *string        `json:"-" gorm:"column:visual_workflow_json;type:text"`
-	// WorkflowChecksum 是 API Workflow 按 RFC 8785 规范化后的 SHA-256 摘要。
-	WorkflowChecksum string `json:"workflow_checksum" gorm:"column:workflow_checksum;type:text;not null;index"`
-	// ImportObjectInfo 是服务端从来源实例读取的能力快照，客户端不能提交。
-	ImportObjectInfo         map[string]any `json:"-" gorm:"-"`
-	ImportObjectInfoShadow   string         `json:"-" gorm:"column:import_object_info_json;type:text;not null"`
-	ImportObjectInfoChecksum string         `json:"-" gorm:"column:import_object_info_checksum;type:text;not null"`
-	// ParseStatus 和派生 JSON 列保存导入时的节点、候选项和依赖解析结果。
-	ParseStatus            string                           `json:"parse_status" gorm:"column:parse_status;type:text;not null;index"`
-	ParseSummary           ComfyUIWorkflowParseSummary      `json:"-" gorm:"-"`
-	ParseSummaryShadow     string                           `json:"-" gorm:"column:parse_summary_json;type:text;not null"`
-	ParsedNodes            []ComfyUIWorkflowNode            `json:"-" gorm:"-"`
-	ParsedNodesShadow      string                           `json:"-" gorm:"column:parsed_nodes_json;type:text;not null"`
-	InputCandidates        []ComfyUIWorkflowInputCandidate  `json:"-" gorm:"-"`
-	InputCandidatesShadow  string                           `json:"-" gorm:"column:input_candidates_json;type:text;not null"`
-	OutputCandidates       []ComfyUIWorkflowOutputCandidate `json:"-" gorm:"-"`
-	OutputCandidatesShadow string                           `json:"-" gorm:"column:output_candidates_json;type:text;not null"`
-	Dependencies           []ComfyUIWorkflowDependency      `json:"-" gorm:"-"`
-	DependenciesShadow     string                           `json:"-" gorm:"column:dependencies_json;type:text;not null"`
-	// LatestValidationStatus 是最近一次不可变兼容性校验的摘要状态。
-	LatestValidationStatus string `json:"latest_validation_status" gorm:"column:latest_validation_status;type:text;not null;default:'not_validated';index"`
-	// LifecycleStatus 控制归档和恢复；归档资源保留但不能校验或转换。
-	LifecycleStatus  string           `json:"lifecycle_status" gorm:"column:lifecycle_status;type:text;not null;default:'active';index"`
-	ArchivedAt       *imachinery.Time `json:"archived_at" gorm:"column:archived_at;type:timestamptz"`
-	ArchivedByUserID *string          `json:"-" gorm:"column:archived_by_user_id;type:text"`
+	// 以下字段仅承载单次即时解析结果，禁止映射为数据库列或 API 工作流详情字段。
+	ParseStatus      string                           `json:"-" gorm:"-"`
+	ParseSummary     ComfyUIWorkflowParseSummary      `json:"-" gorm:"-"`
+	ParsedNodes      []ComfyUIWorkflowNode            `json:"-" gorm:"-"`
+	InputCandidates  []ComfyUIWorkflowInputCandidate  `json:"-" gorm:"-"`
+	OutputCandidates []ComfyUIWorkflowOutputCandidate `json:"-" gorm:"-"`
+	Dependencies     []ComfyUIWorkflowDependency      `json:"-" gorm:"-"`
 	// Converted* 字段原子固定一次性转换结果、幂等键、时间和操作者。
 	ConvertedApplicationTemplateID *string          `json:"converted_application_template_id" gorm:"column:converted_application_template_id;type:text"`
 	ConvertedTemplateVersionID     *string          `json:"converted_template_version_id" gorm:"column:converted_template_version_id;type:text"`
@@ -91,31 +71,13 @@ func (w *ComfyUIWorkflow) BeforeUpdate(tx *gorm.DB) error {
 }
 func (*ComfyUIWorkflow) AfterUpdate(*gorm.DB) error { return nil }
 func (w *ComfyUIWorkflow) AfterFind(*gorm.DB) error {
-	unmarshalShadow(w.APIWorkflowShadow, &w.APIWorkflow)
+	unmarshalOptional(w.APIWorkflowShadow, &w.APIWorkflow)
 	unmarshalOptional(w.VisualWorkflowShadow, &w.VisualWorkflow)
-	unmarshalShadow(w.ImportObjectInfoShadow, &w.ImportObjectInfo)
-	unmarshalShadow(w.ParseSummaryShadow, &w.ParseSummary)
-	unmarshalShadow(w.ParsedNodesShadow, &w.ParsedNodes)
-	unmarshalShadow(w.InputCandidatesShadow, &w.InputCandidates)
-	unmarshalShadow(w.OutputCandidatesShadow, &w.OutputCandidates)
-	unmarshalShadow(w.DependenciesShadow, &w.Dependencies)
 	return nil
 }
 func (w *ComfyUIWorkflow) marshal() error {
-	values := []struct {
-		value    any
-		target   *string
-		fallback string
-	}{
-		{w.APIWorkflow, &w.APIWorkflowShadow, "{}"}, {w.ImportObjectInfo, &w.ImportObjectInfoShadow, "{}"},
-		{w.ParseSummary, &w.ParseSummaryShadow, "{}"}, {w.ParsedNodes, &w.ParsedNodesShadow, "[]"},
-		{w.InputCandidates, &w.InputCandidatesShadow, "[]"}, {w.OutputCandidates, &w.OutputCandidatesShadow, "[]"},
-		{w.Dependencies, &w.DependenciesShadow, "[]"},
-	}
-	for _, item := range values {
-		if err := marshalShadow(item.value, item.target, item.fallback); err != nil {
-			return err
-		}
+	if err := marshalOptional(w.APIWorkflow, &w.APIWorkflowShadow); err != nil {
+		return err
 	}
 	return marshalOptional(w.VisualWorkflow, &w.VisualWorkflowShadow)
 }
@@ -132,31 +94,23 @@ type ComfyUIWorkflowSummary struct {
 	APIConversionStatus            string           `json:"api_conversion_status"`
 	SourceChecksum                 string           `json:"source_checksum"`
 	APIWorkflowChecksum            *string          `json:"api_workflow_checksum"`
-	LifecycleStatus                string           `json:"lifecycle_status"`
-	ParseStatus                    string           `json:"parse_status"`
-	LatestValidationStatus         string           `json:"latest_validation_status"`
 	Converted                      bool             `json:"converted"`
 	ConvertedApplicationTemplateID *string          `json:"converted_application_template_id"`
 	ConvertedTemplateVersionID     *string          `json:"converted_template_version_id"`
 	ConvertedAt                    *imachinery.Time `json:"converted_at"`
-	ArchivedAt                     *imachinery.Time `json:"archived_at"`
 	CreatedAt                      imachinery.Time  `json:"created_at"`
 	UpdatedAt                      imachinery.Time  `json:"updated_at"`
 	ResourceVersion                int64            `json:"resource_version"`
 }
 
 func (w *ComfyUIWorkflow) Summary() *ComfyUIWorkflowSummary {
-	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceEngineInstanceID: w.SourceEngineInstanceID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, LifecycleStatus: w.LifecycleStatus, ParseStatus: w.ParseStatus, LatestValidationStatus: w.LatestValidationStatus, Converted: w.Converted(), ConvertedApplicationTemplateID: w.ConvertedApplicationTemplateID, ConvertedTemplateVersionID: w.ConvertedTemplateVersionID, ConvertedAt: w.ConvertedAt, ArchivedAt: w.ArchivedAt, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
+	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceEngineInstanceID: w.SourceEngineInstanceID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, Converted: w.Converted(), ConvertedApplicationTemplateID: w.ConvertedApplicationTemplateID, ConvertedTemplateVersionID: w.ConvertedTemplateVersionID, ConvertedAt: w.ConvertedAt, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
 }
 
 type ComfyUIWorkflowDetail struct {
 	*ComfyUIWorkflowSummary
-	APIWorkflow        map[string]any              `json:"api_workflow"`
-	VisualWorkflow     map[string]any              `json:"visual_workflow"`
-	ObjectInfoSnapshot map[string]any              `json:"object_info_snapshot"`
-	ObjectInfoChecksum string                      `json:"object_info_checksum"`
-	ParseSummary       ComfyUIWorkflowParseSummary `json:"parse_summary"`
-	Dependencies       []ComfyUIWorkflowDependency `json:"dependencies"`
+	APIWorkflow    map[string]any `json:"api_workflow"`
+	VisualWorkflow map[string]any `json:"visual_workflow"`
 }
 
 func (w *ComfyUIWorkflow) Detail() *ComfyUIWorkflowDetail {
@@ -164,7 +118,7 @@ func (w *ComfyUIWorkflow) Detail() *ComfyUIWorkflowDetail {
 	if w.APIConversionStatus != ComfyUIAPIConversionReady {
 		apiWorkflow = nil
 	}
-	return &ComfyUIWorkflowDetail{ComfyUIWorkflowSummary: w.Summary(), APIWorkflow: apiWorkflow, VisualWorkflow: w.VisualWorkflow, ObjectInfoSnapshot: w.ImportObjectInfo, ObjectInfoChecksum: w.ImportObjectInfoChecksum, ParseSummary: w.ParseSummary, Dependencies: w.Dependencies}
+	return &ComfyUIWorkflowDetail{ComfyUIWorkflowSummary: w.Summary(), APIWorkflow: apiWorkflow, VisualWorkflow: w.VisualWorkflow}
 }
 
 type ComfyUIWorkflowParseSummary struct {
@@ -222,7 +176,7 @@ type ComfyUIWorkflowDependency struct {
 	SourceNodeIDs  []string `json:"source_node_ids,omitempty"`
 }
 
-// ComfyUIWorkflowValidation 保存一次不可变的目标实例兼容性快照。
+// ComfyUIWorkflowValidation 保存一次不含 object_info 正文的不可变兼容性结果。
 type ComfyUIWorkflowValidation struct {
 	imachinery.ObjectMeta
 	// WorkflowID、OwnerUserID 和 RequestedByUserID 同时记录目标资源、所有者与实际操作者。
@@ -234,10 +188,6 @@ type ComfyUIWorkflowValidation struct {
 	// Status 是 compatible、incompatible 或读取失败后的 failed 终态。
 	Status         string `json:"status" gorm:"column:status;type:text;not null;index"`
 	ComfyUIVersion string `json:"comfyui_version,omitempty" gorm:"column:comfyui_version;type:text;default:''"`
-	// ObjectInfo 是本次校验重新读取的独立能力快照；failed 记录允许为空。
-	ObjectInfo         map[string]any `json:"object_info_snapshot" gorm:"-"`
-	ObjectInfoShadow   *string        `json:"-" gorm:"column:object_info_json;type:text"`
-	ObjectInfoChecksum *string        `json:"object_info_checksum" gorm:"column:object_info_checksum;type:text"`
 	// NodeSummary、DependencySummary、Errors 和 Warnings 保存稳定诊断结果。
 	NodeSummary             map[string]any              `json:"node_summary" gorm:"-"`
 	NodeSummaryShadow       string                      `json:"-" gorm:"column:node_summary_json;type:text;not null"`
@@ -282,33 +232,31 @@ type ComfyUIWorkflowTestEngineSnapshot struct {
 }
 type ComfyUIWorkflowTestRun struct {
 	imachinery.ObjectMeta
-	WorkflowID               string                            `json:"workflow_id" gorm:"column:workflow_id;type:text;not null;index"`
-	OwnerUserID              string                            `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:uk_comfy_test_owner_key"`
-	RequestedByUserID        string                            `json:"-" gorm:"column:requested_by_user_id;type:text;not null"`
-	EngineInstanceID         string                            `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
-	EngineInstanceSnapshot   ComfyUIWorkflowTestEngineSnapshot `json:"engine_instance_snapshot" gorm:"-"`
-	EngineSnapshotShadow     string                            `json:"-" gorm:"column:engine_instance_snapshot_json;type:text;not null"`
-	ParameterOverrideCount   int                               `json:"parameter_override_count" gorm:"-"`
-	WorkflowValidationID     string                            `json:"workflow_validation_id" gorm:"column:workflow_validation_id;type:text;not null"`
-	DAGTaskGroupID           *string                           `json:"dag_task_group_id" gorm:"column:dag_task_group_id;type:text;index"`
-	ExternalJobID            *string                           `json:"external_job_id" gorm:"column:external_job_id;type:text;index"`
-	IdempotencyKey           string                            `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:uk_comfy_test_owner_key"`
-	TaskCreationStatus       string                            `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
-	TaskCreationFailure      *string                           `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text"`
-	WorkflowSnapshot         map[string]any                    `json:"-" gorm:"-"`
-	WorkflowSnapshotShadow   string                            `json:"-" gorm:"column:workflow_snapshot_json;type:text;not null"`
-	ObjectInfoSnapshot       map[string]any                    `json:"-" gorm:"-"`
-	ObjectInfoSnapshotShadow string                            `json:"-" gorm:"column:object_info_snapshot_json;type:text;not null"`
-	Parameters               []ComfyUIWorkflowTestParameter    `json:"parameter_snapshot" gorm:"-"`
-	ParametersShadow         string                            `json:"-" gorm:"column:parameter_snapshot_json;type:text;not null;default:'[]'"`
-	Steps                    []ComfyUIWorkflowTestStep         `json:"steps" gorm:"-"`
-	StepsShadow              string                            `json:"-" gorm:"column:steps_json;type:text;not null;default:'[]'"`
-	Outputs                  []ComfyUIWorkflowTestOutput       `json:"outputs" gorm:"-"`
-	OutputsShadow            string                            `json:"-" gorm:"column:outputs_json;type:text;not null;default:'[]'"`
-	Status                   string                            `json:"status" gorm:"column:status;type:text;not null;default:'PENDING';index"`
-	Progress                 int                               `json:"progress" gorm:"column:progress;not null;default:0"`
-	CurrentStep              *string                           `json:"current_step" gorm:"column:current_step;type:text"`
-	FailureSummary           *string                           `json:"failure_summary" gorm:"column:failure_summary;type:text"`
+	WorkflowID             string                            `json:"workflow_id" gorm:"column:workflow_id;type:text;not null;index"`
+	OwnerUserID            string                            `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:uk_comfy_test_owner_key"`
+	RequestedByUserID      string                            `json:"-" gorm:"column:requested_by_user_id;type:text;not null"`
+	EngineInstanceID       string                            `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
+	EngineInstanceSnapshot ComfyUIWorkflowTestEngineSnapshot `json:"engine_instance_snapshot" gorm:"-"`
+	EngineSnapshotShadow   string                            `json:"-" gorm:"column:engine_instance_snapshot_json;type:text;not null"`
+	ParameterOverrideCount int                               `json:"parameter_override_count" gorm:"-"`
+	WorkflowValidationID   string                            `json:"workflow_validation_id" gorm:"column:workflow_validation_id;type:text;not null"`
+	DAGTaskGroupID         *string                           `json:"dag_task_group_id" gorm:"column:dag_task_group_id;type:text;index"`
+	ExternalJobID          *string                           `json:"external_job_id" gorm:"column:external_job_id;type:text;index"`
+	IdempotencyKey         string                            `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:uk_comfy_test_owner_key"`
+	TaskCreationStatus     string                            `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
+	TaskCreationFailure    *string                           `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text"`
+	WorkflowSnapshot       map[string]any                    `json:"-" gorm:"-"`
+	WorkflowSnapshotShadow string                            `json:"-" gorm:"column:workflow_snapshot_json;type:text;not null"`
+	Parameters             []ComfyUIWorkflowTestParameter    `json:"parameter_snapshot" gorm:"-"`
+	ParametersShadow       string                            `json:"-" gorm:"column:parameter_snapshot_json;type:text;not null;default:'[]'"`
+	Steps                  []ComfyUIWorkflowTestStep         `json:"steps" gorm:"-"`
+	StepsShadow            string                            `json:"-" gorm:"column:steps_json;type:text;not null;default:'[]'"`
+	Outputs                []ComfyUIWorkflowTestOutput       `json:"outputs" gorm:"-"`
+	OutputsShadow          string                            `json:"-" gorm:"column:outputs_json;type:text;not null;default:'[]'"`
+	Status                 string                            `json:"status" gorm:"column:status;type:text;not null;default:'PENDING';index"`
+	Progress               int                               `json:"progress" gorm:"column:progress;not null;default:0"`
+	CurrentStep            *string                           `json:"current_step" gorm:"column:current_step;type:text"`
+	FailureSummary         *string                           `json:"failure_summary" gorm:"column:failure_summary;type:text"`
 }
 
 func (ComfyUIWorkflowTestRun) TableName() string { return "aiapp_comfyui_workflow_test_runs" }
@@ -328,7 +276,6 @@ func (r *ComfyUIWorkflowTestRun) BeforeUpdate(tx *gorm.DB) error {
 func (*ComfyUIWorkflowTestRun) AfterUpdate(*gorm.DB) error { return nil }
 func (r *ComfyUIWorkflowTestRun) AfterFind(*gorm.DB) error {
 	unmarshalShadow(r.WorkflowSnapshotShadow, &r.WorkflowSnapshot)
-	unmarshalShadow(r.ObjectInfoSnapshotShadow, &r.ObjectInfoSnapshot)
 	unmarshalShadow(r.EngineSnapshotShadow, &r.EngineInstanceSnapshot)
 	unmarshalShadow(r.ParametersShadow, &r.Parameters)
 	r.ParameterOverrideCount = len(r.Parameters)
@@ -351,7 +298,7 @@ func (r *ComfyUIWorkflowTestRun) marshal() error {
 		value    any
 		target   *string
 		fallback string
-	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.ObjectInfoSnapshot, &r.ObjectInfoSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.Steps, &r.StepsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
+	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.Steps, &r.StepsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
 		if err := marshalShadow(item.value, item.target, item.fallback); err != nil {
 			return err
 		}
@@ -396,7 +343,6 @@ func (v *ComfyUIWorkflowValidation) BeforeUpdate(tx *gorm.DB) error {
 }
 func (*ComfyUIWorkflowValidation) AfterUpdate(*gorm.DB) error { return nil }
 func (v *ComfyUIWorkflowValidation) AfterFind(*gorm.DB) error {
-	unmarshalOptional(v.ObjectInfoShadow, &v.ObjectInfo)
 	unmarshalShadow(v.NodeSummaryShadow, &v.NodeSummary)
 	unmarshalShadow(v.DependencySummaryShadow, &v.DependencySummary)
 	unmarshalShadow(v.ErrorsShadow, &v.Errors)
@@ -404,9 +350,6 @@ func (v *ComfyUIWorkflowValidation) AfterFind(*gorm.DB) error {
 	return nil
 }
 func (v *ComfyUIWorkflowValidation) marshal() error {
-	if err := marshalOptional(v.ObjectInfo, &v.ObjectInfoShadow); err != nil {
-		return err
-	}
 	values := []struct {
 		value    any
 		target   *string

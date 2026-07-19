@@ -120,6 +120,9 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register engine health reconciler")
 	}
+	if err := reconcileRegistry.Register(appsvc.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
+		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
+	}
 
 	server := &server{
 		httpServer:          genericServer,
@@ -211,6 +214,7 @@ func (c *CompletedExtraConfig) New() error {
 
 		// application platform
 		&iapiserver.EngineInstance{},
+		&iapiserver.ComfyUIEngineObjectInfo{},
 		&iapiserver.EngineCapabilityBinding{},
 		&iapiserver.ComfyUIWorkflow{},
 		&iapiserver.ComfyUIWorkflowValidation{},

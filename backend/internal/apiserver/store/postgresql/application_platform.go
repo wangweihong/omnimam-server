@@ -36,7 +36,35 @@ func (s *applicationPlatformStore) ListEngineInstances(ctx context.Context, req 
 		return q
 	})
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	if err == nil {
+		err = s.attachObjectInfoSummaries(ctx, items)
+	}
 	return items, total, err
+}
+
+func (s *applicationPlatformStore) attachObjectInfoSummaries(ctx context.Context, items []*iapiserver.EngineInstance) error {
+	ids := make([]string, 0, len(items))
+	byID := make(map[string]*iapiserver.EngineInstance, len(items))
+	for _, item := range items {
+		if item.ApplicationEngineTypeID == "comfyui" {
+			ids = append(ids, item.ID)
+			byID[item.ID] = item
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var catalogs []*iapiserver.ComfyUIEngineObjectInfo
+	if err := s.ds.db.WithContext(ctx).Where("engine_instance_id IN ?", ids).Find(&catalogs).Error; err != nil {
+		return errors.WithStack(err)
+	}
+	for _, catalog := range catalogs {
+		item := byID[catalog.EngineInstanceID]
+		item.ObjectInfoAvailable = true
+		refreshedAt := catalog.RefreshedAt
+		item.ObjectInfoRefreshedAt = &refreshedAt
+	}
+	return nil
 }
 
 // ListEnabledEngineInstancesAfter 使用稳定 ID 游标读取巡检分块，避免资源增删导致 offset 漏检。
@@ -46,6 +74,18 @@ func (s *applicationPlatformStore) ListEnabledEngineInstancesAfter(ctx context.C
 	}
 	var items []*iapiserver.EngineInstance
 	err := s.ds.db.WithContext(ctx).Where("enabled = ? AND id > ?", true, cursor).Order("id ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+// ListRefreshableComfyUIEngineInstancesAfter 只返回定时刷新有资格处理的实例。
+func (s *applicationPlatformStore) ListRefreshableComfyUIEngineInstancesAfter(ctx context.Context, cursor string, limit int) ([]*iapiserver.EngineInstance, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	var items []*iapiserver.EngineInstance
+	err := s.ds.db.WithContext(ctx).
+		Where("application_engine_type_id = ? AND enabled = ? AND health_status = ? AND id > ?", "comfyui", true, iapiserver.EngineHealthOnline, cursor).
+		Order("id ASC").Limit(limit).Find(&items).Error
 	return items, errors.WithStack(err)
 }
 
@@ -82,6 +122,50 @@ func (s *applicationPlatformStore) UpdateEngineInstanceHealth(ctx context.Contex
 		return publishOutbox(tx, OutboxTopicEngineHealthChanged, event.IdempotencyKey, payload)
 	})
 	return data, err
+}
+
+func (s *applicationPlatformStore) GetComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfo, error) {
+	var catalog iapiserver.ComfyUIEngineObjectInfo
+	if err := s.ds.db.WithContext(ctx).First(&catalog, "engine_instance_id = ?", engineID).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &catalog, nil
+}
+
+// RefreshComfyUIEngineObjectInfo 持有 EngineInstance 行锁完成远端读取和原子 upsert，使手动与定时刷新跨副本串行。
+func (s *applicationPlatformStore) RefreshComfyUIEngineObjectInfo(ctx context.Context, engineID string, fetch func(*iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error)) (*iapiserver.ComfyUIEngineObjectInfo, error) {
+	var catalog *iapiserver.ComfyUIEngineObjectInfo
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var engine iapiserver.EngineInstance
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&engine, "id = ?", engineID).Error; err != nil {
+			return err
+		}
+		fetched, err := fetch(&engine)
+		if err != nil {
+			return err
+		}
+		fetched.EngineInstanceID = engineID
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "engine_instance_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"object_info_json", "comfyui_version", "refreshed_at"}),
+		}).Create(fetched).Error; err != nil {
+			return err
+		}
+		catalog = fetched
+		return nil
+	})
+	return catalog, errors.WithStack(err)
+}
+
+// WithEngineInstanceLock 串行化依赖当前实例事实的复合操作，并与 object-info 刷新使用同一行锁边界。
+func (s *applicationPlatformStore) WithEngineInstanceLock(ctx context.Context, engineID string, action func() error) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var engine iapiserver.EngineInstance
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&engine, "id = ?", engineID).Error; err != nil {
+			return err
+		}
+		return action()
+	}))
 }
 
 func (s *applicationPlatformStore) DeleteEngineInstance(ctx context.Context, id string) error {

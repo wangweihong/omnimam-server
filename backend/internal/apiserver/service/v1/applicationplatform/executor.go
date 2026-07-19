@@ -72,6 +72,20 @@ func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.A
 	if err := e.validateCurrentProviderBinding(ctx, run, engine, capabilityID); err != nil {
 		return nil, err
 	}
+	if run.CapabilitySourceType == iapiserver.CapabilitySourceComfyUIWorkflow {
+		if engine.HealthStatus != iapiserver.EngineHealthOnline {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI engine is not online")
+		}
+		catalog, catalogErr := e.store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engine.ID)
+		if catalogErr != nil || catalog.Stale(time.Now()) {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "current object_info is missing or stale")
+		}
+		workflow := mapValue(run.CapabilitySourceSnapshot["comfyui_api_workflow"])
+		contract := mapValue(run.CapabilitySourceSnapshot["template_contract"])
+		if validateErr := validateComfyUITemplateSnapshot(workflow, catalog.ObjectInfo, contract); validateErr != nil {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowIncompatible, "workflow is incompatible with the current object_info")
+		}
+	}
 	executorDefinition, ok := e.runtime.OperationExecutor(engine.ApplicationEngineTypeID, capabilityID)
 	if !ok {
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "operation executor mapping is unavailable")
@@ -184,7 +198,7 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 	}
 	e.publish(ctx, "application_run_projection_changed", task.ID+":"+fmt.Sprint(task.ResourceVersion), map[string]any{
 		"application_run_id":    projected.ID,
-		"atomic_task_id":           task.ID,
+		"atomic_task_id":        task.ID,
 		"task_resource_version": task.ResourceVersion,
 		"task_status":           task.Status,
 		"progress":              map[string]any{"value": task.Progress},

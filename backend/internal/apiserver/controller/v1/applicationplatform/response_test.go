@@ -15,8 +15,8 @@ import (
 )
 
 func TestApplicationPlatformErrorResponseMatchesS2(t *testing.T) {
-	if len(applicationPlatformErrors) != 60 {
-		t.Fatalf("expected all 60 S2 error definitions, got %d", len(applicationPlatformErrors))
+	if len(applicationPlatformErrors) != 62 {
+		t.Fatalf("expected all 62 S2 error definitions, got %d", len(applicationPlatformErrors))
 	}
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

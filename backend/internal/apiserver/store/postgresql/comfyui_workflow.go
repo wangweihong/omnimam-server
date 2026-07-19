@@ -19,15 +19,6 @@ func (s *applicationPlatformStore) ListComfyUIWorkflows(ctx context.Context, req
 		if req.OwnerUserID != "" {
 			q = q.Where("owner_user_id = ?", req.OwnerUserID)
 		}
-		if req.LifecycleStatus != "" {
-			q = q.Where("lifecycle_status = ?", req.LifecycleStatus)
-		}
-		if req.ParseStatus != "" {
-			q = q.Where("parse_status = ?", req.ParseStatus)
-		}
-		if req.LatestValidationStatus != "" {
-			q = q.Where("latest_validation_status = ?", req.LatestValidationStatus)
-		}
 		if req.Converted != nil {
 			if *req.Converted {
 				q = q.Where("converted_application_template_id IS NOT NULL")
@@ -71,7 +62,7 @@ func (s *applicationPlatformStore) UpdateComfyUIWorkflow(ctx context.Context, da
 
 func (s *applicationPlatformStore) ListComfyUIWorkflowDuplicateIDs(ctx context.Context, owner, checksum string) ([]string, error) {
 	var ids []string
-	err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflow{}).Where("owner_user_id = ? AND workflow_checksum = ?", owner, checksum).Order("created_at ASC").Pluck("id", &ids).Error
+	err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflow{}).Where("owner_user_id = ? AND source_checksum = ?", owner, checksum).Order("created_at ASC").Pluck("id", &ids).Error
 	return ids, errors.WithStack(err)
 }
 
@@ -91,27 +82,10 @@ func (s *applicationPlatformStore) GetComfyUIWorkflowValidation(ctx context.Cont
 }
 
 func (s *applicationPlatformStore) AddComfyUIWorkflowValidation(ctx context.Context, data *iapiserver.ComfyUIWorkflowValidation) (*iapiserver.ComfyUIWorkflowValidation, error) {
-	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var workflow iapiserver.ComfyUIWorkflow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "lifecycle_status").First(&workflow, "id = ?", data.WorkflowID).Error; err != nil {
-			return err
-		}
-		if workflow.LifecycleStatus != iapiserver.ComfyUIWorkflowActive {
-			return errors.NewStatus(code.ErrAIAppComfyUIWorkflowArchived, "workflow is archived")
-		}
-		if err := tx.Create(data).Error; err != nil {
-			return err
-		}
-		result := tx.Model(&iapiserver.ComfyUIWorkflow{}).Where("id = ?", data.WorkflowID).Updates(map[string]any{"latest_validation_status": data.Status, "resource_version": gorm.Expr("resource_version + 1"), "updated_at": imachinery.Now()})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
-	})
-	return data, errors.WithStack(err)
+	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
 }
 
 func (s *applicationPlatformStore) ListComfyUIWorkflowTestRuns(ctx context.Context, req *iapiserver.ComfyUIWorkflowTestRunListRequest) ([]*iapiserver.ComfyUIWorkflowTestRun, int64, error) {
@@ -183,9 +157,6 @@ func (s *applicationPlatformStore) ConvertComfyUIWorkflow(ctx context.Context, w
 			}
 			result = &iapiserver.ComfyUIWorkflowConvertResult{WorkflowID: workflowID, ApplicationTemplate: template, ApplicationTemplateVersion: version, WorkflowContractRevision: *version.WorkflowContractRevision}
 			return nil
-		}
-		if workflow.LifecycleStatus != iapiserver.ComfyUIWorkflowActive {
-			return errors.NewStatus(code.ErrAIAppComfyUIWorkflowArchived, "workflow is archived")
 		}
 		var conflict int64
 		if err := tx.Model(&iapiserver.ComfyUIWorkflow{}).Where("owner_user_id = ? AND conversion_idempotency_key = ? AND id <> ?", owner, key, workflowID).Count(&conflict).Error; err != nil {

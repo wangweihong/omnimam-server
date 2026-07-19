@@ -69,6 +69,21 @@ func (a *protocolAdapter) ReadObjectInfo(ctx context.Context, engine *iapiserver
 	return result, nil
 }
 
+// ReadComfyUIVersion 读取实例版本元数据；目录刷新可在上游未提供版本时保存空字符串。
+func (a *protocolAdapter) ReadComfyUIVersion(ctx context.Context, engine *iapiserver.EngineInstance) (string, error) {
+	if a.id != "comfyui" {
+		return "", errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine adapter is not ComfyUI")
+	}
+	result, err := invokeProvider(ctx, engine, http.MethodGet, "/system_stats", nil)
+	if err != nil {
+		return "", err
+	}
+	if version := firstString(result, "comfyui_version", "version"); version != "" {
+		return version, nil
+	}
+	return firstString(mapValue(result["system"]), "comfyui_version", "version"), nil
+}
+
 // Check performs the provider-specific lightweight health request using EngineInstance credentials.
 func (a *protocolAdapter) Check(ctx context.Context, engine *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
 	requestPath := map[string]string{

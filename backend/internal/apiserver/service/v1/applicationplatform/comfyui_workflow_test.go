@@ -2,12 +2,13 @@ package applicationplatform
 
 import (
 	"context"
-	stderrors "errors"
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"gorm.io/gorm"
 )
 
 type staticPrincipal struct{ principal Principal }
@@ -40,6 +41,7 @@ type workflowStore struct {
 	validation       *iapiserver.ComfyUIWorkflowValidation
 	convertedVersion *iapiserver.ApplicationTemplateVersion
 	engine           *iapiserver.EngineInstance
+	catalog          *iapiserver.ComfyUIEngineObjectInfo
 	duplicates       []string
 	addedWorkflow    *iapiserver.ComfyUIWorkflow
 	addedValidation  *iapiserver.ComfyUIWorkflowValidation
@@ -66,6 +68,15 @@ func (s *workflowStore) GetComfyUIWorkflowValidation(context.Context, string) (*
 }
 func (s *workflowStore) GetEngineInstance(context.Context, string) (*iapiserver.EngineInstance, error) {
 	return s.engine, nil
+}
+func (s *workflowStore) GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfo, error) {
+	if s.catalog == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return s.catalog, nil
+}
+func (s *workflowStore) WithEngineInstanceLock(_ context.Context, _ string, action func() error) error {
+	return action()
 }
 func (s *workflowStore) ListComfyUIWorkflowDuplicateIDs(context.Context, string, string) ([]string, error) {
 	return s.duplicates, nil
@@ -94,16 +105,15 @@ func TestImportComfyUIWorkflowUsesServerObjectInfoAndOwnerDuplicates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	applicationStore := &workflowStore{engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui"}, duplicates: []string{"workflow-old"}}
+	applicationStore := &workflowStore{engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}, catalog: currentTestCatalog(), duplicates: []string{"workflow-old"}}
 	applicationStore.engine.ID = "engine-1"
-	adapter := workflowObjectInfoAdapter{objectInfo: map[string]any{"KSampler": map[string]any{"input": map[string]any{}, "output": []any{}}}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Adapters: map[string]EngineAdapter{"comfyui": adapter}}}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}}
 	request := &iapiserver.ComfyUIWorkflowImportRequest{Name: "Workflow", SourceEngineInstanceID: "engine-1", APIWorkflow: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}, APIWorkflowRaw: []byte(`{"1":{"class_type":"KSampler","inputs":{}}}`)}
 	result, err := service.ImportComfyUIWorkflow(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.DuplicateContent || len(result.DuplicateWorkflowIDs) != 1 || applicationStore.addedWorkflow == nil || applicationStore.addedWorkflow.OwnerUserID != "user-1" || applicationStore.addedWorkflow.ImportObjectInfo["KSampler"] == nil {
+	if !result.DuplicateContent || len(result.DuplicateWorkflowIDs) != 1 || applicationStore.addedWorkflow == nil || applicationStore.addedWorkflow.OwnerUserID != "user-1" {
 		t.Fatalf("unexpected import result=%#v workflow=%#v", result, applicationStore.addedWorkflow)
 	}
 }
@@ -113,9 +123,9 @@ func TestImportComfyUIWorkflowDoesNotPersistWhenObjectInfoFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applicationStore := &workflowStore{engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui"}}
+	applicationStore := &workflowStore{engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}}
 	applicationStore.engine.ID = "engine-1"
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Adapters: map[string]EngineAdapter{"comfyui": workflowObjectInfoAdapter{err: stderrors.New("offline")}}}}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}}
 	_, err = service.ImportComfyUIWorkflow(context.Background(), &iapiserver.ComfyUIWorkflowImportRequest{Name: "Workflow", SourceEngineInstanceID: "engine-1", APIWorkflow: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}})
 	if err == nil {
 		t.Fatal("object_info failure was accepted")
@@ -130,16 +140,16 @@ func TestValidateComfyUIWorkflowPersistsFailedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", LifecycleStatus: iapiserver.ComfyUIWorkflowActive, ParsedNodes: []iapiserver.ComfyUIWorkflowNode{}}
+	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", APIConversionStatus: iapiserver.ComfyUIAPIConversionReady, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}}
 	workflow.ID = "workflow-1"
-	applicationStore := &workflowStore{workflow: workflow, engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui"}}
+	applicationStore := &workflowStore{workflow: workflow, engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}}
 	applicationStore.engine.ID = "engine-1"
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Adapters: map[string]EngineAdapter{"comfyui": workflowObjectInfoAdapter{err: stderrors.New("offline")}}}}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}}
 	result, err := service.ValidateComfyUIWorkflow(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowValidationCreateRequest{EngineInstanceID: "engine-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != iapiserver.ComfyUIValidationFailed || applicationStore.addedValidation == nil || applicationStore.addedValidation.ObjectInfo != nil || len(applicationStore.addedValidation.Errors) == 0 {
+	if result.Status != iapiserver.ComfyUIValidationFailed || applicationStore.addedValidation == nil || len(applicationStore.addedValidation.Errors) == 0 {
 		t.Fatalf("failed validation was not persisted correctly: %#v", applicationStore.addedValidation)
 	}
 }
@@ -149,11 +159,13 @@ func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", LifecycleStatus: iapiserver.ComfyUIWorkflowActive, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": "value"}}}, OutputCandidates: []iapiserver.ComfyUIWorkflowOutputCandidate{{NodeID: "1", OutputIndex: 0, DataType: "IMAGE", Extractable: true}}, Dependencies: []iapiserver.ComfyUIWorkflowDependency{}}
+	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", APIConversionStatus: iapiserver.ComfyUIAPIConversionReady, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": "value"}}}}
 	workflow.ID = "workflow-1"
-	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: workflow.ID, OwnerUserID: "user-1", Status: iapiserver.ComfyUIValidationCompatible, ObjectInfo: map[string]any{"SaveImage": map[string]any{"output": []any{"IMAGE"}}}}
+	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: workflow.ID, OwnerUserID: "user-1", EngineInstanceID: "engine-1", Status: iapiserver.ComfyUIValidationCompatible}
 	validation.ID = "validation-1"
-	applicationStore := &workflowStore{workflow: workflow, validation: validation}
+	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}
+	engine.ID = "engine-1"
+	applicationStore := &workflowStore{workflow: workflow, validation: validation, engine: engine, catalog: saveImageTestCatalog()}
 	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Events: NoopEventPublisher{}}}
 	request := &iapiserver.ComfyUIWorkflowConvertRequest{Name: "Template", CapabilityDefinitionID: "image.text_to_image", WorkflowValidationID: validation.ID, IdempotencyKey: "convert-1", TemplateContract: map[string]any{"inputs": []any{}, "fixed_parameters": []any{}, "parameter_mappings": []any{}, "outputs": []any{map[string]any{"key": "image", "node_id": "1", "output_index": float64(0), "data_type": "IMAGE", "media_type": "image"}}, "engine_restrictions": map[string]any{}}}
 	result, err := service.ConvertComfyUIWorkflow(context.Background(), workflow.ID, request)
@@ -167,7 +179,15 @@ func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
 	if version.SourceComfyUIWorkflowID == nil || *version.SourceComfyUIWorkflowID != workflow.ID || version.SourceWorkflowValidationID == nil || *version.SourceWorkflowValidationID != validation.ID {
 		t.Fatalf("source relationship missing: %#v", version)
 	}
-	if version.WorkflowContractRevision == nil || version.ComfyUIDependencies == nil {
+	if version.WorkflowContractRevision == nil {
 		t.Fatalf("immutable snapshot incomplete: %#v", version)
 	}
+}
+
+func currentTestCatalog() *iapiserver.ComfyUIEngineObjectInfo {
+	return &iapiserver.ComfyUIEngineObjectInfo{ObjectInfo: map[string]any{"KSampler": map[string]any{"input": map[string]any{}, "output": []any{}}}, RefreshedAt: imachinery.Now()}
+}
+
+func saveImageTestCatalog() *iapiserver.ComfyUIEngineObjectInfo {
+	return &iapiserver.ComfyUIEngineObjectInfo{ObjectInfo: map[string]any{"SaveImage": map[string]any{"input": map[string]any{"optional": map[string]any{"images": []any{"IMAGE"}}}, "output": []any{"IMAGE"}}}, RefreshedAt: imachinery.Now()}
 }

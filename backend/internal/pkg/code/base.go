@@ -503,8 +503,8 @@ const (
 	// @EN The selected source or target EngineInstance is not a ComfyUI engine.
 	ErrAIAppComfyUIEngineTypeInvalid int = 131221
 	// @HTTP 200
-	// @CN 无法从指定 ComfyUI EngineInstance 获取有效的 object_info。
-	// @EN Valid object_info could not be retrieved from the selected ComfyUI EngineInstance.
+	// @CN 指定 ComfyUI EngineInstance 不存在可用的当前 object_info，或目录已超过 48 小时。
+	// @EN The selected ComfyUI EngineInstance has no usable current object_info, or the catalog is older than 48 hours.
 	ErrAIAppComfyUIObjectInfoUnavailable int = 131222
 	// @HTTP 200
 	// @CN 工作流节点、输入连接或输出索引引用无效。
@@ -586,6 +586,14 @@ const (
 	// @CN 当前试运行状态不允许执行该操作。
 	// @EN The workflow test run state does not allow this operation.
 	ErrAIAppComfyUITestRunStateBlocked int = 131242
+	// @HTTP 200
+	// @CN 只有已启用且健康在线的 ComfyUI EngineInstance 可以刷新 object_info。
+	// @EN Object-info refresh is allowed only for enabled, healthy online ComfyUI EngineInstances.
+	ErrAIAppComfyUIObjectInfoRefreshNotAllowed int = 131243
+	// @HTTP 200
+	// @CN 未能从 ComfyUI EngineInstance 获取并校验完整 object_info，已保留最后一次成功目录。
+	// @EN A complete valid object_info could not be retrieved from the ComfyUI EngineInstance; the last successful catalog was retained.
+	ErrAIAppComfyUIObjectInfoRefreshFailed int = 131244
 )
 
 // task-center: SSOT scoped business errors.

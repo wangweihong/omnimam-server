@@ -38,16 +38,17 @@ type ApplicationPlatformSrv interface {
 	DeleteEngineInstance(context.Context, string) (*iapiserver.DeleteResult, error)
 	CheckEngineInstanceHealth(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
 	CheckEngineInstanceHealthInternal(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
+	GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoResponse, error)
+	RefreshComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
+	RefreshComfyUIEngineObjectInfoInternal(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
 	ListComfyUIWorkflows(context.Context, *iapiserver.ComfyUIWorkflowListRequest) (*iapiserver.ComfyUIWorkflowListResponse, error)
 	ImportComfyUIWorkflow(context.Context, *iapiserver.ComfyUIWorkflowImportRequest) (*iapiserver.ComfyUIWorkflowImportResult, error)
 	GetComfyUIWorkflow(context.Context, string) (*iapiserver.ComfyUIWorkflowDetail, error)
 	UpdateComfyUIWorkflow(context.Context, *iapiserver.ComfyUIWorkflowUpdateRequest) (*iapiserver.ComfyUIWorkflowSummary, error)
-	ArchiveComfyUIWorkflow(context.Context, string, int64) (*iapiserver.ComfyUIWorkflowSummary, error)
-	RestoreComfyUIWorkflow(context.Context, string, int64) (*iapiserver.ComfyUIWorkflowSummary, error)
-	ListComfyUIWorkflowNodes(context.Context, string, int, int) (*iapiserver.ComfyUIWorkflowNodeListResponse, error)
-	ListComfyUIWorkflowInputCandidates(context.Context, string) (*iapiserver.ComfyUIWorkflowInputCandidateListResponse, error)
-	ListComfyUIWorkflowOutputCandidates(context.Context, string) (*iapiserver.ComfyUIWorkflowOutputCandidateListResponse, error)
-	ListComfyUIWorkflowDependencies(context.Context, string) (*iapiserver.ComfyUIWorkflowDependencyListResponse, error)
+	ListComfyUIWorkflowNodes(context.Context, string, *iapiserver.ComfyUIWorkflowDeriveRequest) (*iapiserver.ComfyUIWorkflowNodeListResponse, error)
+	ListComfyUIWorkflowInputCandidates(context.Context, string, string) (*iapiserver.ComfyUIWorkflowInputCandidateListResponse, error)
+	ListComfyUIWorkflowOutputCandidates(context.Context, string, string) (*iapiserver.ComfyUIWorkflowOutputCandidateListResponse, error)
+	ListComfyUIWorkflowDependencies(context.Context, string, string) (*iapiserver.ComfyUIWorkflowDependencyListResponse, error)
 	ListComfyUIWorkflowValidations(context.Context, *iapiserver.ComfyUIWorkflowValidationListRequest) (*iapiserver.ComfyUIWorkflowValidationListResponse, error)
 	ValidateComfyUIWorkflow(context.Context, string, *iapiserver.ComfyUIWorkflowValidationCreateRequest) (*iapiserver.ComfyUIWorkflowValidation, error)
 	GetComfyUIWorkflowValidation(context.Context, string) (*iapiserver.ComfyUIWorkflowValidation, error)
@@ -96,6 +97,9 @@ type EngineAdapter interface {
 }
 type ComfyUIObjectInfoReader interface {
 	ReadObjectInfo(context.Context, *iapiserver.EngineInstance) (map[string]any, error)
+}
+type ComfyUIVersionReader interface {
+	ReadComfyUIVersion(context.Context, *iapiserver.EngineInstance) (string, error)
 }
 type OperationExecutor interface {
 	ID() string
@@ -593,7 +597,7 @@ func (s *applicationPlatformService) CreateTemplate(ctx context.Context, req *ia
 	if err != nil {
 		return nil, err
 	}
-	version, err := s.templateVersionFromRequest(req.CapabilityDefinitionID, req.CapabilitySourceType, req.ProviderCapabilityID, req.ProviderOperationID, nil, nil, nil, req.TemplateContract)
+	version, err := s.templateVersionFromRequest(req.CapabilityDefinitionID, req.CapabilitySourceType, req.ProviderCapabilityID, req.ProviderOperationID, nil, req.TemplateContract)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +622,7 @@ func (s *applicationPlatformService) CreateTemplateVersion(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	version, err := s.templateVersionFromRequest(template.CapabilityDefinitionID, req.CapabilitySourceType, req.ProviderCapabilityID, req.ProviderOperationID, req.ComfyUIAPIWorkflow, req.ComfyUIObjectInfo, req.ComfyUIDependencies, req.TemplateContract)
+	version, err := s.templateVersionFromRequest(template.CapabilityDefinitionID, req.CapabilitySourceType, req.ProviderCapabilityID, req.ProviderOperationID, req.ComfyUIAPIWorkflow, req.TemplateContract)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +648,7 @@ func (s *applicationPlatformService) PublishTemplateVersion(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateTemplateVersion(item); err != nil {
+	if err := s.validateTemplateVersion(ctx, item); err != nil {
 		return nil, err
 	}
 	ret, err := s.Store.ApplicationPlatforms().PublishTemplateVersion(ctx, id)
@@ -981,8 +985,8 @@ func (s *applicationPlatformService) resolveBindingStatus(binding *iapiserver.En
 	}
 }
 
-func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefinitionID, sourceType, providerID, operationID string, workflow, objectInfo map[string]any, dependencies []iapiserver.ComfyUIWorkflowDependency, contract map[string]any) (*iapiserver.ApplicationTemplateVersion, error) {
-	version := &iapiserver.ApplicationTemplateVersion{CapabilitySourceType: sourceType, TemplateContract: contract, ComfyUIAPIWorkflow: workflow, ComfyUIObjectInfo: objectInfo, ComfyUIDependencies: dependencies}
+func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefinitionID, sourceType, providerID, operationID string, workflow, contract map[string]any) (*iapiserver.ApplicationTemplateVersion, error) {
+	version := &iapiserver.ApplicationTemplateVersion{CapabilitySourceType: sourceType, TemplateContract: contract, ComfyUIAPIWorkflow: workflow}
 	switch sourceType {
 	case iapiserver.CapabilitySourceProviderCapability:
 		capability, ok := s.Capabilities.Get(providerID)
@@ -998,13 +1002,10 @@ func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefini
 		version.ProviderCapabilityRevision = stringPtr(capability.Revision)
 		version.ProviderOperationID = stringPtr(operationID)
 	case iapiserver.CapabilitySourceComfyUIWorkflow:
-		if len(workflow) == 0 || len(objectInfo) == 0 || dependencies == nil {
+		if len(workflow) == 0 {
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow contract is incomplete")
 		}
-		if err := validateComfyUITemplateSnapshot(workflow, objectInfo, contract); err != nil {
-			return nil, err
-		}
-		revision, err := canonicalJSONDigest(map[string]any{"api_workflow": workflow, "object_info": objectInfo, "dependencies": dependencies, "template_contract": contract})
+		revision, err := canonicalJSONDigest(map[string]any{"api_workflow": workflow, "template_contract": contract})
 		if err != nil {
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, err.Error())
 		}
@@ -1015,7 +1016,7 @@ func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefini
 	}
 	return version, nil
 }
-func (s *applicationPlatformService) validateTemplateVersion(version *iapiserver.ApplicationTemplateVersion) error {
+func (s *applicationPlatformService) validateTemplateVersion(ctx context.Context, version *iapiserver.ApplicationTemplateVersion) error {
 	if version.Status != iapiserver.VersionStatusDraft {
 		return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "template version is not draft")
 	}
@@ -1029,7 +1030,18 @@ func (s *applicationPlatformService) validateTemplateVersion(version *iapiserver
 			return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "provider capability revision is unavailable")
 		}
 	case iapiserver.CapabilitySourceComfyUIWorkflow:
-		return validateComfyUITemplateSnapshot(version.ComfyUIAPIWorkflow, version.ComfyUIObjectInfo, version.TemplateContract)
+		engines, _, err := s.Store.ApplicationPlatforms().ListEngineInstances(ctx, &iapiserver.EngineInstanceListRequest{ApplicationEngineTypeID: "comfyui", Enabled: boolPtr(true)})
+		if err != nil {
+			return err
+		}
+		compatible, err := s.compatibleComfyUIEngineIDs(ctx, version, engines)
+		if err != nil {
+			return err
+		}
+		if len(compatible) == 0 {
+			return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "no current ComfyUI object_info can execute this template")
+		}
+		return nil
 	default:
 		return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "invalid capability source")
 	}
@@ -1047,7 +1059,7 @@ func (s *applicationPlatformService) publish(ctx context.Context, eventType, key
 }
 
 func newApplicationRun(owner string, app *iapiserver.Application, version *iapiserver.ApplicationVersion, template *iapiserver.ApplicationTemplateVersion, engineID string, resolved, original *iapiserver.ApplicationRunCreateRequest, form *iapiserver.RuntimeFormSchema) *iapiserver.ApplicationRun {
-	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engineID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow, "comfyui_object_info": template.ComfyUIObjectInfo, "comfyui_dependencies": template.ComfyUIDependencies}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engineID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifact{}}
+	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engineID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engineID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifact{}}
 	run.Name = app.Name + " run"
 	if form.ProviderCapabilityID != nil {
 		run.CapabilitySourceSnapshot["provider_capability_id"] = *form.ProviderCapabilityID

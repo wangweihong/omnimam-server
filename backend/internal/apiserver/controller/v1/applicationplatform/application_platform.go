@@ -2,16 +2,18 @@ package applicationplatform
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appservice "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -70,6 +72,57 @@ func (c *Controller) DeleteEngineInstance(ctx *gin.Context) {
 func (c *Controller) CheckEngineInstanceHealth(ctx *gin.Context) {
 	run(ctx, nil, func(any) (any, error) {
 		return c.service.CheckEngineInstanceHealth(ctx, ctx.Param("engine_instance_id"))
+	})
+}
+
+// GetComfyUIEngineObjectInfo 返回原始目录，并按 Accept-Encoding 协商 gzip。
+func (c *Controller) GetComfyUIEngineObjectInfo(ctx *gin.Context) {
+	result, err := c.service.GetComfyUIEngineObjectInfo(ctx, ctx.Param("engine_instance_id"))
+	if err != nil {
+		writeResponse(ctx, err, nil)
+		return
+	}
+	ctx.Header("Vary", "Accept-Encoding")
+	if !acceptsGzip(ctx.GetHeader("Accept-Encoding")) {
+		ctx.JSON(http.StatusOK, result)
+		return
+	}
+	ctx.Header("Content-Encoding", "gzip")
+	ctx.Header("Content-Type", "application/json; charset=utf-8")
+	ctx.Status(http.StatusOK)
+	writer := gzip.NewWriter(ctx.Writer)
+	if err := json.NewEncoder(writer).Encode(result); err != nil {
+		_ = writer.Close()
+		return
+	}
+	_ = writer.Close()
+}
+
+func acceptsGzip(header string) bool {
+	for _, encoding := range strings.Split(header, ",") {
+		parts := strings.Split(encoding, ";")
+		name := strings.TrimSpace(strings.ToLower(parts[0]))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+		quality := 1.0
+		for _, parameter := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if ok && strings.EqualFold(key, "q") {
+				if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+					quality = parsed
+				}
+			}
+		}
+		return quality > 0
+	}
+	return false
+}
+
+// RefreshComfyUIEngineObjectInfo 刷新单个实例的当前目录并返回轻量状态。
+func (c *Controller) RefreshComfyUIEngineObjectInfo(ctx *gin.Context) {
+	run(ctx, nil, func(any) (any, error) {
+		return c.service.RefreshComfyUIEngineObjectInfo(ctx, ctx.Param("engine_instance_id"))
 	})
 }
 
@@ -132,34 +185,24 @@ func (c *Controller) UpdateComfyUIWorkflow(ctx *gin.Context) {
 		return c.service.UpdateComfyUIWorkflow(ctx, r)
 	})
 }
-func (c *Controller) ArchiveComfyUIWorkflow(ctx *gin.Context) {
-	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
-		return c.service.ArchiveComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
-	})
-}
-func (c *Controller) RestoreComfyUIWorkflow(ctx *gin.Context) {
-	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
-		return c.service.RestoreComfyUIWorkflow(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
-	})
-}
 func (c *Controller) ListComfyUIWorkflowNodes(ctx *gin.Context) {
-	run(ctx, &imachinery.BasicQueryParam{}, func(r *imachinery.BasicQueryParam) (any, error) {
-		return c.service.ListComfyUIWorkflowNodes(ctx, ctx.Param("workflow_id"), r.PageNum, r.PageSize)
+	run(ctx, &iapiserver.ComfyUIWorkflowDeriveRequest{}, func(r *iapiserver.ComfyUIWorkflowDeriveRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowNodes(ctx, ctx.Param("workflow_id"), r)
 	})
 }
 func (c *Controller) ListComfyUIWorkflowInputCandidates(ctx *gin.Context) {
-	run(ctx, nil, func(any) (any, error) {
-		return c.service.ListComfyUIWorkflowInputCandidates(ctx, ctx.Param("workflow_id"))
+	run(ctx, &iapiserver.ComfyUIWorkflowDeriveRequest{}, func(r *iapiserver.ComfyUIWorkflowDeriveRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowInputCandidates(ctx, ctx.Param("workflow_id"), r.EngineInstanceID)
 	})
 }
 func (c *Controller) ListComfyUIWorkflowOutputCandidates(ctx *gin.Context) {
-	run(ctx, nil, func(any) (any, error) {
-		return c.service.ListComfyUIWorkflowOutputCandidates(ctx, ctx.Param("workflow_id"))
+	run(ctx, &iapiserver.ComfyUIWorkflowDeriveRequest{}, func(r *iapiserver.ComfyUIWorkflowDeriveRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowOutputCandidates(ctx, ctx.Param("workflow_id"), r.EngineInstanceID)
 	})
 }
 func (c *Controller) ListComfyUIWorkflowDependencies(ctx *gin.Context) {
-	run(ctx, nil, func(any) (any, error) {
-		return c.service.ListComfyUIWorkflowDependencies(ctx, ctx.Param("workflow_id"))
+	run(ctx, &iapiserver.ComfyUIWorkflowDeriveRequest{}, func(r *iapiserver.ComfyUIWorkflowDeriveRequest) (any, error) {
+		return c.service.ListComfyUIWorkflowDependencies(ctx, ctx.Param("workflow_id"), r.EngineInstanceID)
 	})
 }
 func (c *Controller) ListComfyUIWorkflowValidations(ctx *gin.Context) {

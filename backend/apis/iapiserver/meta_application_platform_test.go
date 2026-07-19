@@ -30,3 +30,25 @@ func TestEngineInstanceSummaryIncludesBaseURLWithoutAuthConfig(t *testing.T) {
 		t.Fatalf("summary exposes authentication config: %s", raw)
 	}
 }
+
+func TestSpecV14ResponsesDoNotEmbedObjectInfoSnapshots(t *testing.T) {
+	values := []any{
+		&ComfyUIWorkflowDetail{ComfyUIWorkflowSummary: &ComfyUIWorkflowSummary{}},
+		&ComfyUIWorkflowValidation{},
+		&ApplicationTemplateVersion{},
+		&ComfyUIWorkflowTestRun{},
+		&ApplicationRun{},
+	}
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, forbidden := range []string{"object_info_snapshot", "object_info_checksum", "comfyui_object_info", "comfyui_dependencies", "lifecycle_status", "archived_at"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%T response contains forbidden field %q: %s", value, forbidden, text)
+			}
+		}
+	}
+}

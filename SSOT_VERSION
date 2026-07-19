@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 34e1994c9170553f3bcceb7b01b9d640a3698361
-contract_version: spec-v1.3.0
-updated_at: 2026-07-18
+commit: 6f75b7dd187bb0d05e3e42fc2d720f026df47c85
+contract_version: spec-v1.4.0
+updated_at: 2026-07-19
 status: released
-note: TaskSchedule reconcile mode and engine health reconcile released under spec-v1.3.0.
+note: EngineInstance current ComfyUI object_info catalog released under spec-v1.4.0.

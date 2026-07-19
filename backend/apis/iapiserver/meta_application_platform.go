@@ -2,6 +2,7 @@ package iapiserver
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"gorm.io/gorm"
@@ -205,6 +206,9 @@ type EngineInstance struct {
 	MaxConcurrency          int              `json:"max_concurrency" gorm:"column:max_concurrency;not null;default:1"`
 	RequestTimeoutSeconds   int              `json:"request_timeout_seconds" gorm:"column:request_timeout_seconds;not null;default:60"`
 	TaskTimeoutSeconds      int              `json:"task_timeout_seconds" gorm:"column:task_timeout_seconds;not null;default:1800"`
+	// ObjectInfo* 是列表查询批量补充的当前目录摘要，不属于 EngineInstance 表。
+	ObjectInfoAvailable   bool             `json:"-" gorm:"-"`
+	ObjectInfoRefreshedAt *imachinery.Time `json:"-" gorm:"-"`
 }
 
 func (EngineInstance) TableName() string { return "aiapp_engine_instances" }
@@ -237,14 +241,83 @@ type EngineInstanceSummary struct {
 	Description             string `json:"description,omitempty"`
 	ApplicationEngineTypeID string `json:"application_engine_type_id"`
 	// BaseURL 是列表展示和实例选择使用的执行端点；摘要不得包含 AuthConfig。
-	BaseURL      string `json:"base_url"`
-	Enabled      bool   `json:"enabled"`
-	HealthStatus string `json:"health_status"`
-	Region       string `json:"region,omitempty"`
+	BaseURL           string           `json:"base_url"`
+	Enabled           bool             `json:"enabled"`
+	HealthStatus      string           `json:"health_status"`
+	LastHealthCheckAt *imachinery.Time `json:"last_health_check_at"`
+	UnhealthyReason   string           `json:"unhealthy_reason"`
+	// ObjectInfoAvailable 表示 ComfyUI 实例是否已有最后成功目录；非 ComfyUI 固定为 false。
+	ObjectInfoAvailable bool `json:"object_info_available"`
+	// ObjectInfoRefreshedAt 是当前目录最近成功刷新时间，不存在目录时为 null。
+	ObjectInfoRefreshedAt *imachinery.Time `json:"object_info_refreshed_at"`
+	// ObjectInfoStale 根据 48 小时阈值即时派生，不单独持久化状态。
+	ObjectInfoStale bool   `json:"object_info_stale"`
+	Region          string `json:"region,omitempty"`
 }
 
 func (e *EngineInstance) Summary() *EngineInstanceSummary {
-	return &EngineInstanceSummary{ID: e.ID, Name: e.Name, Description: e.Description, ApplicationEngineTypeID: e.ApplicationEngineTypeID, BaseURL: e.BaseURL, Enabled: e.Enabled, HealthStatus: e.HealthStatus, Region: e.Region}
+	stale := false
+	if e.ApplicationEngineTypeID == "comfyui" {
+		stale = !e.ObjectInfoAvailable || e.ObjectInfoRefreshedAt == nil || time.Since(e.ObjectInfoRefreshedAt.Time) > ComfyUIObjectInfoMaxAge
+	}
+	return &EngineInstanceSummary{ID: e.ID, Name: e.Name, Description: e.Description, ApplicationEngineTypeID: e.ApplicationEngineTypeID, BaseURL: e.BaseURL, Enabled: e.Enabled, HealthStatus: e.HealthStatus, LastHealthCheckAt: e.LastHealthCheckAt, UnhealthyReason: e.UnhealthyReason, ObjectInfoAvailable: e.ObjectInfoAvailable, ObjectInfoRefreshedAt: e.ObjectInfoRefreshedAt, ObjectInfoStale: stale, Region: e.Region}
+}
+
+const ComfyUIObjectInfoMaxAge = 48 * time.Hour
+
+// ComfyUIEngineObjectInfo 是 EngineInstance 的一对一当前事实扩展，因此不使用 ObjectMeta、版本或历史字段。
+type ComfyUIEngineObjectInfo struct {
+	// EngineInstanceID 同时作为主键和级联外键，保证每个实例至多一份目录。
+	EngineInstanceID string `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;primaryKey"`
+	// ObjectInfo 保存最近一次完整校验通过的原始 ComfyUI 节点目录。
+	ObjectInfo       map[string]any `json:"object_info" gorm:"-"`
+	ObjectInfoShadow string         `json:"-" gorm:"column:object_info_json;type:text;not null"`
+	// ComfyUIVersion 保存刷新时从 system_stats 取得的可选版本；上游未提供时为空。
+	ComfyUIVersion string `json:"comfyui_version" gorm:"column:comfyui_version;type:text;not null;default:''"`
+	// RefreshedAt 是最近成功刷新完成时间，也是 stale 的唯一计算依据。
+	RefreshedAt imachinery.Time `json:"refreshed_at" gorm:"column:refreshed_at;type:timestamptz;not null"`
+}
+
+func (ComfyUIEngineObjectInfo) TableName() string { return "aiapp_comfyui_engine_object_info" }
+func (c *ComfyUIEngineObjectInfo) BeforeCreate(*gorm.DB) error {
+	return marshalShadow(c.ObjectInfo, &c.ObjectInfoShadow, "{}")
+}
+func (*ComfyUIEngineObjectInfo) AfterCreate(*gorm.DB) error { return nil }
+func (c *ComfyUIEngineObjectInfo) BeforeUpdate(*gorm.DB) error {
+	return marshalShadow(c.ObjectInfo, &c.ObjectInfoShadow, "{}")
+}
+func (*ComfyUIEngineObjectInfo) AfterUpdate(*gorm.DB) error { return nil }
+func (c *ComfyUIEngineObjectInfo) AfterFind(*gorm.DB) error {
+	unmarshalShadow(c.ObjectInfoShadow, &c.ObjectInfo)
+	return nil
+}
+func (c *ComfyUIEngineObjectInfo) Stale(now time.Time) bool {
+	return now.Sub(c.RefreshedAt.Time) > ComfyUIObjectInfoMaxAge
+}
+
+type ComfyUIEngineObjectInfoStatus struct {
+	// EngineInstanceID 标识本次刷新或状态查询对应的实例。
+	EngineInstanceID string `json:"engine_instance_id"`
+	// Available 表示当前是否存在至少一次成功刷新的目录。
+	Available bool `json:"available"`
+	// Stale 表示目录是否缺失或超过 48 小时；成功刷新固定为 false。
+	Stale bool `json:"stale"`
+	// ComfyUIVersion 和 RefreshedAt 在目录不存在或上游未提供版本时允许为空。
+	ComfyUIVersion *string          `json:"comfyui_version"`
+	RefreshedAt    *imachinery.Time `json:"refreshed_at"`
+}
+
+type ComfyUIEngineObjectInfoResponse struct {
+	// EngineInstanceID 标识原始目录所属实例。
+	EngineInstanceID string `json:"engine_instance_id"`
+	// Available 对成功响应固定为 true；不存在目录通过业务错误表达。
+	Available bool `json:"available"`
+	// Stale 允许管理员和应用创建者识别仅可诊断、不可执行的旧目录。
+	Stale bool `json:"stale"`
+	// ComfyUIVersion 是可选上游版本，ObjectInfo 保持第三方原始字段名。
+	ComfyUIVersion string          `json:"comfyui_version,omitempty"`
+	RefreshedAt    imachinery.Time `json:"refreshed_at"`
+	ObjectInfo     map[string]any  `json:"object_info"`
 }
 
 type EngineHealthCheckResult struct {
@@ -306,26 +379,22 @@ func (*ApplicationTemplate) AfterUpdate(*gorm.DB) error       { return nil }
 
 type ApplicationTemplateVersion struct {
 	imachinery.ObjectMeta
-	ApplicationTemplateID      string                      `json:"application_template_id" gorm:"column:application_template_id;type:text;not null;index"`
-	Version                    int                         `json:"version" gorm:"column:version;not null"`
-	Status                     string                      `json:"status" gorm:"column:status;type:text;not null;index"`
-	CapabilitySourceType       string                      `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
-	SourceRevision             string                      `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
-	ProviderCapabilityID       *string                     `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text"`
-	ProviderCapabilityRevision *string                     `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
-	ProviderOperationID        *string                     `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
-	WorkflowContractRevision   *string                     `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
-	SourceComfyUIWorkflowID    *string                     `json:"source_comfyui_workflow_id" gorm:"column:source_comfyui_workflow_id;type:text"`
-	SourceWorkflowValidationID *string                     `json:"source_workflow_validation_id" gorm:"column:source_workflow_validation_id;type:text"`
-	TemplateContract           map[string]any              `json:"template_contract" gorm:"-"`
-	TemplateContractShadow     string                      `json:"-" gorm:"column:template_contract_json;type:text;not null"`
-	ComfyUIAPIWorkflow         map[string]any              `json:"comfyui_api_workflow" gorm:"-"`
-	ComfyUIAPIWorkflowShadow   *string                     `json:"-" gorm:"column:comfyui_api_workflow_json;type:text"`
-	ComfyUIObjectInfo          map[string]any              `json:"comfyui_object_info" gorm:"-"`
-	ComfyUIObjectInfoShadow    *string                     `json:"-" gorm:"column:comfyui_object_info_json;type:text"`
-	ComfyUIDependencies        []ComfyUIWorkflowDependency `json:"comfyui_dependencies" gorm:"-"`
-	ComfyUIDependenciesShadow  *string                     `json:"-" gorm:"column:comfyui_dependencies_json;type:text"`
-	PublishedAt                *imachinery.Time            `json:"published_at" gorm:"column:published_at;type:timestamptz"`
+	ApplicationTemplateID      string           `json:"application_template_id" gorm:"column:application_template_id;type:text;not null;index"`
+	Version                    int              `json:"version" gorm:"column:version;not null"`
+	Status                     string           `json:"status" gorm:"column:status;type:text;not null;index"`
+	CapabilitySourceType       string           `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
+	SourceRevision             string           `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
+	ProviderCapabilityID       *string          `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text"`
+	ProviderCapabilityRevision *string          `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
+	ProviderOperationID        *string          `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
+	WorkflowContractRevision   *string          `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
+	SourceComfyUIWorkflowID    *string          `json:"source_comfyui_workflow_id" gorm:"column:source_comfyui_workflow_id;type:text"`
+	SourceWorkflowValidationID *string          `json:"source_workflow_validation_id" gorm:"column:source_workflow_validation_id;type:text"`
+	TemplateContract           map[string]any   `json:"template_contract" gorm:"-"`
+	TemplateContractShadow     string           `json:"-" gorm:"column:template_contract_json;type:text;not null"`
+	ComfyUIAPIWorkflow         map[string]any   `json:"comfyui_api_workflow" gorm:"-"`
+	ComfyUIAPIWorkflowShadow   *string          `json:"-" gorm:"column:comfyui_api_workflow_json;type:text"`
+	PublishedAt                *imachinery.Time `json:"published_at" gorm:"column:published_at;type:timestamptz"`
 }
 
 func (ApplicationTemplateVersion) TableName() string { return "aiapp_application_template_versions" }
@@ -346,10 +415,6 @@ func (*ApplicationTemplateVersion) AfterUpdate(*gorm.DB) error { return nil }
 func (v *ApplicationTemplateVersion) AfterFind(*gorm.DB) error {
 	unmarshalShadow(v.TemplateContractShadow, &v.TemplateContract)
 	unmarshalOptional(v.ComfyUIAPIWorkflowShadow, &v.ComfyUIAPIWorkflow)
-	unmarshalOptional(v.ComfyUIObjectInfoShadow, &v.ComfyUIObjectInfo)
-	if v.ComfyUIDependenciesShadow != nil {
-		unmarshalShadow(*v.ComfyUIDependenciesShadow, &v.ComfyUIDependencies)
-	}
 	return nil
 }
 func (v *ApplicationTemplateVersion) marshal() error {
@@ -359,19 +424,6 @@ func (v *ApplicationTemplateVersion) marshal() error {
 	if err := marshalOptional(v.ComfyUIAPIWorkflow, &v.ComfyUIAPIWorkflowShadow); err != nil {
 		return err
 	}
-	if err := marshalOptional(v.ComfyUIObjectInfo, &v.ComfyUIObjectInfoShadow); err != nil {
-		return err
-	}
-	if v.ComfyUIDependencies == nil {
-		v.ComfyUIDependenciesShadow = nil
-		return nil
-	}
-	raw, err := json.Marshal(v.ComfyUIDependencies)
-	if err != nil {
-		return err
-	}
-	text := string(raw)
-	v.ComfyUIDependenciesShadow = &text
 	return nil
 }
 

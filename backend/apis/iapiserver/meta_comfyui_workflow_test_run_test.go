@@ -24,12 +24,11 @@ func TestComfyUIWorkflowTestRunSnapshots(t *testing.T) {
 		So(run.ParametersShadow, ShouldContainSubstring, "seed")
 
 		loaded := &ComfyUIWorkflowTestRun{
-			EngineSnapshotShadow:     run.EngineSnapshotShadow,
-			ParametersShadow:         run.ParametersShadow,
-			StepsShadow:              run.StepsShadow,
-			OutputsShadow:            run.OutputsShadow,
-			WorkflowSnapshotShadow:   "{}",
-			ObjectInfoSnapshotShadow: "{}",
+			EngineSnapshotShadow:   run.EngineSnapshotShadow,
+			ParametersShadow:       run.ParametersShadow,
+			StepsShadow:            run.StepsShadow,
+			OutputsShadow:          run.OutputsShadow,
+			WorkflowSnapshotShadow: "{}",
 		}
 		So(loaded.AfterFind(nil), ShouldBeNil)
 		So(loaded.EngineInstanceSnapshot.Name, ShouldEqual, "ComfyUI-A")

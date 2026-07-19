@@ -108,15 +108,13 @@ type ApplicationTemplateCreateRequest struct {
 	TemplateContract       map[string]any `json:"template_contract"`
 }
 type ApplicationTemplateVersionCreateRequest struct {
-	Name                 string                      `json:"name"`
-	Description          string                      `json:"description"`
-	CapabilitySourceType string                      `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
-	ProviderCapabilityID string                      `json:"provider_capability_id"`
-	ProviderOperationID  string                      `json:"provider_operation_id"`
-	ComfyUIAPIWorkflow   map[string]any              `json:"comfyui_api_workflow"`
-	ComfyUIObjectInfo    map[string]any              `json:"comfyui_object_info"`
-	ComfyUIDependencies  []ComfyUIWorkflowDependency `json:"comfyui_dependencies"`
-	TemplateContract     map[string]any              `json:"template_contract"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description"`
+	CapabilitySourceType string         `json:"capability_source_type" binding:"required,oneof=provider_capability comfyui_workflow"`
+	ProviderCapabilityID string         `json:"provider_capability_id"`
+	ProviderOperationID  string         `json:"provider_operation_id"`
+	ComfyUIAPIWorkflow   map[string]any `json:"comfyui_api_workflow"`
+	TemplateContract     map[string]any `json:"template_contract"`
 }
 type ApplicationCreateRequest struct {
 	Name                   string `json:"name" binding:"required"`
@@ -213,15 +211,15 @@ func (r *ApplicationTemplateVersionCreateRequest) Validate() error {
 		if r.ProviderCapabilityID == "" || r.ProviderOperationID == "" {
 			return errors.New("provider_capability_id and provider_operation_id are required")
 		}
-		if r.ComfyUIAPIWorkflow != nil || r.ComfyUIObjectInfo != nil || r.ComfyUIDependencies != nil {
+		if r.ComfyUIAPIWorkflow != nil {
 			return errors.New("ComfyUI fields are not allowed for provider capability versions")
 		}
 	case CapabilitySourceComfyUIWorkflow:
 		if r.ProviderCapabilityID != "" || r.ProviderOperationID != "" {
 			return errors.New("provider fields are not allowed for ComfyUI versions")
 		}
-		if r.ComfyUIAPIWorkflow == nil || r.ComfyUIObjectInfo == nil || r.ComfyUIDependencies == nil {
-			return errors.New("comfyui_api_workflow, comfyui_object_info, and comfyui_dependencies are required")
+		if r.ComfyUIAPIWorkflow == nil {
+			return errors.New("comfyui_api_workflow is required")
 		}
 	}
 	return nil

@@ -364,10 +364,14 @@ type TaskCenterStore interface {
 type ApplicationPlatformStore interface {
 	ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) ([]*iapiserver.EngineInstance, int64, error)
 	ListEnabledEngineInstancesAfter(context.Context, string, int) ([]*iapiserver.EngineInstance, error)
+	ListRefreshableComfyUIEngineInstancesAfter(context.Context, string, int) ([]*iapiserver.EngineInstance, error)
 	GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error)
 	AddEngineInstance(ctx context.Context, data *iapiserver.EngineInstance) (*iapiserver.EngineInstance, error)
 	UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64) (*iapiserver.EngineInstance, error)
 	UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error)
+	GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfo, error)
+	RefreshComfyUIEngineObjectInfo(context.Context, string, func(*iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error)) (*iapiserver.ComfyUIEngineObjectInfo, error)
+	WithEngineInstanceLock(context.Context, string, func() error) error
 	DeleteEngineInstance(ctx context.Context, id string) error
 	CountRunsByEngineInstance(ctx context.Context, id string) (int64, error)
 	ListComfyUIWorkflows(ctx context.Context, req *iapiserver.ComfyUIWorkflowListRequest) ([]*iapiserver.ComfyUIWorkflow, int64, error)

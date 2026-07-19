@@ -96,6 +96,8 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		engines.PATCH("/:engine_instance_id", controller.UpdateEngineInstance)
 		engines.DELETE("/:engine_instance_id", controller.DeleteEngineInstance)
 		engines.POST("/:engine_instance_id/health-check", controller.CheckEngineInstanceHealth)
+		engines.GET("/:engine_instance_id/object-info", controller.GetComfyUIEngineObjectInfo)
+		engines.POST("/:engine_instance_id/object-info/refresh", controller.RefreshComfyUIEngineObjectInfo)
 	}
 
 	bindings := rg.Group("/engine-capability-bindings")
@@ -112,16 +114,9 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		workflows.POST("", controller.ImportComfyUIWorkflow)
 		workflows.GET("/:workflow_id", controller.GetComfyUIWorkflow)
 		workflows.PATCH("/:workflow_id", controller.UpdateComfyUIWorkflow)
-		//Deprecated
-		workflows.POST("/:workflow_id/archive", controller.ArchiveComfyUIWorkflow)
-		//Deprecated
-		workflows.POST("/:workflow_id/restore", controller.RestoreComfyUIWorkflow)
 		workflows.GET("/:workflow_id/nodes", controller.ListComfyUIWorkflowNodes)
-		//Deprecated
 		workflows.GET("/:workflow_id/input-candidates", controller.ListComfyUIWorkflowInputCandidates)
-		//Deprecated
 		workflows.GET("/:workflow_id/output-candidates", controller.ListComfyUIWorkflowOutputCandidates)
-		//Deprecated
 		workflows.GET("/:workflow_id/dependencies", controller.ListComfyUIWorkflowDependencies)
 		workflows.GET("/:workflow_id/validations", controller.ListComfyUIWorkflowValidations)
 		workflows.POST("/:workflow_id/validations", controller.ValidateComfyUIWorkflow)

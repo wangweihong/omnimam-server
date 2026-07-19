@@ -78,6 +78,8 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppComfyUITestRunNotFound:                     {name: "ERR_AIAPP_COMFYUI_TEST_RUN_NOT_FOUND"},
 	code.ErrAIAppComfyUITestPreviewUnavailable:              {name: "ERR_AIAPP_COMFYUI_TEST_PREVIEW_UNAVAILABLE", retryable: true},
 	code.ErrAIAppComfyUITestRunStateBlocked:                 {name: "ERR_AIAPP_COMFYUI_TEST_RUN_STATE_BLOCKED"},
+	code.ErrAIAppComfyUIObjectInfoRefreshNotAllowed:         {name: "ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_NOT_ALLOWED"},
+	code.ErrAIAppComfyUIObjectInfoRefreshFailed:             {name: "ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_FAILED", retryable: true},
 }
 
 type applicationPlatformErrorResponse struct {

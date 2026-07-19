@@ -47,19 +47,20 @@ flowchart LR
 1. 初始化 OmniMAM store 和业务 schema。
 2. 创建 `ConductorRuntime`。
 3. 加载 application runtime registry 和 provider capability registry。
-4. 构造 application、thumbnail 和 engine health executor。
+4. 构造 application、thumbnail、Engine 健康和 ComfyUI object-info executor。
 5. 按受控 `functionRef` 向 Conductor 注册 AtomicTask handler 及并发度。
 6. 订阅 `asset_uploaded` PostgreSQL outbox。
-7. 创建 Engine 健康检查 Schedule。
+7. 幂等确保 Engine 健康检查与 ComfyUI object-info 刷新 SYSTEM RECONCILE Schedule。
 8. 启动 reconciler，周期对账非终态 execution。
 
 当前注册的 handler 包括：
 
 - `application-platform.run`
 - `asset.thumbnail.generate`
-- `application-platform.engine-health-check`
-- `application-platform.engine-health-plan`
+- `task_center_reconcile_controller`
 - `task.schedule.acquire`
+
+Engine 健康和 ComfyUI object-info 刷新不注册逐实例 Worker handler。两者分别以 `application-platform.engine-health` 和 `application-platform.comfyui-object-info-refresh` 注册到 `ReconcileRegistry`，由固定 `task_center_reconcile_controller` 直接扫描并更新业务事实。object-info 计划默认每日 `03:00 UTC` 运行，只处理 enabled、online 的 ComfyUI 实例；成功原子替换一对一当前目录，失败保留最后一次成功内容。
 
 `taskworker` 收到 `SIGINT` 或 `SIGTERM` 后取消进程上下文，停止 outbox 消费和 reconciler，并关闭 Conductor Worker runner。
 

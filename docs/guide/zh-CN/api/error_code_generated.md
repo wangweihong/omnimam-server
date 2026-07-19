@@ -120,7 +120,7 @@
 | ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
 | ErrAIAppComfyUIWorkflowFileInvalid | 131220 | 200 | The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure. | API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。 |
 | ErrAIAppComfyUIEngineTypeInvalid | 131221 | 200 | The selected source or target EngineInstance is not a ComfyUI engine. | 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。 |
-| ErrAIAppComfyUIObjectInfoUnavailable | 131222 | 200 | Valid object_info could not be retrieved from the selected ComfyUI EngineInstance. | 无法从指定 ComfyUI EngineInstance 获取有效的 object_info。 |
+| ErrAIAppComfyUIObjectInfoUnavailable | 131222 | 200 | The selected ComfyUI EngineInstance has no usable current object_info, or the catalog is older than 48 hours. | 指定 ComfyUI EngineInstance 不存在可用的当前 object_info，或目录已超过 48 小时。 |
 | ErrAIAppComfyUIWorkflowReferenceInvalid | 131223 | 200 | The workflow contains an invalid node, input connection, or output index reference. | 工作流节点、输入连接或输出索引引用无效。 |
 | ErrAIAppComfyUIWorkflowIncompatible | 131224 | 200 | The workflow nodes, parameters, or runtime dependencies are incompatible with the target ComfyUI engine. | 工作流节点、参数或运行依赖与目标 ComfyUI 实例不兼容。 |
 | ErrAIAppComfyUIWorkflowNotFound | 131225 | 200 | The ComfyUI workflow does not exist or is not visible to the current user. | ComfyUI 工作流不存在或当前用户不可见。 |
@@ -141,6 +141,8 @@
 | ErrAIAppComfyUITestRunNotFound | 131240 | 200 | The workflow test run does not exist or is not visible. | 试运行不存在或当前用户不可见。 |
 | ErrAIAppComfyUITestPreviewUnavailable | 131241 | 200 | The temporary preview is missing, was removed upstream, or cannot be read safely. | 临时预览不存在、已被上游清理或无法安全读取。 |
 | ErrAIAppComfyUITestRunStateBlocked | 131242 | 200 | The workflow test run state does not allow this operation. | 当前试运行状态不允许执行该操作。 |
+| ErrAIAppComfyUIObjectInfoRefreshNotAllowed | 131243 | 200 | Object-info refresh is allowed only for enabled, healthy online ComfyUI EngineInstances. | 只有已启用且健康在线的 ComfyUI EngineInstance 可以刷新 object_info。 |
+| ErrAIAppComfyUIObjectInfoRefreshFailed | 131244 | 200 | A complete valid object_info could not be retrieved from the ComfyUI EngineInstance; the last successful catalog was retained. | 未能从 ComfyUI EngineInstance 获取并校验完整 object_info，已保留最后一次成功目录。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
 | ErrTaskDAGCycleDetected | 140201 | 200 | DAGTaskGroup contains a cyclic dependency. | DAGTaskGroup 存在环形依赖。 |
 | ErrTaskGroupInvalid | 140202 | 200 | TaskGroup template or execution policy is invalid. | TaskGroup 模板或执行策略不合法。 |

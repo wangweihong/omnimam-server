@@ -10,10 +10,6 @@ import (
 
 type ComfyUIWorkflowListRequest struct {
 	imachinery.BasicQueryParam
-	// LifecycleStatus、ParseStatus 和 LatestValidationStatus 用于工作流状态筛选。
-	LifecycleStatus        string `form:"lifecycle_status" binding:"omitempty,oneof=active archived"`
-	ParseStatus            string `form:"parse_status" binding:"omitempty,oneof=fully_supported partially_supported manual_configuration_required unsupported"`
-	LatestValidationStatus string `form:"latest_validation_status" binding:"omitempty,oneof=not_validated compatible incompatible failed"`
 	// Converted 和 SourceEngineInstanceID 用于转换状态及来源实例筛选。
 	Converted              *bool  `form:"converted"`
 	SourceEngineInstanceID string `form:"source_engine_instance_id"`
@@ -21,12 +17,18 @@ type ComfyUIWorkflowListRequest struct {
 	OwnerUserID string `form:"owner_user_id"`
 }
 
-// ComfyUIWorkflowImportRequest 是 multipart 导入请求；object_info 只由服务端从来源实例读取。
+// ComfyUIWorkflowDeriveRequest 指定即时解析使用的目标实例；分页仅用于节点列表。
+type ComfyUIWorkflowDeriveRequest struct {
+	imachinery.BasicQueryParam
+	EngineInstanceID string `form:"engine_instance_id" binding:"required"`
+}
+
+// ComfyUIWorkflowImportRequest 是 multipart 导入请求；object_info 只从来源实例当前目录读取。
 type ComfyUIWorkflowImportRequest struct {
 	// Name 和 Description 是导入后唯一允许修改的业务元数据。
 	Name        string `form:"name" binding:"required,max=255"`
 	Description string `form:"description"`
-	// SourceEngineInstanceID 指定服务端读取 object_info 的 ComfyUI 实例。
+	// SourceEngineInstanceID 指定基础结构校验使用的当前目录所属实例。
 	SourceEngineInstanceID string                `form:"source_engine_instance_id" binding:"required"`
 	WorkflowFile           *multipart.FileHeader `form:"workflow_file"`
 	// APIWorkflowFile 是必填执行文件；VisualWorkflowFile 仅提供展示位置和标题。

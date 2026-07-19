@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -129,49 +127,35 @@ func (s *applicationPlatformService) compatibleComfyUIEngineIDs(ctx context.Cont
 	if len(engines) == 0 {
 		return []string{}, nil
 	}
-	parsed, err := parseComfyUIWorkflow(version.ComfyUIAPIWorkflow, nil, version.ComfyUIObjectInfo)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI template snapshot is invalid")
-	}
-	workflow := &iapiserver.ComfyUIWorkflow{ParsedNodes: parsed.nodes, Dependencies: version.ComfyUIDependencies, ImportObjectInfo: version.ComfyUIObjectInfo}
-	typeDef, ok := s.Runtime.EngineType("comfyui")
-	if !ok {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "ComfyUI engine type is not registered")
-	}
-	reader, ok := s.Adapters[typeDef.EngineAdapterID].(ComfyUIObjectInfoReader)
-	if !ok {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info reader is unavailable")
-	}
-	var group errgroup.Group
-	group.SetLimit(8)
 	ids := make([]string, 0, len(engines))
-	var mutex sync.Mutex
 	for _, engine := range engines {
-		engine := engine
-		group.Go(func() error {
-			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			objectInfo, readErr := reader.ReadObjectInfo(checkCtx, engine)
-			if readErr != nil || len(objectInfo) == 0 {
-				return nil
-			}
-			if len(compatibilityDiagnostics(workflow, objectInfo)) != 0 {
-				return nil
-			}
-			mutex.Lock()
-			ids = append(ids, engine.ID)
-			mutex.Unlock()
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+		if !engineMatchesComfyUITemplateRestrictions(engine, version.TemplateContract) {
+			continue
+		}
+		catalog, err := s.Store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engine.ID)
+		if err != nil || catalog.Stale(time.Now()) {
+			continue
+		}
+		if err := validateComfyUITemplateSnapshot(version.ComfyUIAPIWorkflow, catalog.ObjectInfo, version.TemplateContract); err != nil {
+			continue
+		}
+		ids = append(ids, engine.ID)
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+func engineMatchesComfyUITemplateRestrictions(engine *iapiserver.EngineInstance, contract map[string]any) bool {
+	if engine == nil || engine.ApplicationEngineTypeID != "comfyui" || !engine.Enabled || engine.HealthStatus != iapiserver.EngineHealthOnline {
+		return false
+	}
+	restrictions := mapValue(contract["engine_restrictions"])
+	allowedIDs := commaSet(stringValue(restrictions["allowed_engine_instance_ids"]))
+	if len(allowedIDs) > 0 && !allowedIDs[engine.ID] {
+		return false
+	}
+	allowedRegions := commaSet(stringValue(restrictions["allowed_regions"]))
+	return len(allowedRegions) == 0 || allowedRegions[engine.Region]
 }
 
 func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Context, capability *iapiserver.AIAppProviderCapability, operationID, selectedEngineID string) ([]runtimeCandidate, error) {
