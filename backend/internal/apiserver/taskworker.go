@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -51,9 +50,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "load provider capabilities")
 	}
-	tasks := taskcentersvc.NewServiceWithFunctions(storeIns, runtime,
+	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
+	tasks := taskcentersvc.NewServiceWithRegistries(storeIns, runtime, reconcileRegistry,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"application-platform.engine-health-plan", "application-platform.engine-health-check",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
@@ -66,6 +65,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
 	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: assetRegistrar, Events: events})
 	if err != nil {
+		return err
+	}
+	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationService)); err != nil {
 		return err
 	}
 	comfyTestExecutor := appsvc.NewComfyUITestExecutor(storeIns)
@@ -102,57 +104,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler("application-platform.engine-health-check", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		engineID, _ := task.Arguments["engine_instance_id"].(string)
-		result, err := applicationService.CheckEngineInstanceHealthInternal(ctx, engineID)
-		if err != nil {
-			return nil, err
-		}
-		raw, _ := json.Marshal(result)
-		var output map[string]any
-		_ = json.Unmarshal(raw, &output)
-		return output, nil
-	}); err != nil {
-		return err
-	}
-	if err := runtime.RegisterHandler("application-platform.engine-health-plan", 1, func(ctx context.Context, workerTask workflowruntime.WorkerTask) (map[string]any, error) {
-		planner, err := storeIns.TaskCenters().GetAtomicTask(ctx, workerTask.AtomicTaskID)
-		if err != nil {
-			return nil, err
-		}
-		enabled := true
-		engines, _, err := storeIns.ApplicationPlatforms().ListEngineInstances(ctx, &iapiserver.EngineInstanceListRequest{Enabled: &enabled})
-		if err != nil {
-			return nil, err
-		}
-		cutoff := time.Now().Add(-cfg.ApplicationPlatformOptions.EngineHealthInterval)
-		children := make([]*iapiserver.AtomicTask, 0, len(engines))
-		dynamicTasks := make([]map[string]any, 0, len(engines))
-		dynamicInputs := make(map[string]any, len(engines))
-		for _, engine := range engines {
-			if engine.LastHealthCheckAt != nil && engine.LastHealthCheckAt.Time.After(cutoff) {
-				continue
-			}
-			key := "engine_" + strings.ReplaceAll(engine.ID, "-", "_")
-			child := &iapiserver.AtomicTask{
-				FunctionRef: "application-platform.engine-health-check", Arguments: map[string]any{"engine_instance_id": engine.ID},
-				TimeoutPolicy: iapiserver.TimeoutPolicy{PerAttemptTimeoutSeconds: 4, OverallTimeoutSeconds: 4},
-				Status:        iapiserver.AtomicTaskStatusBlocked, ChildKey: key, ProjectID: planner.ProjectID,
-				Namespace: planner.Namespace, CreatedBy: planner.CreatedBy,
-			}
-			child.ID = uuid.NewString()
-			child.RootTaskID = child.ID
-			child.Name = "Engine health check"
-			children = append(children, child)
-			dynamicTasks = append(dynamicTasks, map[string]any{"name": child.FunctionRef, "taskReferenceName": key, "type": "SIMPLE"})
-			dynamicInputs[key] = map[string]any{"atomic_task_id": child.ID, "arguments": child.Arguments}
-		}
-		if len(children) > 0 {
-			if err := storeIns.TaskCenters().AddOwnedAtomicTasks(ctx, iapiserver.TaskOwnerTypeDAGGroup, planner.OwnerID, children); err != nil {
-				return nil, err
-			}
-		}
-		return map[string]any{"dynamic_tasks": dynamicTasks, "dynamic_inputs": dynamicInputs, "total": len(children)}, nil
+	if err := runtime.RegisterHandler(taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
+		return tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments["scheduled_at"]))
 	}); err != nil {
 		return err
 	}
@@ -163,7 +117,20 @@ func RunTaskWorker(cfg *config.Config) error {
 			return nil, err
 		}
 		scheduledAt := scheduleTime(task.Arguments["scheduled_at"])
-		execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), TargetType: schedule.Target.Type, RuntimeExecutionID: task.WorkflowID, Status: iapiserver.ScheduleExecutionStatusTriggered}
+		if taskcentersvc.ScheduleTriggerMisfired(scheduledAt, time.Now()) {
+			existing, getErr := storeIns.TaskCenters().GetScheduleExecutionAt(ctx, schedule.ID, scheduledAt)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if existing == nil {
+				return map[string]any{
+					"status":       iapiserver.TaskSchedulePolicySkip,
+					"scheduled_at": scheduledAt.UTC().Format(time.RFC3339Nano),
+					"reason":       "misfire policy skipped delayed schedule trigger",
+				}, nil
+			}
+		}
+		execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ExecutionMode: iapiserver.TaskScheduleModeMaterialized, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), TargetType: schedule.Target.Type, RuntimeExecutionID: task.WorkflowID, Status: iapiserver.ScheduleExecutionStatusTriggered}
 		execution.ID = uuid.NewString()
 		execution.Name = "Schedule execution"
 		record, acquired, err := storeIns.TaskCenters().AcquireScheduleExecution(ctx, execution)
@@ -309,28 +276,10 @@ func applyDAGScheduleOwnership(req *iapiserver.DAGTaskGroupCreateRequest, schedu
 
 func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, interval time.Duration) error {
 	if interval <= 0 {
-		return nil
+		interval = 30 * time.Second
 	}
-	dag := iapiserver.DAGTaskGroupCreateRequest{Name: "Engine health planner", Nodes: []iapiserver.DAGNode{{Key: "plan", Task: iapiserver.AtomicTaskTemplate{Key: "plan", Name: "Plan engine health checks", FunctionRef: "application-platform.engine-health-plan", TimeoutPolicy: iapiserver.TimeoutPolicy{OverallTimeoutSeconds: 5}}, DynamicFork: true, MaxDynamicTasks: iapiserver.MaxDynamicForkTasks}}, Edges: []iapiserver.DAGEdge{}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace}
-	if _, err := tasks.CreateDAGTaskGroup(ctx, &dag); err != nil {
-		return err
-	}
-	raw, _ := json.Marshal(dag)
-	template := map[string]any{}
-	_ = json.Unmarshal(raw, &template)
-	target := iapiserver.ScheduleTarget{Type: iapiserver.TaskScheduleTargetDAG, Template: template}
 	cron := healthCron(interval)
-	list, err := tasks.ListTaskSchedules(ctx, &iapiserver.TaskScheduleListRequest{})
-	if err != nil {
-		return err
-	}
-	for _, schedule := range list.Items {
-		if schedule.Name == "application-platform.engine-health" && schedule.Status != iapiserver.TaskScheduleStatusDeleted {
-			_, err := tasks.UpdateTaskSchedule(ctx, &iapiserver.TaskScheduleUpdateRequest{ID: schedule.ID, CronExpression: &cron, Target: &target})
-			return err
-		}
-	}
-	_, err = tasks.CreateTaskSchedule(ctx, &iapiserver.TaskScheduleCreateRequest{Name: "application-platform.engine-health", Description: "Periodic EngineInstance health planner", TriggerType: iapiserver.TaskScheduleTriggerCron, CronExpression: cron, TimeZone: "UTC", Target: target, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.engine-health", Description: "Periodic EngineInstance health reconcile"}, SystemKey: appsvc.EngineHealthReconcileRef, CronExpression: cron, TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: appsvc.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 

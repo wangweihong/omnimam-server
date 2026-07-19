@@ -132,6 +132,15 @@
 | ErrAIAppComfyUIConversionIdempotencyConflict | 131231 | 200 | The conversion idempotency key is already used by another workflow owned by the same user. | 转换幂等键已被同一所有者的其他工作流使用。 |
 | ErrAIAppComfyUIResourceVersionConflict | 131232 | 200 | The ComfyUI workflow resource version has changed; refresh and retry. | ComfyUI 工作流资源版本已变化，请刷新后重试。 |
 | ErrAIAppComfyUIWorkflowAccessDenied | 131233 | 200 | The current user is not allowed to access or administer this ComfyUI workflow. | 当前用户无权访问或代管该 ComfyUI 工作流。 |
+| ErrAIAppComfyUIWorkflowSourceInvalid | 131234 | 200 | The file is not a supported ComfyUI Workflow or API Workflow JSON. | 文件不是受支持的 ComfyUI Workflow 或 API Workflow JSON。 |
+| ErrAIAppComfyUIAPIConversionBlocked | 131235 | 200 | Blocking diagnostics prevent conversion to an API Workflow. | 普通 Workflow 存在阻断诊断，不能生成 API Workflow。 |
+| ErrAIAppComfyUIAPINotReady | 131236 | 200 | The API Workflow is not ready for validation or testing. | API Workflow 尚未就绪，不能进行校验或试运行。 |
+| ErrAIAppComfyUITestEngineUnavailable | 131237 | 200 | The selected ComfyUI instance is disabled or unhealthy. | 所选 ComfyUI 实例未启用或当前不健康。 |
+| ErrAIAppComfyUITestIncompatible | 131238 | 200 | The workflow is incompatible with the selected ComfyUI instance. | 工作流与所选 ComfyUI 实例不兼容。 |
+| ErrAIAppComfyUITestParameterInvalid | 131239 | 200 | A test parameter is unknown, cannot be overridden, or violates its type or range. | 试运行参数不存在、不允许覆盖或未通过类型与范围校验。 |
+| ErrAIAppComfyUITestRunNotFound | 131240 | 200 | The workflow test run does not exist or is not visible. | 试运行不存在或当前用户不可见。 |
+| ErrAIAppComfyUITestPreviewUnavailable | 131241 | 200 | The temporary preview is missing, was removed upstream, or cannot be read safely. | 临时预览不存在、已被上游清理或无法安全读取。 |
+| ErrAIAppComfyUITestRunStateBlocked | 131242 | 200 | The workflow test run state does not allow this operation. | 当前试运行状态不允许执行该操作。 |
 | ErrTaskDefinitionInvalid | 140200 | 200 | Task definition is invalid. | 任务定义不合法。 |
 | ErrTaskDAGCycleDetected | 140201 | 200 | DAGTaskGroup contains a cyclic dependency. | DAGTaskGroup 存在环形依赖。 |
 | ErrTaskGroupInvalid | 140202 | 200 | TaskGroup template or execution policy is invalid. | TaskGroup 模板或执行策略不合法。 |
@@ -156,6 +165,9 @@
 | ErrTaskScheduleInvalid | 141400 | 200 | TaskSchedule target, cron, timezone, or runAt is invalid. | TaskSchedule 的目标、cron、时区或 runAt 不合法。 |
 | ErrTaskScheduleNotFound | 141401 | 200 | TaskSchedule does not exist or is not visible to the caller. | TaskSchedule 不存在或当前调用方不可见。 |
 | ErrTaskScheduleStateBlocked | 141402 | 200 | Current TaskSchedule status does not allow this operation. | TaskSchedule 当前状态不允许该操作。 |
+| ErrTaskReconcileConfigInvalid | 141403 | 200 | Reconcile config, parallelism, item limit, or timeout is invalid. | 巡检配置、并发、单轮上限或超时不合法。 |
+| ErrTaskReconcileRefUnregistered | 141404 | 200 | The reconcile handler referenced by the schedule is not registered. | 计划引用的巡检器未在后端注册。 |
+| ErrTaskSystemScheduleOperationRestricted | 141405 | 200 | A system schedule cannot be created, deleted, or have protected fields changed. | 系统内置计划不允许创建、删除或修改受保护字段。 |
 | ErrCanvasNotFound | 160200 | 200 | Canvas does not exist or is not visible to the caller. | Canvas 不存在或当前调用方不可见。 |
 | ErrCanvasRevisionConflict | 160201 | 200 | Canvas draft revision has changed; refresh before retrying. | Canvas 草稿 revision 已变化，请刷新后重试。 |
 | ErrCanvasGraphInvalid | 160202 | 200 | Canvas graph nodes, edges, ports, or input bindings are invalid. | Canvas 图的节点、边、端口或输入绑定不合法。 |

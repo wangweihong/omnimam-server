@@ -1,0 +1,102 @@
+package applicationplatform
+
+import (
+	"context"
+	"sort"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+)
+
+type healthReconcileStore struct {
+	store.ApplicationPlatformStore
+	items []*iapiserver.EngineInstance
+}
+
+func (s *healthReconcileStore) ListEnabledEngineInstancesAfter(_ context.Context, cursor string, limit int) ([]*iapiserver.EngineInstance, error) {
+	items := append([]*iapiserver.EngineInstance(nil), s.items...)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	result := make([]*iapiserver.EngineInstance, 0, limit)
+	for _, item := range items {
+		if item.Enabled && item.ID > cursor {
+			result = append(result, item)
+		}
+		if len(result) == limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+type healthReconcileService struct {
+	ApplicationPlatformSrv
+	active  atomic.Int32
+	maximum atomic.Int32
+	failID  string
+}
+
+func (s *healthReconcileService) CheckEngineInstanceHealthInternal(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
+	active := s.active.Add(1)
+	defer s.active.Add(-1)
+	for {
+		maximum := s.maximum.Load()
+		if active <= maximum || s.maximum.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	if id == s.failID {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	time.Sleep(5 * time.Millisecond)
+	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: iapiserver.EngineHealthOnline}, nil
+}
+
+func TestEngineHealthReconcileHonorsConcurrencyAndStableCursor(t *testing.T) {
+	items := make([]*iapiserver.EngineInstance, 5)
+	for i := range items {
+		items[i] = &iapiserver.EngineInstance{Enabled: true, HealthStatus: iapiserver.EngineHealthUnknown}
+		items[i].ID = "engine-0" + string(rune('1'+i))
+	}
+	applicationStore := &healthReconcileStore{items: items}
+	service := &healthReconcileService{}
+	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maximum.Load() != 2 {
+		t.Fatalf("maximum concurrency = %d, want 2", service.maximum.Load())
+	}
+	if result.Scanned != 4 || result.CycleCompleted {
+		t.Fatalf("result = %#v", result)
+	}
+	if cursor := result.NextCheckpoint["engine_instance_id"]; cursor != "engine-04" {
+		t.Fatalf("cursor = %v", cursor)
+	}
+}
+
+func TestEngineHealthReconcileDoesNotAdvanceIncompleteChunk(t *testing.T) {
+	items := []*iapiserver.EngineInstance{}
+	for i := 1; i <= 4; i++ {
+		item := &iapiserver.EngineInstance{Enabled: true}
+		item.ID = "engine-0" + string(rune('0'+i))
+		items = append(items, item)
+	}
+	applicationStore := &healthReconcileStore{items: items}
+	service := &healthReconcileService{failID: "engine-03"}
+	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	result, err := handler.Reconcile(ctx, taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: 20 * time.Millisecond})
+	if err == nil {
+		t.Fatal("expected incomplete chunk error")
+	}
+	if cursor := result.NextCheckpoint["engine_instance_id"]; cursor != "engine-02" {
+		t.Fatalf("cursor = %v, want engine-02", cursor)
+	}
+}

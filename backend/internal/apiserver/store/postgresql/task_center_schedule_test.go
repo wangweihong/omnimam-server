@@ -3,6 +3,8 @@ package postgresql
 import (
 	"strings"
 	"testing"
+
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
 
 func TestTaskCenterScheduleOwnershipBackfillIsIdempotentAndScoped(t *testing.T) {
@@ -18,6 +20,16 @@ func TestTaskCenterScheduleOwnershipBackfillIsIdempotentAndScoped(t *testing.T) 
 		if !strings.Contains(taskCenterScheduleOwnershipBackfillSQL, marker) {
 			t.Fatalf("schedule ownership backfill missing %q", marker)
 		}
+	}
+}
+
+func TestScheduleSummaryDoesNotRegressWhenLightweightHistoryIsPruned(t *testing.T) {
+	schedule := &iapiserver.TaskSchedule{}
+	applyScheduleSummaryTransition(schedule, "", iapiserver.ScheduleExecutionStatusTriggered)
+	applyScheduleSummaryTransition(schedule, iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusSuccess)
+	applyScheduleSummaryTransition(schedule, "", iapiserver.ScheduleExecutionStatusSkippedOverlap)
+	if schedule.Summary.TotalTriggered != 2 || schedule.Summary.Running != 0 || schedule.Summary.Success != 1 || schedule.Summary.SkippedOverlap != 1 {
+		t.Fatalf("summary = %#v", schedule.Summary)
 	}
 }
 

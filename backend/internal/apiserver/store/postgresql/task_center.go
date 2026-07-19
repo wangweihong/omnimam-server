@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -323,6 +325,9 @@ func (s *taskCenterStore) ListTaskSchedules(ctx context.Context, req *iapiserver
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
 		}
+		if req.ExecutionMode != "" {
+			query = query.Where("execution_mode = ?", req.ExecutionMode)
+		}
 		return query
 	}
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskSchedule{}), filter)
@@ -336,11 +341,42 @@ func (s *taskCenterStore) GetTaskSchedule(ctx context.Context, id string) (*iapi
 	}
 	return &item, nil
 }
+func (s *taskCenterStore) GetTaskScheduleBySystemKey(ctx context.Context, key string) (*iapiserver.TaskSchedule, error) {
+	var item iapiserver.TaskSchedule
+	if err := s.ds.db.WithContext(ctx).Where("system_key = ? AND deleted_at IS NULL", key).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskScheduleNotFound, "task schedule not found")
+	}
+	return &item, nil
+}
 func (s *taskCenterStore) AddTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error) {
 	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
+}
+
+// EnsureSystemTaskSchedule 依靠 system_key 唯一索引原子补齐系统计划和一对一状态，多 Worker 并发启动只会创建一份。
+func (s *taskCenterStore) EnsureSystemTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule, state *iapiserver.ScheduleReconcileState) (*iapiserver.TaskSchedule, bool, error) {
+	created := false
+	result := data
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(data)
+		if insert.Error != nil {
+			return insert.Error
+		}
+		created = insert.RowsAffected == 1
+		if !created {
+			var existing iapiserver.TaskSchedule
+			if err := tx.Where("system_key = ? AND deleted_at IS NULL", data.SystemKey).First(&existing).Error; err != nil {
+				return err
+			}
+			result = &existing
+			return nil
+		}
+		state.ScheduleID = data.ID
+		return tx.Create(state).Error
+	})
+	return result, created, errors.WithStack(err)
 }
 func (s *taskCenterStore) UpdateTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error) {
 	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
@@ -361,6 +397,45 @@ func (s *taskCenterStore) ListScheduleExecutions(ctx context.Context, req *iapis
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskScheduleExecution{}), filter).Order("scheduled_at DESC")
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) GetScheduleExecution(ctx context.Context, id string) (*iapiserver.TaskScheduleExecution, error) {
+	var execution iapiserver.TaskScheduleExecution
+	if err := s.ds.db.WithContext(ctx).First(&execution, "id = ?", id).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskScheduleNotFound, "schedule execution not found")
+	}
+	return &execution, nil
+}
+
+// GetScheduleExecutionAt 按唯一业务键读取已有轮次；未命中不是错误，misfire 守卫据此安全跳过首次迟到触发。
+func (s *taskCenterStore) GetScheduleExecutionAt(ctx context.Context, scheduleID string, scheduledAt time.Time) (*iapiserver.TaskScheduleExecution, error) {
+	var execution iapiserver.TaskScheduleExecution
+	err := s.ds.db.WithContext(ctx).Where("schedule_id = ? AND scheduled_at = ?", scheduleID, scheduledAt).First(&execution).Error
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &execution, nil
+}
+
+func (s *taskCenterStore) ListLatestScheduleExecutions(ctx context.Context, scheduleIDs []string) (map[string]*iapiserver.TaskScheduleExecution, error) {
+	result := make(map[string]*iapiserver.TaskScheduleExecution)
+	if len(scheduleIDs) == 0 {
+		return result, nil
+	}
+	var items []*iapiserver.TaskScheduleExecution
+	if err := s.ds.db.WithContext(ctx).Raw("SELECT DISTINCT ON (schedule_id) * FROM task_schedule_executions WHERE schedule_id IN ? ORDER BY schedule_id, scheduled_at DESC", scheduleIDs).Scan(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	for _, item := range items {
+		if err := item.AfterFind(s.ds.db); err != nil {
+			return nil, err
+		}
+		result[item.ScheduleID] = item
+	}
+	return result, nil
 }
 
 func (s *taskCenterStore) ListScheduleSources(ctx context.Context, targetType string, targetIDs []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
@@ -657,6 +732,11 @@ func (s *taskCenterStore) AcquireScheduleExecution(ctx context.Context, data *ia
 	var result *iapiserver.TaskScheduleExecution
 	acquired := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 锁定父计划将“同一 scheduled_at 幂等”和“活动轮次唯一”串行化，避免多 Worker 启动竞态落成唯一索引错误。
+		var schedule iapiserver.TaskSchedule
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&schedule, "id = ?", data.ScheduleID).Error; err != nil {
+			return err
+		}
 		var existing iapiserver.TaskScheduleExecution
 		err := tx.Where("schedule_id = ? AND scheduled_at = ?", data.ScheduleID, data.ScheduledAt.Time).First(&existing).Error
 		if err == nil {
@@ -680,17 +760,174 @@ func (s *taskCenterStore) AcquireScheduleExecution(ctx context.Context, data *ia
 		if err := tx.Create(data).Error; err != nil {
 			return err
 		}
+		if err := publishScheduleExecutionEvent(tx, data); err != nil {
+			return err
+		}
+		applyScheduleSummaryTransition(&schedule, "", data.Status)
+		if err := tx.Save(&schedule).Error; err != nil {
+			return err
+		}
 		result = data
 		return nil
 	})
 	return result, acquired, errors.WithStack(err)
 }
 
+// WithScheduleReconcileLock 使用事务级 advisory lock 防止同一 Conductor task 的超时重投与旧调用并发写 checkpoint。
+func (s *taskCenterStore) WithScheduleReconcileLock(ctx context.Context, scheduleID string, fn func() error) (bool, error) {
+	acquired := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))", "task-center-reconcile:"+scheduleID).Scan(&acquired).Error; err != nil || !acquired {
+			return err
+		}
+		return fn()
+	})
+	return acquired, errors.WithStack(err)
+}
+
 func (s *taskCenterStore) UpdateScheduleExecution(ctx context.Context, data *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.TaskScheduleExecution
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", data.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		if err := updateScheduleSummary(tx, data.ScheduleID, previous.Status, data.Status); err != nil {
+			return err
+		}
+		if isScheduleExecutionTerminal(data.Status) {
+			return publishScheduleExecutionEvent(tx, data)
+		}
+		return nil
+	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
+}
+
+func (s *taskCenterStore) GetScheduleReconcileState(ctx context.Context, scheduleID string) (*iapiserver.ScheduleReconcileState, error) {
+	var state iapiserver.ScheduleReconcileState
+	if err := s.ds.db.WithContext(ctx).First(&state, "schedule_id = ?", scheduleID).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskScheduleNotFound, "schedule reconcile state not found")
+	}
+	return &state, nil
+}
+
+// CompleteScheduleReconcile 原子提交轮次终态、checkpoint 和不回退的累计统计。
+func (s *taskCenterStore) CompleteScheduleReconcile(ctx context.Context, execution *iapiserver.TaskScheduleExecution, state *iapiserver.ScheduleReconcileState) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.TaskScheduleExecution
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", execution.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(execution).Error; err != nil {
+			return err
+		}
+		if err := updateScheduleSummary(tx, execution.ScheduleID, previous.Status, execution.Status); err != nil {
+			return err
+		}
+		if err := tx.Save(state).Error; err != nil {
+			return err
+		}
+		if isScheduleExecutionTerminal(execution.Status) {
+			return publishScheduleExecutionEvent(tx, execution)
+		}
+		return nil
+	}))
+}
+
+func isScheduleExecutionTerminal(status string) bool {
+	return status == iapiserver.ScheduleExecutionStatusSuccess || status == iapiserver.ScheduleExecutionStatusFailed || status == iapiserver.ScheduleExecutionStatusCanceled || status == iapiserver.ScheduleExecutionStatusSkippedOverlap || status == iapiserver.ScheduleExecutionStatusTriggerFailed
+}
+
+func publishScheduleExecutionEvent(tx *gorm.DB, execution *iapiserver.TaskScheduleExecution) error {
+	payload := map[string]any{"task_schedule_id": execution.ScheduleID, "schedule_execution_id": execution.ID, "scheduled_at": execution.ScheduledAt, "execution_mode": execution.ExecutionMode, "status": execution.Status, "target_type": execution.TargetType, "target_id": execution.TargetID, "reason": execution.Reason, "occurred_at": imachinery.Now()}
+	if execution.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+		payload["reconcile_summary"] = execution.ReconcileSummary
+	} else {
+		payload["reconcile_summary"] = nil
+	}
+	return publishOutbox(tx, OutboxTopicScheduleExecutionRecorded, execution.ID+":"+execution.Status, payload)
+}
+
+func updateScheduleSummary(tx *gorm.DB, scheduleID, from, to string) error {
+	if from == to {
+		return nil
+	}
+	var schedule iapiserver.TaskSchedule
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&schedule, "id = ?", scheduleID).Error; err != nil {
+		return err
+	}
+	applyScheduleSummaryTransition(&schedule, from, to)
+	return tx.Save(&schedule).Error
+}
+
+func applyScheduleSummaryTransition(schedule *iapiserver.TaskSchedule, from, to string) {
+	if from == "" {
+		schedule.Summary.TotalTriggered++
+		if to == iapiserver.ScheduleExecutionStatusTriggered || to == iapiserver.ScheduleExecutionStatusRunning {
+			schedule.Summary.Running++
+		}
+		if to == iapiserver.ScheduleExecutionStatusSkippedOverlap {
+			schedule.Summary.SkippedOverlap++
+		}
+		return
+	}
+	if (from == iapiserver.ScheduleExecutionStatusTriggered || from == iapiserver.ScheduleExecutionStatusRunning) && isScheduleExecutionTerminal(to) && schedule.Summary.Running > 0 {
+		schedule.Summary.Running--
+	}
+	switch to {
+	case iapiserver.ScheduleExecutionStatusSuccess:
+		schedule.Summary.Success++
+	case iapiserver.ScheduleExecutionStatusFailed, iapiserver.ScheduleExecutionStatusTriggerFailed:
+		schedule.Summary.Failed++
+	case iapiserver.ScheduleExecutionStatusCanceled:
+		schedule.Summary.Canceled++
+	case iapiserver.ScheduleExecutionStatusSkippedOverlap:
+		schedule.Summary.SkippedOverlap++
+	}
+}
+
+func (s *taskCenterStore) PruneReconcileExecutions(ctx context.Context, scheduleID string, retention iapiserver.HistoryRetention, now time.Time) (int64, error) {
+	var deleted int64
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var keepIDs []string
+		collect := func(statuses []string, limit int, cutoff *time.Time) error {
+			if limit <= 0 {
+				return nil
+			}
+			q := tx.Model(&iapiserver.TaskScheduleExecution{}).Select("id").Where("schedule_id = ? AND execution_mode = ? AND status IN ?", scheduleID, iapiserver.TaskScheduleModeReconcile, statuses)
+			if cutoff != nil {
+				q = q.Where("completed_at >= ?", *cutoff)
+			}
+			var ids []string
+			if err := q.Order("completed_at DESC, scheduled_at DESC").Limit(limit).Pluck("id", &ids).Error; err != nil {
+				return err
+			}
+			keepIDs = append(keepIDs, ids...)
+			return nil
+		}
+		if err := collect([]string{iapiserver.ScheduleExecutionStatusSuccess}, retention.SuccessCount, nil); err != nil {
+			return err
+		}
+		if err := collect([]string{iapiserver.ScheduleExecutionStatusSkippedOverlap}, retention.SkippedCount, nil); err != nil {
+			return err
+		}
+		cutoff := now.Add(-time.Duration(retention.FailureDurationSeconds) * time.Second)
+		if err := collect([]string{iapiserver.ScheduleExecutionStatusFailed, iapiserver.ScheduleExecutionStatusTriggerFailed}, retention.FailureCount, &cutoff); err != nil {
+			return err
+		}
+		q := tx.Where("schedule_id = ? AND execution_mode = ? AND status NOT IN ?", scheduleID, iapiserver.TaskScheduleModeReconcile, []string{iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusRunning})
+		if len(keepIDs) > 0 {
+			q = q.Where("id NOT IN ?", keepIDs)
+		}
+		result := q.Delete(&iapiserver.TaskScheduleExecution{})
+		deleted = result.RowsAffected
+		return result.Error
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	return deleted, errors.WithStack(err)
 }
 
 func mustJSON(value any) string { data, _ := json.Marshal(value); return string(data) }

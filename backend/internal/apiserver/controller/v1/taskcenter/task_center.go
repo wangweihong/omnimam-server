@@ -120,3 +120,8 @@ func (c *Controller) ListScheduleExecutions(ctx *gin.Context) {
 		return c.service.ListScheduleExecutions(ctx, value)
 	})
 }
+
+// GetScheduleReconcileState 返回 RECONCILE 单例状态投影，不暴露 checkpoint 原始 JSON。
+func (c *Controller) GetScheduleReconcileState(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetScheduleReconcileState(ctx, ctx.Param("task_schedule_id")) })
+}

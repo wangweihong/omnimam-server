@@ -96,6 +96,10 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err := r.reconcileScheduleExecutions(ctx); err != nil {
 		errs = append(errs, err)
 	}
+	if err := r.reconcileRuntimeRetention(ctx); err != nil {
+		reconcileRetentionFailures.WithLabelValues("conductor").Inc()
+		errs = append(errs, err)
+	}
 	return stderrors.Join(errs...)
 }
 
@@ -125,6 +129,12 @@ func (r *Reconciler) reconcileScheduleExecutions(ctx context.Context) error {
 	}
 	var errs []error
 	for _, execution := range executions {
+		if execution.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+			if err := r.recoverReconcileExecution(ctx, execution); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
 		status, terminal, statusErr := r.scheduleTargetStatus(ctx, execution)
 		if statusErr != nil {
 			errs = append(errs, statusErr)
@@ -137,6 +147,56 @@ func (r *Reconciler) reconcileScheduleExecutions(ctx context.Context) error {
 		execution.CompletedAt = imachinery.Now()
 		if _, updateErr := r.store.UpdateScheduleExecution(ctx, execution); updateErr != nil {
 			errs = append(errs, updateErr)
+		}
+	}
+	return stderrors.Join(errs...)
+}
+
+func (r *Reconciler) recoverReconcileExecution(ctx context.Context, execution *iapiserver.TaskScheduleExecution) error {
+	runtimeExecution, err := r.runtime.GetExecution(ctx, execution.RuntimeExecutionID)
+	missing := stderrors.Is(err, workflowruntime.ErrExecutionNotFound)
+	if err != nil && !missing {
+		return err
+	}
+	if !missing && (runtimeExecution.Status == "RUNNING" || runtimeExecution.Status == "PAUSED") {
+		return nil
+	}
+	_, err = r.store.WithScheduleReconcileLock(ctx, execution.ScheduleID, func() error {
+		current, getErr := r.store.GetScheduleExecution(ctx, execution.ID)
+		if getErr != nil {
+			return getErr
+		}
+		if current.Status != iapiserver.ScheduleExecutionStatusTriggered && current.Status != iapiserver.ScheduleExecutionStatusRunning {
+			return nil
+		}
+		state, stateErr := r.store.GetScheduleReconcileState(ctx, current.ScheduleID)
+		if stateErr != nil {
+			return stateErr
+		}
+		now := imachinery.Now()
+		reason := "reconcile controller terminated before committing its result"
+		if missing {
+			reason = "reconcile runtime execution no longer exists"
+		}
+		current.Status, current.Reason, current.CompletedAt = iapiserver.ScheduleExecutionStatusFailed, reason, now
+		state.CurrentRuntimeExecutionID, state.LastCompletedAt = "", &now
+		state.ConsecutiveFailures++
+		state.TotalRuns++
+		state.ResourceVersion++
+		return r.store.CompleteScheduleReconcile(ctx, current, state)
+	})
+	return err
+}
+
+func (r *Reconciler) reconcileRuntimeRetention(ctx context.Context) error {
+	items, err := r.runtime.ListTerminalExecutions(ctx, ReconcileControllerDefinition, time.Now().Add(-24*time.Hour), 200)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, execution := range items {
+		if err := r.runtime.DeleteTerminalExecution(ctx, execution.ID); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return stderrors.Join(errs...)

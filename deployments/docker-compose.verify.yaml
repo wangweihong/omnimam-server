@@ -1,0 +1,13 @@
+services:
+  postgres:
+    container_name: omnimam-reconcile-verify-postgres
+    ports: !reset []
+  redis:
+    container_name: omnimam-reconcile-verify-redis
+  conductor:
+    ports: !reset []
+  apiserver:
+    container_name: omnimam-reconcile-verify-apiserver
+    ports: !reset []
+  taskworker:
+    container_name: omnimam-reconcile-verify-taskworker

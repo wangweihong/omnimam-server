@@ -127,6 +127,51 @@ func (r *ConductorRuntime) ListNonTerminalExecutions(ctx context.Context, limit 
 	return items, nil
 }
 
+func (r *ConductorRuntime) ListTerminalExecutions(ctx context.Context, definition string, completedBefore time.Time, limit int) ([]Execution, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	items := make([]Execution, 0, limit)
+	for _, status := range []string{"COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT"} {
+		const pageSize int32 = 200
+		for start := int32(0); len(items) < limit; start += pageSize {
+			summaries, err := r.executor.SearchWithContext(ctx, start, pageSize, fmt.Sprintf("status = %s AND workflowType = %s", status, definition), "")
+			if err != nil {
+				return nil, fmt.Errorf("search terminal conductor workflows: %w", err)
+			}
+			for _, summary := range summaries {
+				completedAt := fromSummaryTime(summary.EndTime)
+				if summary.WorkflowType != definition || completedAt.IsZero() || !completedAt.Before(completedBefore) {
+					continue
+				}
+				items = append(items, Execution{ID: summary.WorkflowId, DefinitionName: summary.WorkflowType, Status: string(summary.Status), StartedAt: fromSummaryTime(summary.StartTime), CompletedAt: completedAt})
+				if len(items) >= limit {
+					return items, nil
+				}
+			}
+			if len(summaries) < int(pageSize) {
+				break
+			}
+		}
+	}
+	return items, nil
+}
+
+// DeleteTerminalExecution 先读取状态再调用 Conductor 官方 remove API，防止误删运行中 execution。
+func (r *ConductorRuntime) DeleteTerminalExecution(ctx context.Context, id string) error {
+	execution, err := r.GetExecution(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !isTerminalExecutionStatus(execution.Status) {
+		return fmt.Errorf("remove conductor workflow: execution is not terminal")
+	}
+	if err := r.executor.RemoveWorkflow(id); err != nil {
+		return fmt.Errorf("remove conductor workflow: %w", err)
+	}
+	return nil
+}
+
 func (r *ConductorRuntime) SaveSchedule(ctx context.Context, schedule Schedule) error {
 	req := schedule.StartRequest
 	body := struct {
@@ -245,7 +290,7 @@ func fromConductorWorkflow(wf *model.Workflow) Execution {
 	if wf == nil {
 		return Execution{}
 	}
-	ret := Execution{ID: wf.WorkflowId, Status: string(wf.Status), Output: wf.Output, StartedAt: fromMillis(wf.StartTime), CompletedAt: fromMillis(wf.EndTime), FailureReason: wf.ReasonForIncompletion}
+	ret := Execution{ID: wf.WorkflowId, DefinitionName: wf.WorkflowName, Status: string(wf.Status), Output: wf.Output, StartedAt: fromMillis(wf.StartTime), CompletedAt: fromMillis(wf.EndTime), FailureReason: wf.ReasonForIncompletion}
 	ret.Tasks = make([]ExecutionTask, 0, len(wf.Tasks))
 	for _, task := range wf.Tasks {
 		ret.Tasks = append(ret.Tasks, ExecutionTask{ID: task.TaskId, ReferenceName: task.ReferenceTaskName, TaskType: task.TaskDefName, Status: string(task.Status), RetryCount: int(task.RetryCount), Input: task.InputData, Output: task.OutputData, FailureReason: task.ReasonForIncompletion, StartedAt: fromMillis(task.StartTime), CompletedAt: fromMillis(task.EndTime)})

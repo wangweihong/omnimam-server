@@ -92,6 +92,7 @@ type DAGTaskGroupCreateRequest struct {
 type TaskScheduleListRequest struct {
 	imachinery.BasicQueryParam
 	Status        string `form:"status" binding:"omitempty,oneof=ACTIVE PAUSED COMPLETED DELETED"`
+	ExecutionMode string `form:"execution_mode" binding:"omitempty,oneof=MATERIALIZED RECONCILE"` // 按完整作业历史或轻量巡检模式筛选。
 	ProjectID     string `form:"-" json:"-"`
 	Namespace     string `form:"-" json:"-"`
 	CreatedBy     string `form:"-" json:"-"`
@@ -101,6 +102,7 @@ type TaskScheduleListRequest struct {
 type TaskScheduleCreateRequest struct {
 	Name           string          `json:"name" binding:"required,max=256"`
 	Description    string          `json:"description" binding:"omitempty,max=2048"`
+	ExecutionMode  string          `json:"execution_mode" binding:"omitempty,oneof=MATERIALIZED"` // 公开创建固定为 MATERIALIZED，省略时使用该默认值。
 	TriggerType    string          `json:"trigger_type" binding:"required,oneof=CRON RUN_AT"`
 	CronExpression string          `json:"cron_expression" binding:"omitempty,max=256"`
 	RunAt          imachinery.Time `json:"run_at"`
@@ -111,13 +113,23 @@ type TaskScheduleCreateRequest struct {
 }
 
 type TaskScheduleUpdateRequest struct {
-	ID             string           `json:"-"`
-	Name           *string          `json:"name" binding:"omitempty,max=256"`
-	Description    *string          `json:"description" binding:"omitempty,max=2048"`
-	CronExpression *string          `json:"cron_expression" binding:"omitempty,max=256"`
-	RunAt          *imachinery.Time `json:"run_at"`
-	TimeZone       *string          `json:"time_zone" binding:"omitempty,max=128"`
-	Target         *ScheduleTarget  `json:"target"`
+	ID             string               `json:"-"`
+	Name           *string              `json:"name" binding:"omitempty,max=256"`
+	Description    *string              `json:"description" binding:"omitempty,max=2048"`
+	CronExpression *string              `json:"cron_expression" binding:"omitempty,max=256"`
+	RunAt          *imachinery.Time     `json:"run_at"`
+	TimeZone       *string              `json:"time_zone" binding:"omitempty,max=128"`
+	Target         *ScheduleTarget      `json:"target"`
+	ReconcileSpec  *ReconcileSpecUpdate `json:"reconcile_spec"` // 仅 SYSTEM RECONCILE 允许调整的安全运行参数。
+}
+
+// ReconcileSpecUpdate 只允许管理员调整 SYSTEM RECONCILE 的安全参数，不接受 reconcile_ref。
+type ReconcileSpecUpdate struct {
+	Config                *map[string]any `json:"config"`                                                    // 巡检器声明并校验的受控配置，不接受运行时任务定义。
+	MaxParallelism        *int            `json:"max_parallelism" binding:"omitempty,min=1,max=64"`          // 单轮最大实际并发，范围 1..64。
+	MaxItemsPerRun        *int            `json:"max_items_per_run" binding:"omitempty,min=1,max=1000"`      // 单轮最多扫描资源数，范围 1..1000。
+	PerItemTimeoutSeconds *int            `json:"per_item_timeout_seconds" binding:"omitempty,min=1,max=30"` // 单资源探测超时，范围 1..30 秒。
+	OverallTimeoutSeconds *int            `json:"overall_timeout_seconds" binding:"omitempty,min=1,max=300"` // 整轮超时，范围 1..300 秒且不得小于单项超时。
 }
 
 type ScheduleExecutionListRequest struct {

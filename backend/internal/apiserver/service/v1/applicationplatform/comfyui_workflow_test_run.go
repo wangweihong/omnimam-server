@@ -37,6 +37,11 @@ func (s *applicationPlatformService) ListComfyUIWorkflowTestRuns(ctx context.Con
 	}
 	for _, item := range items {
 		_, _ = s.projectComfyTestRun(ctx, item)
+		if !req.Detail {
+			item.Parameters = nil
+			item.Steps = nil
+			item.Outputs = nil
+		}
 	}
 	return &iapiserver.ComfyUIWorkflowTestRunListResponse{Total: total, Items: items}, nil
 }
@@ -50,7 +55,9 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
 	}
 	if existing, findErr := s.Store.ApplicationPlatforms().GetComfyUIWorkflowTestRunByIdempotency(ctx, workflow.OwnerUserID, req.IdempotencyKey); findErr == nil {
-		if existing.WorkflowID != workflowID || existing.EngineInstanceID != req.EngineInstanceID {
+		existingParametersDigest, existingDigestErr := canonicalJSONDigest(existing.Parameters)
+		requestParametersDigest, requestDigestErr := canonicalJSONDigest(req.Parameters)
+		if existingDigestErr != nil || requestDigestErr != nil || existing.WorkflowID != workflowID || existing.EngineInstanceID != req.EngineInstanceID || existingParametersDigest != requestParametersDigest {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "idempotency key payload differs")
 		}
 		return s.projectComfyTestRun(ctx, existing)
@@ -88,7 +95,11 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), ObjectInfoSnapshot: objectInfo, Parameters: req.Parameters, Status: iapiserver.TaskGroupStatusPending, Progress: 0, Steps: defaultTestSteps(), Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
+	engineSnapshot := iapiserver.ComfyUIWorkflowTestEngineSnapshot{ID: engine.ID, Name: engine.Name}
+	if engine.Region != "" {
+		engineSnapshot.Region = &engine.Region
+	}
+	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), ObjectInfoSnapshot: objectInfo, Parameters: req.Parameters, Status: iapiserver.TaskGroupStatusPending, Progress: 0, Steps: defaultTestSteps(), Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
 	run.ID = uuid.NewString()
 	run.Name = "ComfyUI workflow test"
 	run, err = s.Store.ApplicationPlatforms().AddComfyUIWorkflowTestRun(ctx, run)

@@ -21,6 +21,62 @@ const taskCenterActiveScheduleIndexSQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_executions_active
 ON task_schedule_executions(schedule_id)
 WHERE status IN ('TRIGGERED', 'RUNNING')
+;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_schedules_system_key
+ON task_schedules(system_key)
+WHERE system_key <> '';
+CREATE INDEX IF NOT EXISTS idx_task_schedules_mode_status
+ON task_schedules(execution_mode, status, next_trigger_at);
+CREATE INDEX IF NOT EXISTS idx_schedule_executions_reconcile_retention
+ON task_schedule_executions(schedule_id, execution_mode, status, completed_at DESC, scheduled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_schedule_reconcile_states_checkpoint
+ON task_schedule_reconcile_states(last_completed_at, updated_at)
+;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_task_schedule_mode_target') THEN
+    ALTER TABLE task_schedules ADD CONSTRAINT ck_task_schedule_mode_target CHECK (
+      (execution_mode='MATERIALIZED' AND target_type<>'' AND target_template_json<>'' AND reconcile_ref='') OR
+      (execution_mode='RECONCILE' AND trigger_type='CRON' AND target_type='' AND target_template_json='' AND reconcile_ref<>'')
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_task_schedule_management') THEN
+    ALTER TABLE task_schedules ADD CONSTRAINT ck_task_schedule_management CHECK (
+      (management_mode='USER' AND system_key='') OR (management_mode='SYSTEM' AND system_key<>'')
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_task_schedule_reconcile_timeout') THEN
+    ALTER TABLE task_schedules ADD CONSTRAINT ck_task_schedule_reconcile_timeout CHECK (reconcile_overall_timeout_seconds >= reconcile_per_item_timeout_seconds);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_task_schedule_reconcile_limits') THEN
+    ALTER TABLE task_schedules ADD CONSTRAINT ck_task_schedule_reconcile_limits CHECK (
+      reconcile_max_parallelism BETWEEN 1 AND 64 AND
+      reconcile_max_items_per_run BETWEEN 1 AND 1000 AND
+      reconcile_per_item_timeout_seconds BETWEEN 1 AND 30 AND
+      reconcile_overall_timeout_seconds BETWEEN 1 AND 300
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_task_schedule_modes') THEN
+    ALTER TABLE task_schedules ADD CONSTRAINT ck_task_schedule_modes CHECK (
+      execution_mode IN ('MATERIALIZED','RECONCILE') AND management_mode IN ('USER','SYSTEM')
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_schedule_execution_mode_target') THEN
+    ALTER TABLE task_schedule_executions ADD CONSTRAINT ck_schedule_execution_mode_target CHECK (
+      (execution_mode='MATERIALIZED' AND target_type<>'') OR (execution_mode='RECONCILE' AND target_type='' AND target_id='')
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_schedule_reconcile_state_schedule') THEN
+    ALTER TABLE task_schedule_reconcile_states ADD CONSTRAINT fk_schedule_reconcile_state_schedule FOREIGN KEY (schedule_id) REFERENCES task_schedules(id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_schedule_execution_schedule') THEN
+    ALTER TABLE task_schedule_executions ADD CONSTRAINT fk_schedule_execution_schedule FOREIGN KEY (schedule_id) REFERENCES task_schedules(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_schedule_reconcile_state_totals') THEN
+    ALTER TABLE task_schedule_reconcile_states ADD CONSTRAINT ck_schedule_reconcile_state_totals CHECK (
+      consecutive_failures >= 0 AND total_runs >= 0 AND total_scanned >= 0 AND total_findings >= 0 AND total_actions_created >= 0
+    );
+  END IF;
+END $$
 `
 
 const taskCenterApplicationRunIndexesSQL = `

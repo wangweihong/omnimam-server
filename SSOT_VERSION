@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: abf219fec0678bea98f5428406b116dc86ac98ed
-contract_version: spec-v1.0.3
+commit: 34e1994c9170553f3bcceb7b01b9d640a3698361
+contract_version: spec-v1.3.0
 updated_at: 2026-07-18
 status: released
-note: TaskSchedule run summaries, recurring owner constraints, and response-only schedule sources released under spec-v1.0.3.
+note: TaskSchedule reconcile mode and engine health reconcile released under spec-v1.3.0.

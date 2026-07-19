@@ -16,6 +16,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       CONFIG_PROP: config-postgres.properties
       CONDUCTOR_POSTGRES_USER: ${OMNIMAM_CONDUCTOR_POSTGRES_USER:-conductor}
@@ -30,6 +32,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes", --appendfsync, everysec]
+    volumes:
+      - omnimam_conductor_queue_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   postgres:
     image: postgres:16-alpine
     container_name: omnimam-postgres
@@ -227,6 +241,7 @@ services:
 
 volumes:
   omnimam_postgres_data:
+  omnimam_conductor_queue_data:
   omnimam_logs:
   omnimam_debug:
   omnimam_assets:

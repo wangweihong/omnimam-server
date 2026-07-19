@@ -39,6 +39,16 @@ func (s *applicationPlatformStore) ListEngineInstances(ctx context.Context, req 
 	return items, total, err
 }
 
+// ListEnabledEngineInstancesAfter 使用稳定 ID 游标读取巡检分块，避免资源增删导致 offset 漏检。
+func (s *applicationPlatformStore) ListEnabledEngineInstancesAfter(ctx context.Context, cursor string, limit int) ([]*iapiserver.EngineInstance, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	var items []*iapiserver.EngineInstance
+	err := s.ds.db.WithContext(ctx).Where("enabled = ? AND id > ?", true, cursor).Order("id ASC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
 func (s *applicationPlatformStore) GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error) {
 	var item iapiserver.EngineInstance
 	if err := s.ds.db.WithContext(ctx).First(&item, "id = ?", id).Error; err != nil {
@@ -56,6 +66,22 @@ func (s *applicationPlatformStore) AddEngineInstance(ctx context.Context, data *
 
 func (s *applicationPlatformStore) UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expected int64) (*iapiserver.EngineInstance, error) {
 	return data, optimisticUpdate(ctx, s.ds.db, data, data.ID, expected)
+}
+
+// UpdateEngineInstanceHealth 将健康事实与状态变化 outbox 放在同一事务；状态未变化时 event 为 nil。
+func (s *applicationPlatformStore) UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, expected int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := optimisticUpdate(ctx, tx, data, data.ID, expected); err != nil {
+			return err
+		}
+		if event == nil {
+			return nil
+		}
+		payload := event.Payload
+		payload["occurred_at"] = event.OccurredAt
+		return publishOutbox(tx, OutboxTopicEngineHealthChanged, event.IdempotencyKey, payload)
+	})
+	return data, err
 }
 
 func (s *applicationPlatformStore) DeleteEngineInstance(ctx context.Context, id string) error {

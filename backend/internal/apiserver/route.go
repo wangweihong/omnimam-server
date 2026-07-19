@@ -112,11 +112,16 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		workflows.POST("", controller.ImportComfyUIWorkflow)
 		workflows.GET("/:workflow_id", controller.GetComfyUIWorkflow)
 		workflows.PATCH("/:workflow_id", controller.UpdateComfyUIWorkflow)
+		//Deprecated
 		workflows.POST("/:workflow_id/archive", controller.ArchiveComfyUIWorkflow)
+		//Deprecated
 		workflows.POST("/:workflow_id/restore", controller.RestoreComfyUIWorkflow)
 		workflows.GET("/:workflow_id/nodes", controller.ListComfyUIWorkflowNodes)
+		//Deprecated
 		workflows.GET("/:workflow_id/input-candidates", controller.ListComfyUIWorkflowInputCandidates)
+		//Deprecated
 		workflows.GET("/:workflow_id/output-candidates", controller.ListComfyUIWorkflowOutputCandidates)
+		//Deprecated
 		workflows.GET("/:workflow_id/dependencies", controller.ListComfyUIWorkflowDependencies)
 		workflows.GET("/:workflow_id/validations", controller.ListComfyUIWorkflowValidations)
 		workflows.POST("/:workflow_id/validations", controller.ValidateComfyUIWorkflow)
@@ -200,6 +205,7 @@ func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenter
 		schedules.POST("/:task_schedule_id/pause", taskCenterController.PauseTaskSchedule)
 		schedules.POST("/:task_schedule_id/resume", taskCenterController.ResumeTaskSchedule)
 		schedules.GET("/:task_schedule_id/executions", taskCenterController.ListScheduleExecutions)
+		schedules.GET("/:task_schedule_id/reconcile-state", taskCenterController.GetScheduleReconcileState)
 	}
 }
 

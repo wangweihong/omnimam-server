@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
@@ -334,9 +335,15 @@ type TaskCenterStore interface {
 	AddOwnedAtomicTasks(context.Context, string, string, []*iapiserver.AtomicTask) error
 	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error)
 	GetTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	GetTaskScheduleBySystemKey(context.Context, string) (*iapiserver.TaskSchedule, error)
 	AddTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
+	EnsureSystemTaskSchedule(context.Context, *iapiserver.TaskSchedule, *iapiserver.ScheduleReconcileState) (*iapiserver.TaskSchedule, bool, error)
 	UpdateTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
 	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) ([]*iapiserver.TaskScheduleExecution, int64, error)
+	GetScheduleExecution(context.Context, string) (*iapiserver.TaskScheduleExecution, error)
+	// GetScheduleExecutionAt 按计划与计划时间读取幂等轮次；不存在时返回 nil，供 misfire 守卫区分首次迟到触发与已有轮次恢复。
+	GetScheduleExecutionAt(context.Context, string, time.Time) (*iapiserver.TaskScheduleExecution, error)
+	ListLatestScheduleExecutions(context.Context, []string) (map[string]*iapiserver.TaskScheduleExecution, error)
 	// ListScheduleSources 按目标类型与 ID 批量返回最新的来源调度轮次。
 	ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error)
 	AddProjectionEventIdempotent(context.Context, *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error)
@@ -346,14 +353,21 @@ type TaskCenterStore interface {
 	ListActiveScheduleExecutions(context.Context, int) ([]*iapiserver.TaskScheduleExecution, error)
 	ApplyRuntimeProjection(context.Context, *iapiserver.AtomicTask, []*iapiserver.TaskAttempt, *iapiserver.RuntimeProjectionEvent) (bool, error)
 	AcquireScheduleExecution(context.Context, *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, bool, error)
+	// WithScheduleReconcileLock 在 PostgreSQL 事务级 advisory lock 下串行执行同一计划的 controller，进程退出时锁自动释放。
+	WithScheduleReconcileLock(context.Context, string, func() error) (bool, error)
 	UpdateScheduleExecution(context.Context, *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, error)
+	GetScheduleReconcileState(context.Context, string) (*iapiserver.ScheduleReconcileState, error)
+	CompleteScheduleReconcile(context.Context, *iapiserver.TaskScheduleExecution, *iapiserver.ScheduleReconcileState) error
+	PruneReconcileExecutions(context.Context, string, iapiserver.HistoryRetention, time.Time) (int64, error)
 }
 
 type ApplicationPlatformStore interface {
 	ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) ([]*iapiserver.EngineInstance, int64, error)
+	ListEnabledEngineInstancesAfter(context.Context, string, int) ([]*iapiserver.EngineInstance, error)
 	GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error)
 	AddEngineInstance(ctx context.Context, data *iapiserver.EngineInstance) (*iapiserver.EngineInstance, error)
 	UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64) (*iapiserver.EngineInstance, error)
+	UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error)
 	DeleteEngineInstance(ctx context.Context, id string) error
 	CountRunsByEngineInstance(ctx context.Context, id string) (int64, error)
 	ListComfyUIWorkflows(ctx context.Context, req *iapiserver.ComfyUIWorkflowListRequest) ([]*iapiserver.ComfyUIWorkflow, int64, error)

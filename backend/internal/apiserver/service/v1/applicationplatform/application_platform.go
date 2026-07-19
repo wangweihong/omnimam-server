@@ -384,35 +384,101 @@ func (s *applicationPlatformService) checkEngineInstanceHealth(ctx context.Conte
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
 	}
+	now := imachinery.Now()
+	var result *iapiserver.EngineHealthCheckResult
 	typeDef, ok := s.Runtime.EngineType(item.ApplicationEngineTypeID)
 	if !ok {
-		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine type is not registered")
-	}
-	adapter := s.Adapters[typeDef.EngineAdapterID]
-	if adapter == nil {
-		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityAdapterMissing, "engine adapter is not registered")
-	}
-	result, checkErr := adapter.Check(ctx, item)
-	old := item.HealthStatus
-	now := imachinery.Now()
-	item.LastHealthCheckAt = &now
-	if checkErr != nil {
-		item.HealthStatus = iapiserver.EngineHealthOffline
-		item.UnhealthyReason = checkErr.Error()
-		result = &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: item.HealthStatus, CheckedAt: now, FailureSummary: item.UnhealthyReason}
+		result = degradedEngineHealth(id, now, "engine type is not registered")
+	} else if adapter := s.Adapters[typeDef.EngineAdapterID]; adapter == nil {
+		result = degradedEngineHealth(id, now, "engine adapter is not registered")
 	} else {
-		item.HealthStatus = result.HealthStatus
-		item.UnhealthyReason = result.FailureSummary
-		result.CheckedAt = now
+		result, err = adapter.Check(ctx, item)
+		if err != nil {
+			// Worker shutdown must leave the current chunk retryable; a bounded detection deadline is a valid offline observation.
+			if stderrors.Is(ctx.Err(), context.Canceled) {
+				return nil, ctx.Err()
+			}
+			result = engineHealthFromError(id, now, err)
+		}
 	}
-	_, err = s.Store.ApplicationPlatforms().UpdateEngineInstance(ctx, item, item.ResourceVersion)
+	result = normalizeEngineHealthResult(id, now, result)
+	old := item.HealthStatus
+	item.LastHealthCheckAt = &now
+	item.HealthStatus = result.HealthStatus
+	item.UnhealthyReason = result.FailureSummary
+	var event *iapiserver.ApplicationPlatformEvent
+	if old != item.HealthStatus {
+		payload := map[string]any{"engine_instance_id": id, "application_engine_type_id": item.ApplicationEngineTypeID, "health_status": item.HealthStatus, "checked_at": now, "failure_summary": item.UnhealthyReason}
+		event = &iapiserver.ApplicationPlatformEvent{Type: "engine_instance_health_changed", IdempotencyKey: id + ":" + now.String(), Payload: payload, OccurredAt: now}
+	}
+	_, err = s.Store.ApplicationPlatforms().UpdateEngineInstanceHealth(ctx, item, item.ResourceVersion, event)
 	if err != nil {
 		return nil, err
 	}
-	if old != item.HealthStatus {
-		s.publish(ctx, "engine_instance_health_changed", id+":"+now.String(), map[string]any{"engine_instance_id": id, "application_engine_type_id": item.ApplicationEngineTypeID, "health_status": item.HealthStatus, "checked_at": now, "failure_summary": item.UnhealthyReason})
-	}
 	return result, nil
+}
+
+func engineHealthFromError(id string, checkedAt imachinery.Time, err error) *iapiserver.EngineHealthCheckResult {
+	status := errors.ToStatus(err)
+	switch status.Code {
+	case code.ErrAIAppEngineAuthConfigInvalid:
+		return degradedEngineHealth(id, checkedAt, "provider authentication failed")
+	case code.ErrAIAppProviderRuntimeCapabilityMismatch:
+		return degradedEngineHealth(id, checkedAt, "provider health protocol is incompatible")
+	case code.ErrAIAppEngineUnavailable:
+		switch {
+		case strings.Contains(status.Desc, "timed out"):
+			return offlineEngineHealth(id, checkedAt, "provider request timed out")
+		case strings.Contains(status.Desc, "base URL"), strings.Contains(status.Desc, "could not be parsed"):
+			return degradedEngineHealth(id, checkedAt, "provider health protocol is incompatible")
+		default:
+			return offlineEngineHealth(id, checkedAt, "provider is unavailable")
+		}
+	default:
+		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
+	}
+}
+
+func normalizeEngineHealthResult(id string, checkedAt imachinery.Time, result *iapiserver.EngineHealthCheckResult) *iapiserver.EngineHealthCheckResult {
+	if result == nil {
+		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
+	}
+	result.EngineInstanceID, result.CheckedAt = id, checkedAt
+	switch result.HealthStatus {
+	case iapiserver.EngineHealthOnline:
+		result.FailureSummary = ""
+	case iapiserver.EngineHealthOffline:
+		result.FailureSummary = safeEngineHealthSummary(result.FailureSummary, "provider is unavailable")
+	case iapiserver.EngineHealthDegraded:
+		result.FailureSummary = safeEngineHealthSummary(result.FailureSummary, "engine health protocol is degraded")
+	default:
+		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
+	}
+	return result
+}
+
+func safeEngineHealthSummary(summary, fallback string) string {
+	switch summary {
+	case "engine type is not registered",
+		"engine adapter is not registered",
+		"provider authentication failed",
+		"provider health protocol is incompatible",
+		"provider request timed out",
+		"provider is unavailable",
+		"engine health adapter failed",
+		"engine health protocol is degraded":
+		return summary
+	default:
+		return fallback
+	}
+}
+
+func degradedEngineHealth(id string, checkedAt imachinery.Time, summary string) *iapiserver.EngineHealthCheckResult {
+	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: iapiserver.EngineHealthDegraded, CheckedAt: checkedAt, FailureSummary: summary}
+}
+
+func offlineEngineHealth(id string, checkedAt imachinery.Time, summary string) *iapiserver.EngineHealthCheckResult {
+	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: iapiserver.EngineHealthOffline, CheckedAt: checkedAt, FailureSummary: summary}
 }
 
 func (s *applicationPlatformService) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error) {

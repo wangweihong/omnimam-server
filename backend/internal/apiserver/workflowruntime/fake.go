@@ -45,7 +45,7 @@ func (f *Fake) StartExecution(_ context.Context, request StartRequest) (Executio
 	}
 	f.nextID++
 	now := time.Now()
-	execution := Execution{ID: fmt.Sprintf("fake-execution-%d", f.nextID), Status: "RUNNING", StartedAt: now, Output: map[string]any{"idempotency_key": request.IdempotencyKey}}
+	execution := Execution{ID: fmt.Sprintf("fake-execution-%d", f.nextID), DefinitionName: request.DefinitionName, Status: "RUNNING", StartedAt: now, Output: map[string]any{"idempotency_key": request.IdempotencyKey}}
 	f.executions[execution.ID] = execution
 	return execution, nil
 }
@@ -55,7 +55,7 @@ func (f *Fake) GetExecution(_ context.Context, id string) (Execution, error) {
 	defer f.mu.Unlock()
 	execution, ok := f.executions[id]
 	if !ok {
-		return Execution{}, fmt.Errorf("workflow execution not found")
+		return Execution{}, ErrExecutionNotFound
 	}
 	return execution, nil
 }
@@ -65,7 +65,7 @@ func (f *Fake) CancelExecution(_ context.Context, id, reason string) error {
 	defer f.mu.Unlock()
 	execution, ok := f.executions[id]
 	if !ok {
-		return fmt.Errorf("workflow execution not found")
+		return ErrExecutionNotFound
 	}
 	execution.Status = "TERMINATED"
 	execution.FailureReason = reason
@@ -102,6 +102,34 @@ func (f *Fake) ListNonTerminalExecutions(_ context.Context, limit int) ([]Execut
 		}
 	}
 	return items, nil
+}
+func (f *Fake) ListTerminalExecutions(_ context.Context, definition string, completedBefore time.Time, limit int) ([]Execution, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	items := make([]Execution, 0)
+	for _, execution := range f.executions {
+		if execution.DefinitionName != definition || !isTerminalExecutionStatus(execution.Status) || execution.CompletedAt.IsZero() || !execution.CompletedAt.Before(completedBefore) {
+			continue
+		}
+		items = append(items, execution)
+		if limit > 0 && len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
+}
+func (f *Fake) DeleteTerminalExecution(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	execution, ok := f.executions[id]
+	if !ok {
+		return ErrExecutionNotFound
+	}
+	if !isTerminalExecutionStatus(execution.Status) {
+		return fmt.Errorf("workflow execution is not terminal")
+	}
+	delete(f.executions, id)
+	return nil
 }
 
 func (f *Fake) SaveSchedule(_ context.Context, schedule Schedule) error {

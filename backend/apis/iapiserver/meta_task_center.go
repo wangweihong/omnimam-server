@@ -50,11 +50,15 @@ const (
 	TaskOwnerTypeDAGGroup = "DAG_TASK_GROUP"
 	TaskOwnerTypeSchedule = "TASK_SCHEDULE"
 
-	TaskScheduleTriggerCron  = "CRON"
-	TaskScheduleTriggerRunAt = "RUN_AT"
-	TaskScheduleTargetAtomic = "ATOMIC_TASK"
-	TaskScheduleTargetGroup  = "TASK_GROUP"
-	TaskScheduleTargetDAG    = "DAG_TASK_GROUP"
+	TaskScheduleTriggerCron      = "CRON"
+	TaskScheduleTriggerRunAt     = "RUN_AT"
+	TaskScheduleTargetAtomic     = "ATOMIC_TASK"
+	TaskScheduleTargetGroup      = "TASK_GROUP"
+	TaskScheduleTargetDAG        = "DAG_TASK_GROUP"
+	TaskScheduleModeMaterialized = "MATERIALIZED"
+	TaskScheduleModeReconcile    = "RECONCILE"
+	TaskScheduleManagementUser   = "USER"
+	TaskScheduleManagementSystem = "SYSTEM"
 
 	TaskScheduleStatusActive    = "ACTIVE"
 	TaskScheduleStatusPaused    = "PAUSED"
@@ -450,29 +454,74 @@ type ScheduleSummary struct {
 	SkippedOverlap int `json:"skipped_overlap"`
 }
 
+// ReconcileSpec 描述后端注册巡检器的受控运行参数；reconcile_ref 不能由公开更新接口更换。
+type ReconcileSpec struct {
+	ReconcileRef          string         `json:"reconcile_ref"`                   // 后端 ReconcileRegistry 中的稳定引用。
+	DisplayName           string         `json:"display_name,omitempty" gorm:"-"` // 后端注册器提供的可读名称，不持久化。
+	Config                map[string]any `json:"config"`                          // 巡检器拥有并校验的受控配置。
+	MaxParallelism        int            `json:"max_parallelism"`                 // 单轮最大并发，契约范围 1..64。
+	MaxItemsPerRun        int            `json:"max_items_per_run"`               // 单轮最大扫描量，契约范围 1..1000。
+	PerItemTimeoutSeconds int            `json:"per_item_timeout_seconds"`        // 单资源探测超时秒数。
+	OverallTimeoutSeconds int            `json:"overall_timeout_seconds"`         // 整轮超时秒数，不得小于单项超时。
+}
+
+// HistoryRetention 控制 RECONCILE 轻量业务历史与运行时历史的有限保留。
+type HistoryRetention struct {
+	SuccessCount            int `json:"success_count"`
+	FailureCount            int `json:"failure_count"`
+	FailureDurationSeconds  int `json:"failure_duration_seconds"`
+	SkippedCount            int `json:"skipped_count"`
+	RuntimeRetentionSeconds int `json:"runtime_retention_seconds"`
+}
+
+// ReconcileSummary 是单轮巡检的低成本结果摘要，不包含逐项检测详情。
+type ReconcileSummary struct {
+	Scanned            int            `json:"scanned"`
+	Findings           int            `json:"findings"`
+	ActionsCreated     int            `json:"actions_created"`
+	Deferred           int            `json:"deferred"`
+	DurationMS         int64          `json:"duration_ms"`
+	CheckpointAdvanced bool           `json:"checkpoint_advanced"`
+	CycleCompleted     bool           `json:"cycle_completed"`
+	Summary            map[string]any `json:"summary,omitempty"`
+}
+
 // TaskSchedule persistently triggers an AtomicTask, TaskGroup, or DAGTaskGroup template.
 type TaskSchedule struct {
 	imachinery.ObjectMeta
-	TriggerType          string             `json:"trigger_type" gorm:"column:trigger_type;type:varchar(16);not null"`
-	CronExpression       string             `json:"cron_expression,omitempty" gorm:"column:cron_expression;type:varchar(256)"`
-	RunAt                imachinery.Time    `json:"run_at,omitempty" gorm:"column:run_at"`
-	TimeZone             string             `json:"time_zone" gorm:"column:time_zone;type:varchar(128);not null;default:'UTC'"`
-	Target               ScheduleTarget     `json:"target" gorm:"-"`
-	TargetSummary        *TaskTargetSummary `json:"target_summary,omitempty" gorm:"-"` // 由目标模板派生的可读摘要。
-	TargetType           string             `json:"-" gorm:"column:target_type;type:varchar(32);not null"`
-	TargetTemplateShadow string             `json:"-" gorm:"column:target_template_json;type:text;not null"`
-	Status               string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_task_schedules_status_next,priority:1"`
-	MisfirePolicy        string             `json:"misfire_policy" gorm:"column:misfire_policy;type:varchar(16);not null;default:'SKIP'"`
-	OverlapPolicy        string             `json:"overlap_policy" gorm:"column:overlap_policy;type:varchar(16);not null;default:'SKIP'"`
-	RuntimeScheduleName  string             `json:"runtime_schedule_name,omitempty" gorm:"column:runtime_schedule_name;type:varchar(256);uniqueIndex"`
-	LastTriggerAt        imachinery.Time    `json:"last_trigger_at,omitempty" gorm:"column:last_trigger_at"`
-	NextTriggerAt        imachinery.Time    `json:"next_trigger_at,omitempty" gorm:"column:next_trigger_at;index:idx_task_schedules_status_next,priority:2"`
-	Summary              ScheduleSummary    `json:"summary" gorm:"-"`
-	SummaryShadow        string             `json:"-" gorm:"column:summary_json;type:text;not null;default:'{}'"`
-	ProjectID            string             `json:"project_id" gorm:"column:project_id;type:varchar(128);not null;index"`
-	Namespace            string             `json:"namespace" gorm:"column:namespace;type:varchar(128);not null;index"`
-	CreatedBy            string             `json:"created_by" gorm:"column:created_by;type:varchar(128);not null"`
-	DeletedAt            imachinery.Time    `json:"-" gorm:"column:deleted_at;index"`
+	ExecutionMode                  string                 `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED';index:idx_task_schedules_mode_status,priority:1"` // MATERIALIZED 保留完整作业历史，RECONCILE 保存轻量巡检历史。
+	ManagementMode                 string                 `json:"management_mode" gorm:"column:management_mode;type:varchar(16);not null;default:'USER'"`                                                       // USER 可常规管理，SYSTEM 仅管理员可调整安全参数。
+	SystemKey                      string                 `json:"system_key" gorm:"column:system_key;type:varchar(256);not null;default:''"`                                                                    // SYSTEM 计划的全局幂等键，非空时由数据库保证唯一。
+	TriggerType                    string                 `json:"trigger_type" gorm:"column:trigger_type;type:varchar(16);not null"`
+	CronExpression                 string                 `json:"cron_expression,omitempty" gorm:"column:cron_expression;type:varchar(256)"`
+	RunAt                          imachinery.Time        `json:"run_at,omitempty" gorm:"column:run_at"`
+	TimeZone                       string                 `json:"time_zone" gorm:"column:time_zone;type:varchar(128);not null;default:'UTC'"`
+	Target                         ScheduleTarget         `json:"target,omitzero" gorm:"-"`
+	TargetSummary                  *TaskTargetSummary     `json:"target_summary,omitempty" gorm:"-"` // 由目标模板派生的可读摘要。
+	TargetType                     string                 `json:"-" gorm:"column:target_type;type:varchar(32);not null"`
+	TargetTemplateShadow           string                 `json:"-" gorm:"column:target_template_json;type:text;not null;default:''"`
+	ReconcileSpec                  *ReconcileSpec         `json:"reconcile_spec,omitempty" gorm:"-"`
+	ReconcileRef                   string                 `json:"-" gorm:"column:reconcile_ref;type:varchar(256);not null;default:''"` // 只允许引用后端注册的巡检器。
+	ReconcileConfigShadow          string                 `json:"-" gorm:"column:reconcile_config_json;type:text;not null;default:'{}'"`
+	ReconcileMaxParallelism        int                    `json:"-" gorm:"column:reconcile_max_parallelism;not null;default:16"`
+	ReconcileMaxItemsPerRun        int                    `json:"-" gorm:"column:reconcile_max_items_per_run;not null;default:1000"`
+	ReconcilePerItemTimeoutSeconds int                    `json:"-" gorm:"column:reconcile_per_item_timeout_seconds;not null;default:4"`
+	ReconcileOverallTimeoutSeconds int                    `json:"-" gorm:"column:reconcile_overall_timeout_seconds;not null;default:5"`
+	HistoryRetention               HistoryRetention       `json:"history_retention" gorm:"-"` // RECONCILE 业务历史和 runtime 历史的有限保留策略。
+	HistoryRetentionShadow         string                 `json:"-" gorm:"column:history_retention_json;type:text;not null;default:'{}'"`
+	Status                         string                 `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_task_schedules_status_next,priority:1;index:idx_task_schedules_mode_status,priority:2"`
+	MisfirePolicy                  string                 `json:"misfire_policy" gorm:"column:misfire_policy;type:varchar(16);not null;default:'SKIP'"`
+	OverlapPolicy                  string                 `json:"overlap_policy" gorm:"column:overlap_policy;type:varchar(16);not null;default:'SKIP'"`
+	RuntimeScheduleName            string                 `json:"runtime_schedule_name,omitempty" gorm:"column:runtime_schedule_name;type:varchar(256);uniqueIndex"`
+	LastTriggerAt                  imachinery.Time        `json:"last_trigger_at,omitempty" gorm:"column:last_trigger_at"`
+	NextTriggerAt                  imachinery.Time        `json:"next_trigger_at,omitempty" gorm:"column:next_trigger_at;index:idx_task_schedules_status_next,priority:2;index:idx_task_schedules_mode_status,priority:3"`
+	Summary                        ScheduleSummary        `json:"summary" gorm:"-"`
+	SummaryShadow                  string                 `json:"-" gorm:"column:summary_json;type:text;not null;default:'{}'"`
+	LastExecution                  *TaskScheduleExecution `json:"last_execution,omitempty" gorm:"-"`
+	ProjectID                      string                 `json:"project_id" gorm:"column:project_id;type:varchar(128);not null;index"`
+	Namespace                      string                 `json:"namespace" gorm:"column:namespace;type:varchar(128);not null;index"`
+	CreatedBy                      string                 `json:"created_by" gorm:"column:created_by;type:varchar(128);not null"`
+	DeletedAt                      imachinery.Time        `json:"-" gorm:"column:deleted_at;index"`
 }
 
 func (TaskSchedule) TableName() string { return "task_schedules" }
@@ -496,35 +545,123 @@ func (s *TaskSchedule) AfterFind(tx *gorm.DB) error {
 	}
 	s.Target.Type = s.TargetType
 	unmarshalJSON(s.TargetTemplateShadow, &s.Target.Template, "{}")
+	if s.ExecutionMode == TaskScheduleModeReconcile {
+		config := map[string]any{}
+		unmarshalJSON(s.ReconcileConfigShadow, &config, "{}")
+		s.ReconcileSpec = &ReconcileSpec{ReconcileRef: s.ReconcileRef, Config: config, MaxParallelism: s.ReconcileMaxParallelism, MaxItemsPerRun: s.ReconcileMaxItemsPerRun, PerItemTimeoutSeconds: s.ReconcilePerItemTimeoutSeconds, OverallTimeoutSeconds: s.ReconcileOverallTimeoutSeconds}
+	} else {
+		s.ReconcileSpec = nil
+	}
+	unmarshalJSON(s.HistoryRetentionShadow, &s.HistoryRetention, "{}")
 	unmarshalJSON(s.SummaryShadow, &s.Summary, "{}")
 	return nil
 }
 func (s *TaskSchedule) marshalShadows() error {
 	s.TargetType = s.Target.Type
-	return marshalJSONFields(jsonField{s.Target.Template, &s.TargetTemplateShadow, "{}"}, jsonField{s.Summary, &s.SummaryShadow, "{}"})
+	if s.ReconcileSpec != nil {
+		s.ReconcileRef = s.ReconcileSpec.ReconcileRef
+		s.ReconcileMaxParallelism = s.ReconcileSpec.MaxParallelism
+		s.ReconcileMaxItemsPerRun = s.ReconcileSpec.MaxItemsPerRun
+		s.ReconcilePerItemTimeoutSeconds = s.ReconcileSpec.PerItemTimeoutSeconds
+		s.ReconcileOverallTimeoutSeconds = s.ReconcileSpec.OverallTimeoutSeconds
+	}
+	var config map[string]any
+	if s.ReconcileSpec != nil {
+		config = s.ReconcileSpec.Config
+	}
+	if s.ExecutionMode == TaskScheduleModeReconcile {
+		s.TargetType, s.TargetTemplateShadow = "", ""
+	} else if err := marshalJSONFields(jsonField{s.Target.Template, &s.TargetTemplateShadow, "{}"}); err != nil {
+		return err
+	}
+	return marshalJSONFields(jsonField{config, &s.ReconcileConfigShadow, "{}"}, jsonField{s.HistoryRetention, &s.HistoryRetentionShadow, "{}"}, jsonField{s.Summary, &s.SummaryShadow, "{}"})
 }
 
 // TaskScheduleExecution records every scheduled time, including overlap skips.
 type TaskScheduleExecution struct {
 	imachinery.ObjectMeta
-	ScheduleID         string             `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
-	ScheduledAt        imachinery.Time    `json:"scheduled_at" gorm:"column:scheduled_at;not null;uniqueIndex:idx_schedule_execution_time,priority:2"`
-	TriggeredAt        imachinery.Time    `json:"triggered_at,omitempty" gorm:"column:triggered_at"`
-	TargetType         string             `json:"target_type" gorm:"column:target_type;type:varchar(32);not null"`
-	TargetID           string             `json:"target_id,omitempty" gorm:"column:target_id;type:varchar(64);index"`
-	TargetSummary      *TaskTargetSummary `json:"target_summary,omitempty" gorm:"-"` // 实际目标摘要，不可用时回退到计划模板摘要。
-	RuntimeExecutionID string             `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
-	Status             string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_schedule_executions_status,priority:1"`
-	Reason             string             `json:"reason,omitempty" gorm:"column:reason;type:text"`
-	CompletedAt        imachinery.Time    `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	ScheduleID             string             `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
+	ExecutionMode          string             `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED'"` // 固化本轮语义，避免计划后续变化改写历史。
+	ScheduledAt            imachinery.Time    `json:"scheduled_at" gorm:"column:scheduled_at;not null;uniqueIndex:idx_schedule_execution_time,priority:2"`
+	TriggeredAt            imachinery.Time    `json:"triggered_at,omitempty" gorm:"column:triggered_at"`
+	TargetType             string             `json:"target_type,omitempty" gorm:"column:target_type;type:varchar(32);not null"`
+	TargetID               string             `json:"target_id,omitempty" gorm:"column:target_id;type:varchar(64);index"`
+	TargetSummary          *TaskTargetSummary `json:"target_summary,omitempty" gorm:"-"`   // 实际目标摘要，不可用时回退到计划模板摘要。
+	ReconcileSummary       ReconcileSummary   `json:"reconcile_summary,omitzero" gorm:"-"` // RECONCILE 扫描、发现、动作与 checkpoint 推进摘要。
+	ReconcileSummaryShadow string             `json:"-" gorm:"column:reconcile_summary_json;type:text;not null;default:'{}'"`
+	RuntimeExecutionID     string             `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
+	Status                 string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_schedule_executions_status,priority:1"`
+	Reason                 string             `json:"reason,omitempty" gorm:"column:reason;type:text"`
+	CompletedAt            imachinery.Time    `json:"completed_at,omitempty" gorm:"column:completed_at"`
 }
 
-func (TaskScheduleExecution) TableName() string                 { return "task_schedule_executions" }
-func (e *TaskScheduleExecution) BeforeCreate(tx *gorm.DB) error { return e.ObjectMeta.BeforeCreate(tx) }
-func (e *TaskScheduleExecution) AfterCreate(*gorm.DB) error     { return nil }
-func (e *TaskScheduleExecution) BeforeUpdate(tx *gorm.DB) error { return e.ObjectMeta.BeforeUpdate(tx) }
-func (e *TaskScheduleExecution) AfterUpdate(*gorm.DB) error     { return nil }
-func (e *TaskScheduleExecution) AfterFind(tx *gorm.DB) error    { return e.ObjectMeta.AfterFind(tx) }
+func (TaskScheduleExecution) TableName() string { return "task_schedule_executions" }
+func (e *TaskScheduleExecution) BeforeCreate(tx *gorm.DB) error {
+	if err := e.ObjectMeta.BeforeCreate(tx); err != nil {
+		return err
+	}
+	return marshalJSONFields(jsonField{e.ReconcileSummary, &e.ReconcileSummaryShadow, "{}"})
+}
+func (e *TaskScheduleExecution) AfterCreate(*gorm.DB) error { return nil }
+func (e *TaskScheduleExecution) BeforeUpdate(tx *gorm.DB) error {
+	if err := e.ObjectMeta.BeforeUpdate(tx); err != nil {
+		return err
+	}
+	return marshalJSONFields(jsonField{e.ReconcileSummary, &e.ReconcileSummaryShadow, "{}"})
+}
+func (e *TaskScheduleExecution) AfterUpdate(*gorm.DB) error { return nil }
+func (e *TaskScheduleExecution) AfterFind(tx *gorm.DB) error {
+	if err := e.ObjectMeta.AfterFind(tx); err != nil {
+		return err
+	}
+	unmarshalJSON(e.ReconcileSummaryShadow, &e.ReconcileSummary, "{}")
+	return nil
+}
+
+// ScheduleReconcileState 是 TaskSchedule 的内部一对一投影，不嵌入 ObjectMeta，避免被误当作可独立命名、删除的普通资源。
+type ScheduleReconcileState struct {
+	ScheduleID                string           `json:"schedule_id" gorm:"column:schedule_id;primaryKey;type:varchar(64)"`
+	Checkpoint                map[string]any   `json:"-" gorm:"-"`
+	CheckpointShadow          string           `json:"-" gorm:"column:checkpoint_json;type:text;not null;default:'{}'"`
+	CurrentRuntimeExecutionID string           `json:"-" gorm:"column:current_runtime_execution_id;type:varchar(128);not null;default:''"`
+	LastStartedAt             *imachinery.Time `json:"last_started_at,omitempty" gorm:"column:last_started_at"`
+	LastCompletedAt           *imachinery.Time `json:"last_completed_at,omitempty" gorm:"column:last_completed_at;index:idx_schedule_reconcile_states_checkpoint,priority:1"`
+	LastSummary               ReconcileSummary `json:"last_summary" gorm:"-"`
+	LastSummaryShadow         string           `json:"-" gorm:"column:last_summary_json;type:text;not null;default:'{}'"`
+	CheckpointAgeSeconds      int64            `json:"checkpoint_age_seconds" gorm:"-"`
+	ConsecutiveFailures       int64            `json:"consecutive_failures" gorm:"column:consecutive_failures;not null;default:0"`
+	TotalRuns                 int64            `json:"total_runs" gorm:"column:total_runs;not null;default:0"`
+	TotalScanned              int64            `json:"total_scanned" gorm:"column:total_scanned;not null;default:0"`
+	TotalFindings             int64            `json:"total_findings" gorm:"column:total_findings;not null;default:0"`
+	TotalActionsCreated       int64            `json:"total_actions_created" gorm:"column:total_actions_created;not null;default:0"`
+	ResourceVersion           int64            `json:"resource_version" gorm:"column:resource_version;not null;default:0"`
+	UpdatedAt                 imachinery.Time  `json:"updated_at" gorm:"column:updated_at;not null;index:idx_schedule_reconcile_states_checkpoint,priority:2"`
+}
+
+func (ScheduleReconcileState) TableName() string { return "task_schedule_reconcile_states" }
+func (s *ScheduleReconcileState) BeforeCreate(*gorm.DB) error {
+	if s.UpdatedAt.IsZero() {
+		s.UpdatedAt = imachinery.Now()
+	}
+	return s.marshalShadows()
+}
+func (*ScheduleReconcileState) AfterCreate(*gorm.DB) error { return nil }
+func (s *ScheduleReconcileState) BeforeUpdate(*gorm.DB) error {
+	s.UpdatedAt = imachinery.Now()
+	return s.marshalShadows()
+}
+func (*ScheduleReconcileState) AfterUpdate(*gorm.DB) error { return nil }
+func (s *ScheduleReconcileState) AfterFind(*gorm.DB) error {
+	unmarshalJSON(s.CheckpointShadow, &s.Checkpoint, "{}")
+	unmarshalJSON(s.LastSummaryShadow, &s.LastSummary, "{}")
+	if !s.UpdatedAt.IsZero() {
+		s.CheckpointAgeSeconds = max(int64(time.Since(s.UpdatedAt.Time).Seconds()), 0)
+	}
+	return nil
+}
+func (s *ScheduleReconcileState) marshalShadows() error {
+	return marshalJSONFields(jsonField{s.Checkpoint, &s.CheckpointShadow, "{}"}, jsonField{s.LastSummary, &s.LastSummaryShadow, "{}"})
+}
 
 // RuntimeProjectionEvent makes Conductor event projection idempotent and replayable.
 type RuntimeProjectionEvent struct {

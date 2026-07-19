@@ -46,13 +46,23 @@ type StartRequest struct {
 }
 
 type Execution struct {
-	ID            string
-	Status        string
-	Output        map[string]any
-	StartedAt     time.Time
-	CompletedAt   time.Time
-	FailureReason string
-	Tasks         []ExecutionTask
+	ID             string
+	DefinitionName string
+	Status         string
+	Output         map[string]any
+	StartedAt      time.Time
+	CompletedAt    time.Time
+	FailureReason  string
+	Tasks          []ExecutionTask
+}
+
+func isTerminalExecutionStatus(status string) bool {
+	switch status {
+	case "COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT", "CANCELED":
+		return true
+	default:
+		return false
+	}
 }
 
 type ExecutionTask struct {
@@ -101,6 +111,9 @@ type ExecutionManager interface {
 	CancelExecution(context.Context, string, string) error
 	RetryExecution(context.Context, string) error
 	ListNonTerminalExecutions(context.Context, int) ([]Execution, error)
+	ListTerminalExecutions(context.Context, string, time.Time, int) ([]Execution, error)
+	// DeleteTerminalExecution 仅删除指定终态运行历史，由 RECONCILE retention 调用。
+	DeleteTerminalExecution(context.Context, string) error
 }
 
 type ScheduleManager interface {
@@ -139,6 +152,12 @@ func (UnavailableRuntime) CancelExecution(context.Context, string, string) error
 func (UnavailableRuntime) RetryExecution(context.Context, string) error { return ErrUnavailable }
 func (UnavailableRuntime) ListNonTerminalExecutions(context.Context, int) ([]Execution, error) {
 	return nil, ErrUnavailable
+}
+func (UnavailableRuntime) ListTerminalExecutions(context.Context, string, time.Time, int) ([]Execution, error) {
+	return nil, ErrUnavailable
+}
+func (UnavailableRuntime) DeleteTerminalExecution(context.Context, string) error {
+	return ErrUnavailable
 }
 func (UnavailableRuntime) SaveSchedule(context.Context, Schedule) error { return ErrUnavailable }
 func (UnavailableRuntime) PauseSchedule(context.Context, string) error  { return ErrUnavailable }

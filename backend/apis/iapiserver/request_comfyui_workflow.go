@@ -85,6 +85,8 @@ type ComfyUIWorkflowTestRunListRequest struct {
 	imachinery.BasicQueryParam
 	WorkflowID  string `form:"-"`
 	OwnerUserID string `form:"-"`
+	// Detail 控制列表是否返回参数快照、任务步骤和输出；默认 false 返回轻量投影。
+	Detail bool `json:"detail" form:"detail"`
 }
 type ComfyUIWorkflowTestParameter struct {
 	NodeID    string `json:"node_id" binding:"required"`

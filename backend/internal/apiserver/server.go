@@ -106,9 +106,9 @@ func createServer(cfg *config.Config) (*server, error) {
 			return nil, errors.Wrap(err, "construct workflow runtime")
 		}
 	}
-	taskCenterService := taskcentersvc.NewServiceWithFunctions(storeIns, workflowRuntime,
+	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
+	taskCenterService := taskcentersvc.NewServiceWithRegistries(storeIns, workflowRuntime, reconcileRegistry,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"application-platform.engine-health-plan", "application-platform.engine-health-check",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
@@ -116,6 +116,9 @@ func createServer(cfg *config.Config) (*server, error) {
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct application platform service")
+	}
+	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
+		return nil, errors.Wrap(err, "register engine health reconciler")
 	}
 
 	server := &server{
@@ -198,6 +201,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.TaskGroup{},
 		&iapiserver.DAGTaskGroup{},
 		&iapiserver.TaskSchedule{},
+		&iapiserver.ScheduleReconcileState{},
 		&iapiserver.TaskScheduleExecution{},
 		&iapiserver.RuntimeProjectionEvent{},
 		&iapiserver.FeatureFlag{},

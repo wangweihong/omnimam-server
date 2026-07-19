@@ -549,16 +549,43 @@ const (
 	// @HTTP 200
 	// @CN 当前用户无权访问或代管该 ComfyUI 工作流。
 	// @EN The current user is not allowed to access or administer this ComfyUI workflow.
-	ErrAIAppComfyUIWorkflowAccessDenied   int = 131233
-	ErrAIAppComfyUIWorkflowSourceInvalid  int = 131234
-	ErrAIAppComfyUIAPIConversionBlocked   int = 131235
-	ErrAIAppComfyUIAPINotReady            int = 131236
-	ErrAIAppComfyUITestEngineUnavailable  int = 131237
-	ErrAIAppComfyUITestIncompatible       int = 131238
-	ErrAIAppComfyUITestParameterInvalid   int = 131239
-	ErrAIAppComfyUITestRunNotFound        int = 131240
+	ErrAIAppComfyUIWorkflowAccessDenied int = 131233
+	// @HTTP 200
+	// @CN 文件不是受支持的 ComfyUI Workflow 或 API Workflow JSON。
+	// @EN The file is not a supported ComfyUI Workflow or API Workflow JSON.
+	ErrAIAppComfyUIWorkflowSourceInvalid int = 131234
+	// @HTTP 200
+	// @CN 普通 Workflow 存在阻断诊断，不能生成 API Workflow。
+	// @EN Blocking diagnostics prevent conversion to an API Workflow.
+	ErrAIAppComfyUIAPIConversionBlocked int = 131235
+	// @HTTP 200
+	// @CN API Workflow 尚未就绪，不能进行校验或试运行。
+	// @EN The API Workflow is not ready for validation or testing.
+	ErrAIAppComfyUIAPINotReady int = 131236
+	// @HTTP 200
+	// @CN 所选 ComfyUI 实例未启用或当前不健康。
+	// @EN The selected ComfyUI instance is disabled or unhealthy.
+	ErrAIAppComfyUITestEngineUnavailable int = 131237
+	// @HTTP 200
+	// @CN 工作流与所选 ComfyUI 实例不兼容。
+	// @EN The workflow is incompatible with the selected ComfyUI instance.
+	ErrAIAppComfyUITestIncompatible int = 131238
+	// @HTTP 200
+	// @CN 试运行参数不存在、不允许覆盖或未通过类型与范围校验。
+	// @EN A test parameter is unknown, cannot be overridden, or violates its type or range.
+	ErrAIAppComfyUITestParameterInvalid int = 131239
+	// @HTTP 200
+	// @CN 试运行不存在或当前用户不可见。
+	// @EN The workflow test run does not exist or is not visible.
+	ErrAIAppComfyUITestRunNotFound int = 131240
+	// @HTTP 200
+	// @CN 临时预览不存在、已被上游清理或无法安全读取。
+	// @EN The temporary preview is missing, was removed upstream, or cannot be read safely.
 	ErrAIAppComfyUITestPreviewUnavailable int = 131241
-	ErrAIAppComfyUITestRunStateBlocked    int = 131242
+	// @HTTP 200
+	// @CN 当前试运行状态不允许执行该操作。
+	// @EN The workflow test run state does not allow this operation.
+	ErrAIAppComfyUITestRunStateBlocked int = 131242
 )
 
 // task-center: SSOT scoped business errors.
@@ -668,6 +695,21 @@ const (
 	// @CN TaskSchedule 当前状态不允许该操作。
 	// @EN Current TaskSchedule status does not allow this operation.
 	ErrTaskScheduleStateBlocked int = 141402
+
+	// @HTTP 200
+	// @CN 巡检配置、并发、单轮上限或超时不合法。
+	// @EN Reconcile config, parallelism, item limit, or timeout is invalid.
+	ErrTaskReconcileConfigInvalid int = 141403
+
+	// @HTTP 200
+	// @CN 计划引用的巡检器未在后端注册。
+	// @EN The reconcile handler referenced by the schedule is not registered.
+	ErrTaskReconcileRefUnregistered int = 141404
+
+	// @HTTP 200
+	// @CN 系统内置计划不允许创建、删除或修改受保护字段。
+	// @EN A system schedule cannot be created, deleted, or have protected fields changed.
+	ErrTaskSystemScheduleOperationRestricted int = 141405
 )
 
 // workflow-canvas: spec-v1.0.0 business errors.

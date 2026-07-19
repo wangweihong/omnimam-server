@@ -50,6 +50,9 @@ type TaskCenterSrv interface {
 	PauseTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
 	ResumeTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
 	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error)
+	GetScheduleReconcileState(context.Context, string) (*iapiserver.ScheduleReconcileState, error)
+	EnsureSystemReconcileSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
+	RunScheduleReconcile(context.Context, string, string, time.Time) (map[string]any, error)
 	// RegisterDAGDefinition validates and registers an immutable DAG definition for workflow-canvas publishing.
 	RegisterDAGDefinition(context.Context, string, int, *iapiserver.DAGTaskGroupCreateRequest) (*DefinitionBinding, error)
 }
@@ -62,9 +65,10 @@ type DefinitionBinding struct {
 }
 
 type taskCenterService struct {
-	store     store.TaskCenterStore
-	runtime   workflowruntime.WorkflowRuntime
-	functions map[string]struct{}
+	store      store.TaskCenterStore
+	runtime    workflowruntime.WorkflowRuntime
+	functions  map[string]struct{}
+	reconciles *ReconcileRegistry
 }
 
 func NewService(factory store.Factory, runtimes ...workflowruntime.WorkflowRuntime) TaskCenterSrv {
@@ -72,7 +76,16 @@ func NewService(factory store.Factory, runtimes ...workflowruntime.WorkflowRunti
 	if len(runtimes) > 0 && runtimes[0] != nil {
 		runtime = runtimes[0]
 	}
-	return &taskCenterService{store: factory.TaskCenters(), runtime: runtime, functions: make(map[string]struct{})}
+	return &taskCenterService{store: factory.TaskCenters(), runtime: runtime, functions: make(map[string]struct{}), reconciles: NewReconcileRegistry()}
+}
+
+// NewServiceWithRegistries 注入 functionRef 与 ReconcileRegistry 两类受控后端注册表。
+func NewServiceWithRegistries(factory store.Factory, runtime workflowruntime.WorkflowRuntime, reconciles *ReconcileRegistry, functionRefs ...string) TaskCenterSrv {
+	service := NewServiceWithFunctions(factory, runtime, functionRefs...).(*taskCenterService)
+	if reconciles != nil {
+		service.reconciles = reconciles
+	}
+	return service
 }
 
 func NewServiceWithFunctions(factory store.Factory, runtime workflowruntime.WorkflowRuntime, functionRefs ...string) TaskCenterSrv {
@@ -413,7 +426,11 @@ func (s *taskCenterService) ListTaskSchedules(ctx context.Context, req *iapiserv
 		return nil, err
 	}
 	for _, item := range items {
+		s.decorateReconcileSchedule(item)
 		item.TargetSummary = scheduleTemplateSummary(item)
+	}
+	if err := s.attachLatestScheduleExecutions(ctx, items); err != nil {
+		return nil, err
 	}
 	return &iapiserver.TaskScheduleListResponse{Total: total, Items: items}, nil
 }
@@ -426,7 +443,10 @@ func (s *taskCenterService) GetTaskSchedule(ctx context.Context, id string) (*ia
 		return nil, errors.NewStatus(code.ErrTaskScheduleNotFound, "task schedule not found")
 	}
 	item.TargetSummary = scheduleTemplateSummary(item)
-	return item, nil
+	if err := s.attachLatestScheduleExecutions(ctx, []*iapiserver.TaskSchedule{item}); err != nil {
+		return nil, err
+	}
+	return s.decorateReconcileSchedule(item), nil
 }
 func (s *taskCenterService) ListScheduleExecutions(ctx context.Context, req *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error) {
 	schedule, err := s.GetTaskSchedule(ctx, req.ScheduleID)
@@ -467,7 +487,7 @@ func (s *taskCenterService) CreateTaskSchedule(ctx context.Context, req *iapiser
 	if err := validateScheduleRequest(req); err != nil {
 		return nil, err
 	}
-	schedule := &iapiserver.TaskSchedule{TriggerType: req.TriggerType, CronExpression: req.CronExpression, RunAt: req.RunAt, TimeZone: req.TimeZone, Target: req.Target, Status: iapiserver.TaskScheduleStatusActive, MisfirePolicy: iapiserver.TaskSchedulePolicySkip, OverlapPolicy: iapiserver.TaskSchedulePolicySkip, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
+	schedule := &iapiserver.TaskSchedule{ExecutionMode: iapiserver.TaskScheduleModeMaterialized, ManagementMode: iapiserver.TaskScheduleManagementUser, TriggerType: req.TriggerType, CronExpression: req.CronExpression, RunAt: req.RunAt, TimeZone: req.TimeZone, Target: req.Target, HistoryRetention: defaultHistoryRetention(), Status: iapiserver.TaskScheduleStatusActive, MisfirePolicy: iapiserver.TaskSchedulePolicySkip, OverlapPolicy: iapiserver.TaskSchedulePolicySkip, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: taskActor(ctx)}
 	schedule.ID = uuid.NewString()
 	schedule.Name = req.Name
 	schedule.Description = req.Description
@@ -511,6 +531,14 @@ func (s *taskCenterService) UpdateTaskSchedule(ctx context.Context, req *iapiser
 	if schedule.Status == iapiserver.TaskScheduleStatusDeleted || schedule.Status == iapiserver.TaskScheduleStatusCompleted {
 		return nil, errors.NewStatusF(code.ErrTaskScheduleStateBlocked, "task schedule cannot be updated")
 	}
+	if schedule.ManagementMode == iapiserver.TaskScheduleManagementSystem {
+		if taskActor(ctx) != "system-admin" || req.Name != nil || req.Description != nil || req.RunAt != nil || req.Target != nil {
+			return nil, errors.NewStatus(code.ErrTaskSystemScheduleOperationRestricted, "system schedule protected fields cannot be changed")
+		}
+		if req.ReconcileSpec == nil && req.CronExpression == nil && req.TimeZone == nil {
+			return nil, errors.NewStatus(code.ErrTaskSystemScheduleOperationRestricted, "system schedule update has no allowed field")
+		}
+	}
 	if req.Name != nil {
 		schedule.Name = *req.Name
 	}
@@ -529,12 +557,52 @@ func (s *taskCenterService) UpdateTaskSchedule(ctx context.Context, req *iapiser
 	if req.Target != nil {
 		schedule.Target = *req.Target
 	}
-	validation := &iapiserver.TaskScheduleCreateRequest{TriggerType: schedule.TriggerType, CronExpression: schedule.CronExpression, RunAt: schedule.RunAt, TimeZone: schedule.TimeZone, Target: schedule.Target}
-	if err := validateScheduleRequest(validation); err != nil {
-		return nil, err
+	if req.ReconcileSpec != nil {
+		if schedule.ReconcileSpec == nil {
+			return nil, errors.NewStatus(code.ErrTaskSystemScheduleOperationRestricted, "materialized schedule cannot accept reconcile spec")
+		}
+		if req.ReconcileSpec.Config != nil {
+			schedule.ReconcileSpec.Config = *req.ReconcileSpec.Config
+		}
+		if req.ReconcileSpec.MaxParallelism != nil {
+			schedule.ReconcileSpec.MaxParallelism = *req.ReconcileSpec.MaxParallelism
+		}
+		if req.ReconcileSpec.MaxItemsPerRun != nil {
+			schedule.ReconcileSpec.MaxItemsPerRun = *req.ReconcileSpec.MaxItemsPerRun
+		}
+		if req.ReconcileSpec.PerItemTimeoutSeconds != nil {
+			schedule.ReconcileSpec.PerItemTimeoutSeconds = *req.ReconcileSpec.PerItemTimeoutSeconds
+		}
+		if req.ReconcileSpec.OverallTimeoutSeconds != nil {
+			schedule.ReconcileSpec.OverallTimeoutSeconds = *req.ReconcileSpec.OverallTimeoutSeconds
+		}
+	}
+	if schedule.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+		handler, ok := s.reconciles.Get(schedule.ReconcileSpec.ReconcileRef)
+		if !ok {
+			return nil, errors.NewStatus(code.ErrTaskReconcileRefUnregistered, "reconcile handler is not registered")
+		}
+		if schedule.TimeZone == "" || len(strings.Fields(schedule.CronExpression)) != 6 {
+			return nil, errors.NewStatus(code.ErrTaskScheduleInvalid, "schedule cron or timezone is invalid")
+		}
+		if _, err := time.LoadLocation(schedule.TimeZone); err != nil {
+			return nil, errors.NewStatus(code.ErrTaskScheduleInvalid, "schedule time zone is invalid")
+		}
+		if err := validateReconcileSpec(schedule.ReconcileSpec, handler); err != nil {
+			return nil, err
+		}
+	} else {
+		validation := &iapiserver.TaskScheduleCreateRequest{ExecutionMode: iapiserver.TaskScheduleModeMaterialized, TriggerType: schedule.TriggerType, CronExpression: schedule.CronExpression, RunAt: schedule.RunAt, TimeZone: schedule.TimeZone, Target: schedule.Target}
+		if err := validateScheduleRequest(validation); err != nil {
+			return nil, err
+		}
 	}
 	if schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
-		binding, err := s.runtime.RegisterDefinition(ctx, scheduleLauncherDefinition(schedule))
+		definition := scheduleLauncherDefinition(schedule)
+		if schedule.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+			definition = reconcileControllerDefinition()
+		}
+		binding, err := s.runtime.RegisterDefinition(ctx, definition)
 		if err != nil {
 			return nil, runtimeError(err)
 		}
@@ -550,6 +618,9 @@ func (s *taskCenterService) DeleteTaskSchedule(ctx context.Context, id string) e
 	schedule, err := s.GetTaskSchedule(ctx, id)
 	if err != nil {
 		return err
+	}
+	if schedule.ManagementMode == iapiserver.TaskScheduleManagementSystem {
+		return errors.NewStatus(code.ErrTaskSystemScheduleOperationRestricted, "system schedule cannot be deleted")
 	}
 	if schedule.RuntimeScheduleName != "" && schedule.TriggerType == iapiserver.TaskScheduleTriggerCron {
 		if err := s.runtime.DeleteSchedule(ctx, schedule.RuntimeScheduleName); err != nil {
@@ -813,6 +884,9 @@ func simpleRuntimeTask(task *iapiserver.AtomicTask) workflowruntime.Task {
 }
 
 func validateScheduleRequest(req *iapiserver.TaskScheduleCreateRequest) error {
+	if req.ExecutionMode != "" && req.ExecutionMode != iapiserver.TaskScheduleModeMaterialized {
+		return errors.NewStatusF(code.ErrTaskSystemScheduleOperationRestricted, "public schedule creation only accepts materialized mode")
+	}
 	if req.Target.Type != iapiserver.TaskScheduleTargetAtomic && req.Target.Type != iapiserver.TaskScheduleTargetGroup && req.Target.Type != iapiserver.TaskScheduleTargetDAG {
 		return errors.NewStatusF(code.ErrTaskScheduleInvalid, "schedule target is invalid")
 	}
@@ -897,6 +971,9 @@ func dagTaskGroupIDs(items []*iapiserver.DAGTaskGroup) []string {
 }
 
 func scheduleTemplateSummary(schedule *iapiserver.TaskSchedule) *iapiserver.TaskTargetSummary {
+	if schedule == nil || schedule.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+		return nil
+	}
 	summary := &iapiserver.TaskTargetSummary{Type: schedule.Target.Type, Name: schedule.Name}
 	raw, err := json.Marshal(schedule.Target.Template)
 	if err != nil {
@@ -947,6 +1024,17 @@ func dagTargetSummary(item *iapiserver.DAGTaskGroup) *iapiserver.TaskTargetSumma
 }
 
 func (s *taskCenterService) attachExecutionTargets(ctx context.Context, schedule *iapiserver.TaskSchedule, executions []*iapiserver.TaskScheduleExecution) error {
+	schedules := map[string]*iapiserver.TaskSchedule{}
+	if schedule != nil {
+		schedules[schedule.ID] = schedule
+	}
+	return s.attachExecutionTargetsForSchedules(ctx, schedules, executions)
+}
+
+func (s *taskCenterService) attachExecutionTargetsForSchedules(ctx context.Context, schedules map[string]*iapiserver.TaskSchedule, executions []*iapiserver.TaskScheduleExecution) error {
+	if len(executions) == 0 {
+		return nil
+	}
 	idsByType := map[string][]string{
 		iapiserver.TaskScheduleTargetAtomic: {},
 		iapiserver.TaskScheduleTargetGroup:  {},
@@ -982,14 +1070,44 @@ func (s *taskCenterService) attachExecutionTargets(ctx context.Context, schedule
 	}
 
 	for _, execution := range executions {
+		if execution.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+			continue
+		}
 		if target := targets[execution.TargetID]; target != nil {
 			execution.TargetSummary = target
 			continue
 		}
-		fallback := scheduleTemplateSummary(schedule)
+		fallback := scheduleTemplateSummary(schedules[execution.ScheduleID])
+		if fallback == nil {
+			continue
+		}
 		fallback.ID = execution.TargetID
 		fallback.Type = execution.TargetType
 		execution.TargetSummary = fallback
+	}
+	return nil
+}
+
+func (s *taskCenterService) attachLatestScheduleExecutions(ctx context.Context, schedules []*iapiserver.TaskSchedule) error {
+	ids := make([]string, 0, len(schedules))
+	byID := make(map[string]*iapiserver.TaskSchedule, len(schedules))
+	for _, schedule := range schedules {
+		ids = append(ids, schedule.ID)
+		byID[schedule.ID] = schedule
+	}
+	latest, err := s.store.ListLatestScheduleExecutions(ctx, ids)
+	if err != nil {
+		return err
+	}
+	executions := make([]*iapiserver.TaskScheduleExecution, 0, len(latest))
+	for _, execution := range latest {
+		executions = append(executions, execution)
+	}
+	if err := s.attachExecutionTargetsForSchedules(ctx, byID, executions); err != nil {
+		return err
+	}
+	for scheduleID, execution := range latest {
+		byID[scheduleID].LastExecution = execution
 	}
 	return nil
 }
