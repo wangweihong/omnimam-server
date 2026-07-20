@@ -17,6 +17,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
+	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
@@ -42,6 +43,11 @@ func RunTaskWorker(cfg *config.Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	storeIns := store.Client()
+	projector := ssesvc.NewProjector(storeIns.UserEvents(), cfg.SSEOptions.Retention, postgresql.SubscribeOutbox)
+	if err := projector.Start(ctx); err != nil {
+		return errors.Wrap(err, "start SSE task-center projector")
+	}
+	defer projector.Close()
 	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
 		return errors.Wrap(err, "load application runtime registry")

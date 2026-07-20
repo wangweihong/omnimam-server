@@ -29,6 +29,14 @@
 | ErrTokenInvalid | 100005 | 401 | Token invalid. | 令牌无效 |
 | ErrPageNotFound | 100006 | 404 | Page not found. | 请求路由不存在 |
 | ErrOperationBatchExecute | 100007 | 200 | Operation batch execute. | 批量执行操作 |
+| ErrSSEConnectionLimitReached | 170200 | 200 | The real-time connection limit for the current user or client instance has been reached. | 当前用户或客户实例的实时连接数已达上限。 |
+| ErrSSEStreamUnavailable | 170201 | 200 | The real-time event stream is temporarily unavailable; use fact-query fallback. | 实时事件流暂时不可用，请使用事实查询降级。 |
+| ErrSSECursorConflict | 170400 | 200 | Last-Event-ID and after_event_id identify different resume positions. | Last-Event-ID 与 after_event_id 指向不同的恢复位置。 |
+| ErrSSECursorNotVisible | 170401 | 200 | The resume cursor does not exist or is not visible to the current user; resynchronization is required. | 恢复游标不存在或不属于当前用户，需要重新同步。 |
+| ErrSSECursorExpired | 170402 | 200 | The resume cursor is outside the retained event range; resynchronization is required. | 恢复游标已超出事件保留范围，需要重新同步。 |
+| ErrSSESourceEventInvalid | 170600 | 200 | The upstream event lacks owner, resource version, or required projection fields. | 上游事件缺少所有者、资源版本或必需投影字段。 |
+| ErrSSESourceEventUnsupported | 170601 | 200 | The upstream event version is not supported by the current SSE projector. | 上游事件版本尚不受当前 SSE 投影器支持。 |
+| ErrSSEPermissionDenied | 170800 | 200 | The caller cannot open the event stream or read event history. | 当前调用方无权建立事件流或读取历史事件。 |
 | ErrDatabase | 100101 | 500 | Database error. | 数据库出错 |
 | ErrEncrypt | 100201 | 401 | Error occurred while encrypting the user password. | 用户密码加密失败 |
 | ErrSignatureInvalid | 100202 | 401 | Signature is invalid. | 签名无效 |

@@ -28,10 +28,14 @@ type routeWorkflowCanvasService struct{ workflowcanvassvc.Service }
 
 type routeAuthenticationFactory struct {
 	store.Factory
-	users store.UserStore
+	users      store.UserStore
+	userEvents store.UserEventStore
 }
 
-func (f routeAuthenticationFactory) Users() store.UserStore { return f.users }
+func (f routeAuthenticationFactory) Users() store.UserStore           { return f.users }
+func (f routeAuthenticationFactory) UserEvents() store.UserEventStore { return f.userEvents }
+
+type routeUserEventStore struct{ store.UserEventStore }
 
 type routeApplicationService struct {
 	appsvc.ApplicationPlatformSrv
@@ -71,6 +75,13 @@ func TestTaskCenterRoutesMatchSSOTOpenAPI(t *testing.T) {
 	installTaskCenterApis(router.Group("/api/v1"), routeTaskCenterService{})
 	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "task-center", "openapi.yaml"))
 }
+
+func TestSSERoutesMatchSSOTOpenAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	installSSEApis(router.Group("/api/v1"), routeAuthenticationFactory{userEvents: routeUserEventStore{}}, options.NewSSEOptions())
+	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "sse", "openapi.yaml"))
+}
 func TestWorkflowCanvasRoutesMatchSSOTOpenAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -98,7 +109,7 @@ func TestApplicationPlatformAllowsAnonymousDevelopmentPrincipal(t *testing.T) {
 
 	service := &routeApplicationService{}
 	router := gin.New()
-	installApis(router, service, nil, &options.AuthOptions{AllowAnonymousDevelopment: true}, "debug")
+	installApis(router, service, nil, &options.AuthOptions{AllowAnonymousDevelopment: true}, options.NewSSEOptions(), "debug")
 
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/applications?page_num=0&page_size=20", nil))

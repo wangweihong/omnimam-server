@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -11,6 +12,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
+	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
@@ -27,13 +29,16 @@ type server struct {
 	// api服务,提供http和tls
 	httpServer *httpsvr.GenericHTTPServer
 	// 控制服务关闭时处理动作, 如捕捉到信号后如何处理
-	gracefulShutdown    *shutdown.GracefulShutdown
-	assetUpload         *options.AssetUploadOptions
-	applicationPlatform appsvc.ApplicationPlatformSrv
-	taskCenter          taskcentersvc.TaskCenterSrv
-	workflowRuntime     workflowruntime.WorkflowRuntime
-	authOptions         *options.AuthOptions
-	serverMode          string
+	gracefulShutdown       *shutdown.GracefulShutdown
+	assetUpload            *options.AssetUploadOptions
+	applicationPlatform    appsvc.ApplicationPlatformSrv
+	taskCenter             taskcentersvc.TaskCenterSrv
+	workflowRuntime        workflowruntime.WorkflowRuntime
+	authOptions            *options.AuthOptions
+	sseOptions             *options.SSEOptions
+	serverMode             string
+	userEventCleanupCtx    context.Context
+	userEventCleanupCancel context.CancelFunc
 }
 
 // preparedServer is a private wrapper that enforces a call of PrepareRun() before Run can be invoked.
@@ -132,6 +137,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		taskCenter:          taskCenterService,
 		workflowRuntime:     workflowRuntime,
 		authOptions:         cfg.AuthOptions,
+		sseOptions:          cfg.SSEOptions,
 		serverMode:          cfg.GenericServerRunOptions.Mode,
 	}
 
@@ -207,6 +213,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.ScheduleReconcileState{},
 		&iapiserver.TaskScheduleExecution{},
 		&iapiserver.RuntimeProjectionEvent{},
+		&iapiserver.UserEvent{},
 		&iapiserver.FeatureFlag{},
 		&iapiserver.Role{},
 		&iapiserver.Permission{},
@@ -284,9 +291,12 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.serverMode)
+	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.serverMode)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
+		ssectrl.BeginDraining()
+		s.userEventCleanupCancel()
 		if s.workflowRuntime != nil {
 			_ = s.workflowRuntime.Close()
 		}
@@ -302,6 +312,7 @@ func (s *server) PrepareRun() preparedServer {
 }
 
 func (s preparedServer) Run(stopCh <-chan struct{}) error {
+	startUserEventCleanup(s.userEventCleanupCtx)
 	if s.assetUpload != nil {
 		platformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
 		platformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)
@@ -312,4 +323,24 @@ func (s preparedServer) Run(stopCh <-chan struct{}) error {
 		log.Fatalf("start shutdown manager failed: %s", err.Error())
 	}
 	return s.httpServer.Run()
+}
+
+// startUserEventCleanup 定期清理过期 SSE 投影，清理失败不影响任务执行和 API 服务。
+func startUserEventCleanup(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if dataStore := store.Client(); dataStore != nil && dataStore.UserEvents() != nil {
+					if _, err := dataStore.UserEvents().PruneExpired(ctx, now); err != nil {
+						log.Warnf("prune expired SSE user events: %v", err)
+					}
+				}
+			}
+		}
+	}()
 }

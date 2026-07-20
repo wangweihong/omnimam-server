@@ -576,6 +576,7 @@ func (f *testFactory) AssetGroups() store.AssetGroupStore             { return n
 func (f *testFactory) AssetGroupMembers() store.AssetGroupMemberStore { return nil }
 func (f *testFactory) AssetRelations() store.AssetRelationStore       { return nil }
 func (f *testFactory) TaskCenters() store.TaskCenterStore             { return nil }
+func (f *testFactory) UserEvents() store.UserEventStore               { return nil }
 func (f *testFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return nil
 }

@@ -70,7 +70,12 @@ func (s *taskCenterStore) GetAtomicTask(ctx context.Context, id string) (*iapise
 
 func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error) {
 	if data.IdempotencyScope == "" || data.IdempotencyKey == "" {
-		if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+		if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(data).Error; err != nil {
+				return err
+			}
+			return projectAtomicTaskCreated(tx, data)
+		}); err != nil {
 			return nil, false, errors.WithStack(err)
 		}
 		return data, true, nil
@@ -93,6 +98,9 @@ func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iap
 		if err := tx.Create(data).Error; err != nil {
 			return errors.WithStack(err)
 		}
+		if err := projectAtomicTaskCreated(tx, data); err != nil {
+			return err
+		}
 		result, created = data, true
 		return nil
 	})
@@ -100,7 +108,16 @@ func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iap
 }
 
 func (s *taskCenterStore) UpdateAtomicTask(ctx context.Context, data *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.AtomicTask
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", data.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		return projectAtomicTaskChanged(tx, &previous, data)
+	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
@@ -176,11 +193,17 @@ func (s *taskCenterStore) AddTaskGroupWithTasks(ctx context.Context, group *iapi
 		if err := tx.Create(group).Error; err != nil {
 			return errors.WithStack(err)
 		}
+		if err := projectTaskGroupCreated(tx, iapiserver.TaskOwnerTypeGroup, group); err != nil {
+			return err
+		}
 		for _, task := range tasks {
 			task.OwnerType = iapiserver.TaskOwnerTypeGroup
 			task.OwnerID = group.ID
 			if err := tx.Create(task).Error; err != nil {
 				return errors.WithStack(err)
+			}
+			if err := projectAtomicTaskCreated(tx, task); err != nil {
+				return err
 			}
 		}
 		created = true
@@ -190,7 +213,16 @@ func (s *taskCenterStore) AddTaskGroupWithTasks(ctx context.Context, group *iapi
 }
 
 func (s *taskCenterStore) UpdateTaskGroup(ctx context.Context, data *iapiserver.TaskGroup) (*iapiserver.TaskGroup, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.TaskGroup
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", data.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		return projectTaskGroupChanged(tx, iapiserver.TaskOwnerTypeGroup, &previous, data, false)
+	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
@@ -258,11 +290,17 @@ func (s *taskCenterStore) AddDAGTaskGroupWithTasks(ctx context.Context, group *i
 		if err := tx.Create(group).Error; err != nil {
 			return errors.WithStack(err)
 		}
+		if err := projectTaskGroupCreated(tx, iapiserver.TaskOwnerTypeDAGGroup, group); err != nil {
+			return err
+		}
 		for _, task := range tasks {
 			task.OwnerType = iapiserver.TaskOwnerTypeDAGGroup
 			task.OwnerID = group.ID
 			if err := tx.Create(task).Error; err != nil {
 				return errors.WithStack(err)
+			}
+			if err := projectAtomicTaskCreated(tx, task); err != nil {
+				return err
 			}
 		}
 		created = true
@@ -272,7 +310,16 @@ func (s *taskCenterStore) AddDAGTaskGroupWithTasks(ctx context.Context, group *i
 }
 
 func (s *taskCenterStore) UpdateDAGTaskGroup(ctx context.Context, data *iapiserver.DAGTaskGroup) (*iapiserver.DAGTaskGroup, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.DAGTaskGroup
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", data.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		return projectTaskGroupChanged(tx, iapiserver.TaskOwnerTypeDAGGroup, &previous, data, false)
+	}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
@@ -306,6 +353,9 @@ func (s *taskCenterStore) AddOwnedAtomicTasks(ctx context.Context, ownerType, ow
 			task.OwnerType = ownerType
 			task.OwnerID = ownerID
 			if err := tx.Create(task).Error; err != nil {
+				return err
+			}
+			if err := projectAtomicTaskCreated(tx, task); err != nil {
 				return err
 			}
 		}
@@ -532,6 +582,11 @@ func (s *taskCenterStore) ListActiveScheduleExecutions(ctx context.Context, limi
 func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, event *iapiserver.RuntimeProjectionEvent) (bool, error) {
 	applied := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		type attemptChange struct {
+			previous *iapiserver.TaskAttempt
+			current  *iapiserver.TaskAttempt
+		}
+		changes := make([]attemptChange, 0, len(attempts))
 		var count int64
 		if err := tx.Model(&iapiserver.RuntimeProjectionEvent{}).Where("runtime_event_id = ?", event.RuntimeEventID).Count(&count).Error; err != nil {
 			return err
@@ -540,6 +595,10 @@ func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapi
 			return nil
 		}
 		if err := tx.Create(event).Error; err != nil {
+			return err
+		}
+		var previousTask iapiserver.AtomicTask
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", task.ID).First(&previousTask).Error; err != nil {
 			return err
 		}
 		for _, attempt := range attempts {
@@ -552,9 +611,41 @@ func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapi
 				if err := tx.Save(attempt).Error; err != nil {
 					return err
 				}
+				previous := existing
+				changes = append(changes, attemptChange{previous: &previous, current: attempt})
 			case stderrors.Is(err, gorm.ErrRecordNotFound):
-				if err := tx.Create(attempt).Error; err != nil {
+				finalAttempt := *attempt
+				scheduled := finalAttempt
+				scheduled.Status = iapiserver.TaskAttemptStatusScheduled
+				scheduled.StartedAt = imachinery.Time{}
+				scheduled.CompletedAt = imachinery.Time{}
+				scheduled.DurationMS = 0
+				scheduled.OutputSnapshot = map[string]any{}
+				scheduled.Error = iapiserver.TaskError{}
+				scheduled.Retryable = false
+				if err := tx.Create(&scheduled).Error; err != nil {
 					return err
+				}
+				changes = append(changes, attemptChange{current: &scheduled})
+				previous := scheduled
+				if finalAttempt.Status != iapiserver.TaskAttemptStatusScheduled {
+					if !finalAttempt.StartedAt.IsZero() && finalAttempt.Status != iapiserver.TaskAttemptStatusRunning {
+						running := finalAttempt
+						running.ID, running.CreatedAt, running.ResourceVersion = scheduled.ID, scheduled.CreatedAt, scheduled.ResourceVersion
+						running.Status = iapiserver.TaskAttemptStatusRunning
+						running.CompletedAt, running.DurationMS = imachinery.Time{}, 0
+						running.OutputSnapshot, running.Error = map[string]any{}, iapiserver.TaskError{}
+						if err := tx.Save(&running).Error; err != nil {
+							return err
+						}
+						changes = append(changes, attemptChange{previous: &previous, current: &running})
+						previous = running
+					}
+					finalAttempt.ID, finalAttempt.CreatedAt, finalAttempt.ResourceVersion = previous.ID, previous.CreatedAt, previous.ResourceVersion
+					if err := tx.Save(&finalAttempt).Error; err != nil {
+						return err
+					}
+					changes = append(changes, attemptChange{previous: &previous, current: &finalAttempt})
 				}
 			default:
 				return err
@@ -562,6 +653,14 @@ func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapi
 		}
 		if err := tx.Save(task).Error; err != nil {
 			return err
+		}
+		if err := projectAtomicTaskChanged(tx, &previousTask, task); err != nil {
+			return err
+		}
+		for _, change := range changes {
+			if err := projectTaskAttemptChanged(tx, task, change.previous, change.current); err != nil {
+				return err
+			}
 		}
 		if task.CanvasNodeRunID != "" {
 			if err := projectCanvasNode(tx, task); err != nil {
@@ -718,12 +817,29 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 			status = iapiserver.TaskGroupStatusSuccess
 		}
 	}
-	values := map[string]any{"summary_json": mustJSON(summary), "result_json": mustJSON(result), "progress": progress, "status": status, "updated_at": time.Now()}
 	switch ownerType {
 	case iapiserver.TaskOwnerTypeGroup:
-		return tx.Model(&iapiserver.TaskGroup{}).Where("id = ?", ownerID).Updates(values).Error
+		var group iapiserver.TaskGroup
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, "id = ?", ownerID).Error; err != nil {
+			return err
+		}
+		previous := group
+		group.Summary, group.Result, group.Progress, group.Status = summary, result, progress, status
+		if err := tx.Save(&group).Error; err != nil {
+			return err
+		}
+		return projectTaskGroupChanged(tx, ownerType, &previous, &group, false)
 	case iapiserver.TaskOwnerTypeDAGGroup:
-		return tx.Model(&iapiserver.DAGTaskGroup{}).Where("id = ?", ownerID).Updates(values).Error
+		var group iapiserver.DAGTaskGroup
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, "id = ?", ownerID).Error; err != nil {
+			return err
+		}
+		previous := group
+		group.Summary, group.Result, group.Progress, group.Status = summary, result, progress, status
+		if err := tx.Save(&group).Error; err != nil {
+			return err
+		}
+		return projectTaskGroupChanged(tx, ownerType, &previous, &group, false)
 	}
 	return nil
 }

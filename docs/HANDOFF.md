@@ -2,76 +2,74 @@
 
 ## Current project goal
 
-Complete the backend alignment for released `spec-v1.4.0`, replacing persisted ComfyUI object-info snapshots with the EngineInstance one-to-one current catalog.
+Implement the released `spec-v1.5.0` SSE user event stream for Task Center while preserving Task Center as the business fact source and Conductor as the internal runtime.
 
 ## Completed in this session
 
-- Updated the `ssot` submodule to released tag `spec-v1.4.0` at `6f75b7dd187bb0d05e3e42fc2d720f026df47c85` and synchronized `SSOT_VERSION`.
-- Added `aiapp_comfyui_engine_object_info`, a current-fact extension keyed by `engine_instance_id`, with atomic upsert and `ON DELETE CASCADE`.
-- Added current object-info read and manual refresh APIs. Read supports gzip negotiation; refresh requires an enabled, online ComfyUI instance and preserves the last success on failure.
-- Added database row-lock serialization shared by manual refresh, scheduled refresh, and template conversion revalidation.
-- Added the `application-platform.comfyui-object-info-refresh` SYSTEM RECONCILE handler and the unique daily `0 0 3 * * *` UTC schedule.
-- Added EngineInstance list summary fields for object-info availability, refresh time, and derived 48-hour stale state.
-- Removed Workflow lifecycle/archive/restore behavior, persisted parse caches, Validation object-info snapshots/checksums, TemplateVersion object-info/dependency snapshots, and WorkflowTestRun object-info snapshots.
-- Changed nodes, input-candidates, output-candidates, and dependencies to require `engine_instance_id` and derive results from that instance's current usable catalog.
-- Changed import, API conversion, validation, template conversion/publish, RuntimeForm resolution, test runs, ApplicationRun creation, and Worker execution to revalidate against current object-info where applicable.
-- Regenerated application-platform error code source and documentation for errors `131243` and `131244`.
-- Updated TaskWorker architecture documentation to describe the two SYSTEM RECONCILE paths.
+1. Updated the `ssot` submodule to remote released `spec-v1.5.0` marker commit `802d663278d52909cb9b4e1ed65008ce9794094a` and synchronized `SSOT_VERSION`.
+2. Added `sse_user_events`, the current-user event envelope DTOs, history filters, sync state, cursor validation, retention metadata, and idempotent PostgreSQL store.
+3. Added `GET /api/v1/events/stream`, `GET /api/v1/events`, and `GET /api/v1/events/sync-state`, matching the SSE OpenAPI paths.
+4. Implemented SSE framing with `id/event/retry/data`, `connection.ready`, `connection.resync_required`, heartbeat comments, `connection.server_draining`, Last-Event-ID/after_event_id conflict checks, 5-second write deadlines, and per-user/per-client-instance connection limits.
+5. Added Task Center reliable outbox events for AtomicTask creation/status/progress, TaskAttempt lifecycle, and TaskGroup/DAGTaskGroup creation/status/summary changes.
+6. Added a TaskWorker-owned SSE projector that consumes Task Center outbox events, validates owner/version/source fields, removes internal routing fields, and idempotently writes UserEvent records. Projector failure Nacks the event and does not roll back task facts.
+7. Updated runtime projection so first-seen TaskAttempts persist and publish `SCHEDULED` before observed RUNNING/terminal states. Group/DAG aggregate recalculation now increments `resource_version` and emits reliable events.
+8. Added configurable SSE retention, poll interval, heartbeat interval, and per-user connection limit. API Server periodically removes expired UserEvent rows without changing business facts.
+9. Generated all `170200-170800` SSE business errors and refreshed generated error documentation.
+10. Updated TaskWorker/API Server architecture documentation for the Task Center outbox -> SSE projector -> UserEvent -> SSE gateway flow.
 
-## Files added or modified
+## Files modified or added
 
 - SSOT pin: `ssot`, `SSOT_VERSION`.
-- API/meta/request models: `backend/apis/iapiserver/meta_application_platform.go`, `meta_comfyui_workflow.go`, `request_application_platform.go`, and `request_comfyui_workflow.go`.
-- Service/runtime: application-platform object-info, workflow, test-run, runtime-form, executor, adapters, and reconcile files under `backend/internal/apiserver/service/v1/applicationplatform/`.
-- Store/schema: `backend/internal/apiserver/store/store.go` and PostgreSQL application-platform/schema files.
-- HTTP/bootstrap: application-platform controller, response mapping, routes, API Server bootstrap, and TaskWorker bootstrap.
-- Generated errors and docs: `backend/internal/pkg/code/*`, `docs/guide/zh-CN/api/error_code_generated.md`.
-- Architecture and handoff docs under `docs/guide/zh-CN/architecture/` and `docs/HANDOFF.md`.
-- Added focused unit, race-safe reconcile, gzip, forbidden-field, and PostgreSQL integration tests.
+- SSE API/meta: `backend/apis/iapiserver/meta_sse.go`, `request_sse.go`.
+- SSE gateway/service/projector: `backend/internal/apiserver/controller/v1/sse/`, `backend/internal/apiserver/service/v1/sse/`.
+- Store/schema initialization: `backend/internal/apiserver/store/{factory.go,store.go}` and PostgreSQL `0_pg.go`, `sse.go`, `outbox.go`, `task_center.go`, `task_center_events.go`.
+- Bootstrap/config/routes: `options/options.go`, `route.go`, `server.go`, `taskworker.go`.
+- Error code source/generated docs: `backend/internal/pkg/code/`, `docs/guide/zh-CN/api/error_code_generated.md`.
+- Tests: SSE controller/service/projector tests, Task Center event mapping tests, route/OpenAPI checks, and PostgreSQL integration coverage.
+- Documentation: `docs/guide/zh-CN/architecture/taskworker-apiserver-collaboration.md`, `docs/HANDOFF.md`.
+- A pre-existing uncommitted change in `backend/internal/apiserver/service/v1/taskcenter/reconciler.go` was preserved and remains in the worktree; the SSE changes are compatible with its Group/DAG terminal projection.
 
 ## Key architectural decisions
 
-- PostgreSQL stores exactly one current object-info body per ComfyUI EngineInstance. It has no ObjectMeta, checksum, resource version, status machine, or history because it is an EngineInstance fact extension.
-- Refresh obtains an EngineInstance row lock before the provider call and retains it through atomic upsert. Conversion uses the same lock while revalidating and committing the first template version.
-- Stale is derived at read time from `refreshed_at`; catalogs older than 48 hours remain readable for diagnosis but are rejected by all execution-capable paths.
-- Workflow parse results are request-local only. Template revision covers API Workflow plus template contract, never object-info or derived dependencies.
-- Per user direction, this work targets a fresh v1.4.0 schema. No legacy data backfill, dual read/write, or in-place compatibility migration was added.
+- Task Center writes business facts and reliable outbox records in one transaction. It never writes directly to an active SSE connection.
+- UserEvent projection is asynchronous and idempotent on `recipient_user_id + source_domain + source_event_id + event_type`; projection failure cannot block task execution.
+- SSE gateway reads PostgreSQL in bounded batches instead of keeping an in-memory event backlog, so API instances remain stateless and reconnects work across instances.
+- `event_sequence` orders the current user's replay stream only. `aggregate_version` remains the upstream Task Center `resource_version`.
+- Arbitrary task result bodies are not pushed. SSE exposes only status/progress/error metadata and allowlisted `artifact_refs`/`representation_refs` summaries.
+- No production database migration, compatibility migration, or historical backfill was added per user direction. The new table and constraints use the repository's existing `EnsureScheme/AutoMigrate` initialization path for the current/new schema.
 
 ## API, schema, and configuration changes
 
-- Added `GET /api/v1/engine-instances/{engine_instance_id}/object-info`.
-- Added `POST /api/v1/engine-instances/{engine_instance_id}/object-info/refresh`.
-- Removed ComfyUI Workflow archive and restore routes.
-- Workflow derive routes now require query `engine_instance_id`.
-- Added EngineInstance summary fields `object_info_available`, `object_info_refreshed_at`, and `object_info_stale`.
-- Added errors `ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_NOT_ALLOWED` and `ERR_AIAPP_COMFYUI_OBJECT_INFO_REFRESH_FAILED`.
-- Added daily SYSTEM RECONCILE schedule `application-platform.comfyui-object-info-refresh` at `03:00 UTC`.
+- Added SSE endpoints under `/api/v1/events` with permissions defined by SSOT (`sse.stream.read`, `sse.history.read`). Current authentication middleware enforces the user boundary.
+- Added `sse_user_events` and Task Center outbox topics: `atomic_task_created`, `atomic_task_status_changed`, `task_attempt_status_changed`, and `task_group_status_changed`.
+- Added flags: `sse.retention`, `sse.poll-interval`, `sse.heartbeat-interval`, and `sse.max-connections-per-user`.
+- Added SSE error codes `170200`, `170201`, `170400-170402`, `170600-170601`, and `170800`.
 
 ## Verification results
 
-- Passed focused application-platform model, service, controller, and PostgreSQL store tests.
 - Passed `go test ./backend/internal/apiserver/...`.
-- Passed focused race tests for application-platform service, controller, and PostgreSQL store.
-- Passed `go vet ./backend/apis/iapiserver ./backend/internal/apiserver/...`.
-- Passed real PostgreSQL 16 integration coverage for current-catalog upsert, failure retention, and cascade deletion.
-- Passed `git diff --check`, exact SSOT tag verification, and `SSOT_VERSION.commit` equality.
-- Full `go test ./backend/...` still fails only in unrelated baseline packages: `backend/apis/imachinery`, `backend/pkg/validator`, `backend/pkg/grpccli`, and `backend/pkg/grpcsvr`.
+- Passed race tests for SSE service/controller/projector (including projector shutdown), PostgreSQL store, and Task Center service.
+- Passed `go vet ./backend/internal/apiserver/...` and `git diff --check`.
+- Passed route-to-SSOT OpenAPI checks for SSE and existing application/task routes.
+- Passed an isolated PostgreSQL 16 integration test for Task Center outbox persistence, UserEvent ordering, idempotency, retention fields, and cross-user cursor isolation.
+- `go test ./...` still fails only in known unrelated baseline areas: `backend/apis/imachinery`, `backend/pkg/validator`, `backend/pkg/grpccli`, `backend/pkg/grpcsvr`, `third_party/k8s.io/utils/exec`, and `tools/ssot-s1-live`.
 
 ## Outstanding tasks
 
-1. Review the complete v1.4.0 diff and stage/commit it when ready.
-2. Decide separately whether to repair the unrelated full-suite baseline failures.
-3. Run deployment-level ComfyUI verification against a reachable instance if one is available, including version extraction and a real daily reconcile execution.
+1. Implement the remaining spec-v1.5.0 asset-library Artifact and AssetVersion source events and feed them through the same SSE projector.
+2. Run a deployment smoke test with rebuilt API Server and TaskWorker containers: create/cancel/retry AtomicTask, verify live SSE frames, restart API/Worker, and verify Last-Event-ID replay.
+3. Review and commit the pre-existing `reconciler.go` terminal-status projection change separately if it is still desired.
 
 ## Known issues and risks
 
-- Existing pre-v1.4.0 databases are not upgraded or backfilled by design; use a fresh schema or a separately reviewed destructive reset.
-- ComfyUI version is read best-effort from `/system_stats`; a valid object-info refresh can succeed with an empty version when the upstream omits it.
-- No reachable ComfyUI instance was available in this session, so provider-level object-info payload compatibility was covered with contract-shaped fixtures rather than a live endpoint.
+- Task Center SSE projection runs in TaskWorker. When TaskWorker is stopped, Task Center outbox rows accumulate and are projected after it returns; task facts remain valid.
+- UserEvent cleanup runs hourly in API Server. Expired rows may remain physically present for up to one cleanup interval but are excluded from history and stream queries immediately at `expires_at`.
+- No live multi-instance proxy/load-balancer SSE smoke test was run. Unit tests cover framing, cancellation, write deadlines, connection limits, resync, and replay; PostgreSQL coverage used an isolated local PostgreSQL 16 database.
+- Artifact/AssetVersion SSE events listed in the full v1.5 SSE enum are not implemented in this task-center-scoped session.
 
 ## Recommended next task
 
-Review and stage the complete `spec-v1.4.0` backend change, then perform a live ComfyUI smoke test before deployment.
+Implement asset-library Artifact/AssetVersion reliable source events and projector mappings, then run the complete deployment-level SSE recovery smoke test.
 
 Next Prompt:
 

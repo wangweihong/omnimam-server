@@ -11,6 +11,7 @@ import (
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
+	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
 	workflowcanvasctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/workflowcanvas"
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
@@ -25,9 +26,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, taskCenter taskcentersvc.TaskCenterSrv, authOptions *options.AuthOptions, mode string) {
+func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, taskCenter taskcentersvc.TaskCenterSrv, authOptions *options.AuthOptions, sseOptions *options.SSEOptions, mode string) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, authOptions, mode)
+	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mode)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -41,7 +42,7 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), "release")
+	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), "release")
 }
 
 func installApis(
@@ -49,6 +50,7 @@ func installApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 	authOptions *options.AuthOptions,
+	sseOptions *options.SSEOptions,
 	mode string,
 ) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
@@ -59,6 +61,7 @@ func installApis(
 		v1 := g.Group("/api/v1")
 		{
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
+			installSSEApis(v1, storeIns, sseOptions)
 			installPlatformApis(v1, storeIns, nil)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)
@@ -76,6 +79,16 @@ func installApis(
 	}
 
 	return g
+}
+
+func installSSEApis(rg *gin.RouterGroup, storeIns store.Factory, config *options.SSEOptions) {
+	if storeIns.UserEvents() == nil {
+		return
+	}
+	controller := ssectrl.NewController(storeIns, config)
+	rg.GET("/events/stream", controller.StreamEvents)
+	rg.GET("/events", controller.ListEvents)
+	rg.GET("/events/sync-state", controller.GetSyncState)
 }
 
 func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.ApplicationPlatformSrv) {

@@ -361,6 +361,16 @@ type TaskCenterStore interface {
 	PruneReconcileExecutions(context.Context, string, iapiserver.HistoryRetention, time.Time) (int64, error)
 }
 
+// UserEventStore 提供当前用户短期事件历史与 SSE 增量读取，不暴露跨用户查询。
+type UserEventStore interface {
+	AddIdempotent(context.Context, *iapiserver.UserEvent) (*iapiserver.UserEvent, bool, error)
+	List(context.Context, *iapiserver.UserEventListRequest, time.Time) ([]*iapiserver.UserEvent, int64, error)
+	ListAfter(context.Context, string, int64, int, time.Time) ([]*iapiserver.UserEvent, error)
+	CursorVisible(context.Context, string, int64) (bool, bool, error)
+	SyncState(context.Context, string, time.Time) (int64, int64, error)
+	PruneExpired(context.Context, time.Time) (int64, error)
+}
+
 type ApplicationPlatformStore interface {
 	ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) ([]*iapiserver.EngineInstance, int64, error)
 	ListEnabledEngineInstancesAfter(context.Context, string, int) ([]*iapiserver.EngineInstance, error)

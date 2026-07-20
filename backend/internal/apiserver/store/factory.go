@@ -44,6 +44,7 @@ type Factory interface {
 	AssetRelations() AssetRelationStore
 	AssetsV1() AssetV1Store
 	TaskCenters() TaskCenterStore
+	UserEvents() UserEventStore
 	ApplicationPlatforms() ApplicationPlatformStore
 	FeatureFlags() FeatureFlagStore
 	Roles() RoleStore

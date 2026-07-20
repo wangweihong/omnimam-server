@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 6f75b7dd187bb0d05e3e42fc2d720f026df47c85
-contract_version: spec-v1.4.0
-updated_at: 2026-07-19
+commit: 802d663278d52909cb9b4e1ed65008ce9794094a
+contract_version: spec-v1.5.0
+updated_at: 2026-07-20
 status: released
-note: EngineInstance current ComfyUI object_info catalog released under spec-v1.4.0.
+note: SSE user event projection and coordinated task-center/asset-library contracts released under spec-v1.5.0.

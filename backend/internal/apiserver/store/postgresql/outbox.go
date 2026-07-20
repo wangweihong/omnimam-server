@@ -18,12 +18,16 @@ const (
 	OutboxTopicArtifactRegistered        = "artifact_registered"
 	OutboxTopicEngineHealthChanged       = "engine_instance_health_changed"
 	OutboxTopicScheduleExecutionRecorded = "task_schedule_execution_recorded"
+	OutboxTopicAtomicTaskCreated         = "atomic_task_created"
+	OutboxTopicAtomicTaskStatusChanged   = "atomic_task_status_changed"
+	OutboxTopicTaskAttemptStatusChanged  = "task_attempt_status_changed"
+	OutboxTopicTaskGroupStatusChanged    = "task_group_status_changed"
 )
 
 var outboxSchema = &wmsql.DefaultPostgreSQLSchema{}
 
 func (ds *datastore) ensureOutboxScheme() error {
-	for _, topic := range []string{OutboxTopicAssetUploaded, OutboxTopicArtifactRegistered, OutboxTopicEngineHealthChanged, OutboxTopicScheduleExecutionRecorded} {
+	for _, topic := range []string{OutboxTopicAssetUploaded, OutboxTopicArtifactRegistered, OutboxTopicEngineHealthChanged, OutboxTopicScheduleExecutionRecorded, OutboxTopicAtomicTaskCreated, OutboxTopicAtomicTaskStatusChanged, OutboxTopicTaskAttemptStatusChanged, OutboxTopicTaskGroupStatusChanged} {
 		queries, err := outboxSchema.SchemaInitializingQueries(wmsql.SchemaInitializingQueriesParams{Topic: topic})
 		if err != nil {
 			return err

@@ -101,6 +101,21 @@ ON dag_task_groups(project_id, namespace, idempotency_scope, idempotency_key)
 WHERE idempotency_scope <> '';
 `
 
+const sseUserEventConstraintsSQL = `
+CREATE INDEX IF NOT EXISTS idx_sse_user_events_expires ON sse_user_events(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sse_user_events_recipient_sequence ON sse_user_events(recipient_user_id, event_sequence);
+CREATE INDEX IF NOT EXISTS idx_sse_user_events_recipient_occurred ON sse_user_events(recipient_user_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_sse_user_events_aggregate ON sse_user_events(aggregate_type, aggregate_id, aggregate_version);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_sse_user_events_version') THEN
+    ALTER TABLE sse_user_events ADD CONSTRAINT ck_sse_user_events_version CHECK (event_version >= 1 AND aggregate_version >= 0);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_sse_user_events_expiry') THEN
+    ALTER TABLE sse_user_events ADD CONSTRAINT ck_sse_user_events_expiry CHECK (expires_at > occurred_at);
+  END IF;
+END $$;
+`
+
 const taskCenterScheduleOwnershipBackfillSQL = `
 UPDATE atomic_tasks AS target
 SET created_by = schedule.created_by,
@@ -315,6 +330,9 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 	if err := ds.db.Exec(taskCenterApplicationRunIndexesSQL).Error; err != nil {
 		return err
 	}
+	if err := ds.db.Exec(sseUserEventConstraintsSQL).Error; err != nil {
+		return err
+	}
 	return ds.db.Exec(taskCenterScheduleOwnershipBackfillSQL).Error
 }
 
@@ -444,6 +462,8 @@ func (ds *datastore) AssetsV1() store.AssetV1Store { return newAssetV1Store(ds) 
 func (ds *datastore) TaskCenters() store.TaskCenterStore {
 	return newTaskCenterStore(ds)
 }
+
+func (ds *datastore) UserEvents() store.UserEventStore { return newUserEventStore(ds) }
 
 func (ds *datastore) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return newApplicationPlatform(ds)

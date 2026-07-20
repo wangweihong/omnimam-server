@@ -44,6 +44,42 @@ const (
 	ErrOperationBatchExecute
 )
 
+// sse: spec-v1.5.0 business errors.
+const (
+	// @HTTP 200
+	// @CN 当前用户或客户实例的实时连接数已达上限。
+	// @EN The real-time connection limit for the current user or client instance has been reached.
+	ErrSSEConnectionLimitReached int = 170200
+	// @HTTP 200
+	// @CN 实时事件流暂时不可用，请使用事实查询降级。
+	// @EN The real-time event stream is temporarily unavailable; use fact-query fallback.
+	ErrSSEStreamUnavailable int = 170201
+	// @HTTP 200
+	// @CN Last-Event-ID 与 after_event_id 指向不同的恢复位置。
+	// @EN Last-Event-ID and after_event_id identify different resume positions.
+	ErrSSECursorConflict int = 170400
+	// @HTTP 200
+	// @CN 恢复游标不存在或不属于当前用户，需要重新同步。
+	// @EN The resume cursor does not exist or is not visible to the current user; resynchronization is required.
+	ErrSSECursorNotVisible int = 170401
+	// @HTTP 200
+	// @CN 恢复游标已超出事件保留范围，需要重新同步。
+	// @EN The resume cursor is outside the retained event range; resynchronization is required.
+	ErrSSECursorExpired int = 170402
+	// @HTTP 200
+	// @CN 上游事件缺少所有者、资源版本或必需投影字段。
+	// @EN The upstream event lacks owner, resource version, or required projection fields.
+	ErrSSESourceEventInvalid int = 170600
+	// @HTTP 200
+	// @CN 上游事件版本尚不受当前 SSE 投影器支持。
+	// @EN The upstream event version is not supported by the current SSE projector.
+	ErrSSESourceEventUnsupported int = 170601
+	// @HTTP 200
+	// @CN 当前调用方无权建立事件流或读取历史事件。
+	// @EN The caller cannot open the event stream or read event history.
+	ErrSSEPermissionDenied int = 170800
+)
+
 // common: database errors.
 const (
 	// @HTTP 500

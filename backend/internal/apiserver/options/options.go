@@ -1,6 +1,7 @@
 package options
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -32,6 +33,7 @@ type Options struct {
 	ApplicationPlatformOptions *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
 	AuthOptions                *AuthOptions                    `json:"auth"             mapstructure:"auth"`
 	WorkflowRuntimeOptions     *WorkflowRuntimeOptions         `json:"workflow-runtime" mapstructure:"workflow-runtime"`
+	SSEOptions                 *SSEOptions                     `json:"sse" mapstructure:"sse"`
 }
 
 // AuthOptions 控制用户系统完成前的开发态认证兼容路径。
@@ -40,6 +42,25 @@ type AuthOptions struct {
 }
 
 func NewAuthOptions() *AuthOptions { return &AuthOptions{} }
+
+// SSEOptions 控制用户事件保留、流式轮询、心跳和单实例连接上限。
+type SSEOptions struct {
+	Retention             time.Duration `json:"retention" mapstructure:"retention"`
+	PollInterval          time.Duration `json:"poll-interval" mapstructure:"poll-interval"`
+	HeartbeatInterval     time.Duration `json:"heartbeat-interval" mapstructure:"heartbeat-interval"`
+	MaxConnectionsPerUser int           `json:"max-connections-per-user" mapstructure:"max-connections-per-user"`
+}
+
+func NewSSEOptions() *SSEOptions {
+	return &SSEOptions{Retention: 24 * time.Hour, PollInterval: time.Second, HeartbeatInterval: 15 * time.Second, MaxConnectionsPerUser: 8}
+}
+
+func (o *SSEOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.DurationVar(&o.Retention, "sse.retention", o.Retention, "retention duration for replayable user events")
+	fs.DurationVar(&o.PollInterval, "sse.poll-interval", o.PollInterval, "database poll interval for active SSE streams")
+	fs.DurationVar(&o.HeartbeatInterval, "sse.heartbeat-interval", o.HeartbeatInterval, "heartbeat interval for active SSE streams")
+	fs.IntVar(&o.MaxConnectionsPerUser, "sse.max-connections-per-user", o.MaxConnectionsPerUser, "maximum active SSE streams per user on one API instance")
+}
 
 type AssetUploadOptions struct {
 	ChunkTempDir      string `json:"chunk-temp-dir"      mapstructure:"chunk-temp-dir"`
@@ -118,6 +139,7 @@ func NewOptions() *Options {
 		ApplicationPlatformOptions: NewApplicationPlatformOptions(),
 		AuthOptions:                NewAuthOptions(),
 		WorkflowRuntimeOptions:     NewWorkflowRuntimeOptions(),
+		SSEOptions:                 NewSSEOptions(),
 	}
 
 	return &s
@@ -136,6 +158,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.AssetUploadOptions.AddFlags(fss.FlagSet("asset upload"))
 	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
 	o.WorkflowRuntimeOptions.AddFlags(fss.FlagSet("workflow runtime"))
+	o.SSEOptions.AddFlags(fss.FlagSet("sse"))
 	fs := fss.FlagSet("authentication")
 	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
 		"allow anonymous development authentication for unfinished user management")
@@ -174,6 +197,12 @@ func (o *Options) Complete() error {
 	}
 	if o.WorkflowRuntimeOptions == nil {
 		o.WorkflowRuntimeOptions = NewWorkflowRuntimeOptions()
+	}
+	if o.SSEOptions == nil {
+		o.SSEOptions = NewSSEOptions()
+	}
+	if o.SSEOptions.Retention <= 0 || o.SSEOptions.PollInterval <= 0 || o.SSEOptions.HeartbeatInterval <= 0 || o.SSEOptions.MaxConnectionsPerUser <= 0 {
+		return fmt.Errorf("SSE retention, intervals, and connection limit must be positive")
 	}
 	if o.ApplicationPlatformOptions.ProviderCapabilityDirectory == "" {
 		o.ApplicationPlatformOptions.ProviderCapabilityDirectory = "./provider-capabilities"
