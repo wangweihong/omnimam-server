@@ -141,13 +141,13 @@ type AssetVersion struct {
 	// SourceRefID 关联来源 Artifact 或导入记录。
 	SourceRefID string `json:"source_ref_id,omitempty" gorm:"column:source_ref_id;type:text"`
 	// Content 保存 canonical 等受控结构化内容。
-	Content       map[string]any `json:"-" gorm:"-"`
+	Content       map[string]any `json:"content" gorm:"-"`
 	ContentShadow string         `json:"-" gorm:"column:content_json;type:text;not null;default:'{}'"`
 	// Metadata 保存有限媒体信息，不保存正文或 Provider 响应。
-	Metadata       map[string]any `json:"-" gorm:"-"`
+	Metadata       map[string]any `json:"metadata" gorm:"-"`
 	MetadataShadow string         `json:"-" gorm:"column:metadata_json;type:text;not null;default:'{}'"`
 	// VersionNote 是用户可读的版本说明。
-	VersionNote string `json:"-" gorm:"column:version_note;type:text"`
+	VersionNote string `json:"version_note" gorm:"column:version_note;type:text"`
 	// ProcessingError 保存有限错误摘要，SSE 只暴露稳定 error_code。
 	ProcessingError       map[string]any `json:"-" gorm:"-"`
 	ProcessingErrorShadow string         `json:"-" gorm:"column:processing_error_json;type:text;not null;default:'{}'"`

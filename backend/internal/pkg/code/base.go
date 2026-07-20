@@ -756,6 +756,182 @@ const (
 	ErrTaskSystemScheduleOperationRestricted int = 141405
 )
 
+// asset-library: spec-v1.5.1 business errors.
+const (
+	// @HTTP 200
+	// @CN 统一选择器表达式语法错误。
+	// @EN The unified asset selector expression is invalid.
+	ErrAssetSelectorInvalid int = 150200
+	// @HTTP 200
+	// @CN 统一选择器超过复杂度限制。
+	// @EN The unified asset selector exceeds complexity limits.
+	ErrAssetSelectorTooComplex int = 150201
+	// @HTTP 200
+	// @CN 自然语言无法形成合法素材查询条件。
+	// @EN Natural language could not be resolved into valid asset query conditions.
+	ErrAssetSearchParseFailed int = 150202
+	// @HTTP 200
+	// @CN 素材搜索解析依赖不可用。
+	// @EN The asset search resolution dependency is unavailable.
+	ErrAssetSearchDependencyFailed int = 150203
+	// @HTTP 200
+	// @CN 素材列表或过滤查询失败。
+	// @EN The asset list or filter query failed.
+	ErrAssetListFailed int = 150204
+	// @HTTP 200
+	// @CN 素材查询参数组合无效。
+	// @EN The asset query parameter combination is invalid.
+	ErrAssetQueryParametersInvalid int = 150205
+	// @HTTP 200
+	// @CN Label 不满足约束。
+	// @EN The asset label is invalid.
+	ErrAssetLabelInvalid int = 150400
+	// @HTTP 200
+	// @CN Tag 不满足约束。
+	// @EN The asset tag is invalid.
+	ErrAssetTagInvalid int = 150401
+	// @HTTP 200
+	// @CN Labels 数量超过上限。
+	// @EN The asset label limit is exceeded.
+	ErrAssetLabelLimitExceeded int = 150402
+	// @HTTP 200
+	// @CN Tags 数量超过上限。
+	// @EN The asset tag limit is exceeded.
+	ErrAssetTagLimitExceeded int = 150403
+	// @HTTP 200
+	// @CN 批量打标请求无效。
+	// @EN The batch asset labeling request is invalid.
+	ErrAssetBatchLabelRequestInvalid int = 150404
+	// @HTTP 200
+	// @CN 素材不存在、不可写或不属于当前用户。
+	// @EN The asset does not exist, is not writable, or does not belong to the current user.
+	ErrAssetNotFoundOrNotWritable int = 150600
+	// @HTTP 200
+	// @CN 素材不存在或不属于当前用户。
+	// @EN The asset does not exist or is not visible to the current user.
+	ErrAssetNotFoundOrNotVisible int = 150601
+	// @HTTP 200
+	// @CN 素材名称无效。
+	// @EN The asset name is invalid.
+	ErrAssetNameInvalid int = 150602
+	// @HTTP 200
+	// @CN 素材当前状态不允许该操作。
+	// @EN The asset state does not allow this operation.
+	ErrAssetStateInvalid int = 150603
+	// @HTTP 200
+	// @CN 素材版本不存在或不可见。
+	// @EN The asset version does not exist or is not visible.
+	ErrAssetVersionNotFoundOrNotVisible int = 150604
+	// @HTTP 200
+	// @CN Representation 不存在或不可见。
+	// @EN The asset representation does not exist or is not visible.
+	ErrAssetRepresentationNotFoundOrNotVisible int = 150605
+	// @HTTP 200
+	// @CN 素材内容不可读取。
+	// @EN The asset content is unavailable.
+	ErrAssetContentUnavailable int = 150606
+	// @HTTP 200
+	// @CN 素材仍被强引用，不能永久删除。
+	// @EN The asset is strongly referenced and cannot be permanently deleted.
+	ErrAssetPermanentDeleteBlocked int = 150607
+	// @HTTP 200
+	// @CN 素材或 Collection 版本冲突。
+	// @EN The asset or collection resource version conflicts.
+	ErrAssetResourceVersionConflict int = 150608
+	// @HTTP 200
+	// @CN 素材版本内容无效。
+	// @EN The asset version content is invalid.
+	ErrAssetVersionContentInvalid int = 150609
+	// @HTTP 200
+	// @CN Artifact 创建或登记请求无效。
+	// @EN The Artifact creation or registration request is invalid.
+	ErrArtifactRegistrationInvalid int = 150800
+	// @HTTP 200
+	// @CN Artifact owner 不匹配。
+	// @EN The Artifact owner does not match.
+	ErrArtifactOwnerMismatch int = 150801
+	// @HTTP 200
+	// @CN Artifact 内容不可读取。
+	// @EN The Artifact content is unavailable.
+	ErrArtifactContentUnavailable int = 150802
+	// @HTTP 200
+	// @CN Artifact 媒体信息无效。
+	// @EN The Artifact media information is invalid.
+	ErrArtifactMediaInvalid int = 150803
+	// @HTTP 200
+	// @CN Artifact 幂等键冲突。
+	// @EN The Artifact idempotency key conflicts.
+	ErrArtifactIdempotencyConflict int = 150804
+	// @HTTP 200
+	// @CN Artifact 当前状态不允许该操作。
+	// @EN The Artifact state does not allow this operation.
+	ErrArtifactStateInvalid int = 150805
+	// @HTTP 200
+	// @CN Artifact 内容来源被禁止。
+	// @EN The Artifact content source is forbidden.
+	ErrArtifactSourceForbidden int = 150806
+	// @HTTP 200
+	// @CN Representation 计划无效。
+	// @EN The representation plan is invalid.
+	ErrRepresentationPlanInvalid int = 151000
+	// @HTTP 200
+	// @CN Representation 写入冲突。
+	// @EN The representation write conflicts.
+	ErrRepresentationWriteConflict int = 151001
+	// @HTTP 200
+	// @CN Representation 源内容不可恢复。
+	// @EN The representation source is irrecoverable.
+	ErrRepresentationSourceIrrecoverable int = 151002
+	// @HTTP 200
+	// @CN Representation 补全被延后。
+	// @EN The representation backfill was deferred.
+	ErrRepresentationBackfillDeferred int = 151003
+	// @HTTP 200
+	// @CN 上传初始化请求无效。
+	// @EN The asset upload initialization request is invalid.
+	ErrAssetUploadRequestInvalid int = 151200
+	// @HTTP 200
+	// @CN 上传会话不存在或不可见。
+	// @EN The asset upload session does not exist or is not visible.
+	ErrAssetUploadNotFoundOrNotVisible int = 151201
+	// @HTTP 200
+	// @CN 上传会话状态不允许该操作。
+	// @EN The asset upload session state does not allow this operation.
+	ErrAssetUploadStateInvalid int = 151202
+	// @HTTP 200
+	// @CN 上传分片无效。
+	// @EN The asset upload part is invalid.
+	ErrAssetUploadPartInvalid int = 151203
+	// @HTTP 200
+	// @CN 上传内容 SHA256 不匹配。
+	// @EN The uploaded content SHA256 does not match.
+	ErrAssetUploadChecksumMismatch int = 151204
+	// @HTTP 200
+	// @CN 上传存储操作失败。
+	// @EN The asset upload storage operation failed.
+	ErrAssetUploadStorageFailed int = 151205
+	// @HTTP 200
+	// @CN Collection 不存在或不可见。
+	// @EN The Collection does not exist or is not visible.
+	ErrCollectionNotFoundOrNotVisible int = 151400
+	// @HTTP 200
+	// @CN Collection 名称冲突。
+	// @EN The Collection name conflicts.
+	ErrCollectionNameConflict int = 151401
+	// @HTTP 200
+	// @CN Collection 层级无效。
+	// @EN The Collection hierarchy is invalid.
+	ErrCollectionHierarchyInvalid int = 151402
+	// @HTTP 200
+	// @CN Collection 成员无效。
+	// @EN The Collection item is invalid.
+	ErrCollectionItemInvalid int = 151403
+	// @HTTP 200
+	// @CN Collection 固定版本无效。
+	// @EN The Collection pinned version is invalid.
+	ErrCollectionPinnedVersionInvalid int = 151404
+)
+
 // workflow-canvas: spec-v1.0.0 business errors.
 const (
 	// @HTTP 200

@@ -16,6 +16,7 @@ import (
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
@@ -59,7 +60,8 @@ func RunTaskWorker(cfg *config.Config) error {
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
 	tasks := taskcentersvc.NewServiceWithRegistries(storeIns, runtime, reconcileRegistry,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
+		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
+		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
 	events := appsvc.NoopEventPublisher{}
@@ -69,6 +71,8 @@ func RunTaskWorker(cfg *config.Config) error {
 		return err
 	}
 	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
+	artifactProcessExecutor := assetlibrarysvc.NewArtifactProcessExecutor(storeIns)
+	representationFinalizeExecutor := assetlibrarysvc.NewRepresentationFinalizeExecutor(storeIns)
 	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: assetRegistrar, Events: events})
 	if err != nil {
 		return err
@@ -111,6 +115,12 @@ func RunTaskWorker(cfg *config.Config) error {
 		}
 		return thumbnailExecutor.Execute(ctx, atomicTask)
 	}); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionArtifactProcess, 16, artifactProcessExecutor.Execute); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationFinalize, 16, representationFinalizeExecutor.Execute); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler(taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
@@ -164,6 +174,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
+	if err := startAssetLibraryTaskConsumers(ctx, tasks); err != nil {
+		return err
+	}
 	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, "task-center-thumbnail")
 	if err != nil {
 		return err
@@ -172,6 +185,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		for msg := range messages {
 			var event struct {
 				AssetID        string `json:"asset_id"`
+				AssetVersionID string `json:"asset_version_id"`
 				OwnerUserID    string `json:"owner_user_id"`
 				ProjectID      string `json:"project_id"`
 				Namespace      string `json:"namespace"`
@@ -180,6 +194,10 @@ func RunTaskWorker(cfg *config.Config) error {
 			}
 			if err := json.Unmarshal(msg.Payload, &event); err != nil {
 				msg.Nack()
+				continue
+			}
+			if event.AssetVersionID != "" {
+				msg.Ack()
 				continue
 			}
 			thumbnail, err := storeIns.AssetThumbnails().GetByAsset(ctx, event.AssetID)
@@ -210,6 +228,69 @@ func RunTaskWorker(cfg *config.Config) error {
 		_ = runtime.Close()
 		return err
 	}
+}
+
+func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
+	artifactMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicArtifactContentCompleted, "task-center-artifact-process")
+	if err != nil {
+		return err
+	}
+	go func() {
+		for msg := range artifactMessages {
+			var event struct {
+				ArtifactID               string `json:"artifact_id"`
+				OwnerUserID              string `json:"owner_user_id"`
+				ProcessingProfileVersion string `json:"processing_profile_version"`
+			}
+			if err := json.Unmarshal(msg.Payload, &event); err != nil || event.ArtifactID == "" || event.OwnerUserID == "" {
+				msg.Nack()
+				continue
+			}
+			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
+				Key: "artifact-process", Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess,
+				Arguments:            map[string]any{"artifact_id": event.ArtifactID, "owner_user_id": event.OwnerUserID},
+				RequiredCapabilities: assetlibrarysvc.FunctionArtifactProcess,
+				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
+				IdempotencyScope: "artifact-process", IdempotencyKey: "artifact-process:" + event.ArtifactID + ":" + event.ProcessingProfileVersion,
+			})
+			if err != nil {
+				msg.Nack()
+			} else {
+				msg.Ack()
+			}
+		}
+	}()
+
+	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, "task-center-representation-finalize")
+	if err != nil {
+		return err
+	}
+	go func() {
+		for msg := range representationMessages {
+			var event struct {
+				AssetVersionID string `json:"asset_version_id"`
+				OwnerUserID    string `json:"owner_user_id"`
+				ProfileVersion string `json:"profile_version"`
+			}
+			if err := json.Unmarshal(msg.Payload, &event); err != nil || event.AssetVersionID == "" || event.OwnerUserID == "" {
+				msg.Nack()
+				continue
+			}
+			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
+				Key: "representation-finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize,
+				Arguments:            map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID},
+				RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize,
+				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
+				IdempotencyScope: "asset-representations", IdempotencyKey: "asset-representations:" + event.AssetVersionID + ":" + event.ProfileVersion,
+			})
+			if err != nil {
+				msg.Nack()
+			} else {
+				msg.Ack()
+			}
+		}
+	}()
+	return nil
 }
 
 type workerAssetRegistrar struct{ service platformsvc.PlatformSrv }

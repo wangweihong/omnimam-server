@@ -311,6 +311,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
+	if err := ds.ensureAssetLibraryScheme(); err != nil {
+		return err
+	}
 	if err := ds.ensureTaskCenterScheme(); err != nil {
 		return err
 	}
@@ -321,6 +324,14 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 		return err
 	}
 	return nil
+}
+
+func (ds *datastore) ensureAssetLibraryScheme() error {
+	return ds.db.Exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_asset_groups_owner_name_unique
+ON user_asset_groups(owner_user_id, lower(trim(name)))
+WHERE deleted_at IS NULL;
+`).Error
 }
 
 func (ds *datastore) ensureTaskCenterScheme() error {

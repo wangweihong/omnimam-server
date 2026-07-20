@@ -232,6 +232,64 @@ type AssetV1Store interface {
 	CreateAssetVersion(context.Context, *iapiserver.AssetVersion, string, string) (*iapiserver.AssetVersion, bool, error)
 	// UpdateAssetVersionProcessing 以乐观版本推进 Representation 汇总，并可靠发布素材版本事件。
 	UpdateAssetVersionProcessing(context.Context, string, string, int64, AssetVersionProcessingMutation) (*iapiserver.AssetVersion, error)
+
+	ListUserAssets(context.Context, string, *iapiserver.UserAssetListRequest) ([]*iapiserver.UserAsset, int64, error)
+	GetUserAsset(context.Context, string, string, bool) (*iapiserver.UserAsset, error)
+	GetAssetDetail(context.Context, string, string) (*iapiserver.AssetDetail, error)
+	CreateCanonicalAsset(context.Context, string, *iapiserver.CreateCanonicalAssetRequest) (*iapiserver.AssetDetail, error)
+	UpdateUserAsset(context.Context, string, string, *iapiserver.UpdateUserAssetRequest) (*iapiserver.UserAsset, error)
+	SetUserAssetDeleted(context.Context, string, string, bool) (*iapiserver.UserAsset, error)
+	PermanentlyDeleteUserAsset(context.Context, string, string) (*iapiserver.PermanentDeleteResult, []StoredAssetContent, error)
+
+	CreateAssetUploads(context.Context, string, []iapiserver.AssetUploadItemRequest, int64) ([]iapiserver.AssetUploadInitResult, error)
+	GetAssetUpload(context.Context, string, string) (*iapiserver.AssetUploadSession, error)
+	RecordAssetUploadPart(context.Context, string, string, iapiserver.UploadedPart) (*iapiserver.AssetUploadSession, error)
+	CompleteAssetUpload(context.Context, string, string, *iapiserver.CompleteAssetUploadRequest, StoredAssetContent) (*iapiserver.CompleteAssetUploadResponse, error)
+	CancelAssetUpload(context.Context, string, string) (*iapiserver.AssetUploadSession, error)
+
+	ListCollections(context.Context, string, *iapiserver.CollectionListRequest) ([]*iapiserver.AssetCollection, int64, error)
+	GetCollection(context.Context, string, string, imachinery.PagingParams) (*iapiserver.CollectionDetail, error)
+	CreateCollection(context.Context, string, *iapiserver.CreateCollectionRequest) (*iapiserver.AssetCollection, error)
+	UpdateCollection(context.Context, string, string, *iapiserver.UpdateCollectionRequest) (*iapiserver.AssetCollection, error)
+	DeleteCollection(context.Context, string, string) error
+	AddCollectionItems(context.Context, string, string, []iapiserver.AddCollectionItem) (*iapiserver.CollectionItemBatchResponse, error)
+	UpdateCollectionItem(context.Context, string, string, string, *iapiserver.UpdateCollectionItemRequest) (*iapiserver.AssetCollectionItem, error)
+	DeleteCollectionItem(context.Context, string, string, string) error
+
+	ReplaceLabels(context.Context, string, string, map[string]string) (*iapiserver.BatchLabelData, error)
+	DeleteLabel(context.Context, string, string, string) (*iapiserver.BatchLabelData, error)
+	AddTags(context.Context, string, string, []string) (*iapiserver.BatchLabelData, error)
+	DeleteTag(context.Context, string, string, string) (*iapiserver.BatchLabelData, error)
+
+	ListArtifacts(context.Context, string, *iapiserver.ArtifactListRequest) ([]*iapiserver.Artifact, int64, error)
+	GetArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
+	StoreArtifactContent(context.Context, string, string, StoredAssetContent) (*iapiserver.Artifact, error)
+	CompleteArtifact(context.Context, string, string, *iapiserver.CompleteArtifactRequest) (*iapiserver.Artifact, error)
+	DeleteArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
+	RegisterArtifactLifecycle(context.Context, string, string, *iapiserver.RegisterArtifactRequest) (*iapiserver.ArtifactRegistrationResponse, error)
+
+	ListAssetVersions(context.Context, string, string) ([]*iapiserver.AssetVersion, error)
+	CreateCanonicalVersion(context.Context, string, string, *iapiserver.CreateCanonicalVersionRequest) (*iapiserver.AssetVersion, error)
+	GetAssetVersionDetail(context.Context, string, string) (*iapiserver.AssetVersionDetail, error)
+	SetCurrentAssetVersion(context.Context, string, string, string) (*iapiserver.UserAsset, error)
+	ListRepresentations(context.Context, string, string) ([]*iapiserver.AssetRepresentation, error)
+	RegisterRepresentation(context.Context, string, string, *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error)
+	GetRepresentation(context.Context, string, string) (*iapiserver.AssetRepresentation, *StoredAssetContent, error)
+
+	ListAssetRelations(context.Context, string, string, imachinery.PagingParams) (*iapiserver.AssetRelationListResponse, error)
+	GetAssetLineage(context.Context, string, string) (*iapiserver.AssetLineage, error)
+	ListAssetReferences(context.Context, string, string, imachinery.PagingParams) (*iapiserver.AssetReferenceListResponse, error)
+	ListAssetUsages(context.Context, string, string, imachinery.PagingParams) (*iapiserver.AssetUsageListResponse, error)
+}
+
+// StoredAssetContent 是 StorageAdapter 与持久化事务之间的受控对象引用。
+type StoredAssetContent struct {
+	StorageBackendID string
+	ObjectKey        string
+	SHA256           string
+	SizeBytes        int64
+	MIMEType         string
+	BlobID           string
 }
 
 // ArtifactProcessingMutation 只允许处理模块修改 Artifact 的处理维度和受保护预览摘要。

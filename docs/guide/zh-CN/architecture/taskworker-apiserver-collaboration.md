@@ -1,6 +1,6 @@
 # TaskWorker 与 API Server 协作流程
 
-本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.5.0`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
+本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.5.1`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
 
 ## 1. 架构定位
 
@@ -53,7 +53,7 @@ flowchart LR
 3. 加载 application runtime registry 和 provider capability registry。
 4. 构造 application、thumbnail、Engine 健康和 ComfyUI object-info executor。
 5. 按受控 `functionRef` 向 Conductor 注册 AtomicTask handler 及并发度。
-6. 订阅 `asset_uploaded`，以及 Task Center 和 asset-library Artifact/AssetVersion 变化 outbox。
+6. 订阅 `asset_uploaded`、`artifact_content_completed`、`asset_version_representation_requested`，以及 Task Center 和 asset-library Artifact/AssetVersion 变化 outbox。
 7. 启动 SSE projector，按来源事件键幂等写入当前用户短期事件投影。
 8. 幂等确保 Engine 健康检查与 ComfyUI object-info 刷新 SYSTEM RECONCILE Schedule。
 9. 启动 reconciler，周期对账非终态 execution。
@@ -64,6 +64,8 @@ flowchart LR
 - `asset.thumbnail.generate`
 - `task_center_reconcile_controller`
 - `task.schedule.acquire`
+- `asset-library.artifact.process`
+- `asset-library.representation.finalize`
 
 Engine 健康和 ComfyUI object-info 刷新不注册逐实例 Worker handler。两者分别以 `application-platform.engine-health` 和 `application-platform.comfyui-object-info-refresh` 注册到 `ReconcileRegistry`，由固定 `task_center_reconcile_controller` 直接扫描并更新业务事实。object-info 计划默认每日 `03:00 UTC` 运行，只处理 enabled、online 的 ComfyUI 实例；成功原子替换一对一当前目录，失败保留最后一次成功内容。
 
@@ -177,6 +179,36 @@ sequenceDiagram
 
 消费者组固定为 `task-center-thumbnail`。AtomicTask 使用素材 ID 和 profile version 组成幂等键，因此消息重投不会重复创建同一版本的缩略图任务。
 
+### 6.1 spec-v1.5.1 canonical asset-library
+
+`apiserver` 在 `/api/v1` 安装 asset-library OpenAPI 的 45 个 operation，覆盖 Asset、AssetVersion、AssetUpload、Collection、Label/Tag、Artifact、AssetRepresentation 和引用查询。旧 `/assets/upload`、旧分片上传和旧缩略图内容接口暂时保留为兼容入口，但不再拥有 canonical `GET/PATCH/DELETE /assets`。
+
+canonical 写路径只使用 `user_assets`、`asset_versions`、`asset_representations`、`blobs`、`artifacts`、上传会话、Collection 和规范化 Label/Tag 事实表。owner 始终从认证上下文注入；请求中的来源 ID、任务 ID 或兼容 owner 字段不能扩大可见范围。LocalStorage 文件访问通过 service 消费的 `ContentStorage` 接口和 `LocalContentStorage` adapter 完成，业务 service/store 不解析绝对路径。
+
+```mermaid
+sequenceDiagram
+  participant Client as 当前用户/受信 Producer
+  participant API as asset-library API
+  participant Storage as LocalContentStorage
+  participant DB as PostgreSQL + outbox
+  participant Worker as taskworker
+  participant Task as Task Center
+  Client->>API: 上传或完成 Artifact
+  API->>Storage: 原子写入并校验 SHA256
+  API->>DB: 事实 + artifact_content_completed
+  DB-->>Worker: durable delivery
+  Worker->>Task: 幂等创建 asset-library.artifact.process
+  Task-->>Worker: 执行受控 handler
+  Worker->>DB: Artifact ready + 状态 outbox
+  Client->>API: register Artifact / complete AssetUpload
+  API->>DB: AssetVersion + original/canonical + representation_requested
+  DB-->>Worker: durable delivery
+  Worker->>Task: 幂等创建 representation.finalize
+  Worker->>DB: 按 Representation 事实汇总版本状态
+```
+
+当前 `representation.finalize` 只汇总已经存在的 original/canonical/Worker 写入 Representation；媒体类型对应的 inspect、thumbnail、preview、playback、manifest 生成 DAG 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作，不能把 finalize 成功解释为派生媒体已经生成。
+
 ## 7. 状态投影与故障恢复
 
 当前实现由 `taskworker` 内的 reconciler 周期执行以下操作：
@@ -230,11 +262,14 @@ sequenceDiagram
 当前实现的关键入口：
 
 - [`taskworker` 启动与 handler 注册](../../../../backend/internal/apiserver/taskworker.go)
+- [Asset Library controller](../../../../backend/internal/apiserver/controller/v1/assetlibrary/controller.go)
+- [Asset Library service 与 LocalStorage adapter](../../../../backend/internal/apiserver/service/v1/assetlibrary/service.go)
 - [Task Center service 与运行时启动](../../../../backend/internal/apiserver/service/v1/taskcenter/task_center.go)
 - [Conductor `WorkflowRuntime` 适配](../../../../backend/internal/apiserver/workflowruntime/conductor.go)
 - [运行时状态 reconciler](../../../../backend/internal/apiserver/service/v1/taskcenter/reconciler.go)
 - [PostgreSQL outbox](../../../../backend/internal/apiserver/store/postgresql/outbox.go)
 - [Asset Library 生命周期事实与 outbox](../../../../backend/internal/apiserver/store/postgresql/asset_lifecycle_events.go)
+- [Asset Library canonical store](../../../../backend/internal/apiserver/store/postgresql/asset_contract.go)
 - [SSE projector](../../../../backend/internal/apiserver/service/v1/sse/projector.go)
 - [SSE gateway](../../../../backend/internal/apiserver/controller/v1/sse/sse.go)
 - [本地部署拓扑](../../../../deployments/docker-compose.yaml)

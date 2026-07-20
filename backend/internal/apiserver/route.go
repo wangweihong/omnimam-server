@@ -7,6 +7,7 @@ import (
 	aichatctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/aichat"
 	aiappctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
+	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
@@ -17,6 +18,7 @@ import (
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
@@ -63,6 +65,7 @@ func installApis(
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
 			installSSEApis(v1, storeIns, sseOptions)
 			installPlatformApis(v1, storeIns, nil)
+			installAssetLibraryContractApis(v1, storeIns)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)
 			installAssetApis(v1, storeIns)
@@ -283,7 +286,6 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 
 	assets := rg.Group("/assets")
 	{
-		assets.GET("", platformController.ListAssets)
 		assets.POST("/upload", platformController.UploadAsset)
 		assets.POST("/uploads/chunks/init", platformController.InitAssetChunkUpload)
 		assets.PUT("/uploads/chunks/:checksum/:index", platformController.UploadAssetChunk)
@@ -291,15 +293,9 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 		assets.DELETE("/uploads/chunks/:checksum", platformController.CancelAssetChunkUpload)
 		assets.POST("/search", platformController.SearchAssets)
 		assets.POST("/search/parse", platformController.ParseAssetSearch)
-		assets.GET("/:asset_id", platformController.GetAsset)
-		assets.PATCH("/:asset_id", platformController.UpdateAsset)
-		assets.DELETE("/:asset_id", platformController.DeleteAsset)
 		assets.GET("/:asset_id/content", platformController.GetAssetContent)
 		assets.GET("/:asset_id/thumbnail", platformController.GetAssetThumbnail)
-		assets.POST("/batch-labels", platformController.BatchApplyAssetLabels)
 	}
-	rg.POST("/artifact-registrations", platformController.RegisterArtifact)
-
 	rg.POST("/asset-groups", platformController.CreateAssetGroup)
 
 	canvasAssets := rg.Group("/canvas-assets")
@@ -309,6 +305,89 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 		canvasAssets.POST("/register-output", platformController.RegisterCanvasOutput)
 	}
 
+}
+
+func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory) {
+	assetStore := optionalAssetV1Store(storeIns)
+	if assetStore == nil {
+		return
+	}
+	service := assetlibrarysvc.NewStore(assetStore, assetlibrarysvc.NewLocalContentStorage(storeIns))
+	controller := assetlibraryctrl.New(service)
+
+	assets := rg.Group("/assets")
+	{
+		assets.GET("", controller.ListAssets)
+		assets.POST("", controller.CreateAsset)
+		assets.POST("/batch-labels", controller.BatchLabels)
+		assets.GET("/:asset_id", controller.GetAsset)
+		assets.PATCH("/:asset_id", controller.UpdateAsset)
+		assets.DELETE("/:asset_id", controller.DeleteAsset)
+		assets.POST("/:asset_id/restore", controller.RestoreAsset)
+		assets.DELETE("/:asset_id/permanent", controller.PermanentlyDeleteAsset)
+		assets.GET("/:asset_id/versions", controller.ListVersions)
+		assets.POST("/:asset_id/versions", controller.CreateVersion)
+		assets.POST("/:asset_id/versions/:version_id/set-current", controller.SetCurrentVersion)
+		assets.PUT("/:asset_id/labels", controller.ReplaceLabels)
+		assets.DELETE("/:asset_id/labels/:label_id", controller.DeleteLabel)
+		assets.POST("/:asset_id/tags", controller.AddTags)
+		assets.DELETE("/:asset_id/tags/:tag_id", controller.DeleteTag)
+		assets.GET("/:asset_id/relations", controller.ListRelations)
+		assets.GET("/:asset_id/lineage", controller.Lineage)
+		assets.GET("/:asset_id/references", controller.ListReferences)
+		assets.GET("/:asset_id/usages", controller.ListUsages)
+	}
+
+	uploads := rg.Group("/asset-uploads")
+	{
+		uploads.POST("", controller.CreateUploads)
+		uploads.POST("/:upload_id/content", controller.UploadContent)
+		uploads.POST("/:upload_id/complete", controller.CompleteUpload)
+		uploads.DELETE("/:upload_id", controller.CancelUpload)
+	}
+
+	collections := rg.Group("/collections")
+	{
+		collections.GET("", controller.ListCollections)
+		collections.POST("", controller.CreateCollection)
+		collections.GET("/:collection_id", controller.GetCollection)
+		collections.PATCH("/:collection_id", controller.UpdateCollection)
+		collections.DELETE("/:collection_id", controller.DeleteCollection)
+		collections.POST("/:collection_id/items", controller.AddCollectionItems)
+		collections.PATCH("/:collection_id/items/:item_id", controller.UpdateCollectionItem)
+		collections.DELETE("/:collection_id/items/:item_id", controller.DeleteCollectionItem)
+	}
+
+	artifacts := rg.Group("/artifacts")
+	{
+		artifacts.GET("", controller.ListArtifacts)
+		artifacts.POST("", controller.CreateArtifact)
+		artifacts.GET("/:artifact_id", controller.GetArtifact)
+		artifacts.DELETE("/:artifact_id", controller.DeleteArtifact)
+		artifacts.POST("/:artifact_id/content", controller.UploadArtifactContent)
+		artifacts.POST("/:artifact_id/complete", controller.CompleteArtifact)
+		artifacts.POST("/:artifact_id/register", controller.RegisterArtifact)
+	}
+	rg.POST("/artifact-registrations", controller.RegisterArtifactCompat)
+
+	rg.GET("/asset-versions/:version_id", controller.GetVersion)
+	representations := rg.Group("/asset-versions/:version_id/representations")
+	{
+		representations.GET("", controller.ListRepresentations)
+		representations.POST("", controller.RegisterRepresentation)
+	}
+	rg.GET("/asset-representations/:representation_id", controller.GetRepresentation)
+	rg.GET("/asset-representations/:representation_id/content", controller.ReadRepresentation)
+	rg.GET("/asset-representations/:representation_id/access-url", controller.RepresentationAccess)
+}
+
+func optionalAssetV1Store(factory store.Factory) (assetStore store.AssetV1Store) {
+	defer func() {
+		if recover() != nil {
+			assetStore = nil
+		}
+	}()
+	return factory.AssetsV1()
 }
 
 func installAuthApis(rg *gin.RouterGroup, storeIns store.Factory) {

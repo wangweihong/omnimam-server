@@ -14,18 +14,20 @@ import (
 )
 
 const (
-	OutboxTopicAssetUploaded                 = "asset_uploaded"
-	OutboxTopicArtifactRegistered            = "artifact_registered"
-	OutboxTopicEngineHealthChanged           = "engine_instance_health_changed"
-	OutboxTopicScheduleExecutionRecorded     = "task_schedule_execution_recorded"
-	OutboxTopicAtomicTaskCreated             = "atomic_task_created"
-	OutboxTopicAtomicTaskStatusChanged       = "atomic_task_status_changed"
-	OutboxTopicTaskAttemptStatusChanged      = "task_attempt_status_changed"
-	OutboxTopicTaskGroupStatusChanged        = "task_group_status_changed"
-	OutboxTopicArtifactCreated               = "artifact_created"
-	OutboxTopicArtifactProcessingChanged     = "artifact_processing_changed"
-	OutboxTopicArtifactRegistrationChanged   = "artifact_registration_changed"
-	OutboxTopicAssetVersionProcessingChanged = "asset_version_processing_changed"
+	OutboxTopicAssetUploaded                       = "asset_uploaded"
+	OutboxTopicArtifactRegistered                  = "artifact_registered"
+	OutboxTopicEngineHealthChanged                 = "engine_instance_health_changed"
+	OutboxTopicScheduleExecutionRecorded           = "task_schedule_execution_recorded"
+	OutboxTopicAtomicTaskCreated                   = "atomic_task_created"
+	OutboxTopicAtomicTaskStatusChanged             = "atomic_task_status_changed"
+	OutboxTopicTaskAttemptStatusChanged            = "task_attempt_status_changed"
+	OutboxTopicTaskGroupStatusChanged              = "task_group_status_changed"
+	OutboxTopicArtifactCreated                     = "artifact_created"
+	OutboxTopicArtifactProcessingChanged           = "artifact_processing_changed"
+	OutboxTopicArtifactRegistrationChanged         = "artifact_registration_changed"
+	OutboxTopicAssetVersionProcessingChanged       = "asset_version_processing_changed"
+	OutboxTopicArtifactContentCompleted            = "artifact_content_completed"
+	OutboxTopicAssetVersionRepresentationRequested = "asset_version_representation_requested"
 )
 
 var outboxSchema = &wmsql.DefaultPostgreSQLSchema{}
@@ -36,6 +38,7 @@ func (ds *datastore) ensureOutboxScheme() error {
 		OutboxTopicScheduleExecutionRecorded, OutboxTopicAtomicTaskCreated, OutboxTopicAtomicTaskStatusChanged,
 		OutboxTopicTaskAttemptStatusChanged, OutboxTopicTaskGroupStatusChanged, OutboxTopicArtifactCreated,
 		OutboxTopicArtifactProcessingChanged, OutboxTopicArtifactRegistrationChanged, OutboxTopicAssetVersionProcessingChanged,
+		OutboxTopicArtifactContentCompleted, OutboxTopicAssetVersionRepresentationRequested,
 	} {
 		queries, err := outboxSchema.SchemaInitializingQueries(wmsql.SchemaInitializingQueriesParams{Topic: topic})
 		if err != nil {

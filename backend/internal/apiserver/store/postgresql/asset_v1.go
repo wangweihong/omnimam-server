@@ -43,7 +43,7 @@ func (s *assetV1Store) RegisterArtifact(ctx context.Context, req *iapiserver.Art
 		if err := tx.Create(item).Error; err != nil {
 			return err
 		}
-		mapping := &iapiserver.ArtifactAssetRegistration{ArtifactID: req.ArtifactID, ApplicationRunID: req.ApplicationRunID, OwnerUserID: req.OwnerUserID, AssetID: item.ID, ContentRef: req.ContentRef, MediaType: req.MediaType}
+		mapping := &iapiserver.ArtifactAssetRegistration{ArtifactID: req.ArtifactID, ApplicationRunID: req.ApplicationRunID, OwnerUserID: req.OwnerUserID, AssetID: item.ID, AssetVersionID: item.ID, RegistrationMode: "create_asset", RegistrationResult: "created", ContentRef: req.ContentRef, MediaType: req.MediaType}
 		mapping.ID = uuid.NewString()
 		mapping.Name = "Artifact registration"
 		if err := tx.Create(mapping).Error; err != nil {
@@ -70,10 +70,11 @@ func (s *assetV1Store) ApplyLabels(ctx context.Context, owner, id string, upsert
 			key = strings.TrimSpace(key)
 			value = strings.TrimSpace(value)
 			var label iapiserver.UserAssetLabel
-			err := tx.Where("asset_id = ? AND key = ?", id, key).First(&label).Error
+			err := tx.Where("asset_id = ? AND label_key = ? AND deleted_at IS NULL", id, key).First(&label).Error
 			if stderrors.Is(err, gorm.ErrRecordNotFound) {
 				label.ID = uuid.NewString()
 				label.Name = "Asset label"
+				label.OwnerUserID = owner
 				label.AssetID = id
 				label.Key = key
 			} else if err != nil {
@@ -90,7 +91,7 @@ func (s *assetV1Store) ApplyLabels(ctx context.Context, owner, id string, upsert
 			if tag == "" {
 				continue
 			}
-			item := &iapiserver.UserAssetTag{AssetID: id, Tag: tag, Source: "manual"}
+			item := &iapiserver.UserAssetTag{OwnerUserID: owner, AssetID: id, Tag: tag, Source: "manual"}
 			item.ID = uuid.NewString()
 			item.Name = "Asset tag"
 			if err := tx.Where("asset_id = ? AND tag = ?", id, tag).FirstOrCreate(item).Error; err != nil {

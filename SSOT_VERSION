@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 802d663278d52909cb9b4e1ed65008ce9794094a
-contract_version: spec-v1.5.0
+commit: f55c2439c6527e1716c2824ee3b84b84ebaf623c
+contract_version: spec-v1.5.1
 updated_at: 2026-07-20
 status: released
-note: SSE user event projection and coordinated task-center/asset-library contracts released under spec-v1.5.0.
+note: Asset-library API contracts completed and released under spec-v1.5.1.

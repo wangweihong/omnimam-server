@@ -178,6 +178,49 @@
 | ErrTaskReconcileConfigInvalid | 141403 | 200 | Reconcile config, parallelism, item limit, or timeout is invalid. | 巡检配置、并发、单轮上限或超时不合法。 |
 | ErrTaskReconcileRefUnregistered | 141404 | 200 | The reconcile handler referenced by the schedule is not registered. | 计划引用的巡检器未在后端注册。 |
 | ErrTaskSystemScheduleOperationRestricted | 141405 | 200 | A system schedule cannot be created, deleted, or have protected fields changed. | 系统内置计划不允许创建、删除或修改受保护字段。 |
+| ErrAssetSelectorInvalid | 150200 | 200 | The unified asset selector expression is invalid. | 统一选择器表达式语法错误。 |
+| ErrAssetSelectorTooComplex | 150201 | 200 | The unified asset selector exceeds complexity limits. | 统一选择器超过复杂度限制。 |
+| ErrAssetSearchParseFailed | 150202 | 200 | Natural language could not be resolved into valid asset query conditions. | 自然语言无法形成合法素材查询条件。 |
+| ErrAssetSearchDependencyFailed | 150203 | 200 | The asset search resolution dependency is unavailable. | 素材搜索解析依赖不可用。 |
+| ErrAssetListFailed | 150204 | 200 | The asset list or filter query failed. | 素材列表或过滤查询失败。 |
+| ErrAssetQueryParametersInvalid | 150205 | 200 | The asset query parameter combination is invalid. | 素材查询参数组合无效。 |
+| ErrAssetLabelInvalid | 150400 | 200 | The asset label is invalid. | Label 不满足约束。 |
+| ErrAssetTagInvalid | 150401 | 200 | The asset tag is invalid. | Tag 不满足约束。 |
+| ErrAssetLabelLimitExceeded | 150402 | 200 | The asset label limit is exceeded. | Labels 数量超过上限。 |
+| ErrAssetTagLimitExceeded | 150403 | 200 | The asset tag limit is exceeded. | Tags 数量超过上限。 |
+| ErrAssetBatchLabelRequestInvalid | 150404 | 200 | The batch asset labeling request is invalid. | 批量打标请求无效。 |
+| ErrAssetNotFoundOrNotWritable | 150600 | 200 | The asset does not exist, is not writable, or does not belong to the current user. | 素材不存在、不可写或不属于当前用户。 |
+| ErrAssetNotFoundOrNotVisible | 150601 | 200 | The asset does not exist or is not visible to the current user. | 素材不存在或不属于当前用户。 |
+| ErrAssetNameInvalid | 150602 | 200 | The asset name is invalid. | 素材名称无效。 |
+| ErrAssetStateInvalid | 150603 | 200 | The asset state does not allow this operation. | 素材当前状态不允许该操作。 |
+| ErrAssetVersionNotFoundOrNotVisible | 150604 | 200 | The asset version does not exist or is not visible. | 素材版本不存在或不可见。 |
+| ErrAssetRepresentationNotFoundOrNotVisible | 150605 | 200 | The asset representation does not exist or is not visible. | Representation 不存在或不可见。 |
+| ErrAssetContentUnavailable | 150606 | 200 | The asset content is unavailable. | 素材内容不可读取。 |
+| ErrAssetPermanentDeleteBlocked | 150607 | 200 | The asset is strongly referenced and cannot be permanently deleted. | 素材仍被强引用，不能永久删除。 |
+| ErrAssetResourceVersionConflict | 150608 | 200 | The asset or collection resource version conflicts. | 素材或 Collection 版本冲突。 |
+| ErrAssetVersionContentInvalid | 150609 | 200 | The asset version content is invalid. | 素材版本内容无效。 |
+| ErrArtifactRegistrationInvalid | 150800 | 200 | The Artifact creation or registration request is invalid. | Artifact 创建或登记请求无效。 |
+| ErrArtifactOwnerMismatch | 150801 | 200 | The Artifact owner does not match. | Artifact owner 不匹配。 |
+| ErrArtifactContentUnavailable | 150802 | 200 | The Artifact content is unavailable. | Artifact 内容不可读取。 |
+| ErrArtifactMediaInvalid | 150803 | 200 | The Artifact media information is invalid. | Artifact 媒体信息无效。 |
+| ErrArtifactIdempotencyConflict | 150804 | 200 | The Artifact idempotency key conflicts. | Artifact 幂等键冲突。 |
+| ErrArtifactStateInvalid | 150805 | 200 | The Artifact state does not allow this operation. | Artifact 当前状态不允许该操作。 |
+| ErrArtifactSourceForbidden | 150806 | 200 | The Artifact content source is forbidden. | Artifact 内容来源被禁止。 |
+| ErrRepresentationPlanInvalid | 151000 | 200 | The representation plan is invalid. | Representation 计划无效。 |
+| ErrRepresentationWriteConflict | 151001 | 200 | The representation write conflicts. | Representation 写入冲突。 |
+| ErrRepresentationSourceIrrecoverable | 151002 | 200 | The representation source is irrecoverable. | Representation 源内容不可恢复。 |
+| ErrRepresentationBackfillDeferred | 151003 | 200 | The representation backfill was deferred. | Representation 补全被延后。 |
+| ErrAssetUploadRequestInvalid | 151200 | 200 | The asset upload initialization request is invalid. | 上传初始化请求无效。 |
+| ErrAssetUploadNotFoundOrNotVisible | 151201 | 200 | The asset upload session does not exist or is not visible. | 上传会话不存在或不可见。 |
+| ErrAssetUploadStateInvalid | 151202 | 200 | The asset upload session state does not allow this operation. | 上传会话状态不允许该操作。 |
+| ErrAssetUploadPartInvalid | 151203 | 200 | The asset upload part is invalid. | 上传分片无效。 |
+| ErrAssetUploadChecksumMismatch | 151204 | 200 | The uploaded content SHA256 does not match. | 上传内容 SHA256 不匹配。 |
+| ErrAssetUploadStorageFailed | 151205 | 200 | The asset upload storage operation failed. | 上传存储操作失败。 |
+| ErrCollectionNotFoundOrNotVisible | 151400 | 200 | The Collection does not exist or is not visible. | Collection 不存在或不可见。 |
+| ErrCollectionNameConflict | 151401 | 200 | The Collection name conflicts. | Collection 名称冲突。 |
+| ErrCollectionHierarchyInvalid | 151402 | 200 | The Collection hierarchy is invalid. | Collection 层级无效。 |
+| ErrCollectionItemInvalid | 151403 | 200 | The Collection item is invalid. | Collection 成员无效。 |
+| ErrCollectionPinnedVersionInvalid | 151404 | 200 | The Collection pinned version is invalid. | Collection 固定版本无效。 |
 | ErrCanvasNotFound | 160200 | 200 | Canvas does not exist or is not visible to the caller. | Canvas 不存在或当前调用方不可见。 |
 | ErrCanvasRevisionConflict | 160201 | 200 | Canvas draft revision has changed; refresh before retrying. | Canvas 草稿 revision 已变化，请刷新后重试。 |
 | ErrCanvasGraphInvalid | 160202 | 200 | Canvas graph nodes, edges, ports, or input bindings are invalid. | Canvas 图的节点、边、端口或输入绑定不合法。 |

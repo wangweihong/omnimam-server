@@ -15,6 +15,7 @@ import (
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -114,7 +115,8 @@ func createServer(cfg *config.Config) (*server, error) {
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
 	taskCenterService := taskcentersvc.NewServiceWithRegistries(storeIns, workflowRuntime, reconcileRegistry,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview")
+		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
+		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
 		Adapters: adapters, Executors: executors, Tasks: taskCenterService, Assets: assets, Events: events,
@@ -202,8 +204,13 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.AssetGroupMember{},
 		&iapiserver.AssetRelation{},
 		&iapiserver.UserAsset{},
+		&iapiserver.AssetBlob{},
 		&iapiserver.Artifact{},
 		&iapiserver.AssetVersion{},
+		&iapiserver.AssetRepresentation{},
+		&iapiserver.AssetUploadSession{},
+		&iapiserver.AssetCollection{},
+		&iapiserver.AssetCollectionItem{},
 		&iapiserver.ArtifactAssetRegistration{},
 		&iapiserver.UserAssetLabel{},
 		&iapiserver.UserAssetTag{},
