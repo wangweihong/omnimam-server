@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
 type IdentityProviderStore interface {
@@ -221,6 +222,53 @@ type AssetStore interface {
 type AssetV1Store interface {
 	RegisterArtifact(context.Context, *iapiserver.ArtifactRegistrationRequest) (*iapiserver.UserAsset, bool, error)
 	ApplyLabels(context.Context, string, string, map[string]string, []string, []string) (*iapiserver.BatchLabelData, error)
+	// CreateArtifact 幂等创建 asset-library Artifact，并在同一事务写 artifact_created outbox。
+	CreateArtifact(context.Context, *iapiserver.Artifact) (*iapiserver.Artifact, bool, error)
+	// UpdateArtifactProcessing 以乐观版本推进处理事实，并在同一事务写 artifact_processing_changed outbox。
+	UpdateArtifactProcessing(context.Context, string, string, int64, ArtifactProcessingMutation) (*iapiserver.Artifact, error)
+	// UpdateArtifactRegistration 以乐观版本推进登记事实，并在同一事务写 artifact_registration_changed outbox。
+	UpdateArtifactRegistration(context.Context, string, string, int64, ArtifactRegistrationMutation) (*iapiserver.Artifact, error)
+	// CreateAssetVersion 幂等创建 processing 状态版本，并在同一事务写 asset_version_processing_changed outbox。
+	CreateAssetVersion(context.Context, *iapiserver.AssetVersion, string, string) (*iapiserver.AssetVersion, bool, error)
+	// UpdateAssetVersionProcessing 以乐观版本推进 Representation 汇总，并可靠发布素材版本事件。
+	UpdateAssetVersionProcessing(context.Context, string, string, int64, AssetVersionProcessingMutation) (*iapiserver.AssetVersion, error)
+}
+
+// ArtifactProcessingMutation 只允许处理模块修改 Artifact 的处理维度和受保护预览摘要。
+type ArtifactProcessingMutation struct {
+	ChangeType            string
+	ProcessingStatus      string
+	Progress              *float64
+	ProcessingPhase       string
+	PreviewAvailable      bool
+	PreviewRef            string
+	ThumbnailRef          string
+	ProcessingErrorCode   string
+	ProcessingErrorDetail string
+	Retryable             bool
+	ReadyAt               *imachinery.Time
+}
+
+// ArtifactRegistrationMutation 只允许登记模块修改 Artifact 的登记维度和目标引用。
+type ArtifactRegistrationMutation struct {
+	RegistrationStatus      string
+	RegistrationResult      string
+	AssetID                 string
+	AssetVersionID          string
+	RegistrationErrorCode   string
+	RegistrationErrorDetail string
+	Retryable               bool
+}
+
+// AssetVersionProcessingMutation 由 Representation 汇总器提交有限计数、状态和任务引用。
+type AssetVersionProcessingMutation struct {
+	Status         string
+	ExpectedCount  int
+	CompletedCount int
+	FailedCount    int
+	TaskGroupID    string
+	AtomicTaskID   string
+	ErrorCode      string
 }
 
 type AssetThumbnailStore interface {

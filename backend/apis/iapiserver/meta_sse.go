@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	SSESourceDomainTaskCenter = "task-center"
+	SSESourceDomainTaskCenter   = "task-center"
+	SSESourceDomainAssetLibrary = "asset-library"
 
 	UserEventAtomicTaskCreated         = "atomic_task.created"
 	UserEventAtomicTaskBlocked         = "atomic_task.blocked"
@@ -43,6 +44,22 @@ const (
 	UserEventDAGTaskGroupSucceeded  = "dag_task_group.succeeded"
 	UserEventDAGTaskGroupFailed     = "dag_task_group.failed"
 	UserEventDAGTaskGroupCanceled   = "dag_task_group.canceled"
+
+	UserEventArtifactCreated               = "artifact.created"
+	UserEventArtifactTransferring          = "artifact.transferring"
+	UserEventArtifactProcessing            = "artifact.processing"
+	UserEventArtifactPreviewReady          = "artifact.preview_ready"
+	UserEventArtifactReady                 = "artifact.ready"
+	UserEventArtifactProcessingFailed      = "artifact.processing_failed"
+	UserEventArtifactRegistrationSucceeded = "artifact.registration_succeeded"
+	UserEventArtifactRegistrationFailed    = "artifact.registration_failed"
+	UserEventArtifactDeleted               = "artifact.deleted"
+
+	UserEventAssetVersionProcessingStarted    = "asset_version.processing_started"
+	UserEventAssetVersionProcessingProgressed = "asset_version.processing_progressed"
+	UserEventAssetVersionReady                = "asset_version.ready"
+	UserEventAssetVersionReadyWithWarnings    = "asset_version.ready_with_warnings"
+	UserEventAssetVersionProcessingFailed     = "asset_version.processing_failed"
 )
 
 // UserEvent 是面向单个登录用户的短期可重放事件投影，不是任务或素材事实源。

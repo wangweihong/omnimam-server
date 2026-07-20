@@ -101,3 +101,86 @@ func TestProjectorRejectsSourceWithoutOwner(t *testing.T) {
 		t.Fatal("project() error = nil")
 	}
 }
+
+func TestProjectorMapsAssetLibraryEvents(t *testing.T) {
+	tests := []struct {
+		name            string
+		topic           string
+		fields          map[string]any
+		wantEventType   string
+		wantAggregate   string
+		wantAggregateID string
+	}{
+		{name: "artifact created", topic: topicArtifactCreated, fields: map[string]any{"artifact_id": "artifact-1"}, wantEventType: iapiserver.UserEventArtifactCreated, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact transferring", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "transferring", "progress": 0.25, "retryable": true, "error_code": nil, "processing_error_code": nil}, wantEventType: iapiserver.UserEventArtifactTransferring, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact processing", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "processing"}, wantEventType: iapiserver.UserEventArtifactProcessing, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact preview ready", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "preview_ready"}, wantEventType: iapiserver.UserEventArtifactPreviewReady, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact ready", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "ready"}, wantEventType: iapiserver.UserEventArtifactReady, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact failed", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "failed"}, wantEventType: iapiserver.UserEventArtifactProcessingFailed, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "artifact deleted", topic: topicArtifactProcessingChanged, fields: map[string]any{"artifact_id": "artifact-1", "change_type": "deleted"}, wantEventType: iapiserver.UserEventArtifactDeleted, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "registration succeeded", topic: topicArtifactRegistrationChanged, fields: map[string]any{"artifact_id": "artifact-1", "registration_status": "registered", "asset_id": "asset-1", "asset_version_id": "version-1"}, wantEventType: iapiserver.UserEventArtifactRegistrationSucceeded, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "registration failed", topic: topicArtifactRegistrationChanged, fields: map[string]any{"artifact_id": "artifact-1", "registration_status": "failed"}, wantEventType: iapiserver.UserEventArtifactRegistrationFailed, wantAggregate: "artifact", wantAggregateID: "artifact-1"},
+		{name: "version started", topic: topicAssetVersionProcessingChanged, fields: map[string]any{"asset_id": "asset-1", "asset_version_id": "version-1", "status": "processing", "change_type": "started"}, wantEventType: iapiserver.UserEventAssetVersionProcessingStarted, wantAggregate: "asset_version", wantAggregateID: "version-1"},
+		{name: "version progressed", topic: topicAssetVersionProcessingChanged, fields: map[string]any{"asset_id": "asset-1", "asset_version_id": "version-1", "status": "processing", "change_type": "progressed"}, wantEventType: iapiserver.UserEventAssetVersionProcessingProgressed, wantAggregate: "asset_version", wantAggregateID: "version-1"},
+		{name: "version ready", topic: topicAssetVersionProcessingChanged, fields: map[string]any{"asset_id": "asset-1", "asset_version_id": "version-1", "status": "ready"}, wantEventType: iapiserver.UserEventAssetVersionReady, wantAggregate: "asset_version", wantAggregateID: "version-1"},
+		{name: "version ready with warnings", topic: topicAssetVersionProcessingChanged, fields: map[string]any{"asset_id": "asset-1", "asset_version_id": "version-1", "status": "ready_with_warnings"}, wantEventType: iapiserver.UserEventAssetVersionReadyWithWarnings, wantAggregate: "asset_version", wantAggregateID: "version-1"},
+		{name: "version failed", topic: topicAssetVersionProcessingChanged, fields: map[string]any{"asset_id": "asset-1", "asset_version_id": "version-1", "status": "failed"}, wantEventType: iapiserver.UserEventAssetVersionProcessingFailed, wantAggregate: "asset_version", wantAggregateID: "version-1"},
+	}
+
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := &recordingUserEventStore{}
+			projector := NewProjector(storage, time.Hour, nil)
+			payload := map[string]any{
+				"source_domain":    iapiserver.SSESourceDomainAssetLibrary,
+				"source_event_id":  tt.name,
+				"owner_user_id":    "user-1",
+				"resource_version": index + 1,
+				"occurred_at":      "2026-07-20T00:00:00Z",
+				"project_id":       "internal-project",
+				"producer_type":    "atomic_task",
+				"producer_id":      "internal-task",
+				"artifact_type":    "image",
+				"sequence":         0,
+			}
+			for key, value := range tt.fields {
+				payload[key] = value
+			}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := projector.project(context.Background(), tt.topic, raw); err != nil {
+				t.Fatalf("project() error = %v", err)
+			}
+			if len(storage.events) != 1 {
+				t.Fatalf("events = %d, want 1", len(storage.events))
+			}
+			event := storage.events[0]
+			if event.RecipientUserID != "user-1" || event.EventType != tt.wantEventType || event.AggregateType != tt.wantAggregate || event.AggregateID != tt.wantAggregateID {
+				t.Fatalf("projected event = %#v", event)
+			}
+			for _, key := range []string{"source_domain", "source_event_id", "owner_user_id", "project_id", "resource_version", "change_type", "producer_type", "producer_id", "artifact_type", "sequence"} {
+				if _, exists := event.Payload[key]; exists {
+					t.Fatalf("payload retained internal field %q: %#v", key, event.Payload)
+				}
+			}
+			if tt.name == "artifact transferring" {
+				if event.Payload["processing_progress"] != 0.25 || event.Payload["processing_retryable"] != true {
+					t.Fatalf("processing payload was not normalized: %#v", event.Payload)
+				}
+				if _, exists := event.Payload["progress"]; exists {
+					t.Fatalf("source progress leaked into public payload: %#v", event.Payload)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectorRejectsAssetLibraryEventWithWrongDomain(t *testing.T) {
+	projector := NewProjector(&recordingUserEventStore{}, time.Hour, nil)
+	raw := []byte(`{"source_domain":"task-center","source_event_id":"artifact-1:1:created","owner_user_id":"user-1","resource_version":1,"occurred_at":"2026-07-20T00:00:00Z","artifact_id":"artifact-1"}`)
+	if err := projector.project(context.Background(), topicArtifactCreated, raw); err == nil {
+		t.Fatal("project() error = nil")
+	}
+}

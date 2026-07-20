@@ -16,6 +16,7 @@ flowchart LR
   Conductor --> Worker["taskworker"]
   Worker --> BusinessDB
   Worker --> Conductor
+  AssetFacts["asset-library Artifact / AssetVersion"] --> BusinessDB
   BusinessDB --> Outbox["PostgreSQL outbox"]
   Outbox --> Worker
   Worker --> UserEvents["sse_user_events"]
@@ -30,7 +31,7 @@ flowchart LR
 | 组件 | 主要职责 | 不负责 |
 | --- | --- | --- |
 | `apiserver` | 提供 Task Center 和当前用户 SSE API；执行权限、租户、参数和 `functionRef` 校验；持久化 Task Center 事实；按认证用户读取短期 UserEvent 并流式发送 | 不注册 Worker handler，不从 Conductor 直接推送 SSE，不维护 Worker lease |
-| `taskworker` | 注册受控 Worker handler；运行 reconciler；消费素材 outbox 和 Task Center 可靠事件；幂等投影 `sse_user_events` | 不提供外部业务 API，不把 SSE 故障反向写入任务事实，不实现自研 DAG 状态机 |
+| `taskworker` | 注册受控 Worker handler；运行 reconciler；消费素材 outbox、Task Center 与 asset-library 可靠事件；幂等投影 `sse_user_events` | 不提供外部业务 API，不把 SSE 故障反向写入任务或素材事实，不实现自研 DAG 状态机 |
 | Conductor | 负责任务调度、Worker 分发、并发控制、自动重试、超时、DAG 状态机和内部运行历史 | 不拥有 Task Center 业务资源，不直接写 OmniMAM 业务表 |
 | OmniMAM PostgreSQL | 保存 Task Center 业务资源和状态投影、Application/Asset 等领域数据及 PostgreSQL outbox | 不保存 Conductor 的内部运行历史 |
 | Conductor 数据库 | 保存 Conductor workflow、task、schedule 和重试历史 | 不作为前端或其他业务领域的查询入口 |
@@ -52,7 +53,7 @@ flowchart LR
 3. 加载 application runtime registry 和 provider capability registry。
 4. 构造 application、thumbnail、Engine 健康和 ComfyUI object-info executor。
 5. 按受控 `functionRef` 向 Conductor 注册 AtomicTask handler 及并发度。
-6. 订阅 `asset_uploaded` 以及 AtomicTask、TaskAttempt、TaskGroup/DAG 变化 outbox。
+6. 订阅 `asset_uploaded`，以及 Task Center 和 asset-library Artifact/AssetVersion 变化 outbox。
 7. 启动 SSE projector，按来源事件键幂等写入当前用户短期事件投影。
 8. 幂等确保 Engine 健康检查与 ComfyUI object-info 刷新 SYSTEM RECONCILE Schedule。
 9. 启动 reconciler，周期对账非终态 execution。
@@ -123,13 +124,13 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant Task as Task Center store
+  participant Domain as Task Center / asset-library store
   participant Outbox as PostgreSQL outbox
   participant Projector as taskworker SSE projector
   participant Events as sse_user_events
   participant API as apiserver SSE gateway
   participant Web as 当前用户 Web 客户端
-  Task->>Outbox: 事实事务写 Task Center 可靠事件
+  Domain->>Outbox: 事实事务写可靠领域事件
   Outbox-->>Projector: at-least-once 投递
   Projector->>Events: recipient + source event + event type 幂等写入
   Projector-->>Outbox: Ack；失败则 Nack
@@ -142,6 +143,8 @@ sequenceDiagram
 ```
 
 `event_sequence` 只表示用户事件流恢复顺序，不替代各业务聚合的 `resource_version`。API Server 不缓存未发送事件：每批最多读取 200 条，单次写有 5 秒 deadline；慢客户端断开后使用持久事件重放。默认保留 24 小时，配置项只影响 UserEvent，不改变 AtomicTask、TaskAttempt 或 Group/DAG 历史。实例退出时先发送 `connection.server_draining`，再关闭连接。
+
+asset-library 由 `Artifact` 和 `AssetVersion` owner store 在事实事务内分别写入 `artifact_created`、`artifact_processing_changed`、`artifact_registration_changed` 和 `asset_version_processing_changed`。Projector 使用独立消费者组 `sse-asset-library-projector`，将 source 的 `progress/retryable/error_code` 归一化为公开 payload 的 `processing_progress`、`processing_retryable` 或 `registration_retryable`，并移除 owner、project、namespace 和 source routing 字段。正文、Provider 响应、内部错误详情和物理内容引用不进入 UserEvent。
 
 ## 6. 素材上传与缩略图 outbox 流程
 
@@ -194,7 +197,7 @@ sequenceDiagram
 | OmniMAM PostgreSQL 重启 | API 和 Worker 等待数据库恢复；业务资源与 outbox 由数据库持久化，不依赖进程内队列 |
 | outbox 消费中断 | 未 Ack 的消息由 Watermill PostgreSQL subscriber 重新投递；AtomicTask 幂等键防止重复创建 |
 | 投影遗漏或短暂失败 | reconciler 再次查询 Conductor，并幂等修复非终态 AtomicTask 和 TaskAttempt 投影 |
-| SSE projector 中断 | Task Center outbox 保留未确认事件；恢复后按来源事件键补写 UserEvent，不影响任务执行 |
+| SSE projector 中断 | Task Center/asset-library outbox 保留未确认事件；恢复后按来源事件键补写 UserEvent，不影响任务或素材事实 |
 | API Server 或 SSE 连接重启 | UserEvent 保存在 PostgreSQL；客户端以 `Last-Event-ID` 重放，过期或跨用户游标要求完整重同步 |
 
 外部异步 executor 必须保存并优先使用 `external_job_id` 恢复外部作业，不能因为 Worker 或 API Server 重启而重复提交。
@@ -208,7 +211,7 @@ sequenceDiagram
 - 用户输入只能选择已注册的 `functionRef`，不得提交任意 HTTP、INLINE、脚本、Worker 名、凭证或内部运行时配置。
 - Conductor 与 OmniMAM 业务表必须使用独立数据库或 schema，双方不得直接改写对方拥有的数据。
 - 运行时不可用时保留可恢复业务状态，不得双写旧 TaskRun 或回退到旧任务协议。
-- SSE 只消费 Task Center 可靠事件，不直接读取 Conductor API/数据库，也不把 UserEvent 当作任务事实源。
+- SSE 只消费 Task Center 与 asset-library 可靠事件，不直接读取 Conductor API/数据库，也不把 UserEvent 当作任务或素材事实源。
 - 本实现不提供旧数据 migration 或回填；新表和约束使用仓库现有 `EnsureScheme/AutoMigrate` 初始化路径。
 
 ## 9. 事实源与实现索引
@@ -220,6 +223,8 @@ sequenceDiagram
 - [Task Center 架构参考](../../../../ssot/02_architecture/domains/task-center.md)
 - [SSE 产品规格](../../../../ssot/00_product/domains/sse/product-spec.md)
 - [SSE 模块契约](../../../../ssot/01_contracts/domains/sse/module-contract.md)
+- [Asset Library 产品规格](../../../../ssot/00_product/domains/asset-library/product-spec.md)
+- [Asset Library 模块契约](../../../../ssot/01_contracts/domains/asset-library/module-contract.md)
 - [后端实现规则](../../../../backend/AGENTS.md)
 
 当前实现的关键入口：
@@ -229,6 +234,7 @@ sequenceDiagram
 - [Conductor `WorkflowRuntime` 适配](../../../../backend/internal/apiserver/workflowruntime/conductor.go)
 - [运行时状态 reconciler](../../../../backend/internal/apiserver/service/v1/taskcenter/reconciler.go)
 - [PostgreSQL outbox](../../../../backend/internal/apiserver/store/postgresql/outbox.go)
+- [Asset Library 生命周期事实与 outbox](../../../../backend/internal/apiserver/store/postgresql/asset_lifecycle_events.go)
 - [SSE projector](../../../../backend/internal/apiserver/service/v1/sse/projector.go)
 - [SSE gateway](../../../../backend/internal/apiserver/controller/v1/sse/sse.go)
 - [本地部署拓扑](../../../../deployments/docker-compose.yaml)

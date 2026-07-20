@@ -45,7 +45,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	storeIns := store.Client()
 	projector := ssesvc.NewProjector(storeIns.UserEvents(), cfg.SSEOptions.Retention, postgresql.SubscribeOutbox)
 	if err := projector.Start(ctx); err != nil {
-		return errors.Wrap(err, "start SSE task-center projector")
+		return errors.Wrap(err, "start SSE source projector")
 	}
 	defer projector.Close()
 	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()

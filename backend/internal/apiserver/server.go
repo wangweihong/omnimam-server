@@ -202,6 +202,8 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.AssetGroupMember{},
 		&iapiserver.AssetRelation{},
 		&iapiserver.UserAsset{},
+		&iapiserver.Artifact{},
+		&iapiserver.AssetVersion{},
 		&iapiserver.ArtifactAssetRegistration{},
 		&iapiserver.UserAssetLabel{},
 		&iapiserver.UserAssetTag{},
