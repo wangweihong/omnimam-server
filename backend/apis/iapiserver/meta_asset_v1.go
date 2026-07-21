@@ -21,20 +21,21 @@ type UserAsset struct {
 	DurationSeconds float64 `json:"duration_seconds" gorm:"column:duration_seconds"`
 	SourceType      string  `json:"source_type" gorm:"column:source_type;type:varchar(32);not null"`
 	// Status 表达 active、archived 或 deleted，删除只隐藏素材并保留版本与内容事实。
-	Status                 string            `json:"status" gorm:"column:status;type:varchar(16);not null;default:active;index"`
-	CurrentVersionID       string            `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text;index"`
-	ObjectPath             string            `json:"-" gorm:"column:object_path;type:text;not null;default:''"`
-	ThumbnailStatus        string            `json:"thumbnail_status" gorm:"column:thumbnail_status;type:varchar(16);not null"`
-	PreviewStatus          string            `json:"preview_status" gorm:"column:preview_status;type:varchar(16);not null;default:none"`
-	SHA256                 string            `json:"sha256" gorm:"column:sha256;type:varchar(80)"`
-	ReferenceCount         int               `json:"reference_count" gorm:"column:reference_count;not null;default:0"`
-	ReferenceSources       []AssetReference  `json:"-" gorm:"-"`
-	ReferenceSourcesShadow string            `json:"-" gorm:"column:reference_sources_json;type:text;not null;default:'[]'"`
-	DeletedAt              *imachinery.Time  `json:"deleted_at,omitempty" gorm:"column:deleted_at;type:timestamptz;index"`
-	Labels                 map[string]string `json:"labels" gorm:"-"`
-	Tags                   []string          `json:"tags" gorm:"-"`
-	LabelSources           map[string]string `json:"label_sources" gorm:"-"`
-	TagSources             map[string]string `json:"tag_sources" gorm:"-"`
+	Status                 string               `json:"status" gorm:"column:status;type:varchar(16);not null;default:active;index"`
+	CurrentVersionID       string               `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text;index"`
+	CurrentVersion         *AssetVersionSummary `json:"current_version,omitempty" gorm:"-"`
+	ObjectPath             string               `json:"-" gorm:"column:object_path;type:text;not null;default:''"`
+	ThumbnailStatus        string               `json:"thumbnail_status" gorm:"column:thumbnail_status;type:varchar(16);not null"`
+	PreviewStatus          string               `json:"preview_status" gorm:"column:preview_status;type:varchar(16);not null;default:none"`
+	SHA256                 string               `json:"sha256" gorm:"column:sha256;type:varchar(80)"`
+	ReferenceCount         int                  `json:"reference_count" gorm:"column:reference_count;not null;default:0"`
+	ReferenceSources       []AssetReference     `json:"-" gorm:"-"`
+	ReferenceSourcesShadow string               `json:"-" gorm:"column:reference_sources_json;type:text;not null;default:'[]'"`
+	DeletedAt              *imachinery.Time     `json:"deleted_at,omitempty" gorm:"column:deleted_at;type:timestamptz;index"`
+	Labels                 map[string]string    `json:"labels" gorm:"-"`
+	Tags                   []string             `json:"tags" gorm:"-"`
+	LabelSources           map[string]string    `json:"label_sources" gorm:"-"`
+	TagSources             map[string]string    `json:"tag_sources" gorm:"-"`
 }
 
 func (UserAsset) TableName() string { return "user_assets" }

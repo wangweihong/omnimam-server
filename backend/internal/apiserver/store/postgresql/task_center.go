@@ -384,6 +384,18 @@ func (s *taskCenterStore) ListTaskSchedules(ctx context.Context, req *iapiserver
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
+
+func (s *taskCenterStore) GetTaskSchedulesByIDs(ctx context.Context, ids []string) ([]*iapiserver.TaskSchedule, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.TaskSchedule{}, nil
+	}
+	var items []*iapiserver.TaskSchedule
+	if err := s.ds.db.WithContext(ctx).Where("id IN ? AND deleted_at IS NULL", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *taskCenterStore) GetTaskSchedule(ctx context.Context, id string) (*iapiserver.TaskSchedule, error) {
 	var item iapiserver.TaskSchedule
 	if err := s.ds.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&item).Error; err != nil {

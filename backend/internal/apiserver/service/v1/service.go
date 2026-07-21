@@ -67,5 +67,5 @@ func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
 }
 
 func (s *service) AIChat() aichat.AIChatSrv {
-	return aichat.NewService(s.store)
+	return aichat.NewService(s.store, platform.NewService(s.store))
 }

@@ -2,6 +2,7 @@ package applicationplatform
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"reflect"
@@ -817,7 +818,12 @@ func (s *applicationPlatformService) CreateApplicationRun(ctx context.Context, a
 		if !sameApplicationRunRequest(existing, applicationID, req) {
 			return nil, errors.NewStatus(code.ErrAIAppApplicationRunCreateFailed, "idempotency key was used with a different application run request")
 		}
-		return s.retryTaskBinding(ctx, existing)
+		result, retryErr := s.retryTaskBinding(ctx, existing)
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		s.attachApplicationRunRelations(ctx, result)
+		return result, nil
 	} else if !stderrors.Is(lookupErr, gorm.ErrRecordNotFound) {
 		return nil, lookupErr
 	}
@@ -846,7 +852,11 @@ func (s *applicationPlatformService) CreateApplicationRun(ctx context.Context, a
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppTemplateVersionNotFound, "template version not found")
 	}
-	run := newApplicationRun(p.UserID, app, version, templateVersion, engineID, &resolvedRequest, req, form)
+	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, engineID)
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAIAppEngineUnavailable, "engine instance is unavailable")
+	}
+	run := newApplicationRun(p.UserID, app, version, templateVersion, engine, &resolvedRequest, req, form)
 	if run.ProviderCapabilityID != nil {
 		if capability, ok := s.Capabilities.Get(*run.ProviderCapabilityID); ok {
 			run.CapabilitySourceSnapshot["provider_capability"] = capability
@@ -857,7 +867,12 @@ func (s *applicationPlatformService) CreateApplicationRun(ctx context.Context, a
 		return nil, mapUnique(err, "idx_aiapp_runs_owner_idempotency", code.ErrAIAppApplicationRunCreateFailed, "application run idempotency conflict")
 	}
 	s.publish(ctx, "application_run_created", created.ID+":created", applicationRunEventPayload(created))
-	return s.retryTaskBinding(ctx, created)
+	result, err := s.retryTaskBinding(ctx, created)
+	if err != nil {
+		return nil, err
+	}
+	s.attachApplicationRunRelations(ctx, result)
+	return result, nil
 }
 
 func sameApplicationRunRequest(existing *iapiserver.ApplicationRun, applicationID string, request *iapiserver.ApplicationRunCreateRequest) bool {
@@ -930,7 +945,56 @@ func (s *applicationPlatformService) GetApplicationRun(ctx context.Context, id s
 	if err != nil || (!p.Admin && run.OwnerUserID != p.UserID) {
 		return nil, errors.NewStatus(code.ErrAIAppApplicationRunNotFound, "application run not found")
 	}
+	s.attachApplicationRunRelations(ctx, run)
 	return run, nil
+}
+
+// attachApplicationRunRelations 优先读取运行快照，并以固定上限回查旧数据缺失的同域摘要。
+// AtomicTask 始终通过 Task Center 权限边界读取；任一关联缺失不影响父运行响应。
+func (s *applicationPlatformService) attachApplicationRunRelations(ctx context.Context, run *iapiserver.ApplicationRun) {
+	if run == nil {
+		return
+	}
+	run.Application = snapshotValue[iapiserver.ApplicationSummary](run.CapabilitySourceSnapshot, "application")
+	run.ApplicationVersion = snapshotValue[iapiserver.ApplicationVersionSummary](run.CapabilitySourceSnapshot, "application_version")
+	run.ApplicationTemplateVersion = snapshotValue[iapiserver.ApplicationTemplateVersionSummary](run.CapabilitySourceSnapshot, "application_template_version")
+	run.EngineInstance = snapshotValue[iapiserver.EngineInstanceRefSummary](run.CapabilitySourceSnapshot, "engine_instance")
+
+	if run.Application == nil {
+		if item, err := s.GetApplication(ctx, run.ApplicationID); err == nil {
+			run.Application = applicationSummary(item)
+		}
+	}
+	if run.ApplicationVersion == nil {
+		if item, err := s.GetApplicationVersion(ctx, run.ApplicationVersionID); err == nil {
+			run.ApplicationVersion = applicationVersionSummary(item)
+		}
+	}
+	if run.ApplicationTemplateVersion == nil {
+		if item, err := s.GetTemplateVersion(ctx, run.ApplicationTemplateVersionID); err == nil {
+			run.ApplicationTemplateVersion = applicationTemplateVersionSummary(item)
+		}
+	}
+	if run.EngineInstance == nil {
+		if item, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, run.EngineInstanceID); err == nil {
+			run.EngineInstance = engineInstanceRefSummary(item)
+		}
+	}
+	if run.ProviderCapabilityID != nil {
+		if capability := snapshotValue[iapiserver.AIAppProviderCapability](run.CapabilitySourceSnapshot, "provider_capability"); capability != nil {
+			run.ProviderCapability = providerCapabilityRefSummary(capability, run.ProviderOperationID)
+		} else if s.Capabilities != nil {
+			capability, ok := s.Capabilities.Get(*run.ProviderCapabilityID)
+			if ok {
+				run.ProviderCapability = providerCapabilityRefSummary(capability, run.ProviderOperationID)
+			}
+		}
+	}
+	if run.AtomicTaskID != nil && s.Tasks != nil {
+		if task, err := s.Tasks.GetAtomicTask(ctx, *run.AtomicTaskID); err == nil {
+			run.AtomicTask = &iapiserver.AtomicTaskRefSummary{ID: task.ID, Name: task.Name, Status: task.Status, Progress: task.Progress, FunctionRef: task.FunctionRef}
+		}
+	}
 }
 
 func (s *applicationPlatformService) validateEngineAuth(typeID, authType string, config map[string]any) error {
@@ -1058,14 +1122,65 @@ func (s *applicationPlatformService) publish(ctx context.Context, eventType, key
 	}
 }
 
-func newApplicationRun(owner string, app *iapiserver.Application, version *iapiserver.ApplicationVersion, template *iapiserver.ApplicationTemplateVersion, engineID string, resolved, original *iapiserver.ApplicationRunCreateRequest, form *iapiserver.RuntimeFormSchema) *iapiserver.ApplicationRun {
-	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engineID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engineID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifact{}}
+func newApplicationRun(owner string, app *iapiserver.Application, version *iapiserver.ApplicationVersion, template *iapiserver.ApplicationTemplateVersion, engine *iapiserver.EngineInstance, resolved, original *iapiserver.ApplicationRunCreateRequest, form *iapiserver.RuntimeFormSchema) *iapiserver.ApplicationRun {
+	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engine.ID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow, "application": applicationSummary(app), "application_version": applicationVersionSummary(version), "application_template_version": applicationTemplateVersionSummary(template), "engine_instance": engineInstanceRefSummary(engine)}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engine.ID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifact{}}
 	run.Name = app.Name + " run"
 	if form.ProviderCapabilityID != nil {
 		run.CapabilitySourceSnapshot["provider_capability_id"] = *form.ProviderCapabilityID
 		run.CapabilitySourceSnapshot["provider_capability_revision"] = *form.ProviderCapabilityRevision
 	}
 	return run
+}
+
+func applicationSummary(item *iapiserver.Application) *iapiserver.ApplicationSummary {
+	return &iapiserver.ApplicationSummary{ID: item.ID, Name: item.Name, Visibility: item.Visibility}
+}
+
+func applicationVersionSummary(item *iapiserver.ApplicationVersion) *iapiserver.ApplicationVersionSummary {
+	return &iapiserver.ApplicationVersionSummary{ID: item.ID, SemanticVersion: item.SemanticVersion, Status: item.Status}
+}
+
+func applicationTemplateVersionSummary(item *iapiserver.ApplicationTemplateVersion) *iapiserver.ApplicationTemplateVersionSummary {
+	return &iapiserver.ApplicationTemplateVersionSummary{ID: item.ID, Version: item.Version, Status: item.Status, CapabilitySourceType: item.CapabilitySourceType, SourceRevision: item.SourceRevision}
+}
+
+func engineInstanceRefSummary(item *iapiserver.EngineInstance) *iapiserver.EngineInstanceRefSummary {
+	return &iapiserver.EngineInstanceRefSummary{ID: item.ID, Name: item.Name, ApplicationEngineTypeID: item.ApplicationEngineTypeID, Enabled: item.Enabled, HealthStatus: item.HealthStatus}
+}
+
+func providerCapabilityRefSummary(capability *iapiserver.AIAppProviderCapability, operationID *string) *iapiserver.ProviderCapabilityRefSummary {
+	summary := &iapiserver.ProviderCapabilityRefSummary{ID: capability.ID, Name: capability.Name, Revision: capability.Revision, Availability: capability.Availability, OperationID: operationID}
+	if operationID == nil {
+		return summary
+	}
+	for _, operation := range capability.Operations {
+		if operation.ID != *operationID {
+			continue
+		}
+		name := operation.Description
+		if name == "" {
+			name = operation.ID
+		}
+		summary.OperationName = &name
+		break
+	}
+	return summary
+}
+
+func snapshotValue[T any](snapshot map[string]any, key string) *T {
+	value, ok := snapshot[key]
+	if !ok || value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var result T
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil
+	}
+	return &result
 }
 func applicationRunEventPayload(run *iapiserver.ApplicationRun) map[string]any {
 	return map[string]any{"application_run_id": run.ID, "application_id": run.ApplicationID, "application_version_id": run.ApplicationVersionID, "application_template_version_id": run.ApplicationTemplateVersionID, "engine_instance_id": run.EngineInstanceID, "capability_source_type": run.CapabilitySourceType, "source_revision": run.SourceRevision, "provider_capability_id": run.ProviderCapabilityID, "provider_capability_revision": run.ProviderCapabilityRevision, "provider_operation_id": run.ProviderOperationID, "workflow_contract_revision": run.WorkflowContractRevision, "execution_snapshot": run.ExecutionSnapshot, "task_creation_status": run.TaskCreationStatus}

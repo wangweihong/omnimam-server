@@ -27,6 +27,33 @@ const (
 	AssetVersionStatusFailed            = "failed"
 )
 
+// AssetVersionSummary 是不可变素材版本的一跳可读摘要，不包含内容和 Representation。
+type AssetVersionSummary struct {
+	ID         string `json:"id"`
+	AssetID    string `json:"asset_id"`
+	VersionNo  int    `json:"version_no"`
+	Status     string `json:"status"`
+	SourceType string `json:"source_type"`
+}
+
+// UserAssetSummary 是当前用户素材的一跳可读摘要，不包含标签、版本列表和内容地址。
+type UserAssetSummary struct {
+	ID               string `json:"id"`
+	DisplayName      string `json:"display_name"`
+	MediaType        string `json:"media_type"`
+	Status           string `json:"status"`
+	ThumbnailStatus  string `json:"thumbnail_status"`
+	CurrentVersionID string `json:"current_version_id,omitempty"`
+}
+
+// RelatedResourceSummary 是 Artifact 来源任务或运行的非敏感一跳投影。
+type RelatedResourceSummary struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
 // Artifact 是 asset-library 拥有的受控制品事实；内容正文和 Provider 响应不得进入事件 payload。
 type Artifact struct {
 	imachinery.ObjectMeta
@@ -40,16 +67,24 @@ type Artifact struct {
 	ProducerType string `json:"producer_type" gorm:"column:producer_type;type:text;not null;uniqueIndex:idx_artifacts_producer_key,priority:2"`
 	// ProducerID 标识产生该制品的所属运行或任务。
 	ProducerID string `json:"producer_id" gorm:"column:producer_id;type:text;not null"`
+	// Producer 是来源事实源权限裁剪后的可读摘要，不包含运行输入输出。
+	Producer *RelatedResourceSummary `json:"producer,omitempty" gorm:"-"`
 	// ProducerIdempotencyKey 在 owner 和 producer 类型内稳定标识一个逻辑输出。
 	ProducerIdempotencyKey string `json:"producer_idempotency_key" gorm:"column:producer_idempotency_key;type:text;not null;uniqueIndex:idx_artifacts_producer_key,priority:3"`
 	// AtomicTaskID 关联 Task Center 事实，不用于推断素材状态。
 	AtomicTaskID string `json:"atomic_task_id,omitempty" gorm:"column:atomic_task_id;type:text;index"`
+	// AtomicTask 是 Task Center 返回的当前任务摘要。
+	AtomicTask *RelatedResourceSummary `json:"atomic_task,omitempty" gorm:"-"`
 	// TaskAttemptID 记录实际产生内容的自动执行尝试。
 	TaskAttemptID string `json:"task_attempt_id,omitempty" gorm:"column:task_attempt_id;type:text"`
 	// ApplicationRunID 关联应用运行的只读投影。
 	ApplicationRunID string `json:"application_run_id,omitempty" gorm:"column:application_run_id;type:text;index"`
+	// ApplicationRun 是 application-platform 返回的运行摘要。
+	ApplicationRun *RelatedResourceSummary `json:"application_run,omitempty" gorm:"-"`
 	// CanvasRunID 关联画布运行的只读投影。
 	CanvasRunID string `json:"canvas_run_id,omitempty" gorm:"column:canvas_run_id;type:text"`
+	// CanvasRun 是 workflow-canvas 返回的运行摘要。
+	CanvasRun *RelatedResourceSummary `json:"canvas_run,omitempty" gorm:"-"`
 	// NodeRunID 标识产生制品的画布节点运行。
 	NodeRunID string `json:"node_run_id,omitempty" gorm:"column:node_run_id;type:text"`
 	// NodeID 标识产生制品的画布节点定义。
@@ -90,8 +125,12 @@ type Artifact struct {
 	RegistrationErrorDetail string `json:"-" gorm:"column:registration_error_detail;type:text"`
 	// AssetID 在登记成功后指向当前用户素材。
 	AssetID string `json:"asset_id,omitempty" gorm:"column:asset_id;type:text"`
+	// Asset 是登记成功后素材的一跳摘要。
+	Asset *UserAssetSummary `json:"asset,omitempty" gorm:"-"`
 	// AssetVersionID 在登记成功后指向不可变素材版本。
 	AssetVersionID string `json:"asset_version_id,omitempty" gorm:"column:asset_version_id;type:text"`
+	// AssetVersion 是登记成功后不可变版本的一跳摘要。
+	AssetVersion *AssetVersionSummary `json:"asset_version,omitempty" gorm:"-"`
 	// ExpiresAt 仅控制未登记临时制品保留时间。
 	ExpiresAt *imachinery.Time `json:"expires_at,omitempty" gorm:"column:expires_at;type:timestamptz;index"`
 	// ReadyAt 记录内容首次进入 ready 的时间，用于客户端增量展示。

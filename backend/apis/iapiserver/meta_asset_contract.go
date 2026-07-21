@@ -145,13 +145,24 @@ func (u *AssetUploadSession) marshal() error {
 // AssetCollection 是用户范围逻辑分组，对外使用 Collection 术语。
 type AssetCollection struct {
 	imachinery.ObjectMeta
-	OwnerUserID        string           `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
-	ParentCollectionID string           `json:"parent_collection_id,omitempty" gorm:"column:parent_group_id;type:text;index"`
-	Color              string           `json:"color" gorm:"column:color;type:text;not null;default:''"`
-	SortOrder          int              `json:"sort_order" gorm:"column:sort_order;not null;default:0"`
-	DeletedAt          *imachinery.Time `json:"-" gorm:"column:deleted_at;type:timestamptz;index"`
-	Depth              int              `json:"depth" gorm:"-"`
-	ItemCount          int64            `json:"item_count" gorm:"-"`
+	OwnerUserID        string `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
+	ParentCollectionID string `json:"parent_collection_id,omitempty" gorm:"column:parent_group_id;type:text;index"`
+	// ParentCollection 是直接父级的一跳摘要，不递归展开祖先。
+	ParentCollection *CollectionSummary `json:"parent_collection,omitempty" gorm:"-"`
+	Color            string             `json:"color" gorm:"column:color;type:text;not null;default:''"`
+	SortOrder        int                `json:"sort_order" gorm:"column:sort_order;not null;default:0"`
+	DeletedAt        *imachinery.Time   `json:"-" gorm:"column:deleted_at;type:timestamptz;index"`
+	Depth            int                `json:"depth" gorm:"-"`
+	ItemCount        int64              `json:"item_count" gorm:"-"`
+}
+
+// CollectionSummary 是 Collection 的一跳可读摘要，不包含父级和成员。
+type CollectionSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Depth     int    `json:"depth"`
+	ItemCount int64  `json:"item_count"`
 }
 
 func (AssetCollection) TableName() string                 { return "user_asset_groups" }
@@ -164,18 +175,20 @@ func (c *AssetCollection) AfterFind(tx *gorm.DB) error    { return c.ObjectMeta.
 // AssetCollectionItem 保存 Collection 与 Asset 的多对多关系和可选固定版本。
 type AssetCollectionItem struct {
 	imachinery.ObjectMeta
-	OwnerUserID     string           `json:"-" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:1"`
-	CollectionID    string           `json:"collection_id" gorm:"column:group_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:2"`
-	AssetID         string           `json:"asset_id" gorm:"column:asset_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:3"`
-	PinnedVersionID string           `json:"pinned_version_id,omitempty" gorm:"column:pinned_version_id;type:text;index"`
-	Role            string           `json:"role" gorm:"column:role;type:text;not null;default:''"`
-	SortOrder       int              `json:"sort_order" gorm:"column:sort_order;not null;default:0"`
-	Metadata        map[string]any   `json:"metadata" gorm:"-"`
-	MetadataShadow  string           `json:"-" gorm:"column:metadata_json;type:text;not null;default:'{}'"`
-	CreatedBy       string           `json:"-" gorm:"column:created_by;type:text;not null"`
-	JoinedAt        imachinery.Time  `json:"-" gorm:"column:joined_at;type:timestamptz;not null"`
-	DeletedAt       *imachinery.Time `json:"-" gorm:"column:deleted_at;type:timestamptz;index"`
-	Asset           *UserAsset       `json:"asset,omitempty" gorm:"-"`
+	OwnerUserID     string `json:"-" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:1"`
+	CollectionID    string `json:"collection_id" gorm:"column:group_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:2"`
+	AssetID         string `json:"asset_id" gorm:"column:asset_id;type:text;not null;index;uniqueIndex:idx_collection_member,priority:3"`
+	PinnedVersionID string `json:"pinned_version_id,omitempty" gorm:"column:pinned_version_id;type:text;index"`
+	// PinnedVersion 是成员固定版本的一跳摘要；跟随当前版本时为空。
+	PinnedVersion  *AssetVersionSummary `json:"pinned_version,omitempty" gorm:"-"`
+	Role           string               `json:"role" gorm:"column:role;type:text;not null;default:''"`
+	SortOrder      int                  `json:"sort_order" gorm:"column:sort_order;not null;default:0"`
+	Metadata       map[string]any       `json:"metadata" gorm:"-"`
+	MetadataShadow string               `json:"-" gorm:"column:metadata_json;type:text;not null;default:'{}'"`
+	CreatedBy      string               `json:"-" gorm:"column:created_by;type:text;not null"`
+	JoinedAt       imachinery.Time      `json:"-" gorm:"column:joined_at;type:timestamptz;not null"`
+	DeletedAt      *imachinery.Time     `json:"-" gorm:"column:deleted_at;type:timestamptz;index"`
+	Asset          *UserAsset           `json:"asset,omitempty" gorm:"-"`
 }
 
 func (AssetCollectionItem) TableName() string { return "user_asset_group_memberships" }

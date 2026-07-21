@@ -460,6 +460,51 @@ type ApplicationVersion struct {
 	PublishedAt                  *imachinery.Time `json:"published_at" gorm:"column:published_at;type:timestamptz"`
 }
 
+// ApplicationSummary 是 ApplicationRun 返回的一跳应用摘要，不递归展开 owner 或当前版本。
+type ApplicationSummary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Visibility string `json:"visibility"`
+}
+
+// ApplicationVersionSummary 是 ApplicationRun 创建时固定的不可变应用版本摘要。
+type ApplicationVersionSummary struct {
+	ID              string `json:"id"`
+	SemanticVersion string `json:"semantic_version"`
+	Status          string `json:"status"`
+}
+
+// ApplicationTemplateVersionSummary 是 ApplicationRun 创建时固定的模板来源摘要。
+type ApplicationTemplateVersionSummary struct {
+	ID                   string `json:"id"`
+	Version              int    `json:"version"`
+	Status               string `json:"status"`
+	CapabilitySourceType string `json:"capability_source_type"`
+	SourceRevision       string `json:"source_revision"`
+}
+
+// ProviderCapabilityRefSummary 是运行快照中的非敏感 ProviderCapability 与 Operation 摘要。
+type ProviderCapabilityRefSummary struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	Revision      string  `json:"revision"`
+	Availability  string  `json:"availability"`
+	OperationID   *string `json:"operation_id,omitempty"`
+	OperationName *string `json:"operation_name,omitempty"`
+}
+
+// EngineInstanceRefSummary 是 ApplicationRun 可见的非敏感 EngineInstance 摘要。
+type EngineInstanceRefSummary struct {
+	ID                      string `json:"id"`
+	Name                    string `json:"name"`
+	ApplicationEngineTypeID string `json:"application_engine_type_id"`
+	Enabled                 bool   `json:"enabled"`
+	HealthStatus            string `json:"health_status"`
+}
+
+// AtomicTaskRefSummary 复用 Task Center 的一跳任务摘要语义。
+type AtomicTaskRefSummary = AtomicTaskSummary
+
 func (ApplicationVersion) TableName() string { return "aiapp_application_versions" }
 func (v *ApplicationVersion) BeforeCreate(tx *gorm.DB) error {
 	if err := v.ObjectMeta.BeforeCreate(tx); err != nil {
@@ -522,6 +567,18 @@ type ApplicationRun struct {
 	FailureSummary                 string                 `json:"failure_summary" gorm:"column:failure_summary;type:text;default:''"`
 	IdempotencyKey                 string                 `json:"-" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:idx_aiapp_runs_owner_idempotency,priority:2"`
 	Artifacts                      []*ApplicationArtifact `json:"artifacts" gorm:"-"`
+	// Application 是权限裁剪后的应用摘要；关联缺失时为空但保留 ApplicationID。
+	Application *ApplicationSummary `json:"application,omitempty" gorm:"-"`
+	// ApplicationVersion 是运行固定的应用版本摘要。
+	ApplicationVersion *ApplicationVersionSummary `json:"application_version,omitempty" gorm:"-"`
+	// ApplicationTemplateVersion 是运行固定的模板版本摘要。
+	ApplicationTemplateVersion *ApplicationTemplateVersionSummary `json:"application_template_version,omitempty" gorm:"-"`
+	// ProviderCapability 是目录平台运行固定的能力与 Operation 摘要，ComfyUI 运行为空。
+	ProviderCapability *ProviderCapabilityRefSummary `json:"provider_capability,omitempty" gorm:"-"`
+	// EngineInstance 是运行选择的非敏感引擎摘要，不包含连接地址或凭证。
+	EngineInstance *EngineInstanceRefSummary `json:"engine_instance,omitempty" gorm:"-"`
+	// AtomicTask 是 Task Center 权限校验后返回的当前任务摘要。
+	AtomicTask *AtomicTaskRefSummary `json:"atomic_task,omitempty" gorm:"-"`
 }
 
 func (ApplicationRun) TableName() string { return "aiapp_application_runs" }

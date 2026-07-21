@@ -140,9 +140,12 @@ type AtomicTask struct {
 	LastError            TaskError              `json:"last_error,omitempty" gorm:"-"`
 	LastErrorShadow      string                 `json:"-" gorm:"column:last_error_json;type:text;not null;default:'{}'"`
 	RetryOfTaskID        string                 `json:"retry_of_task_id,omitempty" gorm:"column:retry_of_task_id;type:varchar(64);index"`
+	RetryOfTask          *AtomicTaskSummary     `json:"retry_of_task,omitempty" gorm:"-"`
 	RootTaskID           string                 `json:"root_task_id,omitempty" gorm:"column:root_task_id;type:varchar(64);index"`
+	RootTask             *AtomicTaskSummary     `json:"root_task,omitempty" gorm:"-"`
 	OwnerType            string                 `json:"owner_type,omitempty" gorm:"column:owner_type;type:varchar(32)"`
 	OwnerID              string                 `json:"owner_id,omitempty" gorm:"column:owner_id;type:varchar(64);index"`
+	Owner                *TaskOwnerSummary      `json:"owner,omitempty" gorm:"-"`
 	ChildKey             string                 `json:"child_key,omitempty" gorm:"column:child_key;type:varchar(128)"`
 	ChildOrder           int                    `json:"child_order,omitempty" gorm:"column:child_order;not null;default:0"`
 	ApplicationRunID     string                 `json:"application_run_id,omitempty" gorm:"column:application_run_id;type:varchar(64);index"`
@@ -207,22 +210,23 @@ func (t *AtomicTask) marshalShadows() error {
 // TaskAttempt records one Conductor execution attempt for an AtomicTask.
 type TaskAttempt struct {
 	imachinery.ObjectMeta
-	AtomicTaskID   string          `json:"atomic_task_id" gorm:"column:atomic_task_id;type:varchar(64);not null;uniqueIndex:idx_task_attempts_task_no,priority:1;index"`
-	AttemptNo      int             `json:"attempt_no" gorm:"column:attempt_no;not null;uniqueIndex:idx_task_attempts_task_no,priority:2"`
-	RuntimeTaskID  string          `json:"runtime_task_id" gorm:"column:runtime_task_id;type:varchar(128);not null;uniqueIndex"`
-	Status         string          `json:"status" gorm:"column:status;type:varchar(32);not null;index"`
-	InputSnapshot  map[string]any  `json:"input_snapshot,omitempty" gorm:"-"`
-	InputShadow    string          `json:"-" gorm:"column:input_snapshot_json;type:text;not null;default:'{}'"`
-	OutputSnapshot map[string]any  `json:"output_snapshot,omitempty" gorm:"-"`
-	OutputShadow   string          `json:"-" gorm:"column:output_snapshot_json;type:text;not null;default:'{}'"`
-	Error          TaskError       `json:"error,omitempty" gorm:"-"`
-	ErrorShadow    string          `json:"-" gorm:"column:error_json;type:text;not null;default:'{}'"`
-	ExternalJobID  string          `json:"external_job_id,omitempty" gorm:"column:external_job_id;type:varchar(256);index"`
-	LogsRef        string          `json:"logs_ref,omitempty" gorm:"column:logs_ref;type:text"`
-	StartedAt      imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
-	CompletedAt    imachinery.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
-	DurationMS     int64           `json:"duration_ms" gorm:"column:duration_ms;not null;default:0"`
-	Retryable      bool            `json:"retryable" gorm:"column:retryable;not null;default:false"`
+	AtomicTaskID   string             `json:"atomic_task_id" gorm:"column:atomic_task_id;type:varchar(64);not null;uniqueIndex:idx_task_attempts_task_no,priority:1;index"`
+	AtomicTask     *AtomicTaskSummary `json:"atomic_task,omitempty" gorm:"-"`
+	AttemptNo      int                `json:"attempt_no" gorm:"column:attempt_no;not null;uniqueIndex:idx_task_attempts_task_no,priority:2"`
+	RuntimeTaskID  string             `json:"runtime_task_id" gorm:"column:runtime_task_id;type:varchar(128);not null;uniqueIndex"`
+	Status         string             `json:"status" gorm:"column:status;type:varchar(32);not null;index"`
+	InputSnapshot  map[string]any     `json:"input_snapshot,omitempty" gorm:"-"`
+	InputShadow    string             `json:"-" gorm:"column:input_snapshot_json;type:text;not null;default:'{}'"`
+	OutputSnapshot map[string]any     `json:"output_snapshot,omitempty" gorm:"-"`
+	OutputShadow   string             `json:"-" gorm:"column:output_snapshot_json;type:text;not null;default:'{}'"`
+	Error          TaskError          `json:"error,omitempty" gorm:"-"`
+	ErrorShadow    string             `json:"-" gorm:"column:error_json;type:text;not null;default:'{}'"`
+	ExternalJobID  string             `json:"external_job_id,omitempty" gorm:"column:external_job_id;type:varchar(256);index"`
+	LogsRef        string             `json:"logs_ref,omitempty" gorm:"column:logs_ref;type:text"`
+	StartedAt      imachinery.Time    `json:"started_at,omitempty" gorm:"column:started_at"`
+	CompletedAt    imachinery.Time    `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	DurationMS     int64              `json:"duration_ms" gorm:"column:duration_ms;not null;default:0"`
+	Retryable      bool               `json:"retryable" gorm:"column:retryable;not null;default:false"`
 }
 
 func (TaskAttempt) TableName() string { return "task_attempts" }
@@ -293,6 +297,39 @@ type ScheduleSourceSummary struct {
 	ScheduledAt         imachinery.Time `json:"scheduled_at"`          // 该轮次的计划触发时间。
 }
 
+// AtomicTaskSummary 是关联响应使用的一跳任务摘要，不携带参数、输出、错误或其他关联。
+type AtomicTaskSummary struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Status      string  `json:"status"`
+	Progress    float64 `json:"progress"`
+	FunctionRef string  `json:"function_ref,omitempty"`
+}
+
+// DAGTaskGroupSummary 是跨领域读取 DAG 运行状态的一跳摘要，不包含节点、边或运行时标识。
+type DAGTaskGroupSummary struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress"`
+}
+
+// TaskOwnerSummary 是 AtomicTask 多态 owner 以及 Group/DAG 重试来源的一跳摘要。
+type TaskOwnerSummary struct {
+	Type     string  `json:"type"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress,omitempty"`
+}
+
+// TaskScheduleSummary 是执行历史关联的计划摘要，不携带 target 模板或运行历史。
+type TaskScheduleSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
 // TaskTargetSummary 是可展示且可导航的调度目标轻量投影，不包含大型输入输出。
 type TaskTargetSummary struct {
 	Type             string  `json:"type"`                         // 目标为 AtomicTask、TaskGroup 或 DAGTaskGroup。
@@ -322,6 +359,7 @@ type TaskGroup struct {
 	Result                   map[string]any         `json:"result,omitempty" gorm:"-"`
 	ResultShadow             string                 `json:"-" gorm:"column:result_json;type:text;not null;default:'{}'"`
 	RetryOfID                string                 `json:"retry_of_id,omitempty" gorm:"column:retry_of_id;type:varchar(64);index"`
+	RetryOf                  *TaskOwnerSummary      `json:"retry_of,omitempty" gorm:"-"`
 	RuntimeExecutionID       string                 `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
 	RuntimeDefinitionName    string                 `json:"runtime_definition_name,omitempty" gorm:"column:runtime_definition_name;type:varchar(256)"`
 	RuntimeDefinitionVersion int                    `json:"runtime_definition_version,omitempty" gorm:"column:runtime_definition_version;not null;default:0"`
@@ -395,6 +433,7 @@ type DAGTaskGroup struct {
 	Result                   map[string]any         `json:"result,omitempty" gorm:"-"`
 	ResultShadow             string                 `json:"-" gorm:"column:result_json;type:text;not null;default:'{}'"`
 	RetryOfID                string                 `json:"retry_of_id,omitempty" gorm:"column:retry_of_id;type:varchar(64);index"`
+	RetryOf                  *TaskOwnerSummary      `json:"retry_of,omitempty" gorm:"-"`
 	CanvasVersionID          string                 `json:"canvas_version_id,omitempty" gorm:"column:canvas_version_id;type:varchar(64);index"`
 	RuntimeExecutionID       string                 `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
 	RuntimeDefinitionName    string                 `json:"runtime_definition_name" gorm:"column:runtime_definition_name;type:varchar(256);not null;index:idx_dag_groups_definition,priority:1"`
@@ -580,19 +619,20 @@ func (s *TaskSchedule) marshalShadows() error {
 // TaskScheduleExecution records every scheduled time, including overlap skips.
 type TaskScheduleExecution struct {
 	imachinery.ObjectMeta
-	ScheduleID             string             `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
-	ExecutionMode          string             `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED'"` // 固化本轮语义，避免计划后续变化改写历史。
-	ScheduledAt            imachinery.Time    `json:"scheduled_at" gorm:"column:scheduled_at;not null;uniqueIndex:idx_schedule_execution_time,priority:2"`
-	TriggeredAt            imachinery.Time    `json:"triggered_at,omitempty" gorm:"column:triggered_at"`
-	TargetType             string             `json:"target_type,omitempty" gorm:"column:target_type;type:varchar(32);not null"`
-	TargetID               string             `json:"target_id,omitempty" gorm:"column:target_id;type:varchar(64);index"`
-	TargetSummary          *TaskTargetSummary `json:"target_summary,omitempty" gorm:"-"`   // 实际目标摘要，不可用时回退到计划模板摘要。
-	ReconcileSummary       ReconcileSummary   `json:"reconcile_summary,omitzero" gorm:"-"` // RECONCILE 扫描、发现、动作与 checkpoint 推进摘要。
-	ReconcileSummaryShadow string             `json:"-" gorm:"column:reconcile_summary_json;type:text;not null;default:'{}'"`
-	RuntimeExecutionID     string             `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
-	Status                 string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_schedule_executions_status,priority:1"`
-	Reason                 string             `json:"reason,omitempty" gorm:"column:reason;type:text"`
-	CompletedAt            imachinery.Time    `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	ScheduleID             string               `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
+	Schedule               *TaskScheduleSummary `json:"schedule,omitempty" gorm:"-"`
+	ExecutionMode          string               `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED'"` // 固化本轮语义，避免计划后续变化改写历史。
+	ScheduledAt            imachinery.Time      `json:"scheduled_at" gorm:"column:scheduled_at;not null;uniqueIndex:idx_schedule_execution_time,priority:2"`
+	TriggeredAt            imachinery.Time      `json:"triggered_at,omitempty" gorm:"column:triggered_at"`
+	TargetType             string               `json:"target_type,omitempty" gorm:"column:target_type;type:varchar(32);not null"`
+	TargetID               string               `json:"target_id,omitempty" gorm:"column:target_id;type:varchar(64);index"`
+	TargetSummary          *TaskTargetSummary   `json:"target_summary,omitempty" gorm:"-"`   // 实际目标摘要，不可用时回退到计划模板摘要。
+	ReconcileSummary       ReconcileSummary     `json:"reconcile_summary,omitzero" gorm:"-"` // RECONCILE 扫描、发现、动作与 checkpoint 推进摘要。
+	ReconcileSummaryShadow string               `json:"-" gorm:"column:reconcile_summary_json;type:text;not null;default:'{}'"`
+	RuntimeExecutionID     string               `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
+	Status                 string               `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_schedule_executions_status,priority:1"`
+	Reason                 string               `json:"reason,omitempty" gorm:"column:reason;type:text"`
+	CompletedAt            imachinery.Time      `json:"completed_at,omitempty" gorm:"column:completed_at"`
 }
 
 func (TaskScheduleExecution) TableName() string { return "task_schedule_executions" }

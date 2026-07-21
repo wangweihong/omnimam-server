@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -27,6 +28,8 @@ type TaskCenterSrv interface {
 	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
 	CreateAtomicTask(context.Context, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
 	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
+	// GetAtomicTaskSummaries 批量返回当前主体可见的 AtomicTask 一跳摘要，供跨领域只读组合响应。
+	GetAtomicTaskSummaries(context.Context, []string) (map[string]*iapiserver.AtomicTaskSummary, error)
 	ListAttempts(context.Context, *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error)
 	CancelAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
 	RetryAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
@@ -39,6 +42,8 @@ type TaskCenterSrv interface {
 	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error)
 	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
 	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	// GetDAGTaskGroupSummaries 批量返回当前主体可见的 DAGTaskGroup 一跳摘要。
+	GetDAGTaskGroupSummaries(context.Context, []string) (map[string]*iapiserver.DAGTaskGroupSummary, error)
 	ListDAGTaskGroupTasks(context.Context, string, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
 	CancelDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
 	RetryDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
@@ -112,6 +117,9 @@ func (s *taskCenterService) ListAtomicTasks(ctx context.Context, req *iapiserver
 	for _, item := range items {
 		item.ScheduleSource = sources[item.ID]
 	}
+	if err := s.attachAtomicTaskRelations(ctx, items); err != nil {
+		return nil, err
+	}
 	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
 }
 func (s *taskCenterService) GetAtomicTask(ctx context.Context, id string) (*iapiserver.AtomicTask, error) {
@@ -122,15 +130,43 @@ func (s *taskCenterService) GetAtomicTask(ctx context.Context, id string) (*iapi
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetAtomic, []string{item.ID})
+	if err != nil {
+		return nil, err
+	}
+	item.ScheduleSource = sources[item.ID]
+	if err := s.attachAtomicTaskRelations(ctx, []*iapiserver.AtomicTask{item}); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
+
+func (s *taskCenterService) GetAtomicTaskSummaries(ctx context.Context, ids []string) (map[string]*iapiserver.AtomicTaskSummary, error) {
+	result := make(map[string]*iapiserver.AtomicTaskSummary)
+	items, err := s.store.GetAtomicTasksByIDs(ctx, sliceutil.Unique(ids))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item == nil || !canReadTaskCreatedBy(ctx, item.CreatedBy) {
+			continue
+		}
+		result[item.ID] = &iapiserver.AtomicTaskSummary{ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef}
+	}
+	return result, nil
+}
 func (s *taskCenterService) ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error) {
-	if _, err := s.GetAtomicTask(ctx, req.AtomicTaskID); err != nil {
+	task, err := s.GetAtomicTask(ctx, req.AtomicTaskID)
+	if err != nil {
 		return nil, err
 	}
 	items, total, err := s.store.ListAttempts(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	summary := atomicTaskSummary(task)
+	for _, item := range items {
+		item.AtomicTask = summary
 	}
 	return &iapiserver.TaskAttemptListResponse{Total: total, Items: items}, nil
 }
@@ -221,6 +257,9 @@ func (s *taskCenterService) ListTaskGroups(ctx context.Context, req *iapiserver.
 	for _, item := range items {
 		item.ScheduleSource = sources[item.ID]
 	}
+	if err := s.attachTaskGroupRelations(ctx, items); err != nil {
+		return nil, err
+	}
 	return &iapiserver.TaskGroupListResponse{Total: total, Items: items}, nil
 }
 func (s *taskCenterService) GetTaskGroup(ctx context.Context, id string) (*iapiserver.TaskGroup, error) {
@@ -231,6 +270,14 @@ func (s *taskCenterService) GetTaskGroup(ctx context.Context, id string) (*iapis
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrTaskGroupNotFound, "task group not found")
 	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetGroup, []string{item.ID})
+	if err != nil {
+		return nil, err
+	}
+	item.ScheduleSource = sources[item.ID]
+	if err := s.attachTaskGroupRelations(ctx, []*iapiserver.TaskGroup{item}); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
 func (s *taskCenterService) ListTaskGroupTasks(ctx context.Context, id string, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
@@ -239,6 +286,9 @@ func (s *taskCenterService) ListTaskGroupTasks(ctx context.Context, id string, r
 	}
 	items, total, err := s.store.ListOwnedTasks(ctx, iapiserver.TaskOwnerTypeGroup, id, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.attachAtomicTaskRelations(ctx, items); err != nil {
 		return nil, err
 	}
 	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
@@ -329,6 +379,9 @@ func (s *taskCenterService) ListDAGTaskGroups(ctx context.Context, req *iapiserv
 	for _, item := range items {
 		item.ScheduleSource = sources[item.ID]
 	}
+	if err := s.attachDAGTaskGroupRelations(ctx, items); err != nil {
+		return nil, err
+	}
 	return &iapiserver.DAGTaskGroupListResponse{Total: total, Items: items}, nil
 }
 func (s *taskCenterService) GetDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
@@ -339,14 +392,41 @@ func (s *taskCenterService) GetDAGTaskGroup(ctx context.Context, id string) (*ia
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrDAGTaskGroupNotFound, "dag task group not found")
 	}
+	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetDAG, []string{item.ID})
+	if err != nil {
+		return nil, err
+	}
+	item.ScheduleSource = sources[item.ID]
+	if err := s.attachDAGTaskGroupRelations(ctx, []*iapiserver.DAGTaskGroup{item}); err != nil {
+		return nil, err
+	}
 	return item, nil
 }
+
+func (s *taskCenterService) GetDAGTaskGroupSummaries(ctx context.Context, ids []string) (map[string]*iapiserver.DAGTaskGroupSummary, error) {
+	result := make(map[string]*iapiserver.DAGTaskGroupSummary)
+	items, err := s.store.GetDAGTaskGroupsByIDs(ctx, sliceutil.Unique(ids))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item == nil || !canReadTaskCreatedBy(ctx, item.CreatedBy) {
+			continue
+		}
+		result[item.ID] = &iapiserver.DAGTaskGroupSummary{ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress}
+	}
+	return result, nil
+}
+
 func (s *taskCenterService) ListDAGTaskGroupTasks(ctx context.Context, id string, req *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
 	if _, err := s.GetDAGTaskGroup(ctx, id); err != nil {
 		return nil, err
 	}
 	items, total, err := s.store.ListOwnedTasks(ctx, iapiserver.TaskOwnerTypeDAGGroup, id, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.attachAtomicTaskRelations(ctx, items); err != nil {
 		return nil, err
 	}
 	return &iapiserver.AtomicTaskListResponse{Total: total, Items: items}, nil
@@ -459,6 +539,10 @@ func (s *taskCenterService) ListScheduleExecutions(ctx context.Context, req *iap
 	}
 	if err := s.attachExecutionTargets(ctx, schedule, items); err != nil {
 		return nil, err
+	}
+	summary := taskScheduleSummary(schedule)
+	for _, item := range items {
+		item.Schedule = summary
 	}
 	return &iapiserver.ScheduleExecutionListResponse{Total: total, Items: items}, nil
 }

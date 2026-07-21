@@ -359,18 +359,20 @@ type RepresentationAccess struct {
 }
 
 type AssetRelationView struct {
-	ID               string          `json:"id"`
-	SourceAssetID    string          `json:"source_asset_id"`
-	SourceVersionID  string          `json:"source_version_id,omitempty"`
-	RelationType     string          `json:"relation_type"`
-	TargetAssetID    string          `json:"target_asset_id"`
-	TargetVersionID  string          `json:"target_version_id,omitempty"`
-	AtomicTaskID     string          `json:"atomic_task_id,omitempty"`
-	TaskAttemptID    string          `json:"task_attempt_id,omitempty"`
-	ApplicationRunID string          `json:"application_run_id,omitempty"`
-	CanvasRunID      string          `json:"canvas_run_id,omitempty"`
-	Metadata         map[string]any  `json:"metadata"`
-	CreatedAt        imachinery.Time `json:"created_at"`
+	ID               string            `json:"id"`
+	SourceAssetID    string            `json:"source_asset_id"`
+	SourceAsset      *UserAssetSummary `json:"source_asset,omitempty"`
+	SourceVersionID  string            `json:"source_version_id,omitempty"`
+	RelationType     string            `json:"relation_type"`
+	TargetAssetID    string            `json:"target_asset_id"`
+	TargetAsset      *UserAssetSummary `json:"target_asset,omitempty"`
+	TargetVersionID  string            `json:"target_version_id,omitempty"`
+	AtomicTaskID     string            `json:"atomic_task_id,omitempty"`
+	TaskAttemptID    string            `json:"task_attempt_id,omitempty"`
+	ApplicationRunID string            `json:"application_run_id,omitempty"`
+	CanvasRunID      string            `json:"canvas_run_id,omitempty"`
+	Metadata         map[string]any    `json:"metadata"`
+	CreatedAt        imachinery.Time   `json:"created_at"`
 }
 
 type AssetReference struct {

@@ -35,12 +35,18 @@ type AtomicTaskResponse struct {
 	LastError *TaskErrorResponse `json:"last_error,omitempty"`
 	// RetryOfTaskID 指向手动重试所基于的 AtomicTask。
 	RetryOfTaskID string `json:"retry_of_task_id,omitempty"`
+	// RetryOfTask 是手动重试直接来源的一跳可读摘要。
+	RetryOfTask *AtomicTaskSummary `json:"retry_of_task,omitempty"`
 	// RootTaskID 标识手动重试链的根 AtomicTask。
 	RootTaskID string `json:"root_task_id,omitempty"`
+	// RootTask 是手动重试链根任务的一跳可读摘要。
+	RootTask *AtomicTaskSummary `json:"root_task,omitempty"`
 	// OwnerType 表示任务由 TaskGroup、DAGTaskGroup 或 TaskSchedule 拥有。
 	OwnerType string `json:"owner_type,omitempty"`
 	// OwnerID 是组合任务或计划的资源标识。
 	OwnerID string `json:"owner_id,omitempty"`
+	// Owner 是所属 Group、DAG 或 Schedule 的一跳可读摘要。
+	Owner *TaskOwnerSummary `json:"owner,omitempty"`
 	// RuntimeExecutionID 是受控运行时执行标识，仅用于任务诊断和关联。
 	RuntimeExecutionID string `json:"runtime_execution_id,omitempty"`
 	// RuntimeTaskID 是受控运行时任务标识，仅用于 Attempt 关联。

@@ -35,6 +35,15 @@ func (s *workflowCanvasStore) GetWorkflowCanvas(ctx context.Context, id string) 
 	return &item, nil
 }
 
+func (s *workflowCanvasStore) GetWorkflowCanvasesByIDs(ctx context.Context, ids []string) ([]*iapiserver.WorkflowCanvas, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.WorkflowCanvas{}, nil
+	}
+	var items []*iapiserver.WorkflowCanvas
+	err := s.ds.db.WithContext(ctx).Where("id IN ? AND deleted_at IS NULL", ids).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
 func (s *workflowCanvasStore) AddWorkflowCanvas(ctx context.Context, data *iapiserver.WorkflowCanvas) (*iapiserver.WorkflowCanvas, error) {
 	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
 		return nil, errors.WithStack(err)
@@ -101,6 +110,15 @@ func (s *workflowCanvasStore) GetCanvasVersion(ctx context.Context, id string) (
 	return &item, nil
 }
 
+func (s *workflowCanvasStore) GetCanvasVersionsByIDs(ctx context.Context, ids []string) ([]*iapiserver.CanvasVersion, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.CanvasVersion{}, nil
+	}
+	var items []*iapiserver.CanvasVersion
+	err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
 func (s *workflowCanvasStore) ListWorkflowCanvasRuns(ctx context.Context, req *iapiserver.WorkflowCanvasRunListRequest, projectID, namespace, userID string) ([]*iapiserver.WorkflowCanvasRun, int64, error) {
 	var items []*iapiserver.WorkflowCanvasRun
 	filter := func(q *gorm.DB) *gorm.DB {
@@ -127,6 +145,15 @@ func (s *workflowCanvasStore) GetWorkflowCanvasRun(ctx context.Context, id strin
 		return nil, mapNotFound(err, code.ErrCanvasRunNotFound, "canvas run not found")
 	}
 	return &item, nil
+}
+
+func (s *workflowCanvasStore) GetWorkflowCanvasRunsByIDs(ctx context.Context, ids []string) ([]*iapiserver.WorkflowCanvasRun, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.WorkflowCanvasRun{}, nil
+	}
+	var items []*iapiserver.WorkflowCanvasRun
+	err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error
+	return items, errors.WithStack(err)
 }
 
 func (s *workflowCanvasStore) AddWorkflowCanvasRunIdempotent(ctx context.Context, data *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, bool, error) {

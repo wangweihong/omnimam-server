@@ -47,11 +47,17 @@ type MessageCreateResult struct {
 }
 
 type aiChatService struct {
-	store store.Factory
+	store       store.Factory
+	modelReader ModelSummaryReader
 }
 
-func NewService(str store.Factory) AIChatSrv {
-	return &aiChatService{store: str}
+// NewService 创建 AI Chat 服务，并可注入 model-management 的受控模型摘要读取能力。
+func NewService(str store.Factory, modelReaders ...ModelSummaryReader) AIChatSrv {
+	service := &aiChatService{store: str}
+	if len(modelReaders) > 0 {
+		service.modelReader = modelReaders[0]
+	}
+	return service
 }
 
 func (s *aiChatService) ListAssistants(ctx context.Context) (*iapiserver.AIChatAssistantListResponse, error) {
@@ -62,6 +68,9 @@ func (s *aiChatService) ListAssistants(ctx context.Context) (*iapiserver.AIChatA
 	items, err := s.store.AIChat().ListAssistants(ctx, userID)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatAssistantNotFound, "assistant not found")
+	}
+	if err := attachAssistantRelations(ctx, s.modelReader, userID, items); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return &iapiserver.AIChatAssistantListResponse{Items: items}, nil
 }
@@ -79,6 +88,9 @@ func (s *aiChatService) CreateAssistant(
 	if err != nil {
 		return nil, err
 	}
+	if err := attachAssistantRelations(ctx, s.modelReader, userID, []*iapiserver.AIChatAssistant{created}); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	return created, nil
 }
 
@@ -95,6 +107,9 @@ func (s *aiChatService) UpdateAssistant(
 	updated, err := s.store.AIChat().UpdateAssistant(ctx, userID, assistant)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatAssistantNotFound, "assistant not found")
+	}
+	if err := attachAssistantRelations(ctx, s.modelReader, userID, []*iapiserver.AIChatAssistant{updated}); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return updated, nil
 }
@@ -122,6 +137,9 @@ func (s *aiChatService) ListTopics(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	if err := attachTopicRelations(ctx, s.store.AIChat(), s.modelReader, userID, items); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	return &iapiserver.AIChatTopicListResponse{Total: total, Items: items}, nil
 }
 
@@ -133,6 +151,9 @@ func (s *aiChatService) GetTopic(ctx context.Context, id string) (*iapiserver.AI
 	topic, err := s.store.AIChat().GetTopic(ctx, userID, id)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatTopicNotFound, "topic not found")
+	}
+	if err := attachTopicRelations(ctx, s.store.AIChat(), s.modelReader, userID, []*iapiserver.AIChatTopic{topic}); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return topic, nil
 }
@@ -152,6 +173,9 @@ func (s *aiChatService) CreateTopic(
 	}
 	created, err := s.store.AIChat().CreateTopic(ctx, userID, topic)
 	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if err := attachTopicRelations(ctx, s.store.AIChat(), s.modelReader, userID, []*iapiserver.AIChatTopic{created}); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return created, nil
@@ -183,6 +207,9 @@ func (s *aiChatService) UpdateTopic(
 	updated, err := s.store.AIChat().UpdateTopic(ctx, userID, topic)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatTopicNotFound, "topic not found")
+	}
+	if err := attachTopicRelations(ctx, s.store.AIChat(), s.modelReader, userID, []*iapiserver.AIChatTopic{updated}); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return updated, nil
 }
@@ -346,6 +373,9 @@ func (s *aiChatService) BranchMessage(ctx context.Context, messageID string) (*i
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatBranchSourceMissing, "branch source missing")
 	}
+	if err := attachTopicRelations(ctx, s.store.AIChat(), s.modelReader, userID, []*iapiserver.AIChatTopic{topic}); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	return topic, nil
 }
 
@@ -361,6 +391,9 @@ func (s *aiChatService) ListQuickPhrases(
 	if err != nil {
 		return nil, err
 	}
+	if err := attachQuickPhraseRelations(ctx, s.store.AIChat(), userID, items); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	return &iapiserver.AIChatQuickPhraseListResponse{Items: items}, nil
 }
 
@@ -375,6 +408,9 @@ func (s *aiChatService) CreateQuickPhrase(
 	created, err := s.store.AIChat().CreateQuickPhrase(ctx, userID, quickPhraseFromRequest(req))
 	if err != nil {
 		return nil, err
+	}
+	if err := attachQuickPhraseRelations(ctx, s.store.AIChat(), userID, []*iapiserver.AIChatQuickPhrase{created}); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return created, nil
 }
@@ -392,6 +428,9 @@ func (s *aiChatService) UpdateQuickPhrase(
 	updated, err := s.store.AIChat().UpdateQuickPhrase(ctx, userID, phrase)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatMessageNotFound, "quick phrase not found")
+	}
+	if err := attachQuickPhraseRelations(ctx, s.store.AIChat(), userID, []*iapiserver.AIChatQuickPhrase{updated}); err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return updated, nil
 }
@@ -586,12 +625,18 @@ func (s *aiChatService) getModel(ctx context.Context, ownerUserID, id string) (*
 	if err != nil {
 		return nil, err
 	}
+	if providerModel.OwnerUserID != ownerUserID {
+		return nil, gorm.ErrRecordNotFound
+	}
 	provider, err := s.store.Providers().Get(ctx, providerModel.ProviderID)
 	if err != nil {
 		if isRecordNotFound(err) {
 			return nil, gorm.ErrRecordNotFound
 		}
 		return nil, err
+	}
+	if provider.OwnerUserID != ownerUserID {
+		return nil, gorm.ErrRecordNotFound
 	}
 	if !provider.Enabled || !providerModel.Enabled {
 		return nil, gorm.ErrRecordNotFound

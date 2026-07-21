@@ -3,6 +3,7 @@ package platform
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,58 @@ func TestDefaultPermissionsIncludeComfyUIWorkflowContract(t *testing.T) {
 		if !permissions.Has(key) {
 			t.Fatalf("default permissions missing %s", key)
 		}
+	}
+}
+
+func TestGetProviderModelRefSummariesBatchesAndScopesByOwner(t *testing.T) {
+	providerStore := &testProviderStore{items: map[string]*iapiserver.Provider{
+		"provider-a": {ObjectMeta: imachinery.ObjectMeta{ID: "provider-a", Name: "OpenAI A"}, OwnerUserID: "user-a", Enabled: true},
+		"provider-b": {ObjectMeta: imachinery.ObjectMeta{ID: "provider-b", Name: "OpenAI B"}, OwnerUserID: "user-b", Enabled: true},
+	}}
+	modelStore := &testProviderModelStore{items: map[string]*iapiserver.ProviderModel{
+		"model-a": {ObjectMeta: imachinery.ObjectMeta{ID: "model-a"}, OwnerUserID: "user-a", ProviderID: "provider-a", Model: "gpt-a", DisplayName: "GPT A", HealthStatus: iapiserver.ProviderModelHealthHealthy, Enabled: true},
+		"model-b": {ObjectMeta: imachinery.ObjectMeta{ID: "model-b"}, OwnerUserID: "user-b", ProviderID: "provider-b", Model: "gpt-b", DisplayName: "GPT B", HealthStatus: iapiserver.ProviderModelHealthHealthy, Enabled: true},
+	}}
+	service := NewService(&testFactory{providers: providerStore, models: modelStore})
+
+	summaries, err := service.GetProviderModelRefSummaries(context.Background(), "user-a", []string{"model-a", "model-a", "model-b", "missing"})
+	if err != nil {
+		t.Fatalf("get summaries: %v", err)
+	}
+	if len(summaries) != 1 || summaries["model-a"] == nil {
+		t.Fatalf("summaries = %#v", summaries)
+	}
+	if summaries["model-a"].ProviderName != "OpenAI A" || summaries["model-a"].DisplayName != "GPT A" {
+		t.Fatalf("summary = %#v", summaries["model-a"])
+	}
+	if modelStore.getByIDsCalls != 1 || providerStore.getByIDsCalls != 1 {
+		t.Fatalf("batch calls models=%d providers=%d", modelStore.getByIDsCalls, providerStore.getByIDsCalls)
+	}
+	if modelStore.lastGetByIDsUID != "user-a" || providerStore.lastGetByIDsUID != "user-a" {
+		t.Fatalf("owner scope models=%q providers=%q", modelStore.lastGetByIDsUID, providerStore.lastGetByIDsUID)
+	}
+}
+
+func TestProviderModelListAddsProviderNamesInOneBatch(t *testing.T) {
+	providerStore := &testProviderStore{items: map[string]*iapiserver.Provider{
+		"provider-a": {ObjectMeta: imachinery.ObjectMeta{ID: "provider-a", Name: "OpenAI A"}, OwnerUserID: "system-admin", Enabled: true},
+	}}
+	modelStore := &testProviderModelStore{items: map[string]*iapiserver.ProviderModel{}}
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("model-%02d", i)
+		modelStore.items[id] = &iapiserver.ProviderModel{ObjectMeta: imachinery.ObjectMeta{ID: id}, OwnerUserID: "system-admin", ProviderID: "provider-a", Model: id, DisplayName: id, Enabled: true}
+	}
+	service := NewService(&testFactory{providers: providerStore, models: modelStore})
+
+	response, err := service.ProviderModelList(context.Background(), &iapiserver.ProviderModelListRequest{})
+	if err != nil {
+		t.Fatalf("list models: %v", err)
+	}
+	if len(response.Items) != 50 || response.Items[0].ProviderName != "OpenAI A" {
+		t.Fatalf("models = %#v", response.Items)
+	}
+	if providerStore.getByIDsCalls != 1 || providerStore.lastGetByIDsUID != "system-admin" {
+		t.Fatalf("provider batches=%d owner=%q", providerStore.getByIDsCalls, providerStore.lastGetByIDsUID)
 	}
 }
 
@@ -706,7 +759,9 @@ func countPermission(items []string, permission string) int {
 }
 
 type testProviderStore struct {
-	items map[string]*iapiserver.Provider
+	items           map[string]*iapiserver.Provider
+	getByIDsCalls   int
+	lastGetByIDsUID string
 }
 
 func (s *testProviderStore) List(
@@ -729,6 +784,25 @@ func (s *testProviderStore) Get(_ context.Context, id string) (*iapiserver.Provi
 	}
 	cloned := *item
 	return &cloned, nil
+}
+
+func (s *testProviderStore) GetByIDs(
+	_ context.Context,
+	ownerUserID string,
+	ids []string,
+) ([]*iapiserver.Provider, error) {
+	s.getByIDsCalls++
+	s.lastGetByIDsUID = ownerUserID
+	items := make([]*iapiserver.Provider, 0, len(ids))
+	for _, id := range ids {
+		item, ok := s.items[id]
+		if !ok || item.OwnerUserID != ownerUserID {
+			continue
+		}
+		cloned := *item
+		items = append(items, &cloned)
+	}
+	return items, nil
 }
 
 func (s *testProviderStore) Add(_ context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error) {
@@ -754,7 +828,9 @@ func (s *testProviderStore) Delete(_ context.Context, id string) error {
 }
 
 type testProviderModelStore struct {
-	items map[string]*iapiserver.ProviderModel
+	items           map[string]*iapiserver.ProviderModel
+	getByIDsCalls   int
+	lastGetByIDsUID string
 }
 
 func (s *testProviderModelStore) List(
@@ -780,6 +856,25 @@ func (s *testProviderModelStore) Get(_ context.Context, id string) (*iapiserver.
 	}
 	cloned := *item
 	return &cloned, nil
+}
+
+func (s *testProviderModelStore) GetByIDs(
+	_ context.Context,
+	ownerUserID string,
+	ids []string,
+) ([]*iapiserver.ProviderModel, error) {
+	s.getByIDsCalls++
+	s.lastGetByIDsUID = ownerUserID
+	items := make([]*iapiserver.ProviderModel, 0, len(ids))
+	for _, id := range ids {
+		item, ok := s.items[id]
+		if !ok || item.OwnerUserID != ownerUserID {
+			continue
+		}
+		cloned := *item
+		items = append(items, &cloned)
+	}
+	return items, nil
 }
 
 func (s *testProviderModelStore) Add(_ context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error) {

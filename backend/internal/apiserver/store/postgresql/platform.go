@@ -50,6 +50,23 @@ func (s *providerStore) Get(ctx context.Context, id string) (*iapiserver.Provide
 	return &item, nil
 }
 
+func (s *providerStore) GetByIDs(
+	ctx context.Context,
+	ownerUserID string,
+	ids []string,
+) ([]*iapiserver.Provider, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []*iapiserver.Provider
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND id IN ? AND deleted_at = ''", ownerUserID, ids).
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *providerStore) Add(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if CheckExists(tx, &iapiserver.Provider{}, map[string]any{
@@ -174,6 +191,23 @@ func (s *providerModelStore) Get(ctx context.Context, id string) (*iapiserver.Pr
 		return nil, errors.WithStack(err)
 	}
 	return &item, nil
+}
+
+func (s *providerModelStore) GetByIDs(
+	ctx context.Context,
+	ownerUserID string,
+	ids []string,
+) ([]*iapiserver.ProviderModel, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []*iapiserver.ProviderModel
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND id IN ? AND deleted_at = ''", ownerUserID, ids).
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *providerModelStore) Add(

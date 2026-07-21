@@ -296,6 +296,78 @@ func NewService(str store.Factory, dispatcher ...TaskDispatcher) *platformServic
 	return service
 }
 
+// GetProviderModelRefSummaries 按用户边界批量返回非敏感模型摘要，供其他领域组合一跳关系。
+func (s *platformService) GetProviderModelRefSummaries(
+	ctx context.Context,
+	ownerUserID string,
+	ids []string,
+) (map[string]*iapiserver.ProviderModelRefSummary, error) {
+	result := make(map[string]*iapiserver.ProviderModelRefSummary)
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	models, err := s.store.ProviderModels().GetByIDs(ctx, ownerUserID, ids)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	providerIDs := make([]string, 0, len(models))
+	for _, model := range models {
+		if model != nil {
+			providerIDs = append(providerIDs, model.ProviderID)
+		}
+	}
+	providers, err := s.store.Providers().GetByIDs(ctx, ownerUserID, uniqueStrings(providerIDs))
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	providerByID := make(map[string]*iapiserver.Provider, len(providers))
+	for _, item := range providers {
+		if item != nil {
+			providerByID[item.ID] = item
+		}
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		provider := providerByID[model.ProviderID]
+		if provider == nil {
+			continue
+		}
+		displayName := model.DisplayName
+		if displayName == "" {
+			displayName = model.Model
+		}
+		result[model.ID] = &iapiserver.ProviderModelRefSummary{
+			ID:           model.ID,
+			DisplayName:  displayName,
+			ProviderID:   provider.ID,
+			ProviderName: provider.Name,
+			Model:        model.Model,
+			HealthStatus: model.HealthStatus,
+			Enabled:      provider.Enabled && model.Enabled,
+		}
+	}
+	return result, nil
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
 func (s *platformService) Me(ctx context.Context) (*iapiserver.MeResponse, error) {
 	flags, err := s.store.FeatureFlags().List(ctx)
 	if err != nil {
@@ -471,6 +543,9 @@ func (s *platformService) ProviderModelList(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	if err := s.attachProviderNames(ctx, ownerUserID, items); err != nil {
+		return nil, err
+	}
 	return &iapiserver.ProviderModelListResponse{Total: total, Items: items}, nil
 }
 
@@ -505,7 +580,14 @@ func (s *platformService) ProviderModelCreate(
 	}
 	model.Name = req.Name
 	model.DisplayName = req.Name
-	return s.store.ProviderModels().Add(ctx, model)
+	created, err := s.store.ProviderModels().Add(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachProviderNames(ctx, ownerUserID, []*iapiserver.ProviderModel{created}); err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 func (s *platformService) ProviderModelUpdate(
@@ -529,7 +611,14 @@ func (s *platformService) ProviderModelUpdate(
 	model.StreamSupported = general.FallbackIfNil(req.StreamSupported, model.StreamSupported)
 	model.Enabled = general.FallbackIfNil(req.Enabled, model.Enabled)
 
-	return s.store.ProviderModels().Update(ctx, model)
+	updated, err := s.store.ProviderModels().Update(ctx, model)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachProviderNames(ctx, model.OwnerUserID, []*iapiserver.ProviderModel{updated}); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *platformService) ProviderModelHealthCheck(
@@ -650,6 +739,9 @@ func (s *platformService) ProviderModelDelete(
 	}
 	if providerID == "" {
 		providerID = model.ProviderID
+	}
+	if err := s.attachProviderNames(ctx, model.OwnerUserID, []*iapiserver.ProviderModel{model}); err != nil {
+		return nil, err
 	}
 	if err := s.store.SystemLLMConfigs().DeleteByProviderModelID(ctx, providerID, id); err != nil {
 		return nil, errors.WithStack(err)
@@ -788,6 +880,9 @@ func (s *platformService) DefaultModelGet(ctx context.Context, usage string) (*i
 	for _, cfg := range list.Configs {
 		if cfg.Purpose == usage {
 			if model, err := s.store.ProviderModels().Get(ctx, cfg.ModelID); err == nil {
+				if err := s.attachProviderNames(ctx, cfg.OwnerUserID, []*iapiserver.ProviderModel{model}); err != nil {
+					return nil, err
+				}
 				cfg.ModelDetail = model
 			}
 			return cfg, nil
@@ -817,6 +912,7 @@ func (s *platformService) DefaultModelSave(
 		model.HealthStatus == iapiserver.ProviderModelHealthUnhealthy {
 		return nil, errors.NewStatusF(code.ErrDefaultModelInvalid, "default model candidate is invalid")
 	}
+	model.ProviderName = provider.Name
 	cfg := &iapiserver.SystemLLMConfig{
 		OwnerUserID: ownerUserID,
 		Purpose:     usage,
@@ -831,6 +927,36 @@ func (s *platformService) DefaultModelSave(
 	}
 	saved.ModelDetail = model
 	return saved, nil
+}
+
+func (s *platformService) attachProviderNames(ctx context.Context, ownerUserID string, items []*iapiserver.ProviderModel) error {
+	providerIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			item.ProviderName = ""
+			providerIDs = append(providerIDs, item.ProviderID)
+		}
+	}
+	providerIDs = uniqueStrings(providerIDs)
+	if len(providerIDs) == 0 {
+		return nil
+	}
+	providers, err := s.store.Providers().GetByIDs(ctx, ownerUserID, providerIDs)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	providerNames := make(map[string]string, len(providers))
+	for _, provider := range providers {
+		if provider != nil {
+			providerNames[provider.ID] = provider.Name
+		}
+	}
+	for _, item := range items {
+		if item != nil {
+			item.ProviderName = providerNames[item.ProviderID]
+		}
+	}
+	return nil
 }
 
 func (s *platformService) ModelOptionList(

@@ -16,6 +16,10 @@ type captureAssetStore struct {
 	artifact *iapiserver.Artifact
 }
 
+func (s *captureAssetStore) DecorateArtifacts(context.Context, string, []*iapiserver.Artifact) error {
+	return nil
+}
+
 func (s *captureAssetStore) CreateArtifact(_ context.Context, artifact *iapiserver.Artifact) (*iapiserver.Artifact, bool, error) {
 	s.artifact = artifact
 	artifact.ID = "artifact-1"

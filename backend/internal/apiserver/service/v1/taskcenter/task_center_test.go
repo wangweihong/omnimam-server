@@ -22,6 +22,38 @@ type scheduleTargetStoreStub struct {
 	scheduleSources map[string]*iapiserver.ScheduleSourceSummary
 }
 
+type relationStoreStub struct {
+	store.TaskCenterStore
+	atomicCalls   int
+	dagCalls      int
+	scheduleCalls int
+}
+
+func (s *relationStoreStub) GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error) {
+	s.atomicCalls++
+	root := &iapiserver.AtomicTask{Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1, FunctionRef: "asset.process", ProjectID: "project", Namespace: "default", CreatedBy: "user-1"}
+	root.ID = "root-1"
+	root.Name = "Process asset"
+	return []*iapiserver.AtomicTask{root}, nil
+}
+
+func (s *relationStoreStub) GetTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.TaskGroup, error) {
+	return []*iapiserver.TaskGroup{}, nil
+}
+
+func (s *relationStoreStub) GetDAGTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.DAGTaskGroup, error) {
+	s.dagCalls++
+	owner := &iapiserver.DAGTaskGroup{Status: iapiserver.TaskGroupStatusRunning, Progress: 0.5, ProjectID: "project", Namespace: "default", CreatedBy: "user-1"}
+	owner.ID = "dag-1"
+	owner.Name = "Representation build"
+	return []*iapiserver.DAGTaskGroup{owner}, nil
+}
+
+func (s *relationStoreStub) GetTaskSchedulesByIDs(context.Context, []string) ([]*iapiserver.TaskSchedule, error) {
+	s.scheduleCalls++
+	return []*iapiserver.TaskSchedule{}, nil
+}
+
 func (s *scheduleTargetStoreStub) ListAtomicTasks(_ context.Context, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
 	s.seenAtomicList = req
 	item := &iapiserver.AtomicTask{}
@@ -228,6 +260,52 @@ func TestListAtomicTasksIncludesSystemRunsForSystemAdmin(t *testing.T) {
 	}
 	if !canReadTaskCreatedBy(ctx, iapiserver.DefaultTaskCenterCreatedBy) {
 		t.Fatal("system administrator cannot open system schedule target")
+	}
+}
+
+func TestAttachAtomicTaskRelationsUsesBoundedTypedQueries(t *testing.T) {
+	stub := &relationStoreStub{}
+	service := &taskCenterService{store: stub}
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	task := &iapiserver.AtomicTask{RootTaskID: "root-1", RetryOfTaskID: "root-1", OwnerType: iapiserver.TaskOwnerTypeDAGGroup, OwnerID: "dag-1", ProjectID: "project", Namespace: "default", CreatedBy: "user-1"}
+	task.ID = "task-2"
+
+	if err := service.attachAtomicTaskRelations(ctx, []*iapiserver.AtomicTask{task}); err != nil {
+		t.Fatal(err)
+	}
+	if stub.atomicCalls != 1 || stub.dagCalls != 1 || stub.scheduleCalls != 0 {
+		t.Fatalf("relation calls = atomic:%d dag:%d schedule:%d", stub.atomicCalls, stub.dagCalls, stub.scheduleCalls)
+	}
+	if task.RootTask == nil || task.RootTask.Name != "Process asset" || task.RetryOfTask == nil {
+		t.Fatalf("task summaries = root:%#v retry:%#v", task.RootTask, task.RetryOfTask)
+	}
+	if task.Owner == nil || task.Owner.Type != iapiserver.TaskOwnerTypeDAGGroup || task.Owner.Name != "Representation build" {
+		t.Fatalf("owner summary = %#v", task.Owner)
+	}
+}
+
+func TestBatchTaskSummariesFilterInvisibleResources(t *testing.T) {
+	stub := &relationStoreStub{}
+	service := &taskCenterService{store: stub}
+	user := &iapiserver.User{}
+	user.ID = "other-user"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	atomic, err := service.GetAtomicTaskSummaries(ctx, []string{"root-1", "root-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dags, err := service.GetDAGTaskGroupSummaries(ctx, []string{"dag-1", "dag-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atomic) != 0 || len(dags) != 0 {
+		t.Fatalf("invisible task summaries leaked: atomic=%#v dags=%#v", atomic, dags)
+	}
+	if stub.atomicCalls != 1 || stub.dagCalls != 1 {
+		t.Fatalf("batch calls = atomic:%d dag:%d", stub.atomicCalls, stub.dagCalls)
 	}
 }
 

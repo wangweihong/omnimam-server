@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 )
 
@@ -208,4 +209,36 @@ func TestSameApplicationRunRequestRejectsIdempotencyConflict(t *testing.T) {
 	if sameApplicationRunRequest(existing, "app-1", request) {
 		t.Fatal("conflicting idempotent request was accepted")
 	}
+}
+
+func TestNewApplicationRunSnapshotsRelatedResourceSummaries(t *testing.T) {
+	operationID := "generate"
+	run := newApplicationRun(
+		"user-1",
+		&iapiserver.Application{ObjectMeta: objectMeta("app-1", "Poster"), Visibility: iapiserver.ApplicationVisibilityPrivate},
+		&iapiserver.ApplicationVersion{ObjectMeta: objectMeta("version-1", "Poster 1.2.0"), SemanticVersion: "1.2.0", Status: iapiserver.VersionStatusPublished},
+		&iapiserver.ApplicationTemplateVersion{ObjectMeta: objectMeta("template-version-1", "Template v2"), Version: 2, Status: iapiserver.VersionStatusPublished, CapabilitySourceType: iapiserver.CapabilitySourceProviderCapability, SourceRevision: "revision-2", ProviderOperationID: &operationID},
+		&iapiserver.EngineInstance{ObjectMeta: objectMeta("engine-1", "Primary engine"), ApplicationEngineTypeID: "provider", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline},
+		&iapiserver.ApplicationRunCreateRequest{Inputs: map[string]any{"prompt": "poster"}, IdempotencyKey: "run-key"},
+		&iapiserver.ApplicationRunCreateRequest{Inputs: map[string]any{"prompt": "poster"}, IdempotencyKey: "run-key"},
+		&iapiserver.RuntimeFormSchema{},
+	)
+	service := &applicationPlatformService{}
+	service.attachApplicationRunRelations(t.Context(), run)
+	if run.Application == nil || run.Application.Name != "Poster" {
+		t.Fatalf("application summary = %#v", run.Application)
+	}
+	if run.ApplicationVersion == nil || run.ApplicationVersion.SemanticVersion != "1.2.0" {
+		t.Fatalf("application version summary = %#v", run.ApplicationVersion)
+	}
+	if run.ApplicationTemplateVersion == nil || run.ApplicationTemplateVersion.Version != 2 {
+		t.Fatalf("template version summary = %#v", run.ApplicationTemplateVersion)
+	}
+	if run.EngineInstance == nil || run.EngineInstance.Name != "Primary engine" {
+		t.Fatalf("engine summary = %#v", run.EngineInstance)
+	}
+}
+
+func objectMeta(id, name string) imachinery.ObjectMeta {
+	return imachinery.ObjectMeta{ID: id, Name: name}
 }

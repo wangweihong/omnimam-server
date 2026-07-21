@@ -357,8 +357,30 @@ func (s *assetV1Store) decorateUserAssets(ctx context.Context, assets []*iapiser
 	byID := make(map[string]*iapiserver.UserAsset, len(assets))
 	for _, asset := range assets {
 		ids, byID[asset.ID] = append(ids, asset.ID), asset
+		asset.CurrentVersion = nil
 		asset.Labels, asset.Tags = map[string]string{}, []string{}
 		asset.LabelSources, asset.TagSources = map[string]string{}, map[string]string{}
+	}
+	versionIDs := make([]string, 0, len(assets))
+	versionOwners := make(map[string][]*iapiserver.UserAsset)
+	for _, asset := range assets {
+		if asset.CurrentVersionID != "" {
+			versionIDs = append(versionIDs, asset.CurrentVersionID)
+			versionOwners[asset.CurrentVersionID] = append(versionOwners[asset.CurrentVersionID], asset)
+		}
+	}
+	if len(versionIDs) > 0 {
+		var versions []*iapiserver.AssetVersion
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ?", versionIDs, assets[0].OwnerUserID).Find(&versions).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		for _, version := range versions {
+			for _, asset := range versionOwners[version.ID] {
+				if asset.OwnerUserID == version.OwnerUserID && asset.ID == version.AssetID {
+					asset.CurrentVersion = assetVersionSummary(version)
+				}
+			}
+		}
 	}
 	var labels []iapiserver.UserAssetLabel
 	if err := s.ds.db.WithContext(ctx).Where("asset_id IN ? AND deleted_at IS NULL", ids).Find(&labels).Error; err != nil {
@@ -383,6 +405,20 @@ func (s *assetV1Store) decorateUserAssets(ctx context.Context, assets []*iapiser
 		sort.Strings(asset.Tags)
 	}
 	return nil
+}
+
+func assetVersionSummary(version *iapiserver.AssetVersion) *iapiserver.AssetVersionSummary {
+	if version == nil {
+		return nil
+	}
+	return &iapiserver.AssetVersionSummary{ID: version.ID, AssetID: version.AssetID, VersionNo: version.VersionNo, Status: version.Status, SourceType: version.SourceType}
+}
+
+func userAssetSummary(asset *iapiserver.UserAsset) *iapiserver.UserAssetSummary {
+	if asset == nil {
+		return nil
+	}
+	return &iapiserver.UserAssetSummary{ID: asset.ID, DisplayName: asset.DisplayName, MediaType: asset.MediaType, Status: asset.Status, ThumbnailStatus: asset.ThumbnailStatus, CurrentVersionID: asset.CurrentVersionID}
 }
 
 func publishRepresentationRequested(tx *gorm.DB, version *iapiserver.AssetVersion) error {

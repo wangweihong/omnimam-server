@@ -153,14 +153,17 @@ type CanvasStore interface {
 type WorkflowCanvasStore interface {
 	ListWorkflowCanvases(context.Context, *iapiserver.WorkflowCanvasListRequest, string, string, string) ([]*iapiserver.WorkflowCanvas, int64, error)
 	GetWorkflowCanvas(context.Context, string) (*iapiserver.WorkflowCanvas, error)
+	GetWorkflowCanvasesByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvas, error)
 	AddWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas) (*iapiserver.WorkflowCanvas, error)
 	UpdateWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas, int64) (*iapiserver.WorkflowCanvas, error)
 	DeleteWorkflowCanvas(context.Context, string) error
 	PublishWorkflowCanvas(context.Context, *iapiserver.WorkflowCanvas, *iapiserver.CanvasVersion, int64) (*iapiserver.CanvasVersion, error)
 	ListCanvasVersions(context.Context, *iapiserver.CanvasVersionListRequest) ([]*iapiserver.CanvasVersion, int64, error)
 	GetCanvasVersion(context.Context, string) (*iapiserver.CanvasVersion, error)
+	GetCanvasVersionsByIDs(context.Context, []string) ([]*iapiserver.CanvasVersion, error)
 	ListWorkflowCanvasRuns(context.Context, *iapiserver.WorkflowCanvasRunListRequest, string, string, string) ([]*iapiserver.WorkflowCanvasRun, int64, error)
 	GetWorkflowCanvasRun(context.Context, string) (*iapiserver.WorkflowCanvasRun, error)
+	GetWorkflowCanvasRunsByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvasRun, error)
 	AddWorkflowCanvasRunIdempotent(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, bool, error)
 	BindWorkflowCanvasRun(context.Context, string, string, []*iapiserver.CanvasNodeRun) (*iapiserver.WorkflowCanvasRun, error)
 	UpdateWorkflowCanvasRun(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, error)
@@ -170,6 +173,8 @@ type WorkflowCanvasStore interface {
 type ProviderStore interface {
 	List(ctx context.Context, req *iapiserver.ProviderListRequest) ([]*iapiserver.Provider, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.Provider, error)
+	// GetByIDs 按当前所有者边界批量读取 provider，供跨领域一跳投影使用。
+	GetByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.Provider, error)
 	Add(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error)
 	Update(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error)
 	// Delete removes one provider record by id.
@@ -179,6 +184,8 @@ type ProviderStore interface {
 type ProviderModelStore interface {
 	List(ctx context.Context, req *iapiserver.ProviderModelListRequest) ([]*iapiserver.ProviderModel, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.ProviderModel, error)
+	// GetByIDs 按当前所有者边界批量读取模型，禁止消费方逐 ID 查询。
+	GetByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ProviderModel, error)
 	Add(ctx context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error)
 	Update(ctx context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error)
 	// Delete 删除指定模型提供商下的一个模型元数据。
@@ -262,6 +269,8 @@ type AssetV1Store interface {
 	DeleteTag(context.Context, string, string, string) (*iapiserver.BatchLabelData, error)
 
 	ListArtifacts(context.Context, string, *iapiserver.ArtifactListRequest) ([]*iapiserver.Artifact, int64, error)
+	// DecorateArtifacts 批量组合登记素材与版本摘要，不读取跨领域 producer 私有表。
+	DecorateArtifacts(context.Context, string, []*iapiserver.Artifact) error
 	GetArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
 	StoreArtifactContent(context.Context, string, string, StoredAssetContent) (*iapiserver.Artifact, error)
 	CompleteArtifact(context.Context, string, string, *iapiserver.CompleteArtifactRequest) (*iapiserver.Artifact, error)
@@ -362,6 +371,8 @@ type AIChatGenerationBundle struct {
 type AIChatStore interface {
 	ListAssistants(ctx context.Context, ownerUserID string) ([]*iapiserver.AIChatAssistant, error)
 	GetAssistant(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatAssistant, error)
+	// GetAssistantsByIDs 批量读取当前用户可见的系统助手和用户助手。
+	GetAssistantsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.AIChatAssistant, error)
 	CreateAssistant(ctx context.Context, ownerUserID string, data *iapiserver.AIChatAssistant) (*iapiserver.AIChatAssistant, error)
 	UpdateAssistant(ctx context.Context, ownerUserID string, data *iapiserver.AIChatAssistant) (*iapiserver.AIChatAssistant, error)
 	DeleteAssistant(ctx context.Context, ownerUserID, id string) error
@@ -442,6 +453,8 @@ type TaskCenterStore interface {
 	ListOwnedTasks(context.Context, string, string, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
 	AddOwnedAtomicTasks(context.Context, string, string, []*iapiserver.AtomicTask) error
 	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error)
+	// GetTaskSchedulesByIDs 批量读取关联摘要使用的 TaskSchedule，调用方仍需执行主体可见性过滤。
+	GetTaskSchedulesByIDs(context.Context, []string) ([]*iapiserver.TaskSchedule, error)
 	GetTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
 	GetTaskScheduleBySystemKey(context.Context, string) (*iapiserver.TaskSchedule, error)
 	AddTaskSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
@@ -527,6 +540,7 @@ type ApplicationPlatformStore interface {
 	AddApplicationVersion(ctx context.Context, data *iapiserver.ApplicationVersion) (*iapiserver.ApplicationVersion, error)
 	PublishApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
+	GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
 	BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)

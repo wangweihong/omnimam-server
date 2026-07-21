@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: f55c2439c6527e1716c2824ee3b84b84ebaf623c
-contract_version: spec-v1.5.1
-updated_at: 2026-07-20
+commit: e3cbfef1ee55bc9a497a128bc202b1e0b44bd28f
+contract_version: spec-v1.6.5
+updated_at: 2026-07-21
 status: released
-note: Asset-library API contracts completed and released under spec-v1.5.1.
+note: ApplicationRun, Workflow Canvas, AI Chat, Asset Library, and Model Management one-hop summaries extend the related-resource response rules released under spec-v1.6.0.

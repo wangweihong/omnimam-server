@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gowebpki/jcs"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -37,6 +38,7 @@ type Service interface {
 	ListNodeRuns(context.Context, *iapiserver.CanvasNodeRunListRequest) (*iapiserver.CanvasNodeRunListResponse, error)
 	CancelRun(context.Context, string) (*iapiserver.WorkflowCanvasRun, error)
 	RetryRun(context.Context, string, *iapiserver.WorkflowCanvasRunRetryRequest) (*iapiserver.WorkflowCanvasRun, error)
+	GetCanvasRunSummaries(context.Context, string, []string) (map[string]*iapiserver.RelatedResourceSummary, error)
 }
 
 type service struct {
@@ -47,6 +49,26 @@ type service struct {
 
 func New(factory store.Factory, tasks taskcentersvc.TaskCenterSrv) Service {
 	return &service{factory: factory, store: factory.WorkflowCanvases(), tasks: tasks}
+}
+
+// GetCanvasRunSummaries 按创建用户批量返回非敏感 CanvasRun 摘要。
+func (s *service) GetCanvasRunSummaries(ctx context.Context, ownerUserID string, ids []string) (map[string]*iapiserver.RelatedResourceSummary, error) {
+	result := make(map[string]*iapiserver.RelatedResourceSummary)
+	items, err := s.store.GetWorkflowCanvasRunsByIDs(ctx, sliceutil.Unique(ids))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item == nil || item.CreatedBy != ownerUserID {
+			continue
+		}
+		name := item.Name
+		if name == "" {
+			name = "Canvas run"
+		}
+		result[item.ID] = &iapiserver.RelatedResourceSummary{Type: "canvas_run", ID: item.ID, Name: name, Status: item.Status}
+	}
+	return result, nil
 }
 
 func (s *service) List(ctx context.Context, req *iapiserver.WorkflowCanvasListRequest) (*iapiserver.WorkflowCanvasListResponse, error) {
@@ -142,15 +164,23 @@ func (s *service) Publish(ctx context.Context, id string, req *iapiserver.Workfl
 	version := &iapiserver.CanvasVersion{CanvasID: canvas.ID, GraphSnapshot: canvas.DraftGraph, InputSchema: map[string]any{}, OutputSchema: map[string]any{}, ContentDigest: digest, CompiledDefinitionName: binding.Name, CompiledDefinitionVersion: binding.Version, NodeCount: len(canvas.DraftGraph.Nodes), EdgeCount: len(canvas.DraftGraph.Edges), PublishedBy: actor(ctx), PublishedAt: imachinery.Now()}
 	version.ID = uuid.NewString()
 	version.Name = fmt.Sprintf("%s v%d", canvas.Name, next)
-	return s.store.PublishWorkflowCanvas(ctx, canvas, version, req.DraftRevision)
+	result, err := s.store.PublishWorkflowCanvas(ctx, canvas, version, req.DraftRevision)
+	if result != nil {
+		result.Canvas = canvasSummary(canvas)
+	}
+	return result, err
 }
 func (s *service) ListVersions(ctx context.Context, req *iapiserver.CanvasVersionListRequest) (*iapiserver.CanvasVersionListResponse, error) {
-	if _, err := s.Get(ctx, req.CanvasID); err != nil {
+	canvas, err := s.Get(ctx, req.CanvasID)
+	if err != nil {
 		return nil, err
 	}
 	items, total, err := s.store.ListCanvasVersions(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+	for _, item := range items {
+		item.Canvas = canvasSummary(canvas)
 	}
 	return &iapiserver.CanvasVersionListResponse{Total: total, Items: items}, nil
 }
@@ -159,14 +189,19 @@ func (s *service) GetVersion(ctx context.Context, id string) (*iapiserver.Canvas
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.Get(ctx, v.CanvasID); err != nil {
+	canvas, err := s.Get(ctx, v.CanvasID)
+	if err != nil {
 		return nil, err
 	}
+	v.Canvas = canvasSummary(canvas)
 	return v, nil
 }
 func (s *service) ListRuns(ctx context.Context, req *iapiserver.WorkflowCanvasRunListRequest) (*iapiserver.WorkflowCanvasRunListResponse, error) {
 	items, total, err := s.store.ListWorkflowCanvasRuns(ctx, req, iapiserver.DefaultTaskCenterProjectID, iapiserver.DefaultTaskCenterNamespace, actor(ctx))
 	if err != nil {
+		return nil, err
+	}
+	if err := s.attachCanvasRunRelations(ctx, items); err != nil {
 		return nil, err
 	}
 	return &iapiserver.WorkflowCanvasRunListResponse{Total: total, Items: items}, nil
@@ -184,9 +219,19 @@ func (s *service) CreateRun(ctx context.Context, req *iapiserver.WorkflowCanvasR
 	run := &iapiserver.WorkflowCanvasRun{CanvasID: version.CanvasID, CanvasVersionID: version.ID, IdempotencyKey: req.IdempotencyKey, RequestDigest: digest, InputSnapshot: req.Input, TaskCreationStatus: iapiserver.CanvasTaskCreationPending, Status: iapiserver.CanvasRunStatusPending, Progress: 0, Summary: map[string]any{}, Output: map[string]any{}, LastError: map[string]any{}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: actor(ctx)}
 	run.ID = uuid.NewString()
 	run.Name = "Canvas run"
+	run.Extend = map[string]any{
+		"canvas_summary":         version.Canvas,
+		"canvas_version_summary": canvasVersionSummary(version),
+	}
 	created, isNew, err := s.store.AddWorkflowCanvasRunIdempotent(ctx, run)
-	if err != nil || !isNew {
+	if err != nil {
 		return created, err
+	}
+	if !isNew {
+		if relationErr := s.attachCanvasRunRelations(ctx, []*iapiserver.WorkflowCanvasRun{created}); relationErr != nil {
+			return nil, relationErr
+		}
+		return created, nil
 	}
 	dagReq, err := s.dagRequest(ctx, version.GraphSnapshot, run.ProjectID, run.Namespace)
 	if err != nil {
@@ -224,7 +269,14 @@ func (s *service) CreateRun(ctx context.Context, req *iapiserver.WorkflowCanvasR
 		}
 		nodeRuns = append(nodeRuns, nr)
 	}
-	return s.store.BindWorkflowCanvasRun(ctx, run.ID, group.ID, nodeRuns)
+	result, err := s.store.BindWorkflowCanvasRun(ctx, run.ID, group.ID, nodeRuns)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachCanvasRunRelations(ctx, []*iapiserver.WorkflowCanvasRun{result}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 func (s *service) failRun(ctx context.Context, run *iapiserver.WorkflowCanvasRun, cause error) (*iapiserver.WorkflowCanvasRun, error) {
 	run.TaskCreationStatus = iapiserver.CanvasTaskCreationFailed
@@ -244,6 +296,9 @@ func (s *service) GetRun(ctx context.Context, id string) (*iapiserver.WorkflowCa
 	if run.CreatedBy != actor(ctx) {
 		return nil, errors.NewStatus(code.ErrCanvasRunNotFound, "canvas run not found")
 	}
+	if err := s.attachCanvasRunRelations(ctx, []*iapiserver.WorkflowCanvasRun{run}); err != nil {
+		return nil, err
+	}
 	return run, nil
 }
 func (s *service) ListNodeRuns(ctx context.Context, req *iapiserver.CanvasNodeRunListRequest) (*iapiserver.CanvasNodeRunListResponse, error) {
@@ -254,6 +309,7 @@ func (s *service) ListNodeRuns(ctx context.Context, req *iapiserver.CanvasNodeRu
 	if err != nil {
 		return nil, err
 	}
+	s.attachCanvasNodeRunRelations(ctx, items)
 	return &iapiserver.CanvasNodeRunListResponse{Total: total, Items: items}, nil
 }
 func (s *service) CancelRun(ctx context.Context, id string) (*iapiserver.WorkflowCanvasRun, error) {
@@ -269,7 +325,14 @@ func (s *service) CancelRun(ctx context.Context, id string) (*iapiserver.Workflo
 	}
 	run.Status = iapiserver.CanvasRunStatusCanceled
 	run.FinishedAt = imachinery.Now()
-	return s.store.UpdateWorkflowCanvasRun(ctx, run)
+	updated, err := s.store.UpdateWorkflowCanvasRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachCanvasRunRelations(ctx, []*iapiserver.WorkflowCanvasRun{updated}); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 func (s *service) RetryRun(ctx context.Context, id string, req *iapiserver.WorkflowCanvasRunRetryRequest) (*iapiserver.WorkflowCanvasRun, error) {
 	source, err := s.GetRun(ctx, id)
@@ -284,7 +347,143 @@ func (s *service) RetryRun(ctx context.Context, id string, req *iapiserver.Workf
 		created.RetryOfCanvasRunID = &source.ID
 		created, err = s.store.UpdateWorkflowCanvasRun(ctx, created)
 	}
+	if err == nil {
+		err = s.attachCanvasRunRelations(ctx, []*iapiserver.WorkflowCanvasRun{created})
+	}
 	return created, err
+}
+
+// attachCanvasRunRelations 在固定查询预算内组合 Canvas、版本、重跑来源和 Task Center DAG 摘要。
+func (s *service) attachCanvasRunRelations(ctx context.Context, runs []*iapiserver.WorkflowCanvasRun) error {
+	canvasIDs := make([]string, 0, len(runs))
+	versionIDs := make([]string, 0, len(runs))
+	retryIDs := make([]string, 0, len(runs))
+	dagIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		run.Canvas = canvasRunSnapshot[iapiserver.CanvasSummary](run, "canvas_summary")
+		run.CanvasVersion = canvasRunSnapshot[iapiserver.CanvasVersionSummary](run, "canvas_version_summary")
+		if run.Canvas == nil {
+			canvasIDs = append(canvasIDs, run.CanvasID)
+		}
+		if run.CanvasVersion == nil {
+			versionIDs = append(versionIDs, run.CanvasVersionID)
+		}
+		if run.RetryOfCanvasRunID != nil {
+			retryIDs = append(retryIDs, *run.RetryOfCanvasRunID)
+		}
+		if run.DAGTaskGroupID != nil {
+			dagIDs = append(dagIDs, *run.DAGTaskGroupID)
+		}
+	}
+
+	canvasByID := make(map[string]*iapiserver.WorkflowCanvas)
+	if len(canvasIDs) > 0 {
+		canvases, err := s.store.GetWorkflowCanvasesByIDs(ctx, sliceutil.Unique(canvasIDs))
+		if err != nil {
+			return err
+		}
+		for _, item := range canvases {
+			canvasByID[item.ID] = item
+		}
+	}
+	versionByID := make(map[string]*iapiserver.CanvasVersion)
+	if len(versionIDs) > 0 {
+		versions, err := s.store.GetCanvasVersionsByIDs(ctx, sliceutil.Unique(versionIDs))
+		if err != nil {
+			return err
+		}
+		for _, item := range versions {
+			versionByID[item.ID] = item
+		}
+	}
+	retryByID := make(map[string]*iapiserver.WorkflowCanvasRun)
+	if len(retryIDs) > 0 {
+		retries, err := s.store.GetWorkflowCanvasRunsByIDs(ctx, sliceutil.Unique(retryIDs))
+		if err != nil {
+			return err
+		}
+		for _, item := range retries {
+			retryByID[item.ID] = item
+		}
+	}
+	dagByID := map[string]*iapiserver.DAGTaskGroupSummary{}
+	if s.tasks != nil {
+		if summaries, summaryErr := s.tasks.GetDAGTaskGroupSummaries(ctx, sliceutil.Unique(dagIDs)); summaryErr == nil {
+			dagByID = summaries
+		}
+	}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		if run.Canvas == nil && canvasByID[run.CanvasID] != nil {
+			run.Canvas = canvasSummary(canvasByID[run.CanvasID])
+		}
+		if run.CanvasVersion == nil && versionByID[run.CanvasVersionID] != nil {
+			run.CanvasVersion = canvasVersionSummary(versionByID[run.CanvasVersionID])
+		}
+		if run.RetryOfCanvasRunID != nil {
+			source := retryByID[*run.RetryOfCanvasRunID]
+			if source != nil && source.CreatedBy == run.CreatedBy && source.ProjectID == run.ProjectID && source.Namespace == run.Namespace {
+				run.RetryOfCanvasRun = canvasRunSummary(source)
+			}
+		}
+		if run.DAGTaskGroupID != nil {
+			run.DAGTaskGroup = dagByID[*run.DAGTaskGroupID]
+		}
+	}
+	return nil
+}
+
+func (s *service) attachCanvasNodeRunRelations(ctx context.Context, runs []*iapiserver.CanvasNodeRun) {
+	if s.tasks == nil {
+		return
+	}
+	ids := make([]string, 0, len(runs))
+	for _, run := range runs {
+		if run != nil && run.AtomicTaskID != nil {
+			ids = append(ids, *run.AtomicTaskID)
+		}
+	}
+	summaries, err := s.tasks.GetAtomicTaskSummaries(ctx, sliceutil.Unique(ids))
+	if err != nil {
+		return
+	}
+	for _, run := range runs {
+		if run != nil && run.AtomicTaskID != nil {
+			run.AtomicTask = summaries[*run.AtomicTaskID]
+		}
+	}
+}
+
+func canvasSummary(item *iapiserver.WorkflowCanvas) *iapiserver.CanvasSummary {
+	return &iapiserver.CanvasSummary{CanvasID: item.ID, Name: item.Name, Visibility: item.Visibility}
+}
+
+func canvasVersionSummary(item *iapiserver.CanvasVersion) *iapiserver.CanvasVersionSummary {
+	return &iapiserver.CanvasVersionSummary{CanvasVersionID: item.ID, Version: item.Version, ContentDigest: item.ContentDigest, PublishedAt: item.PublishedAt}
+}
+
+func canvasRunSummary(item *iapiserver.WorkflowCanvasRun) *iapiserver.CanvasRunSummary {
+	return &iapiserver.CanvasRunSummary{CanvasRunID: item.ID, Status: item.Status, Progress: item.Progress, CreatedAt: item.CreatedAt}
+}
+
+func canvasRunSnapshot[T any](run *iapiserver.WorkflowCanvasRun, key string) *T {
+	if run == nil || run.Extend == nil || run.Extend[key] == nil {
+		return nil
+	}
+	raw, err := json.Marshal(run.Extend[key])
+	if err != nil {
+		return nil
+	}
+	var result T
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil
+	}
+	return &result
 }
 
 func (s *service) dagRequest(ctx context.Context, graph iapiserver.WorkflowCanvasGraph, projectID, namespace string) (*iapiserver.DAGTaskGroupCreateRequest, error) {

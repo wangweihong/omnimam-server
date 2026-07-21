@@ -80,6 +80,7 @@ type Service interface {
 type service struct {
 	store   store.AssetV1Store
 	storage ContentStorage
+	readers RelationReaders
 }
 
 func New(factory store.Factory, storage ContentStorage) Service {
@@ -89,6 +90,11 @@ func New(factory store.Factory, storage ContentStorage) Service {
 // NewStore 使用消费方接口构造服务，便于路由能力探测和单元测试替换。
 func NewStore(assetStore store.AssetV1Store, storage ContentStorage) Service {
 	return &service{store: assetStore, storage: storage}
+}
+
+// NewStoreWithRelations 注入 Artifact 跨领域受控摘要读取器；存储层仍只读取 asset-library 自有表。
+func NewStoreWithRelations(assetStore store.AssetV1Store, storage ContentStorage, readers RelationReaders) Service {
+	return &service{store: assetStore, storage: storage, readers: readers}
 }
 
 func (s *service) ListAssets(ctx context.Context, req *iapiserver.UserAssetListRequest) (*iapiserver.UserAssetListResponse, error) {
@@ -458,6 +464,9 @@ func (s *service) ListArtifacts(ctx context.Context, req *iapiserver.ArtifactLis
 	if err != nil {
 		return nil, err
 	}
+	if err := s.attachArtifactRelations(ctx, owner, items); err != nil {
+		return nil, err
+	}
 	return &iapiserver.ArtifactListResponse{Total: total, Items: items}, nil
 }
 func (s *service) CreateArtifact(ctx context.Context, req *iapiserver.CreateArtifactRequest) (*iapiserver.Artifact, error) {
@@ -476,6 +485,9 @@ func (s *service) CreateArtifact(ctx context.Context, req *iapiserver.CreateArti
 		}
 		return nil, errors.NewStatus(code.ErrArtifactRegistrationInvalid, "artifact request is invalid")
 	}
+	if err := s.attachArtifactRelations(ctx, owner, []*iapiserver.Artifact{result}); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 func (s *service) GetArtifact(ctx context.Context, id string) (*iapiserver.Artifact, error) {
@@ -484,7 +496,13 @@ func (s *service) GetArtifact(ctx context.Context, id string) (*iapiserver.Artif
 		return nil, err
 	}
 	result, err := s.store.GetArtifact(ctx, owner, id)
-	return result, mapNotFound(err, code.ErrArtifactOwnerMismatch)
+	if err = mapNotFound(err, code.ErrArtifactOwnerMismatch); err != nil {
+		return nil, err
+	}
+	if err := s.attachArtifactRelations(ctx, owner, []*iapiserver.Artifact{result}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 func (s *service) UploadArtifactContent(ctx context.Context, id, mimeType string, reader io.Reader) (*iapiserver.Artifact, error) {
 	owner, err := currentUserID(ctx)
@@ -502,6 +520,9 @@ func (s *service) UploadArtifactContent(ctx context.Context, id, mimeType string
 	if err != nil {
 		return nil, mapArtifactError(err)
 	}
+	if err := s.attachArtifactRelations(ctx, owner, []*iapiserver.Artifact{result}); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 func (s *service) CompleteArtifact(ctx context.Context, id string, req *iapiserver.CompleteArtifactRequest) (*iapiserver.Artifact, error) {
@@ -513,7 +534,13 @@ func (s *service) CompleteArtifact(ctx context.Context, id string, req *iapiserv
 		return nil, errors.NewStatus(code.ErrArtifactSourceForbidden, "artifact metadata contains forbidden source data")
 	}
 	result, err := s.store.CompleteArtifact(ctx, owner, id, req)
-	return result, mapArtifactError(err)
+	if err = mapArtifactError(err); err != nil {
+		return nil, err
+	}
+	if err := s.attachArtifactRelations(ctx, owner, []*iapiserver.Artifact{result}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 func (s *service) DeleteArtifact(ctx context.Context, id string) (*iapiserver.Artifact, error) {
 	owner, err := currentUserID(ctx)
@@ -521,7 +548,13 @@ func (s *service) DeleteArtifact(ctx context.Context, id string) (*iapiserver.Ar
 		return nil, err
 	}
 	result, err := s.store.DeleteArtifact(ctx, owner, id)
-	return result, mapArtifactError(err)
+	if err = mapArtifactError(err); err != nil {
+		return nil, err
+	}
+	if err := s.attachArtifactRelations(ctx, owner, []*iapiserver.Artifact{result}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 func (s *service) RegisterArtifact(ctx context.Context, id string, req *iapiserver.RegisterArtifactRequest) (*iapiserver.ArtifactRegistrationResponse, error) {
 	owner, err := currentUserID(ctx)

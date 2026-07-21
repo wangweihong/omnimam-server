@@ -437,6 +437,17 @@ func (s *applicationPlatformStore) GetApplicationRun(ctx context.Context, id str
 	return &item, nil
 }
 
+func (s *applicationPlatformStore) GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.ApplicationRun{}, nil
+	}
+	var items []*iapiserver.ApplicationRun
+	if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ?", ids, ownerUserID).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *applicationPlatformStore) GetApplicationRunByIdempotency(ctx context.Context, owner, key string) (*iapiserver.ApplicationRun, error) {
 	var item iapiserver.ApplicationRun
 	if err := s.ds.db.WithContext(ctx).First(&item, "owner_user_id = ? AND idempotency_key = ?", owner, key).Error; err != nil {

@@ -38,10 +38,8 @@ func (s *assetV1Store) ListCollections(ctx context.Context, owner string, req *i
 	if err != nil {
 		return nil, 0, err
 	}
-	for _, item := range items {
-		if err := s.decorateCollection(ctx, item); err != nil {
-			return nil, 0, err
-		}
+	if err := s.decorateCollections(ctx, items); err != nil {
+		return nil, 0, err
 	}
 	return items, total, nil
 }
@@ -51,7 +49,7 @@ func (s *assetV1Store) GetCollection(ctx context.Context, owner, id string, pagi
 	if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ? AND deleted_at IS NULL", id, owner).First(&collection).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
-	if err := s.decorateCollection(ctx, &collection); err != nil {
+	if err := s.decorateCollections(ctx, []*iapiserver.AssetCollection{&collection}); err != nil {
 		return nil, err
 	}
 	query := s.ds.db.WithContext(ctx).Model(&iapiserver.AssetCollectionItem{}).Where("group_id = ? AND owner_user_id = ? AND deleted_at IS NULL", id, owner).Order("sort_order ASC, joined_at DESC")
@@ -61,10 +59,29 @@ func (s *assetV1Store) GetCollection(ctx context.Context, owner, id string, pagi
 		return nil, err
 	}
 	assetIDs := make([]string, 0, len(items))
+	pinnedVersionIDs := make([]string, 0, len(items))
 	byID := map[string]*iapiserver.AssetCollectionItem{}
 	for _, item := range items {
 		assetIDs = append(assetIDs, item.AssetID)
+		if item.PinnedVersionID != "" {
+			pinnedVersionIDs = append(pinnedVersionIDs, item.PinnedVersionID)
+		}
 		byID[item.AssetID] = item
+	}
+	if len(pinnedVersionIDs) > 0 {
+		var versions []*iapiserver.AssetVersion
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ?", pinnedVersionIDs, owner).Find(&versions).Error; err != nil {
+			return nil, errors.WithStack(err)
+		}
+		byVersionID := make(map[string]*iapiserver.AssetVersionSummary, len(versions))
+		for _, version := range versions {
+			byVersionID[version.ID] = assetVersionSummary(version)
+		}
+		for _, item := range items {
+			if summary := byVersionID[item.PinnedVersionID]; summary != nil && summary.AssetID == item.AssetID {
+				item.PinnedVersion = summary
+			}
+		}
 	}
 	if len(assetIDs) > 0 {
 		var assets []*iapiserver.UserAsset
@@ -332,17 +349,108 @@ func addTagsTx(tx *gorm.DB, owner, assetID string, tags []string) error {
 }
 
 func (s *assetV1Store) decorateCollection(ctx context.Context, collection *iapiserver.AssetCollection) error {
-	depth, parent := 0, collection.ParentCollectionID
-	for parent != "" && depth < 9 {
-		var item iapiserver.AssetCollection
-		if err := s.ds.db.WithContext(ctx).Select("parent_group_id").Where("id = ? AND owner_user_id = ?", parent, collection.OwnerUserID).First(&item).Error; err != nil {
+	return s.decorateCollections(ctx, []*iapiserver.AssetCollection{collection})
+}
+
+func (s *assetV1Store) decorateCollections(ctx context.Context, collections []*iapiserver.AssetCollection) error {
+	if len(collections) == 0 {
+		return nil
+	}
+	owner := collections[0].OwnerUserID
+	all := make(map[string]*iapiserver.AssetCollection, len(collections))
+	frontier := make([]string, 0, len(collections))
+	for _, item := range collections {
+		all[item.ID] = item
+		item.ParentCollection = nil
+		if item.ParentCollectionID != "" {
+			frontier = append(frontier, item.ParentCollectionID)
+		}
+	}
+	for level := 0; level < 8 && len(frontier) > 0; level++ {
+		frontier = uniqueStrings(frontier)
+		missing := make([]string, 0, len(frontier))
+		for _, id := range frontier {
+			if all[id] == nil {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) == 0 {
+			break
+		}
+		var parents []*iapiserver.AssetCollection
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ? AND deleted_at IS NULL", missing, owner).Find(&parents).Error; err != nil {
 			return errors.WithStack(err)
 		}
-		parent = item.ParentCollectionID
-		depth++
+		frontier = frontier[:0]
+		for _, parent := range parents {
+			all[parent.ID] = parent
+			if parent.ParentCollectionID != "" {
+				frontier = append(frontier, parent.ParentCollectionID)
+			}
+		}
 	}
-	collection.Depth = depth
-	return errors.WithStack(s.ds.db.WithContext(ctx).Model(&iapiserver.AssetCollectionItem{}).Where("group_id = ? AND owner_user_id = ? AND deleted_at IS NULL", collection.ID, collection.OwnerUserID).Count(&collection.ItemCount).Error)
+	type collectionCount struct {
+		CollectionID string `gorm:"column:collection_id"`
+		Count        int64  `gorm:"column:item_count"`
+	}
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		ids = append(ids, id)
+	}
+	var counts []collectionCount
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.AssetCollectionItem{}).
+		Select("group_id AS collection_id, COUNT(*) AS item_count").
+		Where("group_id IN ? AND owner_user_id = ? AND deleted_at IS NULL", ids, owner).
+		Group("group_id").Scan(&counts).Error; err != nil {
+		return errors.WithStack(err)
+	}
+	for _, count := range counts {
+		if item := all[count.CollectionID]; item != nil {
+			item.ItemCount = count.Count
+		}
+	}
+	depthOf := func(item *iapiserver.AssetCollection) int {
+		depth, parentID := 0, item.ParentCollectionID
+		seen := map[string]struct{}{item.ID: {}}
+		for parentID != "" && depth < 8 {
+			if _, ok := seen[parentID]; ok {
+				break
+			}
+			seen[parentID] = struct{}{}
+			parent := all[parentID]
+			if parent == nil {
+				break
+			}
+			depth++
+			parentID = parent.ParentCollectionID
+		}
+		return depth
+	}
+	for _, item := range all {
+		item.Depth = depthOf(item)
+	}
+	for _, item := range collections {
+		if parent := all[item.ParentCollectionID]; parent != nil {
+			item.ParentCollection = &iapiserver.CollectionSummary{ID: parent.ID, Name: parent.Name, Color: parent.Color, Depth: parent.Depth, ItemCount: parent.ItemCount}
+		}
+	}
+	return nil
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func ensureCollectionNameAvailableTx(tx *gorm.DB, owner, name, exceptID string) error {

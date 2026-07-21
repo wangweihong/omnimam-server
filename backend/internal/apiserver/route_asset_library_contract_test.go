@@ -14,7 +14,10 @@ type assetContractRouteFactory struct {
 	assetStore store.AssetV1Store
 }
 
-func (f assetContractRouteFactory) AssetsV1() store.AssetV1Store { return f.assetStore }
+func (f assetContractRouteFactory) AssetsV1() store.AssetV1Store                         { return f.assetStore }
+func (f assetContractRouteFactory) TaskCenters() store.TaskCenterStore                   { return nil }
+func (f assetContractRouteFactory) ApplicationPlatforms() store.ApplicationPlatformStore { return nil }
+func (f assetContractRouteFactory) WorkflowCanvases() store.WorkflowCanvasStore          { return nil }
 
 func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)

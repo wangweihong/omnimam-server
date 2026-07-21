@@ -48,6 +48,24 @@ type AIChatModel struct {
 	IsDefaultTranslation bool     `json:"is_default_translation"`
 }
 
+// AssistantSummary 是 AI Chat 助手的一跳可读摘要，不包含提示词和运行参数。
+type AssistantSummary struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	IsSystem bool   `json:"is_system"`
+}
+
+// ProviderModelRefSummary 是 model-management 面向消费方的非敏感模型只读投影。
+type ProviderModelRefSummary struct {
+	ID           string `json:"id"`
+	DisplayName  string `json:"display_name"`
+	ProviderID   string `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	Model        string `json:"model"`
+	HealthStatus string `json:"health_status"`
+	Enabled      bool   `json:"enabled"`
+}
+
 // AIChatAssistant 保存 ai-chat S2 助手配置，用户助手按 OwnerUserID 隔离，系统助手受保护。
 type AIChatAssistant struct {
 	imachinery.ObjectMeta
@@ -57,6 +75,8 @@ type AIChatAssistant struct {
 	System bool `json:"is_system"              gorm:"column:is_system;type:boolean;not null;default:false"`
 	// SuggestedModelID 指向 model-management 的 provider model，用作该助手推荐模型。
 	SuggestedModelID string `json:"suggested_model_id"     gorm:"column:suggested_model_id;type:varchar(64)"`
+	// SuggestedModel 返回建议模型的一跳可读投影；模型不可见或已删除时为空。
+	SuggestedModel *ProviderModelRefSummary `json:"suggested_model,omitempty" gorm:"-"`
 	// UseSuggestedModel 控制生成时是否强制使用助手推荐模型。
 	UseSuggestedModel bool `json:"use_suggested_model"    gorm:"column:use_suggested_model;type:boolean;not null;default:false"`
 	// SystemPrompt 保存助手提示词，参与生成上下文但不作为用户消息展示。
@@ -123,8 +143,12 @@ type AIChatTopic struct {
 	Pinned bool `json:"pinned"                   gorm:"column:pinned;type:boolean;not null;default:false;index:idx_ai_chat_topics_owner_activity,priority:2,sort:desc"`
 	// AssistantID 记录话题默认助手，生成时可被请求级参数覆盖。
 	AssistantID string `json:"assistant_id"             gorm:"column:assistant_id;type:varchar(64)"`
+	// Assistant 返回当前用户可见助手的一跳摘要；关联失效时为空。
+	Assistant *AssistantSummary `json:"assistant,omitempty" gorm:"-"`
 	// ModelID 指向 model-management 的 provider model，用作话题默认模型。
 	ModelID string `json:"model_id"                 gorm:"column:model_id;type:varchar(64)"`
+	// Model 返回当前用户可见模型的一跳摘要；关联失效时为空。
+	Model *ProviderModelRefSummary `json:"model,omitempty" gorm:"-"`
 	// BranchSourceTopicID 记录分支来源话题，普通话题为空。
 	BranchSourceTopicID string `json:"branch_source_topic_id"   gorm:"column:branch_source_topic_id;type:varchar(64);index:idx_ai_chat_topics_branch_source,priority:1"`
 	// BranchSourceMessageID 记录分支来源消息，用于回溯上下文来源。
@@ -300,6 +324,8 @@ type AIChatQuickPhrase struct {
 	Scope string `json:"scope"         gorm:"column:scope;type:varchar(24);not null;index:idx_ai_chat_quick_phrases_owner_scope,priority:2"`
 	// AssistantID 在 assistant 作用域下限定短语所属助手。
 	AssistantID string `json:"assistant_id"  gorm:"column:assistant_id;type:varchar(64);index:idx_ai_chat_quick_phrases_owner_scope,priority:3"`
+	// Assistant 返回助手作用域短语所绑定助手的一跳摘要；全局短语或关联失效时为空。
+	Assistant *AssistantSummary `json:"assistant,omitempty" gorm:"-"`
 	// PhraseType 区分普通文本和提示词短语，默认 plain。
 	PhraseType string `json:"phrase_type"   gorm:"column:phrase_type;type:varchar(24);not null;default:'plain'"`
 	// DeletedAt 用于软删除快捷短语，保留历史引用可能性。

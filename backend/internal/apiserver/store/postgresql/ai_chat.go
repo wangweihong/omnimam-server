@@ -47,6 +47,23 @@ func (s *aiChatStore) GetAssistant(
 	return &item, nil
 }
 
+func (s *aiChatStore) GetAssistantsByIDs(
+	ctx context.Context,
+	ownerUserID string,
+	ids []string,
+) ([]*iapiserver.AIChatAssistant, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []*iapiserver.AIChatAssistant
+	if err := s.ds.db.WithContext(ctx).
+		Where("id IN ? AND deleted_at = '' AND (is_system = ? OR owner_user_id = ?)", ids, true, ownerUserID).
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *aiChatStore) CreateAssistant(
 	ctx context.Context,
 	ownerUserID string,

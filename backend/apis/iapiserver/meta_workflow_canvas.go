@@ -110,7 +110,35 @@ type CanvasVersion struct {
 	EdgeCount                 int                 `json:"-" gorm:"column:edge_count;not null"`
 	PublishedBy               string              `json:"published_by" gorm:"column:published_by;type:varchar(128);not null"`
 	PublishedAt               imachinery.Time     `json:"published_at" gorm:"column:published_at;not null"`
+	// Canvas 是当前主体可见的一跳画布摘要，不包含草稿图。
+	Canvas *CanvasSummary `json:"canvas,omitempty" gorm:"-"`
 }
+
+// CanvasSummary 是 CanvasVersion 和 CanvasRun 返回的一跳画布摘要。
+type CanvasSummary struct {
+	CanvasID   string `json:"canvas_id"`
+	Name       string `json:"name"`
+	Visibility string `json:"visibility"`
+}
+
+// CanvasVersionSummary 是 CanvasRun 固定的不可变版本摘要。
+type CanvasVersionSummary struct {
+	CanvasVersionID string          `json:"canvas_version_id"`
+	Version         int             `json:"version"`
+	ContentDigest   string          `json:"content_digest"`
+	PublishedAt     imachinery.Time `json:"published_at"`
+}
+
+// CanvasRunSummary 是手动重跑直接来源的一跳摘要。
+type CanvasRunSummary struct {
+	CanvasRunID string          `json:"canvas_run_id"`
+	Status      string          `json:"status"`
+	Progress    float64         `json:"progress"`
+	CreatedAt   imachinery.Time `json:"created_at"`
+}
+
+// DAGTaskGroupRefSummary 复用 Task Center 的 DAGTaskGroup 一跳摘要。
+type DAGTaskGroupRefSummary = DAGTaskGroupSummary
 
 func (CanvasVersion) TableName() string { return "canvas_versions" }
 func (v *CanvasVersion) BeforeCreate(tx *gorm.DB) error {
@@ -180,6 +208,13 @@ type WorkflowCanvasRun struct {
 	Namespace             string          `json:"namespace" gorm:"column:namespace;type:varchar(128);not null;uniqueIndex:idx_canvas_run_idempotency,priority:2"`
 	CreatedBy             string          `json:"created_by" gorm:"column:created_by;type:varchar(128);not null;uniqueIndex:idx_canvas_run_idempotency,priority:3"`
 	FinishedAt            imachinery.Time `json:"finished_at,omitempty" gorm:"column:finished_at"`
+	// Canvas 与 CanvasVersion 优先来自运行创建快照，旧数据才回查当前同域资源。
+	Canvas        *CanvasSummary        `json:"canvas,omitempty" gorm:"-"`
+	CanvasVersion *CanvasVersionSummary `json:"canvas_version,omitempty" gorm:"-"`
+	// DAGTaskGroup 由 Task Center 受控批量读取，不包含节点和运行时配置。
+	DAGTaskGroup *DAGTaskGroupRefSummary `json:"dag_task_group,omitempty" gorm:"-"`
+	// RetryOfCanvasRun 是手动重跑直接来源摘要，不递归展开重跑链。
+	RetryOfCanvasRun *CanvasRunSummary `json:"retry_of_canvas_run,omitempty" gorm:"-"`
 }
 
 func (WorkflowCanvasRun) TableName() string { return "canvas_runs" }
@@ -244,6 +279,8 @@ type CanvasNodeRun struct {
 	LastErrorJSON         string          `json:"-" gorm:"column:last_error_json;type:text;not null"`
 	TaskResourceVersion   int64           `json:"task_resource_version" gorm:"column:task_resource_version;not null;default:0"`
 	FinishedAt            imachinery.Time `json:"finished_at,omitempty" gorm:"column:finished_at"`
+	// AtomicTask 是 Task Center 权限过滤后的一跳任务摘要。
+	AtomicTask *AtomicTaskRefSummary `json:"atomic_task,omitempty" gorm:"-"`
 }
 
 func (CanvasNodeRun) TableName() string { return "canvas_node_runs" }

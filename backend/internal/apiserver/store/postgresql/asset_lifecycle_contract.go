@@ -37,6 +37,51 @@ func (s *assetV1Store) ListArtifacts(ctx context.Context, owner string, req *iap
 	return items, total, err
 }
 
+func (s *assetV1Store) DecorateArtifacts(ctx context.Context, owner string, items []*iapiserver.Artifact) error {
+	assetIDs := make([]string, 0, len(items))
+	versionIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		item.Asset, item.AssetVersion = nil, nil
+		if item.AssetID != "" {
+			assetIDs = append(assetIDs, item.AssetID)
+		}
+		if item.AssetVersionID != "" {
+			versionIDs = append(versionIDs, item.AssetVersionID)
+		}
+	}
+	assetsByID := make(map[string]*iapiserver.UserAssetSummary)
+	if len(assetIDs) > 0 {
+		var assets []*iapiserver.UserAsset
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ?", assetIDs, owner).Find(&assets).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		for _, asset := range assets {
+			assetsByID[asset.ID] = userAssetSummary(asset)
+		}
+	}
+	versionsByID := make(map[string]*iapiserver.AssetVersionSummary)
+	if len(versionIDs) > 0 {
+		var versions []*iapiserver.AssetVersion
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ?", versionIDs, owner).Find(&versions).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		for _, version := range versions {
+			versionsByID[version.ID] = assetVersionSummary(version)
+		}
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		item.Asset = assetsByID[item.AssetID]
+		item.AssetVersion = versionsByID[item.AssetVersionID]
+	}
+	return nil
+}
+
 func (s *assetV1Store) GetArtifact(ctx context.Context, owner, id string) (*iapiserver.Artifact, error) {
 	var artifact iapiserver.Artifact
 	if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ? AND deleted_at IS NULL", id, owner).First(&artifact).Error; err != nil {
@@ -470,7 +515,8 @@ func (s *assetV1Store) GetRepresentation(ctx context.Context, owner, id string) 
 }
 
 func (s *assetV1Store) ListAssetRelations(ctx context.Context, owner, assetID string, paging imachinery.PagingParams) (*iapiserver.AssetRelationListResponse, error) {
-	if _, err := s.GetUserAsset(ctx, owner, assetID, false); err != nil {
+	asset, err := s.GetUserAsset(ctx, owner, assetID, false)
+	if err != nil {
 		return nil, err
 	}
 	if !s.ds.db.Migrator().HasTable(&iapiserver.AssetRelation{}) {
@@ -489,22 +535,25 @@ func (s *assetV1Store) ListAssetRelations(ctx context.Context, owner, assetID st
 			otherIDs = append(otherIDs, relation.TargetAssetID)
 		}
 	}
-	visible := map[string]bool{assetID: true}
+	visible := map[string]*iapiserver.UserAssetSummary{assetID: userAssetSummary(asset)}
 	if len(otherIDs) > 0 {
-		var assets []iapiserver.UserAsset
-		if err := s.ds.db.WithContext(ctx).Select("id").Where("id IN ? AND owner_user_id = ? AND status <> ?", otherIDs, owner, iapiserver.AssetStatusDeleted).Find(&assets).Error; err != nil {
+		var assets []*iapiserver.UserAsset
+		if err := s.ds.db.WithContext(ctx).Where("id IN ? AND owner_user_id = ? AND status <> ?", otherIDs, owner, iapiserver.AssetStatusDeleted).Find(&assets).Error; err != nil {
 			return nil, errors.WithStack(err)
 		}
 		for _, asset := range assets {
-			visible[asset.ID] = true
+			visible[asset.ID] = userAssetSummary(asset)
 		}
 	}
 	items := make([]iapiserver.AssetRelationView, 0, len(relations))
 	for _, relation := range relations {
-		if !visible[relation.SourceAssetID] || !visible[relation.TargetAssetID] {
+		if visible[relation.SourceAssetID] == nil || visible[relation.TargetAssetID] == nil {
 			continue
 		}
-		items = append(items, relationView(relation))
+		view := relationView(relation)
+		view.SourceAsset = visible[relation.SourceAssetID]
+		view.TargetAsset = visible[relation.TargetAssetID]
+		items = append(items, view)
 	}
 	total := int64(len(items))
 	window, err := paging.Normalize()
