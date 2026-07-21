@@ -1,11 +1,24 @@
 package apiserver
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
+
+type recordingRepresentationTaskCreator struct {
+	request *iapiserver.DAGTaskGroupCreateRequest
+	err     error
+}
+
+func (f *recordingRepresentationTaskCreator) CreateDAGTaskGroup(_ context.Context, request *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error) {
+	f.request = request
+	return &iapiserver.DAGTaskGroup{}, f.err
+}
 
 func TestHealthCron(t *testing.T) {
 	tests := []struct {
@@ -50,5 +63,53 @@ func TestScheduleTimeReadsConductorMilliseconds(t *testing.T) {
 	want := time.Date(2026, time.July, 18, 1, 20, 30, 0, time.UTC)
 	if got := scheduleTime(float64(want.UnixMilli())); !got.Equal(want) {
 		t.Fatalf("scheduleTime = %s, want %s", got, want)
+	}
+}
+
+func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
+	payload, err := json.Marshal(representationRequestedEvent{
+		AssetID: "asset-1", AssetVersionID: "version-1", OwnerUserID: "user-1",
+		ProjectID: "default", Namespace: "default", MediaType: "image", ProfileVersion: "default-v1",
+		RequestedRepresentations: []requestedRepresentation{{RepresentationType: "thumbnail", Profile: "list-320"}},
+		IdempotencyKey:           "asset-representations:version-1:default-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator := &recordingRepresentationTaskCreator{}
+	if err := handleRepresentationRequested(context.Background(), creator, payload); err != nil {
+		t.Fatalf("handleRepresentationRequested() error = %v", err)
+	}
+	request := creator.request
+	if request == nil || request.ProjectID != "default" || request.Namespace != "default" || request.CreatedBy != "user-1" {
+		t.Fatalf("request ownership = %#v", request)
+	}
+	if request.IdempotencyScope != "asset-representations" || request.IdempotencyKey != "asset-representations:version-1:default-v1" {
+		t.Fatalf("request idempotency = %q/%q", request.IdempotencyScope, request.IdempotencyKey)
+	}
+	wantKeys := []string{"inspect", "thumbnail:list-320", "finalize"}
+	if len(request.Nodes) != len(wantKeys) {
+		t.Fatalf("node count = %d, want %d", len(request.Nodes), len(wantKeys))
+	}
+	for index, want := range wantKeys {
+		if request.Nodes[index].Key != want {
+			t.Fatalf("node[%d].key = %q, want %q", index, request.Nodes[index].Key, want)
+		}
+	}
+	if len(request.Edges) != 2 || request.Edges[0].FromNode != "inspect" || request.Edges[0].ToNode != "thumbnail:list-320" || request.Edges[1].FromNode != "thumbnail:list-320" || request.Edges[1].ToNode != "finalize" {
+		t.Fatalf("edges = %#v", request.Edges)
+	}
+}
+
+func TestRepresentationDAGRequestRejectsLegacyEvent(t *testing.T) {
+	_, err := representationDAGRequest([]byte(`{"asset_id":"asset-1","asset_version_id":"version-1","owner_user_id":"user-1","profile_version":"default-v1"}`))
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("representationDAGRequest() error = %v", err)
+	}
+}
+
+func TestRepresentationOrchestratorConsumerGroupIsStable(t *testing.T) {
+	if representationOrchestratorConsumerGroup != "task-center-representation-orchestrator" {
+		t.Fatalf("consumer group = %q", representationOrchestratorConsumerGroup)
 	}
 }

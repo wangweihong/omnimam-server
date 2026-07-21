@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -24,6 +25,30 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 )
+
+const representationOrchestratorConsumerGroup = "task-center-representation-orchestrator"
+
+type representationTaskCreator interface {
+	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+}
+
+type representationRequestedEvent struct {
+	AssetID                  string                    `json:"asset_id"`
+	AssetVersionID           string                    `json:"asset_version_id"`
+	OwnerUserID              string                    `json:"owner_user_id"`
+	ProjectID                string                    `json:"project_id"`
+	Namespace                string                    `json:"namespace"`
+	MediaType                string                    `json:"media_type"`
+	ProfileVersion           string                    `json:"profile_version"`
+	RequestedRepresentations []requestedRepresentation `json:"requested_representations"`
+	IdempotencyKey           string                    `json:"idempotency_key"`
+}
+
+type requestedRepresentation struct {
+	RepresentationType string `json:"representation_type"`
+	Profile            string `json:"profile"`
+	Required           bool   `json:"required"`
+}
 
 // RunTaskWorker starts only Conductor AtomicTask handlers and runtime projection reconciliation.
 func RunTaskWorker(cfg *config.Config) error {
@@ -271,65 +296,14 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 		}
 	}()
 
-	// 保留已发布消费者组名称，升级编排实现时不得从新 offset 重放全部历史请求。
-	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, "task-center-representation-finalize")
+	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, representationOrchestratorConsumerGroup)
 	if err != nil {
 		return err
 	}
 	go func() {
 		for msg := range representationMessages {
-			var event struct {
-				AssetID                  string           `json:"asset_id"`
-				AssetVersionID           string           `json:"asset_version_id"`
-				OwnerUserID              string           `json:"owner_user_id"`
-				ProjectID                string           `json:"project_id"`
-				Namespace                string           `json:"namespace"`
-				MediaType                string           `json:"media_type"`
-				ProfileVersion           string           `json:"profile_version"`
-				RequestedRepresentations []map[string]any `json:"requested_representations"`
-				IdempotencyKey           string           `json:"idempotency_key"`
-			}
-			if err := json.Unmarshal(msg.Payload, &event); err != nil || event.AssetVersionID == "" || event.OwnerUserID == "" {
-				msg.Nack()
-				continue
-			}
-			projectID, namespace := event.ProjectID, event.Namespace
-			if projectID == "" {
-				projectID = iapiserver.DefaultTaskCenterProjectID
-			}
-			if namespace == "" {
-				namespace = iapiserver.DefaultTaskCenterNamespace
-			}
-			profileVersion := event.ProfileVersion
-			if profileVersion == "" {
-				profileVersion = "v1"
-			}
-			idempotencyKey := event.IdempotencyKey
-			if idempotencyKey == "" {
-				idempotencyKey = "asset-representations:" + event.AssetVersionID + ":" + profileVersion
-			}
-			nodes := []iapiserver.DAGNode{
-				{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": profileVersion}}},
-			}
-			for _, requested := range event.RequestedRepresentations {
-				representationType, _ := requested["representation_type"].(string)
-				profile, _ := requested["profile"].(string)
-				if representationType == "" || profile == "" {
-					continue
-				}
-				required, _ := requested["required"].(bool)
-				nodes = append(nodes, iapiserver.DAGNode{Key: representationType + ":" + profile, Task: iapiserver.AtomicTaskTemplate{Key: representationType + ":" + profile, Name: "Generate " + representationType, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "representation_type": representationType, "profile": profile, "profile_version": profileVersion, "required": required}}})
-			}
-			nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
-			edges := []iapiserver.DAGEdge{}
-			for _, node := range nodes[1 : len(nodes)-1] {
-				edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: "finalize"})
-			}
-			if len(nodes) == 2 {
-				edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: "finalize"})
-			}
-			_, err := tasks.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges, Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: projectID, Namespace: namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: idempotencyKey})
-			if err != nil {
+			if err := handleRepresentationRequested(ctx, tasks, msg.Payload); err != nil {
+				log.Errorf("asset representation orchestration failed: consumer_group=%s message_id=%s error=%v", representationOrchestratorConsumerGroup, msg.UUID, err)
 				msg.Nack()
 			} else {
 				msg.Ack()
@@ -337,6 +311,48 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 		}
 	}()
 	return nil
+}
+
+func handleRepresentationRequested(ctx context.Context, tasks representationTaskCreator, payload []byte) error {
+	request, err := representationDAGRequest(payload)
+	if err != nil {
+		return err
+	}
+	_, err = tasks.CreateDAGTaskGroup(ctx, request)
+	return errors.Wrap(err, "create representation DAG task group")
+}
+
+func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateRequest, error) {
+	var event representationRequestedEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return nil, errors.Wrap(err, "decode representation requested event")
+	}
+	if event.AssetID == "" || event.AssetVersionID == "" || event.OwnerUserID == "" || event.ProjectID == "" || event.Namespace == "" || event.MediaType == "" || event.ProfileVersion == "" || event.IdempotencyKey == "" || event.RequestedRepresentations == nil {
+		return nil, errors.Errorf("representation requested event is incomplete")
+	}
+	nodes := []iapiserver.DAGNode{
+		{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": event.ProfileVersion}}},
+	}
+	for _, requested := range event.RequestedRepresentations {
+		if requested.RepresentationType == "" || requested.Profile == "" {
+			return nil, errors.Errorf("representation requested event contains an invalid representation")
+		}
+		childKey := requested.RepresentationType + ":" + requested.Profile
+		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required}}})
+	}
+	nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
+	edges := make([]iapiserver.DAGEdge, 0, max(1, 2*len(event.RequestedRepresentations)))
+	for _, node := range nodes[1 : len(nodes)-1] {
+		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: "finalize"})
+	}
+	if len(nodes) == 2 {
+		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: "finalize"})
+	}
+	return &iapiserver.DAGTaskGroupCreateRequest{
+		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges,
+		Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: event.ProjectID,
+		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: event.IdempotencyKey,
+	}, nil
 }
 
 type workerAssetRegistrar struct{ service platformsvc.PlatformSrv }

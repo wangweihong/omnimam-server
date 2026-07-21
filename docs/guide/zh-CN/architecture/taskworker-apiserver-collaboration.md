@@ -212,7 +212,7 @@ sequenceDiagram
   Task-->>Worker: finalize 按 Representation 事实汇总版本状态
 ```
 
-当前图片 policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。生成器通过 `ContentStorage` 访问受控内容，输出 PNG Blob 并登记 `thumbnail` Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。preview、playback、package、manifest policy 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作。
+当前图片 policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用固定消费者组 `task-center-representation-orchestrator` 接收事件，并以 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。消费者只接受 released 事件定义中的完整 owner、scope、media policy、profile 和 idempotency 字段；无效消息记录错误后 Nack，不降级为缺少 generate 节点的 DAG。生成器通过 `ContentStorage` 访问受控内容，输出 PNG Blob 并登记 `thumbnail` Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。preview、playback、package、manifest policy 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作。
 
 ## 7. 状态投影与故障恢复
 
