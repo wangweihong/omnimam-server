@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -24,8 +25,11 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 	installAssetLibraryContractApis(group, factory)
 
 	actual := make(map[string]struct{})
+	handlers := make(map[string]string)
 	for _, route := range router.Routes() {
-		actual[route.Method+" "+route.Path] = struct{}{}
+		key := route.Method + " " + route.Path
+		actual[key] = struct{}{}
+		handlers[key] = route.Handler
 	}
 	expected := []string{
 		"GET /api/v1/assets", "POST /api/v1/assets", "GET /api/v1/assets/:asset_id", "PATCH /api/v1/assets/:asset_id", "DELETE /api/v1/assets/:asset_id",
@@ -46,6 +50,14 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 	for _, route := range expected {
 		if _, ok := actual[route]; !ok {
 			t.Errorf("released route is not installed: %s", route)
+		}
+	}
+	for route, handlerSuffix := range map[string]string{
+		"GET /api/v1/assets/:asset_id/relations": ".ListRelations-fm",
+		"GET /api/v1/assets/:asset_id/lineage":   ".Lineage-fm",
+	} {
+		if !strings.HasSuffix(handlers[route], handlerSuffix) {
+			t.Errorf("route %s uses handler %q, want suffix %q", route, handlers[route], handlerSuffix)
 		}
 	}
 }

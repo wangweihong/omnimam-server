@@ -503,6 +503,35 @@ func TestMeIncludesTaskCenterDefaultPermissions(t *testing.T) {
 	}
 }
 
+func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
+	svc := newTestPlatformService()
+	resp, err := svc.Me(context.Background())
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+
+	for _, permission := range []string{
+		"asset.upload",
+		"asset.label.manage",
+		"asset.collection.read",
+		"asset.collection.manage",
+		"asset.artifact.read",
+		"asset.artifact.register",
+		"asset.content.read",
+		"asset.representation.read",
+		"asset.reference.read",
+		"task.atomic.operate",
+		"task.group.operate",
+		"task.schedule.manage",
+		"sse.stream.read",
+		"sse.history.read",
+	} {
+		if !hasPermission(resp.Permissions, permission) {
+			t.Errorf("permissions missing %s", permission)
+		}
+	}
+}
+
 func TestMeDeduplicatesDatabasePermissions(t *testing.T) {
 	svc := newTestPlatformService()
 	factory := svc.store.(*testFactory)

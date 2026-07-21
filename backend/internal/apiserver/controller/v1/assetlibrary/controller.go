@@ -224,11 +224,14 @@ func contentDisposition(value string) string {
 	return "inline"
 }
 
+// ListRelations 返回当前用户可见素材关系的分页列表，响应固定为 total/items，不返回 Lineage 图。
 func (c *Controller) ListRelations(ctx *gin.Context) {
 	core.Run(ctx, &imachinery.PagingParams{}, func(req *imachinery.PagingParams) (any, error) {
 		return c.service.ListRelations(ctx, ctx.Param("asset_id"), *req)
 	})
 }
+
+// Lineage 返回当前用户可见素材的来源图，响应固定为 asset_id/nodes/edges，不使用分页列表结构。
 func (c *Controller) Lineage(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.Lineage(ctx, ctx.Param("asset_id")) })
 }
