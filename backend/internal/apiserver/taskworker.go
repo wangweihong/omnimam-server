@@ -61,7 +61,8 @@ func RunTaskWorker(cfg *config.Config) error {
 	tasks := taskcentersvc.NewServiceWithRegistries(storeIns, runtime, reconcileRegistry,
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
-		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
+		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
+		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
 	events := appsvc.NoopEventPublisher{}
@@ -72,6 +73,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
 	artifactProcessExecutor := assetlibrarysvc.NewArtifactProcessExecutor(storeIns)
+	assetStorage := assetlibrarysvc.NewLocalContentStorage(storeIns)
+	representationInspectExecutor := assetlibrarysvc.NewRepresentationInspectExecutor(storeIns)
+	representationGenerateExecutor := assetlibrarysvc.NewRepresentationGenerateExecutor(storeIns, assetStorage)
 	representationFinalizeExecutor := assetlibrarysvc.NewRepresentationFinalizeExecutor(storeIns)
 	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: assetRegistrar, Events: events})
 	if err != nil {
@@ -118,6 +122,12 @@ func RunTaskWorker(cfg *config.Config) error {
 		return err
 	}
 	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionArtifactProcess, 16, artifactProcessExecutor.Execute); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationInspect, 16, representationInspectExecutor.Execute); err != nil {
+		return err
+	}
+	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationGenerate, 8, representationGenerateExecutor.Execute); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationFinalize, 16, representationFinalizeExecutor.Execute); err != nil {
@@ -261,6 +271,7 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 		}
 	}()
 
+	// 保留已发布消费者组名称，升级编排实现时不得从新 offset 重放全部历史请求。
 	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, "task-center-representation-finalize")
 	if err != nil {
 		return err
@@ -268,21 +279,56 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 	go func() {
 		for msg := range representationMessages {
 			var event struct {
-				AssetVersionID string `json:"asset_version_id"`
-				OwnerUserID    string `json:"owner_user_id"`
-				ProfileVersion string `json:"profile_version"`
+				AssetID                  string           `json:"asset_id"`
+				AssetVersionID           string           `json:"asset_version_id"`
+				OwnerUserID              string           `json:"owner_user_id"`
+				ProjectID                string           `json:"project_id"`
+				Namespace                string           `json:"namespace"`
+				MediaType                string           `json:"media_type"`
+				ProfileVersion           string           `json:"profile_version"`
+				RequestedRepresentations []map[string]any `json:"requested_representations"`
+				IdempotencyKey           string           `json:"idempotency_key"`
 			}
 			if err := json.Unmarshal(msg.Payload, &event); err != nil || event.AssetVersionID == "" || event.OwnerUserID == "" {
 				msg.Nack()
 				continue
 			}
-			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
-				Key: "representation-finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize,
-				Arguments:            map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID},
-				RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize,
-				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
-				IdempotencyScope: "asset-representations", IdempotencyKey: "asset-representations:" + event.AssetVersionID + ":" + event.ProfileVersion,
-			})
+			projectID, namespace := event.ProjectID, event.Namespace
+			if projectID == "" {
+				projectID = iapiserver.DefaultTaskCenterProjectID
+			}
+			if namespace == "" {
+				namespace = iapiserver.DefaultTaskCenterNamespace
+			}
+			profileVersion := event.ProfileVersion
+			if profileVersion == "" {
+				profileVersion = "v1"
+			}
+			idempotencyKey := event.IdempotencyKey
+			if idempotencyKey == "" {
+				idempotencyKey = "asset-representations:" + event.AssetVersionID + ":" + profileVersion
+			}
+			nodes := []iapiserver.DAGNode{
+				{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": profileVersion}}},
+			}
+			for _, requested := range event.RequestedRepresentations {
+				representationType, _ := requested["representation_type"].(string)
+				profile, _ := requested["profile"].(string)
+				if representationType == "" || profile == "" {
+					continue
+				}
+				required, _ := requested["required"].(bool)
+				nodes = append(nodes, iapiserver.DAGNode{Key: representationType + ":" + profile, Task: iapiserver.AtomicTaskTemplate{Key: representationType + ":" + profile, Name: "Generate " + representationType, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "representation_type": representationType, "profile": profile, "profile_version": profileVersion, "required": required}}})
+			}
+			nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
+			edges := []iapiserver.DAGEdge{}
+			for _, node := range nodes[1 : len(nodes)-1] {
+				edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: "finalize"})
+			}
+			if len(nodes) == 2 {
+				edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: "finalize"})
+			}
+			_, err := tasks.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges, Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: projectID, Namespace: namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: idempotencyKey})
 			if err != nil {
 				msg.Nack()
 			} else {

@@ -143,7 +143,7 @@ func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string
 		version := &iapiserver.AssetVersion{AssetID: asset.ID, OwnerUserID: owner, VersionNo: int(versionCount) + 1,
 			Status: iapiserver.AssetVersionStatusProcessing, SourceType: "upload", SourceRefID: upload.ID,
 			Content: map[string]any{}, Metadata: map[string]any{"mime_type": upload.MIMEType, "size_bytes": upload.SizeBytes},
-			VersionNote: upload.VersionNote, ProfileVersion: upload.ProfileVersion, ExpectedCount: 1}
+			VersionNote: upload.VersionNote, ProfileVersion: upload.ProfileVersion, ExpectedCount: expectedRepresentationCount(asset.MediaType)}
 		version.ID, version.Name = uuid.NewString(), fmtVersionName(int(versionCount)+1)
 		if err := tx.Create(version).Error; err != nil {
 			return err
@@ -156,7 +156,8 @@ func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string
 			return err
 		}
 		asset.CurrentVersionID, asset.SHA256, asset.SizeBytes = version.ID, blob.SHA256, blob.SizeBytes
-		asset.Status, asset.ThumbnailStatus, asset.PreviewStatus = iapiserver.AssetStatusActive, "pending", "pending"
+		asset.Status = iapiserver.AssetStatusActive
+		asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatuses(asset.MediaType)
 		if err := tx.Save(asset).Error; err != nil {
 			return err
 		}
@@ -222,7 +223,8 @@ func (s *assetV1Store) lockOrCreateUploadAsset(tx *gorm.DB, owner string, upload
 	mediaType, format := mediaTypeAndFormat(upload.MIMEType, upload.FileName)
 	asset := &iapiserver.UserAsset{OwnerUserID: owner, DisplayName: upload.DisplayName, OriginalName: upload.FileName,
 		MediaType: mediaType, Format: format, SizeBytes: upload.SizeBytes, SourceType: "upload", Status: iapiserver.AssetStatusActive,
-		ThumbnailStatus: "pending", PreviewStatus: "pending", Labels: map[string]string{}, Tags: []string{}}
+		Labels: map[string]string{}, Tags: []string{}}
+	asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatuses(asset.MediaType)
 	asset.ID, asset.Name = uuid.NewString(), upload.DisplayName
 	if err := tx.Create(asset).Error; err != nil {
 		return nil, err

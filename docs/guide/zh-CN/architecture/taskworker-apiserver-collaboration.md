@@ -65,6 +65,8 @@ flowchart LR
 - `task_center_reconcile_controller`
 - `task.schedule.acquire`
 - `asset-library.artifact.process`
+- `asset-library.representation.inspect`
+- `asset-library.representation.generate`
 - `asset-library.representation.finalize`
 
 Engine 健康和 ComfyUI object-info 刷新不注册逐实例 Worker handler。两者分别以 `application-platform.engine-health` 和 `application-platform.comfyui-object-info-refresh` 注册到 `ReconcileRegistry`，由固定 `task_center_reconcile_controller` 直接扫描并更新业务事实。object-info 计划默认每日 `03:00 UTC` 运行，只处理 enabled、online 的 ComfyUI 实例；成功原子替换一对一当前目录，失败保留最后一次成功内容。
@@ -203,11 +205,14 @@ sequenceDiagram
   Client->>API: register Artifact / complete AssetUpload
   API->>DB: AssetVersion + original/canonical + representation_requested
   DB-->>Worker: durable delivery
-  Worker->>Task: 幂等创建 representation.finalize
-  Worker->>DB: 按 Representation 事实汇总版本状态
+  Worker->>Task: 幂等创建 inspect/generate/finalize DAGTaskGroup
+  Task-->>Worker: inspect 校验版本与 policy 输入
+  Task-->>Worker: generate 读取 original 并写 Blob-backed thumbnail
+  Worker->>DB: 幂等登记 Representation 并投影 thumbnail_status
+  Task-->>Worker: finalize 按 Representation 事实汇总版本状态
 ```
 
-当前 `representation.finalize` 只汇总已经存在的 original/canonical/Worker 写入 Representation；媒体类型对应的 inspect、thumbnail、preview、playback、manifest 生成 DAG 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作，不能把 finalize 成功解释为派生媒体已经生成。
+当前图片 policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。生成器通过 `ContentStorage` 访问受控内容，输出 PNG Blob 并登记 `thumbnail` Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。preview、playback、package、manifest policy 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作。
 
 ## 7. 状态投影与故障恢复
 

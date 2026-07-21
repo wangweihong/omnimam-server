@@ -274,6 +274,8 @@ type AssetV1Store interface {
 	SetCurrentAssetVersion(context.Context, string, string, string) (*iapiserver.UserAsset, error)
 	ListRepresentations(context.Context, string, string) ([]*iapiserver.AssetRepresentation, error)
 	RegisterRepresentation(context.Context, string, string, *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error)
+	// CreateRepresentationBlob 幂等登记 Worker 生成的受控派生内容，返回 Blob ID。
+	CreateRepresentationBlob(context.Context, StoredAssetContent) (string, error)
 	GetRepresentation(context.Context, string, string) (*iapiserver.AssetRepresentation, *StoredAssetContent, error)
 
 	ListAssetRelations(context.Context, string, string, imachinery.PagingParams) (*iapiserver.AssetRelationListResponse, error)

@@ -386,12 +386,37 @@ func (s *assetV1Store) decorateUserAssets(ctx context.Context, assets []*iapiser
 }
 
 func publishRepresentationRequested(tx *gorm.DB, version *iapiserver.AssetVersion) error {
+	var asset iapiserver.UserAsset
+	if err := tx.Select("id", "media_type").Where("id = ? AND owner_user_id = ?", version.AssetID, version.OwnerUserID).First(&asset).Error; err != nil {
+		return err
+	}
+	requested := []map[string]any{}
+	if asset.MediaType == iapiserver.AssetMediaTypeImage {
+		requested = append(requested, map[string]any{"representation_type": "thumbnail", "profile": "list-320", "required": false})
+	}
 	sourceID := fmt.Sprintf("%s:%s:representation_requested", version.ID, version.ProfileVersion)
 	return publishOutbox(tx, OutboxTopicAssetVersionRepresentationRequested, sourceID, map[string]any{
 		"source_event_id": sourceID, "source_domain": iapiserver.SSESourceDomainAssetLibrary,
 		"asset_id": version.AssetID, "asset_version_id": version.ID, "owner_user_id": version.OwnerUserID,
-		"profile_version": version.ProfileVersion, "occurred_at": version.UpdatedAt,
+		"project_id": iapiserver.DefaultTaskCenterProjectID, "namespace": iapiserver.DefaultTaskCenterNamespace,
+		"media_type": asset.MediaType, "profile_version": version.ProfileVersion,
+		"requested_representations": requested, "idempotency_key": "asset-representations:" + version.ID + ":" + version.ProfileVersion,
+		"occurred_at": version.UpdatedAt,
 	})
+}
+
+func expectedRepresentationCount(mediaType string) int {
+	if mediaType == iapiserver.AssetMediaTypeImage {
+		return 2
+	}
+	return 1
+}
+
+func initialRepresentationStatuses(mediaType string) (string, string) {
+	if mediaType == iapiserver.AssetMediaTypeImage {
+		return "pending", "none"
+	}
+	return "none", "none"
 }
 
 func compileAssetSelector(expression *iapiserver.AssetSelectorExpression, owner string) (string, []any, error) {

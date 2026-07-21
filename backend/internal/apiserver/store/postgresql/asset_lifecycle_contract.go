@@ -179,7 +179,8 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 				sourceType = "canvas_output"
 			}
 			asset = &iapiserver.UserAsset{OwnerUserID: owner, DisplayName: name, MediaType: artifact.MediaType, SourceType: sourceType,
-				Status: iapiserver.AssetStatusActive, ThumbnailStatus: "pending", PreviewStatus: "pending", Labels: map[string]string{}, Tags: []string{}}
+				Status: iapiserver.AssetStatusActive, Labels: map[string]string{}, Tags: []string{}}
+			asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatuses(asset.MediaType)
 			asset.ID, asset.Name = uuid.NewString(), name
 			if value, ok := artifact.Metadata["size_bytes"].(float64); ok {
 				asset.SizeBytes = int64(value)
@@ -193,7 +194,7 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 			return err
 		}
 		version := &iapiserver.AssetVersion{AssetID: asset.ID, OwnerUserID: owner, VersionNo: int(count) + 1, Status: iapiserver.AssetVersionStatusProcessing,
-			SourceType: "artifact", SourceRefID: artifact.ID, Content: map[string]any{}, Metadata: artifact.Metadata, VersionNote: req.VersionNote, ProfileVersion: profile, ExpectedCount: 1}
+			SourceType: "artifact", SourceRefID: artifact.ID, Content: map[string]any{}, Metadata: artifact.Metadata, VersionNote: req.VersionNote, ProfileVersion: profile, ExpectedCount: expectedRepresentationCount(artifact.MediaType)}
 		version.ID, version.Name = uuid.NewString(), fmtVersionName(int(count)+1)
 		if err := tx.Create(version).Error; err != nil {
 			return err
@@ -396,6 +397,15 @@ func (s *assetV1Store) RegisterRepresentation(ctx context.Context, owner, versio
 		if err := tx.Save(&version).Error; err != nil {
 			return err
 		}
+		if req.RepresentationType == "thumbnail" {
+			thumbnailStatus := "failed"
+			if req.Status == "ready" {
+				thumbnailStatus = "ready"
+			}
+			if err := tx.Model(&iapiserver.UserAsset{}).Where("id = ? AND owner_user_id = ?", version.AssetID, owner).Update("thumbnail_status", thumbnailStatus).Error; err != nil {
+				return err
+			}
+		}
 		if err := publishAssetVersionProcessingChanged(tx, &version, "progressed", "", "", req.ErrorCode); err != nil {
 			return err
 		}
@@ -409,6 +419,34 @@ func (s *assetV1Store) RegisterRepresentation(ctx context.Context, owner, versio
 		return nil, err
 	}
 	return result, nil
+}
+
+// CreateRepresentationBlob 幂等登记 Representation Worker 已写入受控存储的派生内容。
+func (s *assetV1Store) CreateRepresentationBlob(ctx context.Context, content store.StoredAssetContent) (string, error) {
+	if content.StorageBackendID == "" || content.ObjectKey == "" || content.SHA256 == "" || content.MIMEType == "" || content.SizeBytes < 0 {
+		return "", errors.Errorf("generated representation content reference is invalid")
+	}
+	var blob iapiserver.AssetBlob
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tx.Where("storage_backend_id = ? AND object_key = ?", content.StorageBackendID, content.ObjectKey).First(&blob).Error
+		if err == nil {
+			if !strings.EqualFold(blob.SHA256, content.SHA256) || blob.SizeBytes != content.SizeBytes || blob.MIMEType != content.MIMEType {
+				return errors.Errorf("generated representation blob conflicts with existing content")
+			}
+			return nil
+		}
+		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		blob = iapiserver.AssetBlob{StorageBackendID: content.StorageBackendID, ObjectKey: content.ObjectKey,
+			SHA256: strings.ToLower(content.SHA256), SizeBytes: content.SizeBytes, MIMEType: content.MIMEType, Status: "available"}
+		blob.ID, blob.Name = uuid.NewString(), "representation:"+content.SHA256
+		return tx.Create(&blob).Error
+	})
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
+	return blob.ID, nil
 }
 
 func (s *assetV1Store) GetRepresentation(ctx context.Context, owner, id string) (*iapiserver.AssetRepresentation, *store.StoredAssetContent, error) {

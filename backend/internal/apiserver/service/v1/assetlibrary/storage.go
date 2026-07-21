@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/log"
 
@@ -24,6 +25,7 @@ type ContentStorage interface {
 	FinalizeUpload(context.Context, *iapiserver.AssetUploadSession) (store.StoredAssetContent, error)
 	CancelUpload(context.Context, *iapiserver.AssetUploadSession) error
 	WriteArtifact(context.Context, string, string, io.Reader) (store.StoredAssetContent, error)
+	WriteDerived(context.Context, string, io.Reader) (store.StoredAssetContent, error)
 	Open(context.Context, store.StoredAssetContent) (io.ReadCloser, error)
 	Delete(context.Context, store.StoredAssetContent) error
 }
@@ -144,6 +146,35 @@ func (s *LocalContentStorage) WriteArtifact(ctx context.Context, artifactID, mim
 		return store.StoredAssetContent{}, err
 	}
 	temporary := filepath.ToSlash(filepath.Join(".artifacts", artifactID, "incoming"))
+	path, err := secureJoin(root, temporary)
+	if err != nil {
+		return store.StoredAssetContent{}, err
+	}
+	size, checksum, err := writeAtomic(ctx, path, reader)
+	if err != nil {
+		return store.StoredAssetContent{}, err
+	}
+	objectKey := filepath.ToSlash(filepath.Join("blobs", checksum[:2], checksum))
+	destination, err := secureJoin(root, objectKey)
+	if err != nil {
+		return store.StoredAssetContent{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
+		return store.StoredAssetContent{}, errors.WithStack(err)
+	}
+	if err := os.Rename(path, destination); err != nil {
+		return store.StoredAssetContent{}, errors.WithStack(err)
+	}
+	return store.StoredAssetContent{StorageBackendID: backend.ID, ObjectKey: objectKey, SHA256: checksum, SizeBytes: size, MIMEType: mimeType}, nil
+}
+
+// WriteDerived 将 Worker 生成的派生媒体按内容摘要写入同一受控 Blob 空间。
+func (s *LocalContentStorage) WriteDerived(ctx context.Context, mimeType string, reader io.Reader) (store.StoredAssetContent, error) {
+	backend, root, err := s.localBackend(ctx)
+	if err != nil {
+		return store.StoredAssetContent{}, err
+	}
+	temporary := filepath.ToSlash(filepath.Join(".representations", uuid.NewString()))
 	path, err := secureJoin(root, temporary)
 	if err != nil {
 		return store.StoredAssetContent{}, err

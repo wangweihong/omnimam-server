@@ -1,13 +1,52 @@
 package assetlibrary
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 )
+
+type generateAssetStore struct {
+	store.AssetV1Store
+	registered *iapiserver.RegisterRepresentationRequest
+}
+
+func (s *generateAssetStore) GetAssetVersionDetail(context.Context, string, string) (*iapiserver.AssetVersionDetail, error) {
+	return &iapiserver.AssetVersionDetail{Version: &iapiserver.AssetVersion{ObjectMeta: imachinery.ObjectMeta{ID: "version-1"}}, Representations: []*iapiserver.AssetRepresentation{{ObjectMeta: imachinery.ObjectMeta{ID: "original-1"}, RepresentationType: iapiserver.AssetRepresentationOriginal, Status: "ready"}}}, nil
+}
+func (s *generateAssetStore) GetRepresentation(context.Context, string, string) (*iapiserver.AssetRepresentation, *store.StoredAssetContent, error) {
+	return &iapiserver.AssetRepresentation{}, &store.StoredAssetContent{BlobID: "original-blob", MIMEType: "image/png"}, nil
+}
+func (s *generateAssetStore) CreateRepresentationBlob(context.Context, store.StoredAssetContent) (string, error) {
+	return "thumbnail-blob", nil
+}
+func (s *generateAssetStore) RegisterRepresentation(_ context.Context, _, _ string, req *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error) {
+	s.registered = req
+	return &iapiserver.AssetRepresentation{ObjectMeta: imachinery.ObjectMeta{ID: "thumbnail-1"}, BlobID: req.BlobID}, nil
+}
+
+type generateStorage struct {
+	ContentStorage
+	source  []byte
+	derived []byte
+}
+
+func (s *generateStorage) Open(context.Context, store.StoredAssetContent) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.source)), nil
+}
+func (s *generateStorage) WriteDerived(_ context.Context, _ string, reader io.Reader) (store.StoredAssetContent, error) {
+	s.derived, _ = io.ReadAll(reader)
+	return store.StoredAssetContent{StorageBackendID: "local", ObjectKey: "blobs/thumb", SHA256: "thumb", SizeBytes: int64(len(s.derived)), MIMEType: "image/png"}, nil
+}
 
 type executorAssetStore struct {
 	store.AssetV1Store
@@ -52,5 +91,34 @@ func TestRepresentationFinalizePreservesOptionalFailure(t *testing.T) {
 	}
 	if assetStore.mutation.Status != iapiserver.AssetVersionStatusReadyWithWarnings || assetStore.mutation.CompletedCount != 1 || assetStore.mutation.FailedCount != 1 {
 		t.Fatalf("mutation = %#v", assetStore.mutation)
+	}
+}
+
+func TestRepresentationGenerateCreatesThumbnailRepresentation(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 640, 320))
+	source.Set(10, 10, color.RGBA{R: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	assetStore := &generateAssetStore{}
+	storage := &generateStorage{source: encoded.Bytes()}
+	executor := &RepresentationGenerateExecutor{store: assetStore, storage: storage}
+	result, err := executor.Execute(context.Background(), workflowruntime.WorkerTask{Arguments: map[string]any{
+		"asset_version_id": "version-1", "owner_user_id": "user-1", "representation_type": "thumbnail",
+		"profile": "list-320", "profile_version": "v1", "required": false,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbnail, err := png.Decode(bytes.NewReader(storage.derived))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bounds := thumbnail.Bounds(); bounds.Dx() != 320 || bounds.Dy() != 160 {
+		t.Fatalf("thumbnail bounds = %v", bounds)
+	}
+	if result["representation_id"] != "thumbnail-1" || assetStore.registered == nil || assetStore.registered.BlobID != "thumbnail-blob" || assetStore.registered.Status != "ready" {
+		t.Fatalf("result=%#v request=%#v", result, assetStore.registered)
 	}
 }
