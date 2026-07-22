@@ -318,6 +318,28 @@ type ArtifactListResponse struct {
 	Items []*Artifact `json:"items"`
 }
 
+// BatchArtifactSummaryItem 指定一个待解析 Artifact；每个 ID 独立按当前主体裁剪。
+type BatchArtifactSummaryItem struct {
+	// ID 是 Artifact 稳定标识，不授予额外可见性。
+	ID string `json:"id" binding:"required,max=128"`
+}
+
+// BatchArtifactSummaryRequest 请求 1..200 个 Artifact 摘要并保持输入顺序。
+type BatchArtifactSummaryRequest struct {
+	// Items 是受固定批次上限约束的 Artifact 标识数组。
+	Items []BatchArtifactSummaryItem `json:"items" binding:"required,min=1,max=200,dive"`
+}
+
+type BatchArtifactSummaryResult struct {
+	ID       string                   `json:"id"`
+	Artifact *ArtifactReadableSummary `json:"artifact"`
+}
+
+type BatchArtifactSummaryResponse struct {
+	Total int                           `json:"total"`
+	Items []*BatchArtifactSummaryResult `json:"items"`
+}
+
 type CompleteArtifactRequest struct {
 	SHA256                   string         `json:"sha256" binding:"required,len=64,hexadecimal"`
 	SizeBytes                int64          `json:"size_bytes" binding:"min=0"`

@@ -56,6 +56,7 @@ type Service interface {
 	AddTags(context.Context, string, *iapiserver.AddTagsRequest) (*iapiserver.BatchLabelData, error)
 	DeleteTag(context.Context, string, string) (*iapiserver.BatchLabelData, error)
 	ListArtifacts(context.Context, *iapiserver.ArtifactListRequest) (*iapiserver.ArtifactListResponse, error)
+	BatchArtifactSummaries(context.Context, *iapiserver.BatchArtifactSummaryRequest) (*iapiserver.BatchArtifactSummaryResponse, error)
 	CreateArtifact(context.Context, *iapiserver.CreateArtifactRequest) (*iapiserver.Artifact, error)
 	GetArtifact(context.Context, string) (*iapiserver.Artifact, error)
 	UploadArtifactContent(context.Context, string, string, io.Reader) (*iapiserver.Artifact, error)
@@ -468,6 +469,27 @@ func (s *service) ListArtifacts(ctx context.Context, req *iapiserver.ArtifactLis
 		return nil, err
 	}
 	return &iapiserver.ArtifactListResponse{Total: total, Items: items}, nil
+}
+
+// BatchArtifactSummaries 保持请求顺序返回 owner 裁剪摘要；缺失、删除和不可见目标统一返回 artifact=null。
+func (s *service) BatchArtifactSummaries(ctx context.Context, req *iapiserver.BatchArtifactSummaryRequest) (*iapiserver.BatchArtifactSummaryResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		ids = append(ids, item.ID)
+	}
+	summaries, err := s.store.ResolveArtifactSummaries(ctx, owner, ids)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*iapiserver.BatchArtifactSummaryResult, 0, len(req.Items))
+	for _, item := range req.Items {
+		items = append(items, &iapiserver.BatchArtifactSummaryResult{ID: item.ID, Artifact: summaries[item.ID]})
+	}
+	return &iapiserver.BatchArtifactSummaryResponse{Total: len(items), Items: items}, nil
 }
 func (s *service) CreateArtifact(ctx context.Context, req *iapiserver.CreateArtifactRequest) (*iapiserver.Artifact, error) {
 	owner, err := currentUserID(ctx)

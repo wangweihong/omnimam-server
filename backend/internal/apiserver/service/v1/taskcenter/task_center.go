@@ -31,6 +31,8 @@ type TaskCenterSrv interface {
 	// GetAtomicTaskSummaries 批量返回当前主体可见的 AtomicTask 一跳摘要，供跨领域只读组合响应。
 	GetAtomicTaskSummaries(context.Context, []string) (map[string]*iapiserver.AtomicTaskSummary, error)
 	ListAttempts(context.Context, *iapiserver.TaskAttemptListRequest) (*iapiserver.TaskAttemptListResponse, error)
+	ListAttemptLogs(context.Context, *iapiserver.TaskAttemptLogListRequest) (*iapiserver.TaskAttemptLogListResponse, error)
+	DownloadAttemptLogs(context.Context, *iapiserver.TaskAttemptLogDownloadRequest) ([]byte, error)
 	CancelAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
 	RetryAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
 	ListTaskGroups(context.Context, *iapiserver.TaskGroupListRequest) (*iapiserver.TaskGroupListResponse, error)
@@ -42,9 +44,12 @@ type TaskCenterSrv interface {
 	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error)
 	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
 	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
+	GetDAGTaskGroupDetail(context.Context, string) (*iapiserver.DAGTaskGroupDetail, error)
 	// GetDAGTaskGroupSummaries 批量返回当前主体可见的 DAGTaskGroup 一跳摘要。
 	GetDAGTaskGroupSummaries(context.Context, []string) (map[string]*iapiserver.DAGTaskGroupSummary, error)
 	ListDAGTaskGroupTasks(context.Context, string, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
+	ListDAGTaskGroupEvents(context.Context, string, *iapiserver.DAGExecutionEventListRequest) (*iapiserver.DAGExecutionEventListResponse, error)
+	ListDAGTaskGroupTimeline(context.Context, string, *iapiserver.DAGTimelineListRequest) (*iapiserver.DAGTimelineListResponse, error)
 	CancelDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
 	RetryDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
 	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) (*iapiserver.TaskScheduleListResponse, error)
@@ -72,8 +77,14 @@ type DefinitionBinding struct {
 type taskCenterService struct {
 	store      store.TaskCenterStore
 	runtime    workflowruntime.WorkflowRuntime
+	artifacts  ArtifactSummaryReader
 	functions  map[string]struct{}
 	reconciles *ReconcileRegistry
+}
+
+// ArtifactSummaryReader 是 Task Center 消费的跨域只读能力；实现必须由 asset-library 提供 owner 裁剪。
+type ArtifactSummaryReader interface {
+	ResolveArtifactSummaries(context.Context, string, []string) (map[string]*iapiserver.ArtifactReadableSummary, error)
 }
 
 func NewService(factory store.Factory, runtimes ...workflowruntime.WorkflowRuntime) TaskCenterSrv {
@@ -86,10 +97,16 @@ func NewService(factory store.Factory, runtimes ...workflowruntime.WorkflowRunti
 
 // NewServiceWithRegistries 注入 functionRef 与 ReconcileRegistry 两类受控后端注册表。
 func NewServiceWithRegistries(factory store.Factory, runtime workflowruntime.WorkflowRuntime, reconciles *ReconcileRegistry, functionRefs ...string) TaskCenterSrv {
+	return NewServiceWithDependencies(factory, runtime, reconciles, nil, functionRefs...)
+}
+
+// NewServiceWithDependencies 注入运行时、注册表和跨域 Artifact 摘要消费方边界。
+func NewServiceWithDependencies(factory store.Factory, runtime workflowruntime.WorkflowRuntime, reconciles *ReconcileRegistry, artifacts ArtifactSummaryReader, functionRefs ...string) TaskCenterSrv {
 	service := NewServiceWithFunctions(factory, runtime, functionRefs...).(*taskCenterService)
 	if reconciles != nil {
 		service.reconciles = reconciles
 	}
+	service.artifacts = artifacts
 	return service
 }
 
@@ -167,6 +184,10 @@ func (s *taskCenterService) ListAttempts(ctx context.Context, req *iapiserver.Ta
 	summary := atomicTaskSummary(task)
 	for _, item := range items {
 		item.AtomicTask = summary
+		item.Executor = nil
+		if taskActor(ctx) == "system-admin" && item.ExecutorType != "" && item.ExecutorDisplayName != "" {
+			item.Executor = &iapiserver.TaskExecutorSummary{Type: item.ExecutorType, DisplayName: item.ExecutorDisplayName}
+		}
 	}
 	return &iapiserver.TaskAttemptListResponse{Total: total, Items: items}, nil
 }
@@ -441,7 +462,24 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	if createdBy == "" {
 		createdBy = taskActor(ctx)
 	}
-	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
+	triggerType := req.TriggerType
+	switch triggerType {
+	case iapiserver.DAGTriggerAPI, iapiserver.DAGTriggerSchedule, iapiserver.DAGTriggerCanvas, iapiserver.DAGTriggerDomainEvent, iapiserver.DAGTriggerRetry:
+	default:
+		triggerType = iapiserver.DAGTriggerAPI
+		if req.CanvasVersionID != "" {
+			triggerType = iapiserver.DAGTriggerCanvas
+		}
+	}
+	triggeredAt := req.TriggeredAt
+	if triggeredAt.IsZero() {
+		triggeredAt = imachinery.Now()
+	}
+	triggerSourceID := req.TriggerSourceID
+	if triggerSourceID == "" && triggerType == iapiserver.DAGTriggerCanvas {
+		triggerSourceID = req.CanvasVersionID
+	}
+	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, TriggerType: triggerType, TriggerSourceID: triggerSourceID, TriggerSourceName: req.TriggerSourceName, TriggeredAt: triggeredAt, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	group.ID = uuid.NewString()
 	group.Name = req.Name
 	group.Description = req.Description
@@ -464,6 +502,7 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	}
 	createdGroup.RuntimeExecutionID = execution.ID
 	createdGroup.Status = iapiserver.TaskGroupStatusRunning
+	createdGroup.StartedAt = imachinery.NewTime(execution.StartedAt)
 	return s.store.UpdateDAGTaskGroup(ctx, createdGroup)
 }
 
@@ -491,7 +530,7 @@ func (s *taskCenterService) RetryDAGTaskGroup(ctx context.Context, id string) (*
 	if !iapiserver.IsTaskGroupTerminal(source.Status) {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "dag task group cannot be rerun")
 	}
-	created, err := s.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: source.Name, Description: source.Description, Nodes: source.Nodes, Edges: source.Edges, Input: source.Input, OutputMapping: source.OutputMapping, CanvasVersionID: source.CanvasVersionID, ProjectID: source.ProjectID, Namespace: source.Namespace})
+	created, err := s.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: source.Name, Description: source.Description, Nodes: source.Nodes, Edges: source.Edges, Input: source.Input, OutputMapping: source.OutputMapping, CanvasVersionID: source.CanvasVersionID, ProjectID: source.ProjectID, Namespace: source.Namespace, TriggerType: iapiserver.DAGTriggerRetry, TriggerSourceID: source.ID, TriggerSourceName: source.Name})
 	if err != nil {
 		return created, err
 	}
@@ -878,7 +917,11 @@ func tasksFromDAG(nodes []iapiserver.DAGNode, ownerID, projectID, namespace, cre
 		templates[i] = node.Task
 		templates[i].Key = node.Key
 	}
-	return tasksFromTemplates(templates, ownerID, iapiserver.TaskOwnerTypeDAGGroup, projectID, namespace, createdBy)
+	tasks := tasksFromTemplates(templates, ownerID, iapiserver.TaskOwnerTypeDAGGroup, projectID, namespace, createdBy)
+	for index, task := range tasks {
+		task.DAGNodeKey = nodes[index].Key
+	}
+	return tasks
 }
 
 func atomicDefinition(task *iapiserver.AtomicTask) workflowruntime.Definition {
@@ -964,7 +1007,12 @@ func runtimeSchedule(schedule *iapiserver.TaskSchedule, start workflowruntime.St
 	}
 }
 func simpleRuntimeTask(task *iapiserver.AtomicTask) workflowruntime.Task {
-	return workflowruntime.Task{Name: task.FunctionRef, ReferenceName: safeName(task.ChildKey + "_" + shortID(task.ID)), Type: "SIMPLE", Input: map[string]any{"atomic_task_id": task.ID, "arguments": task.Arguments}}
+	input := map[string]any{"atomic_task_id": task.ID, "arguments": task.Arguments}
+	if task.DAGNodeKey != "" {
+		input["dag_node_key"] = task.DAGNodeKey
+		input["function_ref"] = task.FunctionRef
+	}
+	return workflowruntime.Task{Name: task.FunctionRef, ReferenceName: safeName(task.ChildKey + "_" + shortID(task.ID)), Type: "SIMPLE", Input: input}
 }
 
 func validateScheduleRequest(req *iapiserver.TaskScheduleCreateRequest) error {
@@ -999,6 +1047,13 @@ func runtimeError(err error) error {
 		return errors.NewStatus(code.ErrWorkflowRuntimeUnavailable, err.Error())
 	}
 	return errors.NewStatus(code.ErrWorkflowRuntimeRejected, err.Error())
+}
+
+func taskLogRuntimeError(err error) error {
+	if stderrors.Is(err, workflowruntime.ErrUnavailable) {
+		return errors.NewStatus(code.ErrWorkflowRuntimeUnavailable, "workflow runtime is unavailable")
+	}
+	return errors.NewStatus(code.ErrWorkflowRuntimeRejected, "workflow runtime rejected task log request")
 }
 func stableRuntimeKey(projectID, namespace, scope, key, fallback string) string {
 	if scope == "" || key == "" {

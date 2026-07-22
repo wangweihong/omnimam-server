@@ -13,6 +13,7 @@ type Fake struct {
 	executions  map[string]Execution
 	schedules   map[string]Schedule
 	handlers    map[string]Handler
+	logs        map[string][]TaskLogEntry
 	nextID      int64
 }
 
@@ -22,7 +23,32 @@ func NewFake() *Fake {
 		executions:  make(map[string]Execution),
 		schedules:   make(map[string]Schedule),
 		handlers:    make(map[string]Handler),
+		logs:        make(map[string][]TaskLogEntry),
 	}
+}
+
+func (f *Fake) AppendTaskLog(_ context.Context, runtimeTaskID string, entry TaskLogEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if runtimeTaskID == "" {
+		return ErrTaskLogNotFound
+	}
+	entry = normalizeTaskLogEntry(entry)
+	if entry.OccurredAt.IsZero() {
+		entry.OccurredAt = time.Now()
+	}
+	f.logs[runtimeTaskID] = append(f.logs[runtimeTaskID], entry)
+	return nil
+}
+
+func (f *Fake) ListTaskLogs(_ context.Context, runtimeTaskID string) ([]TaskLogEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	items, exists := f.logs[runtimeTaskID]
+	if !exists {
+		return []TaskLogEntry{}, nil
+	}
+	return normalizeTaskLogs(append([]TaskLogEntry(nil), items...)), nil
 }
 
 func (f *Fake) RegisterDefinition(_ context.Context, definition Definition) (Binding, error) {

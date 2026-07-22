@@ -2,6 +2,8 @@ package taskcenter
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -27,6 +30,80 @@ type relationStoreStub struct {
 	atomicCalls   int
 	dagCalls      int
 	scheduleCalls int
+}
+
+type attemptLogStoreStub struct {
+	store.TaskCenterStore
+	task            *iapiserver.AtomicTask
+	attempt         *iapiserver.TaskAttempt
+	attemptErr      error
+	getAttemptCalls int
+	seenTaskID      string
+	seenAttemptID   string
+}
+
+type observationStoreStub struct {
+	store.TaskCenterStore
+	group       *iapiserver.DAGTaskGroup
+	tasks       []*iapiserver.AtomicTask
+	attempts    []*iapiserver.TaskAttempt
+	projections []*iapiserver.RuntimeProjectionEvent
+}
+
+type artifactSummaryReaderStub struct {
+	summaries map[string]*iapiserver.ArtifactReadableSummary
+}
+
+func (s *observationStoreStub) GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error) {
+	return s.group, nil
+}
+
+func (*observationStoreStub) ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+	return map[string]*iapiserver.ScheduleSourceSummary{}, nil
+}
+
+func (s *observationStoreStub) ListDAGObservationTasks(context.Context, string) ([]*iapiserver.AtomicTask, error) {
+	return s.tasks, nil
+}
+
+func (s *observationStoreStub) ListAttemptsByTaskIDs(context.Context, []string) ([]*iapiserver.TaskAttempt, error) {
+	return s.attempts, nil
+}
+
+func (s *observationStoreStub) ListRuntimeProjectionEvents(context.Context, string) ([]*iapiserver.RuntimeProjectionEvent, error) {
+	return s.projections, nil
+}
+
+func (s *artifactSummaryReaderStub) ResolveArtifactSummaries(context.Context, string, []string) (map[string]*iapiserver.ArtifactReadableSummary, error) {
+	return s.summaries, nil
+}
+
+func (s *attemptLogStoreStub) GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error) {
+	return s.task, nil
+}
+
+func (*attemptLogStoreStub) ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+	return map[string]*iapiserver.ScheduleSourceSummary{}, nil
+}
+
+func (s *attemptLogStoreStub) GetAttempt(_ context.Context, taskID, attemptID string) (*iapiserver.TaskAttempt, error) {
+	s.getAttemptCalls++
+	s.seenTaskID, s.seenAttemptID = taskID, attemptID
+	return s.attempt, s.attemptErr
+}
+
+type attemptLogRuntimeStub struct {
+	workflowruntime.UnavailableRuntime
+	logs          []workflowruntime.TaskLogEntry
+	err           error
+	listCalls     int
+	seenRuntimeID string
+}
+
+func (s *attemptLogRuntimeStub) ListTaskLogs(_ context.Context, runtimeTaskID string) ([]workflowruntime.TaskLogEntry, error) {
+	s.listCalls++
+	s.seenRuntimeID = runtimeTaskID
+	return s.logs, s.err
 }
 
 func (s *relationStoreStub) GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error) {
@@ -91,6 +168,223 @@ func TestValidateDAGRejectsCycle(t *testing.T) {
 	}
 	if status := toolboxerrors.ToStatus(err); status.Code != code.ErrTaskDAGCycleDetected {
 		t.Fatalf("code = %d, want %d", status.Code, code.ErrTaskDAGCycleDetected)
+	}
+}
+
+func TestListAttemptLogsAuthorizesParentBeforeAttemptLookup(t *testing.T) {
+	task := &iapiserver.AtomicTask{CreatedBy: "owner"}
+	task.ID = "atomic-1"
+	storeStub := &attemptLogStoreStub{task: task}
+	runtimeStub := &attemptLogRuntimeStub{}
+	service := &taskCenterService{store: storeStub, runtime: runtimeStub}
+	user := &iapiserver.User{}
+	user.ID = "other-user"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	_, err := service.ListAttemptLogs(ctx, &iapiserver.TaskAttemptLogListRequest{AtomicTaskID: task.ID, TaskAttemptID: "attempt-1"})
+	if status := toolboxerrors.ToStatus(err); status.Code != code.ErrAtomicTaskNotFound {
+		t.Fatalf("code = %d, want %d", status.Code, code.ErrAtomicTaskNotFound)
+	}
+	if storeStub.getAttemptCalls != 0 || runtimeStub.listCalls != 0 {
+		t.Fatalf("unauthorized lookup reached child/runtime: attempt=%d runtime=%d", storeStub.getAttemptCalls, runtimeStub.listCalls)
+	}
+}
+
+func TestListAttemptLogsValidatesOwnershipAndPaginates(t *testing.T) {
+	task := &iapiserver.AtomicTask{CreatedBy: "owner"}
+	task.ID = "atomic-1"
+	attempt := &iapiserver.TaskAttempt{RuntimeTaskID: "runtime-1"}
+	attempt.ID = "attempt-1"
+	base := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	storeStub := &attemptLogStoreStub{task: task, attempt: attempt}
+	runtimeStub := &attemptLogRuntimeStub{logs: []workflowruntime.TaskLogEntry{
+		{Sequence: 1, Source: workflowruntime.TaskLogSourceLifecycle, Level: workflowruntime.TaskLogLevelInfo, Message: "started", OccurredAt: base},
+		{Sequence: 2, Source: workflowruntime.TaskLogSourceWorker, Level: workflowruntime.TaskLogLevelInfo, Message: "running", OccurredAt: base.Add(time.Second)},
+	}}
+	service := &taskCenterService{store: storeStub, runtime: runtimeStub}
+	user := &iapiserver.User{}
+	user.ID = "owner"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	response, err := service.ListAttemptLogs(ctx, &iapiserver.TaskAttemptLogListRequest{
+		BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{PageNum: 1, PageSize: 1}},
+		AtomicTaskID:    task.ID,
+		TaskAttemptID:   attempt.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storeStub.seenTaskID != task.ID || storeStub.seenAttemptID != attempt.ID || runtimeStub.seenRuntimeID != attempt.RuntimeTaskID {
+		t.Fatalf("lookup ids = %q/%q/%q", storeStub.seenTaskID, storeStub.seenAttemptID, runtimeStub.seenRuntimeID)
+	}
+	if response.Total != 2 || len(response.Items) != 1 || response.Items[0].Sequence != 2 || response.Items[0].Message != "running" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestListAttemptLogsMapsRuntimeFailures(t *testing.T) {
+	task := &iapiserver.AtomicTask{CreatedBy: "owner"}
+	task.ID = "atomic-1"
+	attempt := &iapiserver.TaskAttempt{RuntimeTaskID: "runtime-1"}
+	attempt.ID = "attempt-1"
+	user := &iapiserver.User{}
+	user.ID = "owner"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "retained history missing", err: workflowruntime.ErrTaskLogNotFound, want: code.ErrTaskAttemptLogUnavailable},
+		{name: "runtime unavailable", err: workflowruntime.ErrUnavailable, want: code.ErrWorkflowRuntimeUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &taskCenterService{
+				store:   &attemptLogStoreStub{task: task, attempt: attempt},
+				runtime: &attemptLogRuntimeStub{err: tt.err},
+			}
+			_, err := service.ListAttemptLogs(ctx, &iapiserver.TaskAttemptLogListRequest{AtomicTaskID: task.ID, TaskAttemptID: attempt.ID})
+			if status := toolboxerrors.ToStatus(err); status.Code != tt.want {
+				t.Fatalf("code = %d, want %d", status.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestListAttemptLogsReturnsEmptyBeforeRuntimeTaskExists(t *testing.T) {
+	task := &iapiserver.AtomicTask{CreatedBy: "owner"}
+	task.ID = "atomic-1"
+	attempt := &iapiserver.TaskAttempt{}
+	attempt.ID = "attempt-1"
+	user := &iapiserver.User{}
+	user.ID = "owner"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	runtimeStub := &attemptLogRuntimeStub{}
+	service := &taskCenterService{store: &attemptLogStoreStub{task: task, attempt: attempt}, runtime: runtimeStub}
+
+	response, err := service.ListAttemptLogs(ctx, &iapiserver.TaskAttemptLogListRequest{AtomicTaskID: task.ID, TaskAttemptID: attempt.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Total != 0 || len(response.Items) != 0 || runtimeStub.listCalls != 0 {
+		t.Fatalf("response = %#v, runtime calls = %d", response, runtimeStub.listCalls)
+	}
+}
+
+func TestAttemptLogFiltersCursorAndDownloadShareSemantics(t *testing.T) {
+	task := &iapiserver.AtomicTask{CreatedBy: "owner"}
+	task.ID = "atomic-1"
+	attempt := &iapiserver.TaskAttempt{RuntimeTaskID: "runtime-1"}
+	attempt.ID = "attempt-1"
+	base := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	runtimeStub := &attemptLogRuntimeStub{logs: []workflowruntime.TaskLogEntry{
+		{Sequence: 1, Source: workflowruntime.TaskLogSourceLifecycle, Level: workflowruntime.TaskLogLevelInfo, Message: "started", OccurredAt: base},
+		{Sequence: 2, Source: workflowruntime.TaskLogSourceWorker, Level: workflowruntime.TaskLogLevelWarn, Message: "waiting for output", OccurredAt: base.Add(time.Second)},
+		{Sequence: 3, Source: workflowruntime.TaskLogSourceWorker, Level: workflowruntime.TaskLogLevelError, Message: "output failed", OccurredAt: base.Add(2 * time.Second)},
+	}}
+	service := &taskCenterService{store: &attemptLogStoreStub{task: task, attempt: attempt}, runtime: runtimeStub}
+	user := &iapiserver.User{}
+	user.ID = "owner"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	req := &iapiserver.TaskAttemptLogListRequest{BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{PageSize: 1}, Keyword: "output", SortOrder: "asc"}, AtomicTaskID: task.ID, TaskAttemptID: attempt.ID, Sources: "WORKER", Direction: "forward"}
+
+	first, err := service.ListAttemptLogs(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Total != 2 || len(first.Items) != 1 || first.Items[0].Sequence != 2 || first.NextCursor == nil {
+		t.Fatalf("first page = %#v", first)
+	}
+	req.Cursor = *first.NextCursor
+	second, err := service.ListAttemptLogs(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Items) != 1 || second.Items[0].Sequence != 3 || second.PreviousCursor == nil {
+		t.Fatalf("second page = %#v", second)
+	}
+	download, err := service.DownloadAttemptLogs(ctx, &iapiserver.TaskAttemptLogDownloadRequest{AtomicTaskID: task.ID, TaskAttemptID: attempt.ID, Keyword: "output", Sources: "WORKER", SortOrder: "asc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(download)
+	if !strings.Contains(text, "waiting for output") || !strings.Contains(text, "output failed") || strings.Contains(text, "started") {
+		t.Fatalf("download = %q", text)
+	}
+}
+
+func TestAggregateDAGNodeUsesActivityThenTerminalPriority(t *testing.T) {
+	base := imachinery.NewTime(time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC))
+	tasks := []*iapiserver.AtomicTask{
+		{Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1, StartedAt: base, CompletedAt: imachinery.NewTime(base.Add(time.Second)), Output: map[string]any{"artifact_refs": []any{map[string]any{"artifact_id": "a"}}}},
+		{Status: iapiserver.AtomicTaskStatusFailed, Progress: 1, StartedAt: base, CompletedAt: imachinery.NewTime(base.Add(2 * time.Second)), LastError: iapiserver.TaskError{Message: "failed", OccurredAt: imachinery.NewTime(base.Add(2 * time.Second))}},
+		{Status: iapiserver.AtomicTaskStatusRunning, Progress: 0.5, StartedAt: base},
+	}
+	for index, task := range tasks {
+		task.ID = fmt.Sprintf("task-%d", index)
+	}
+	attempts := map[string][]*iapiserver.TaskAttempt{"task-1": {{AttemptNo: 1}, {AttemptNo: 2}}}
+	result := aggregateDAGNode(iapiserver.DAGNode{Key: "render", DynamicFork: true}, tasks, attempts)
+	if result.Status != iapiserver.AtomicTaskStatusRunning || result.AttemptCount != 2 || result.RetryCount != 1 || result.ArtifactCount != 1 || result.PrimaryAtomicTaskID != nil {
+		t.Fatalf("active aggregate = %#v", result)
+	}
+	tasks[2].Status, tasks[2].Progress, tasks[2].CompletedAt = iapiserver.AtomicTaskStatusSuccess, 1, imachinery.NewTime(base.Add(3*time.Second))
+	result = aggregateDAGNode(iapiserver.DAGNode{Key: "render", DynamicFork: true}, tasks, attempts)
+	if result.Status != iapiserver.AtomicTaskStatusFailed {
+		t.Fatalf("terminal status = %s, want FAILED", result.Status)
+	}
+}
+
+func TestGetDAGTaskGroupDetailRebuildsEnrichedResult(t *testing.T) {
+	group := &iapiserver.DAGTaskGroup{Nodes: []iapiserver.DAGNode{{Key: "render"}}, CreatedBy: "user-1"}
+	group.ID = "dag-1"
+	task := &iapiserver.AtomicTask{ChildKey: "render", DAGNodeKey: "render", Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1, Output: map[string]any{"artifact_refs": []any{map[string]any{"artifact_id": "artifact-1"}}}}
+	task.ID = "task-1"
+	reader := &artifactSummaryReaderStub{summaries: map[string]*iapiserver.ArtifactReadableSummary{"artifact-1": {ID: "artifact-1", ArtifactType: "IMAGE"}}}
+	service := &taskCenterService{store: &observationStoreStub{group: group, tasks: []*iapiserver.AtomicTask{task}}, artifacts: reader}
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	detail, err := service.GetDAGTaskGroupDetail(ctx, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, ok := detail.Result["render"].(map[string]any)
+	if !ok {
+		t.Fatalf("DAG result = %#v", detail.Result)
+	}
+	refs := output["artifact_refs"].([]any)
+	artifact, ok := refs[0].(map[string]any)["artifact"].(*iapiserver.ArtifactReadableSummary)
+	if !ok || artifact.ID != "artifact-1" {
+		t.Fatalf("enriched artifact = %#v", refs[0])
+	}
+}
+
+func TestListDAGTaskGroupEventsRejectsInvertedTimeRange(t *testing.T) {
+	group := &iapiserver.DAGTaskGroup{CreatedBy: "user-1"}
+	group.ID = "dag-1"
+	service := &taskCenterService{store: &observationStoreStub{group: group}}
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	_, err := service.ListDAGTaskGroupEvents(ctx, group.ID, &iapiserver.DAGExecutionEventListRequest{OccurredAfter: "2026-07-22T11:00:00Z", OccurredBefore: "2026-07-22T10:00:00Z"})
+	if status := toolboxerrors.ToStatus(err); status.Code != code.ErrValidation {
+		t.Fatalf("code = %d, want %d", status.Code, code.ErrValidation)
+	}
+}
+
+func TestBuildTimelineRowMarksInvertedFactsIncomplete(t *testing.T) {
+	base := imachinery.NewTime(time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC))
+	group := &iapiserver.DAGTaskGroup{TriggeredAt: base}
+	task := &iapiserver.AtomicTask{DAGNodeKey: "render", Status: iapiserver.AtomicTaskStatusFailed}
+	task.ID = "task-1"
+	attempt := &iapiserver.TaskAttempt{AttemptNo: 1, StartedAt: imachinery.NewTime(base.Add(-time.Second)), CompletedAt: imachinery.NewTime(base.Add(-2 * time.Second))}
+	row := buildTimelineRow(group, task, []*iapiserver.TaskAttempt{attempt}, nil, nil)
+	if row.Complete || len(row.Segments) != 2 || row.Segments[0].Complete || row.Segments[1].Complete {
+		t.Fatalf("timeline row = %#v", row)
 	}
 }
 

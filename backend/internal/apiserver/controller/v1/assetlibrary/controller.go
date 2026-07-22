@@ -125,6 +125,13 @@ func (c *Controller) DeleteTag(ctx *gin.Context) {
 func (c *Controller) ListArtifacts(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.ArtifactListRequest{}, func(req *iapiserver.ArtifactListRequest) (any, error) { return c.service.ListArtifacts(ctx, req) })
 }
+
+// BatchArtifactSummaries 返回当前主体可见的有界 Artifact 一跳摘要，不区分缺失与不可见目标。
+func (c *Controller) BatchArtifactSummaries(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.BatchArtifactSummaryRequest{}, func(req *iapiserver.BatchArtifactSummaryRequest) (any, error) {
+		return c.service.BatchArtifactSummaries(ctx, req)
+	})
+}
 func (c *Controller) CreateArtifact(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.CreateArtifactRequest{}, func(req *iapiserver.CreateArtifactRequest) (any, error) { return c.service.CreateArtifact(ctx, req) })
 }

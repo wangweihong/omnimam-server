@@ -171,6 +171,7 @@
 | ErrTaskLeaseInvalid | 140800 | 200 | ExecutionLease is invalid, expired, or does not belong to current worker. | ExecutionLease 无效、已过期或不属于当前 Worker。 |
 | ErrTaskAttemptUpdateRejected | 141000 | 200 | Current task attempt is not allowed to update task result. | 当前执行尝试不允许更新任务结果。 |
 | ErrTaskAttemptNotFound | 141001 | 200 | TaskAttempt does not exist or does not belong to the AtomicTask. | TaskAttempt 不存在或不属于指定 AtomicTask。 |
+| ErrTaskAttemptLogUnavailable | 141002 | 200 | Runtime log history for the TaskAttempt is no longer available. | TaskAttempt 对应的运行时日志历史已不可用。 |
 | ErrTaskPermissionDenied | 141200 | 200 | Current user does not have task center permission. | 当前用户缺少任务中心操作权限。 |
 | ErrTaskScheduleInvalid | 141400 | 200 | TaskSchedule target, cron, timezone, or runAt is invalid. | TaskSchedule 的目标、cron、时区或 runAt 不合法。 |
 | ErrTaskScheduleNotFound | 141401 | 200 | TaskSchedule does not exist or is not visible to the caller. | TaskSchedule 不存在或当前调用方不可见。 |

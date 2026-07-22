@@ -46,6 +46,19 @@ type UserAssetSummary struct {
 	CurrentVersionID string `json:"current_version_id,omitempty"`
 }
 
+// ArtifactReadableSummary 是供受控跨域批量识别的 owner 裁剪投影，不包含内容、metadata 或存储引用。
+type ArtifactReadableSummary struct {
+	ID                 string            `json:"id"`
+	OutputKey          string            `json:"output_key"`
+	ArtifactType       string            `json:"artifact_type"`
+	MediaType          string            `json:"media_type"`
+	ProcessingStatus   string            `json:"processing_status"`
+	RegistrationStatus string            `json:"registration_status"`
+	PreviewAvailable   bool              `json:"preview_available"`
+	AssetID            *string           `json:"asset_id"`
+	Asset              *UserAssetSummary `json:"asset"`
+}
+
 // RelatedResourceSummary 是 Artifact 来源任务或运行的非敏感一跳投影。
 type RelatedResourceSummary struct {
 	Type   string `json:"type"`

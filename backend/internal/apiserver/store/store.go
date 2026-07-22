@@ -300,6 +300,8 @@ type AssetV1Store interface {
 	DeleteTag(context.Context, string, string, string) (*iapiserver.BatchLabelData, error)
 
 	ListArtifacts(context.Context, string, *iapiserver.ArtifactListRequest) ([]*iapiserver.Artifact, int64, error)
+	// ResolveArtifactSummaries 批量读取 owner 可见且未删除的 Artifact 一跳摘要，不返回缺失目标差异。
+	ResolveArtifactSummaries(context.Context, string, []string) (map[string]*iapiserver.ArtifactReadableSummary, error)
 	// DecorateArtifacts 批量组合登记素材与版本摘要，不读取跨领域 producer 私有表。
 	DecorateArtifacts(context.Context, string, []*iapiserver.Artifact) error
 	GetArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
@@ -469,6 +471,8 @@ type TaskCenterStore interface {
 	AddAtomicTaskIdempotent(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error)
 	UpdateAtomicTask(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error)
 	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
+	GetAttempt(context.Context, string, string) (*iapiserver.TaskAttempt, error)
+	ListAttemptsByTaskIDs(context.Context, []string) ([]*iapiserver.TaskAttempt, error)
 	ListTaskGroups(context.Context, *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error)
 	// GetTaskGroupsByIDs 批量读取调度历史引用的 TaskGroup。
 	GetTaskGroupsByIDs(context.Context, []string) ([]*iapiserver.TaskGroup, error)
@@ -482,6 +486,8 @@ type TaskCenterStore interface {
 	AddDAGTaskGroupWithTasks(context.Context, *iapiserver.DAGTaskGroup, []*iapiserver.AtomicTask) (*iapiserver.DAGTaskGroup, bool, error)
 	UpdateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroup) (*iapiserver.DAGTaskGroup, error)
 	ListOwnedTasks(context.Context, string, string, *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error)
+	// ListDAGObservationTasks 批量读取一个已授权 DAG 的实际任务投影，供详情、事件和时间线聚合。
+	ListDAGObservationTasks(context.Context, string) ([]*iapiserver.AtomicTask, error)
 	AddOwnedAtomicTasks(context.Context, string, string, []*iapiserver.AtomicTask) error
 	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error)
 	// GetTaskSchedulesByIDs 批量读取关联摘要使用的 TaskSchedule，调用方仍需执行主体可见性过滤。
@@ -499,6 +505,7 @@ type TaskCenterStore interface {
 	// ListScheduleSources 按目标类型与 ID 批量返回最新的来源调度轮次。
 	ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error)
 	AddProjectionEventIdempotent(context.Context, *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error)
+	ListRuntimeProjectionEvents(context.Context, string) ([]*iapiserver.RuntimeProjectionEvent, error)
 	ListNonTerminalAtomicTasks(context.Context, int) ([]*iapiserver.AtomicTask, error)
 	ListNonTerminalTaskGroups(context.Context, int) ([]*iapiserver.TaskGroup, error)
 	ListNonTerminalDAGTaskGroups(context.Context, int) ([]*iapiserver.DAGTaskGroup, error)

@@ -89,7 +89,67 @@ func (s *taskCenterService) attachAtomicTaskRelations(ctx context.Context, tasks
 			}
 		}
 	}
+	return s.attachTaskArtifactSummaries(ctx, tasks)
+}
+
+// attachTaskArtifactSummaries 按最多 200 项批量调用 asset-library，并在原始 artifact_id 旁附加可见摘要。
+func (s *taskCenterService) attachTaskArtifactSummaries(ctx context.Context, tasks []*iapiserver.AtomicTask) error {
+	if s.artifacts == nil {
+		return nil
+	}
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, task := range tasks {
+		for _, ref := range taskArtifactRefs(task) {
+			id, _ := ref["artifact_id"].(string)
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	summaries := make(map[string]*iapiserver.ArtifactReadableSummary, len(ids))
+	for start := 0; start < len(ids); start += 200 {
+		end := min(start+200, len(ids))
+		batch, err := s.artifacts.ResolveArtifactSummaries(ctx, taskActor(ctx), ids[start:end])
+		if err != nil {
+			return err
+		}
+		for id, summary := range batch {
+			summaries[id] = summary
+		}
+	}
+	for _, task := range tasks {
+		for _, ref := range taskArtifactRefs(task) {
+			id, _ := ref["artifact_id"].(string)
+			ref["artifact"] = summaries[id]
+		}
+	}
 	return nil
+}
+
+func taskArtifactRefs(task *iapiserver.AtomicTask) []map[string]any {
+	if task == nil || task.Output == nil {
+		return nil
+	}
+	value := task.Output["artifact_refs"]
+	switch refs := value.(type) {
+	case []map[string]any:
+		return refs
+	case []any:
+		result := make([]map[string]any, 0, len(refs))
+		for _, item := range refs {
+			if ref, ok := item.(map[string]any); ok {
+				result = append(result, ref)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 func (s *taskCenterService) attachTaskGroupRelations(ctx context.Context, groups []*iapiserver.TaskGroup) error {

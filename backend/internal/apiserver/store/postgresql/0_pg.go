@@ -79,6 +79,70 @@ DO $$ BEGIN
 END $$
 `
 
+const taskCenterAttemptLogsRefBackfillSQL = `
+UPDATE task_attempts
+SET logs_ref = 'task-attempt-log:' || id
+WHERE COALESCE(logs_ref, '') = '' AND id <> '';
+`
+
+const taskCenterDAGObservabilityMigrationSQL = `
+UPDATE atomic_tasks
+SET dag_node_key = child_key
+WHERE owner_type = 'DAG_TASK_GROUP' AND COALESCE(dag_node_key, '') = '' AND COALESCE(child_key, '') <> '';
+
+UPDATE dag_task_groups
+SET triggered_at = created_at
+WHERE triggered_at IS NULL;
+
+UPDATE dag_task_groups
+SET trigger_type = CASE
+  WHEN COALESCE(retry_of_id, '') <> '' THEN 'RETRY'
+  WHEN COALESCE(canvas_version_id, '') <> '' THEN 'CANVAS'
+  WHEN EXISTS (
+    SELECT 1 FROM task_schedule_executions e
+    WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag_task_groups.id
+  ) THEN 'SCHEDULE'
+  ELSE 'API'
+END
+WHERE COALESCE(trigger_type, '') = '' OR trigger_type = 'API';
+
+UPDATE dag_task_groups AS dag
+SET trigger_source_id = CASE
+      WHEN dag.trigger_type = 'RETRY' THEN dag.retry_of_id
+      WHEN dag.trigger_type = 'CANVAS' THEN dag.canvas_version_id
+      WHEN dag.trigger_type = 'SCHEDULE' THEN COALESCE((
+        SELECT e.schedule_id FROM task_schedule_executions e
+        WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag.id
+        ORDER BY e.scheduled_at DESC LIMIT 1
+      ), '')
+      ELSE dag.trigger_source_id
+    END,
+    trigger_source_name = CASE
+      WHEN dag.trigger_type = 'SCHEDULE' THEN COALESCE((
+        SELECT s.name FROM task_schedule_executions e
+        JOIN task_schedules s ON s.id = e.schedule_id
+        WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag.id
+        ORDER BY e.scheduled_at DESC LIMIT 1
+      ), '')
+      ELSE dag.trigger_source_name
+    END
+WHERE COALESCE(dag.trigger_source_id, '') = '';
+
+CREATE INDEX IF NOT EXISTS idx_atomic_tasks_dag_node
+ON atomic_tasks(owner_id, dag_node_key, child_order)
+WHERE owner_type = 'DAG_TASK_GROUP' AND dag_node_key <> '';
+CREATE INDEX IF NOT EXISTS idx_dag_groups_status_time
+ON dag_task_groups(status, started_at, completed_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_projection_execution_time
+ON runtime_projection_events(runtime_execution_id, occurred_at, id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_dag_groups_trigger_type') THEN
+    ALTER TABLE dag_task_groups ADD CONSTRAINT ck_dag_groups_trigger_type
+      CHECK (trigger_type IN ('API','SCHEDULE','CANVAS','DOMAIN_EVENT','RETRY'));
+  END IF;
+END $$;
+`
+
 const taskCenterApplicationRunIndexesSQL = `
 CREATE INDEX IF NOT EXISTS idx_atomic_tasks_application
 ON atomic_tasks(application_run_id)
@@ -347,7 +411,13 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 	if err := ds.db.Exec(sseUserEventConstraintsSQL).Error; err != nil {
 		return err
 	}
-	return ds.db.Exec(taskCenterScheduleOwnershipBackfillSQL).Error
+	if err := ds.db.Exec(taskCenterScheduleOwnershipBackfillSQL).Error; err != nil {
+		return err
+	}
+	if err := ds.db.Exec(taskCenterAttemptLogsRefBackfillSQL).Error; err != nil {
+		return err
+	}
+	return ds.db.Exec(taskCenterDAGObservabilityMigrationSQL).Error
 }
 
 func (ds *datastore) ensureApplicationPlatformScheme() error {

@@ -41,14 +41,14 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 		"GET /api/v1/collections", "POST /api/v1/collections", "GET /api/v1/collections/:collection_id", "PATCH /api/v1/collections/:collection_id", "DELETE /api/v1/collections/:collection_id",
 		"POST /api/v1/collections/:collection_id/items", "PATCH /api/v1/collections/:collection_id/items/:item_id", "DELETE /api/v1/collections/:collection_id/items/:item_id",
 		"PUT /api/v1/assets/:asset_id/labels", "DELETE /api/v1/assets/:asset_id/labels/:label_id", "POST /api/v1/assets/:asset_id/tags", "DELETE /api/v1/assets/:asset_id/tags/:tag_id",
-		"GET /api/v1/artifacts", "POST /api/v1/artifacts", "GET /api/v1/artifacts/:artifact_id", "DELETE /api/v1/artifacts/:artifact_id", "POST /api/v1/artifacts/:artifact_id/content", "POST /api/v1/artifacts/:artifact_id/complete", "POST /api/v1/artifacts/:artifact_id/register", "POST /api/v1/artifact-registrations",
+		"GET /api/v1/artifacts", "POST /api/v1/artifacts", "POST /api/v1/artifacts/batch-summaries", "GET /api/v1/artifacts/:artifact_id", "DELETE /api/v1/artifacts/:artifact_id", "POST /api/v1/artifacts/:artifact_id/content", "POST /api/v1/artifacts/:artifact_id/complete", "POST /api/v1/artifacts/:artifact_id/register", "POST /api/v1/artifact-registrations",
 		"GET /api/v1/assets/:asset_id/versions", "POST /api/v1/assets/:asset_id/versions", "GET /api/v1/asset-versions/:version_id", "POST /api/v1/assets/:asset_id/versions/:version_id/set-current",
 		"GET /api/v1/asset-versions/:version_id/representations", "POST /api/v1/asset-versions/:version_id/representations",
 		"GET /api/v1/asset-representations/:representation_id", "GET /api/v1/asset-representations/:representation_id/content", "GET /api/v1/asset-representations/:representation_id/access-url",
 		"GET /api/v1/assets/:asset_id/relations", "GET /api/v1/assets/:asset_id/lineage", "GET /api/v1/assets/:asset_id/references", "GET /api/v1/assets/:asset_id/usages",
 	}
-	if len(expected) != 45 {
-		t.Fatalf("test fixture has %d operations, want 45", len(expected))
+	if len(expected) != 46 {
+		t.Fatalf("test fixture has %d operations, want 46", len(expected))
 	}
 	for _, route := range expected {
 		if _, ok := actual[route]; !ok {

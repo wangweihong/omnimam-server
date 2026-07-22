@@ -133,6 +133,25 @@ func (s *taskCenterStore) ListAttempts(ctx context.Context, req *iapiserver.Task
 	return items, total, err
 }
 
+func (s *taskCenterStore) GetAttempt(ctx context.Context, atomicTaskID, attemptID string) (*iapiserver.TaskAttempt, error) {
+	var item iapiserver.TaskAttempt
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND atomic_task_id = ?", attemptID, atomicTaskID).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrTaskAttemptNotFound, "task attempt not found")
+	}
+	return &item, nil
+}
+
+func (s *taskCenterStore) ListAttemptsByTaskIDs(ctx context.Context, taskIDs []string) ([]*iapiserver.TaskAttempt, error) {
+	if len(taskIDs) == 0 {
+		return []*iapiserver.TaskAttempt{}, nil
+	}
+	var items []*iapiserver.TaskAttempt
+	if err := s.ds.db.WithContext(ctx).Where("atomic_task_id IN ?", taskIDs).Order("atomic_task_id ASC, attempt_no ASC").Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.TaskGroupListRequest) ([]*iapiserver.TaskGroup, int64, error) {
 	var items []*iapiserver.TaskGroup
 	filter := func(query *gorm.DB) *gorm.DB {
@@ -150,6 +169,15 @@ func (s *taskCenterStore) ListTaskGroups(ctx context.Context, req *iapiserver.Ta
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.TaskGroup{}), filter)
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *taskCenterStore) ListDAGObservationTasks(ctx context.Context, dagID string) ([]*iapiserver.AtomicTask, error) {
+	var items []*iapiserver.AtomicTask
+	err := s.ds.db.WithContext(ctx).
+		Where("owner_type = ? AND owner_id = ? AND deleted_at IS NULL", iapiserver.TaskOwnerTypeDAGGroup, dagID).
+		Order("child_order ASC, created_at ASC, id ASC").
+		Find(&items).Error
+	return items, errors.WithStack(err)
 }
 
 func (s *taskCenterStore) GetTaskGroupsByIDs(ctx context.Context, ids []string) ([]*iapiserver.TaskGroup, error) {
@@ -350,6 +378,9 @@ func (s *taskCenterStore) ListOwnedTasks(
 		query = query.Where("owner_type = ? AND owner_id = ? AND deleted_at IS NULL", ownerType, ownerID)
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
+		}
+		if req.NodeKey != "" {
+			query = query.Where("dag_node_key = ?", req.NodeKey)
 		}
 		return query
 	}
@@ -581,6 +612,17 @@ func (s *taskCenterStore) AddProjectionEventIdempotent(
 		return nil, false, errors.WithStack(err)
 	}
 	return data, true, nil
+}
+
+func (s *taskCenterStore) ListRuntimeProjectionEvents(ctx context.Context, runtimeExecutionID string) ([]*iapiserver.RuntimeProjectionEvent, error) {
+	if runtimeExecutionID == "" {
+		return []*iapiserver.RuntimeProjectionEvent{}, nil
+	}
+	var items []*iapiserver.RuntimeProjectionEvent
+	if err := s.ds.db.WithContext(ctx).Where("runtime_execution_id = ?", runtimeExecutionID).Order("occurred_at ASC, id ASC").Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *taskCenterStore) ListNonTerminalAtomicTasks(ctx context.Context, limit int) ([]*iapiserver.AtomicTask, error) {
@@ -1035,8 +1077,15 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 	failed := false
 	canceled := false
 	timedOut := false
+	var startedAt, completedAt imachinery.Time
 	for _, task := range tasks {
 		progress += task.Progress
+		if !task.StartedAt.IsZero() && (startedAt.IsZero() || task.StartedAt.Before(&startedAt)) {
+			startedAt = task.StartedAt
+		}
+		if !task.CompletedAt.IsZero() && (completedAt.IsZero() || completedAt.Before(&task.CompletedAt)) {
+			completedAt = task.CompletedAt
+		}
 		switch task.Status {
 		case iapiserver.AtomicTaskStatusPending:
 			summary.Pending++
@@ -1044,11 +1093,17 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 		case iapiserver.AtomicTaskStatusBlocked:
 			summary.Blocked++
 			terminal = false
-		case iapiserver.AtomicTaskStatusReady,
-			iapiserver.AtomicTaskStatusRunning,
-			iapiserver.AtomicTaskStatusRetrying,
-			iapiserver.AtomicTaskStatusCancelRequested:
+		case iapiserver.AtomicTaskStatusReady:
+			summary.Ready++
+			terminal = false
+		case iapiserver.AtomicTaskStatusRunning:
 			summary.Running++
+			terminal = false
+		case iapiserver.AtomicTaskStatusRetrying:
+			summary.Retrying++
+			terminal = false
+		case iapiserver.AtomicTaskStatusCancelRequested:
+			summary.CancelRequested++
 			terminal = false
 		case iapiserver.AtomicTaskStatusSuccess:
 			summary.Success++
@@ -1060,7 +1115,7 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 			summary.Canceled++
 			canceled = true
 		case iapiserver.AtomicTaskStatusTimeout:
-			summary.Failed++
+			summary.Timeout++
 			timedOut = true
 		case iapiserver.AtomicTaskStatusSkipped:
 			summary.Skipped++
@@ -1101,6 +1156,15 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 		}
 		previous := group
 		group.Summary, group.Result, group.Progress, group.Status = summary, result, progress, status
+		if group.StartedAt.IsZero() && !startedAt.IsZero() {
+			group.StartedAt = startedAt
+		}
+		if terminal && group.CompletedAt.IsZero() {
+			if completedAt.IsZero() {
+				completedAt = imachinery.Now()
+			}
+			group.CompletedAt = completedAt
+		}
 		if err := tx.Save(&group).Error; err != nil {
 			return err
 		}
@@ -1387,6 +1451,7 @@ func dagTaskGroupFingerprint(group *iapiserver.DAGTaskGroup) string {
 	return fingerprint(map[string]any{
 		"name": group.Name, "description": group.Description, "nodes": group.Nodes, "edges": group.Edges,
 		"input": group.Input, "output_mapping": group.OutputMapping, "canvas_version_id": group.CanvasVersionID,
+		"trigger_type": group.TriggerType, "trigger_source_id": group.TriggerSourceID, "trigger_source_name": group.TriggerSourceName,
 		"idempotency_scope": group.IdempotencyScope, "idempotency_key": group.IdempotencyKey,
 		"project_id": group.ProjectID, "namespace": group.Namespace, "created_by": group.CreatedBy,
 	})

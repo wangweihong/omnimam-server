@@ -113,7 +113,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		}
 	}
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
-	taskCenterService := taskcentersvc.NewServiceWithRegistries(storeIns, workflowRuntime, reconcileRegistry,
+	taskCenterService := taskcentersvc.NewServiceWithDependencies(storeIns, workflowRuntime, reconcileRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
 		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)

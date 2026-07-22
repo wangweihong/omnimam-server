@@ -42,6 +42,7 @@ func (e *ArtifactProcessExecutor) Execute(ctx context.Context, task workflowrunt
 		return nil, err
 	}
 	if artifact.ProcessingStatus == iapiserver.ArtifactProcessingReady {
+		task.Log(ctx, workflowruntime.WorkerLog("artifact.process.ready", workflowruntime.TaskLogLevelInfo, "Artifact was already ready."))
 		return map[string]any{"artifact_id": artifact.ID}, nil
 	}
 	if artifact.ProcessingStatus != iapiserver.ArtifactProcessingProcessing {
@@ -52,6 +53,7 @@ func (e *ArtifactProcessExecutor) Execute(ctx context.Context, task workflowrunt
 	if err != nil {
 		return nil, err
 	}
+	task.Log(ctx, workflowruntime.WorkerLog("artifact.process.completed", workflowruntime.TaskLogLevelInfo, "Artifact processing completed."))
 	return map[string]any{"artifact_id": updated.ID}, nil
 }
 
@@ -75,6 +77,7 @@ func (e *RepresentationInspectExecutor) Execute(ctx context.Context, task workfl
 		return nil, err
 	}
 	mediaType, _ := task.Arguments["media_type"].(string)
+	task.Log(ctx, workflowruntime.WorkerLog("representation.inspect.completed", workflowruntime.TaskLogLevelInfo, "AssetVersion representation requirements were inspected."))
 	return map[string]any{"asset_version_id": versionID, "media_type": mediaType}, nil
 }
 
@@ -91,12 +94,14 @@ func NewRepresentationGenerateExecutor(factory store.Factory, storage ContentSto
 func (e *RepresentationGenerateExecutor) Execute(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 	result, err := e.generate(ctx, task)
 	if err == nil {
+		task.Log(ctx, workflowruntime.WorkerLog("representation.generate.completed", workflowruntime.TaskLogLevelInfo, "Derived representation was generated and registered."))
 		return result, nil
 	}
 	required, _ := task.Arguments["required"].(bool)
 	if required {
 		return nil, err
 	}
+	task.Log(ctx, workflowruntime.WorkerLog("representation.generate.optional_failed", workflowruntime.TaskLogLevelWarn, "Optional representation generation failed and was recorded."))
 	versionID, _ := task.Arguments["asset_version_id"].(string)
 	owner, _ := task.Arguments["owner_user_id"].(string)
 	typeName, _ := task.Arguments["representation_type"].(string)
@@ -229,5 +234,6 @@ func (e *RepresentationFinalizeExecutor) Execute(ctx context.Context, task workf
 	if err != nil {
 		return nil, err
 	}
+	task.Log(ctx, workflowruntime.WorkerLog("representation.finalize.completed", workflowruntime.TaskLogLevelInfo, fmt.Sprintf("Representation build finalized with %d completed and %d failed outputs.", completed, failed)))
 	return map[string]any{"asset_version_id": updated.ID, "status": updated.Status, "summary": fmt.Sprintf("%d/%d", completed, expected)}, nil
 }

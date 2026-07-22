@@ -47,6 +47,8 @@ type AtomicTaskResponse struct {
 	OwnerID string `json:"owner_id,omitempty"`
 	// Owner 是所属 Group、DAG 或 Schedule 的一跳可读摘要。
 	Owner *TaskOwnerSummary `json:"owner,omitempty"`
+	// NodeKey 是所属 DAG 声明节点 key；动态子任务共享该值。
+	NodeKey string `json:"node_key,omitempty"`
 	// RuntimeExecutionID 是受控运行时执行标识，仅用于任务诊断和关联。
 	RuntimeExecutionID string `json:"runtime_execution_id,omitempty"`
 	// RuntimeTaskID 是受控运行时任务标识，仅用于 Attempt 关联。
@@ -75,4 +77,102 @@ type AtomicTaskListAPIResponse struct {
 	Total int64 `json:"total"`
 	// Items 是当前分页内的 AtomicTask 契约投影。
 	Items []*AtomicTaskResponse `json:"items"`
+}
+
+// TaskAttemptLog 是公开 Task Center API 返回的单条已脱敏执行日志。
+type TaskAttemptLog struct {
+	// Sequence 是当前 runtime task 日志历史内稳定升序的序号。
+	Sequence int `json:"sequence"`
+	// Source 区分框架生命周期与受控业务 Worker 日志。
+	Source string `json:"source"`
+	// Level 是 INFO、WARN 或 ERROR。
+	Level string `json:"level"`
+	// Message 是双重脱敏且不超过 4096 字节的单行消息。
+	Message string `json:"message"`
+	// OccurredAt 使用运行时持久化的日志创建时间。
+	OccurredAt imachinery.Time `json:"occurred_at"`
+}
+
+// TaskExecutorSummary 是仅向 task.operation.admin 返回的非敏感执行器快照。
+type TaskExecutorSummary struct {
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+}
+
+// DAGTriggerSummary 固化 DAG 创建时的触发来源，不回查可变或已删除资源。
+type DAGTriggerSummary struct {
+	Type        string          `json:"type"`
+	SourceID    *string         `json:"source_id"`
+	SourceName  *string         `json:"source_name"`
+	TriggeredAt imachinery.Time `json:"triggered_at"`
+}
+
+// DAGNodeExecutionSummary 将声明节点与实际 AtomicTask/Attempt 确定性聚合。
+type DAGNodeExecutionSummary struct {
+	NodeKey             string             `json:"node_key"`
+	Dynamic             bool               `json:"dynamic"`
+	Status              string             `json:"status"`
+	Progress            float64            `json:"progress"`
+	TaskSummary         TaskSummary        `json:"task_summary"`
+	PrimaryAtomicTaskID *string            `json:"primary_atomic_task_id"`
+	PrimaryAtomicTask   *AtomicTaskSummary `json:"primary_atomic_task"`
+	AttemptCount        int                `json:"attempt_count"`
+	RetryCount          int                `json:"retry_count"`
+	StartedAt           *imachinery.Time   `json:"started_at"`
+	CompletedAt         *imachinery.Time   `json:"completed_at"`
+	DurationMS          int64              `json:"duration_ms"`
+	LatestError         *TaskError         `json:"latest_error"`
+	ArtifactCount       int                `json:"artifact_count"`
+	RepresentationCount int                `json:"representation_count"`
+}
+
+// DAGTaskGroupDetail 是 DAG 运行工作台的受控详情投影。
+type DAGTaskGroupDetail struct {
+	*DAGTaskGroup
+	StartedAt      *imachinery.Time           `json:"started_at"`
+	CompletedAt    *imachinery.Time           `json:"completed_at"`
+	TriggerSummary DAGTriggerSummary          `json:"trigger_summary"`
+	ExecutionNodes []*DAGNodeExecutionSummary `json:"execution_nodes"`
+}
+
+type DAGExecutionEvent struct {
+	ID            string          `json:"id"`
+	EventType     string          `json:"event_type"`
+	NodeKey       string          `json:"node_key"`
+	AtomicTaskID  *string         `json:"atomic_task_id"`
+	TaskAttemptID *string         `json:"task_attempt_id"`
+	AttemptNo     *int            `json:"attempt_no"`
+	Status        *string         `json:"status"`
+	Progress      *float64        `json:"progress"`
+	Error         *TaskError      `json:"error"`
+	OutputCount   *int            `json:"output_count"`
+	Message       *string         `json:"message"`
+	OccurredAt    imachinery.Time `json:"occurred_at"`
+}
+
+type DAGExecutionEventListResponse struct {
+	Total int64                `json:"total"`
+	Items []*DAGExecutionEvent `json:"items"`
+}
+
+type DAGTimelineSegment struct {
+	Phase       string           `json:"phase"`
+	AttemptNo   *int             `json:"attempt_no"`
+	StartedAt   imachinery.Time  `json:"started_at"`
+	CompletedAt *imachinery.Time `json:"completed_at"`
+	Complete    bool             `json:"complete"`
+}
+
+type DAGTimelineRow struct {
+	NodeKey        string                `json:"node_key"`
+	AtomicTaskID   string                `json:"atomic_task_id"`
+	AtomicTaskName string                `json:"atomic_task_name"`
+	Status         string                `json:"status"`
+	Complete       bool                  `json:"complete"`
+	Segments       []*DAGTimelineSegment `json:"segments"`
+}
+
+type DAGTimelineListResponse struct {
+	Total int64             `json:"total"`
+	Items []*DAGTimelineRow `json:"items"`
 }

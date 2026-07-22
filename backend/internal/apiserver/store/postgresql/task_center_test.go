@@ -17,6 +17,25 @@ func TestTaskCenterSchemaIndexesMatchV1Contract(t *testing.T) {
 	}
 }
 
+func TestTaskCenterAttemptLogsRefBackfillIsIdempotent(t *testing.T) {
+	for _, required := range []string{"UPDATE task_attempts", "task-attempt-log:", "COALESCE(logs_ref, '') = ''"} {
+		if !strings.Contains(taskCenterAttemptLogsRefBackfillSQL, required) {
+			t.Fatalf("task attempt logs_ref backfill does not contain %q: %s", required, taskCenterAttemptLogsRefBackfillSQL)
+		}
+	}
+}
+
+func TestTaskCenterDAGObservabilityMigrationMatchesReleasedContract(t *testing.T) {
+	for _, required := range []string{
+		"SET dag_node_key = child_key", "SET triggered_at = created_at", "'RETRY'", "'CANVAS'", "'SCHEDULE'",
+		"idx_atomic_tasks_dag_node", "idx_dag_groups_status_time", "idx_runtime_projection_execution_time",
+	} {
+		if !strings.Contains(taskCenterDAGObservabilityMigrationSQL, required) {
+			t.Fatalf("DAG observability migration does not contain %q: %s", required, taskCenterDAGObservabilityMigrationSQL)
+		}
+	}
+}
+
 func TestAtomicTaskUserEventMappingAndOutputRedaction(t *testing.T) {
 	tests := []struct{ status, want string }{
 		{iapiserver.AtomicTaskStatusRunning, iapiserver.UserEventAtomicTaskStarted},

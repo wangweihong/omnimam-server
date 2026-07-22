@@ -2,89 +2,86 @@
 
 ## Current project goal
 
-Upgrade the server from released `spec-v1.6.5` to released `spec-v1.7.0` and align Workflow Canvas, Task Center projection, persistence, error codes, and SSE contracts with the redesigned workflow-canvas S1/S2.
+Keep the server aligned with released OmniMAM SSOT contracts. The current workspace implements `spec-v1.7.1` TaskAttempt execution logs and the newly released `spec-v1.7.2` Task Center DAG observability plus Asset Library Artifact batch summaries.
 
 ## Completed in this session
 
-1. Fetched and pinned the `ssot` submodule to released `spec-v1.7.0` commit `1090a2531d07283d96475b3af8ffee8367697041`; updated `SSOT_VERSION`.
-2. Reviewed the released workflow-canvas S1/S2, architecture, schema, errors, permissions, events, and related SSE changes.
-3. Evaluated open-source reuse: retained Conductor OSS for DAG execution, existing `santhosh-tekuri/jsonschema/v6` for node schemas, and existing request validator; used ComfyUI, n8n, and Dify patterns as design references without importing a second workflow engine.
-4. Added immutable NodeDefinition registration, list/get/deprecate APIs and persistence with typed ports, JSON schemas, controlled execution binding, renderer metadata, scope, and deprecation state.
-5. Replaced the legacy graph/run contract with typed node IDs, definition versions, edges, flows, run scope, run policy, execution-plan digest, FlowRun, 1:N TaskBinding, OutputBinding, outbox, and reconcile cursor models.
-6. Added draft validation, run validation, FlowRun list, and NodeRun detail endpoints; the route set now matches the workflow-canvas v1.7 OpenAPI.
-7. Added deterministic scope compilation for `all`, `flows`, `only_nodes`, `until_nodes`, and `from_nodes`, including duplicate/unknown target validation and stable JCS/SHA256 digests.
-8. Made workflow definition identity content-addressed and CanvasVersion publish idempotent by content digest.
-9. Updated CanvasRun creation/retry/cancel semantics, recoverable `RETRYABLE_FAILED` task creation state, stable producer keys, FlowRun creation, and TaskBinding/OutputBinding persistence.
-10. Updated Task Center projection to resolve bindings by AtomicTask ID, reject stale task versions, aggregate 1:N tasks into NodeRun, aggregate FlowRun/CanvasRun, and publish Canvas semantic events.
-11. Added reliable workflow-canvas Watermill topics plus `workflow_canvas_outbox` audit records and SSE mappings for `canvas.run.*` and `canvas.node.*`.
-12. Added all new workflow-canvas business errors and regenerated Go error registration and API error documentation with `make gen`.
-13. Added a backward-compatible v1.0 -> v1.7 database backfill for workflow definition fields, run scope/policy, node IDs/execution keys, legacy AtomicTask bindings, latest published version, and new unique indexes.
-14. Added unit tests for scope compilation, invalid reuse/scope, NodeDefinition binding, response DTOs, flattened NodeRun detail, and Canvas SSE projection.
-15. Verified the legacy migration against a disposable PostgreSQL 16 instance.
+1. Fetched released tag `spec-v1.7.2`, pinned `ssot` to commit `7607cb2bd93f34a2cce8be8fddf8564529acff8a`, and synchronized `SSOT_VERSION`.
+2. Added DAG trigger snapshots (`API/SCHEDULE/CANVAS/DOMAIN_EVENT/RETRY`), start/completion times, `dag_node_key`, TaskAttempt executor snapshots, schema backfills, constraints, and query indexes.
+3. Added deterministic Dynamic Fork child identity envelopes in `ConductorRuntime`; planner output now fails closed on malformed structures, duplicate references, unregistered functions, or expansion beyond `max_dynamic_tasks`, and the reconciler idempotently materializes actual child AtomicTasks without introducing a second execution engine.
+4. Upgraded DAG detail to return trigger/time snapshots and deterministic declared-node execution aggregates with activity-first and terminal failure priority.
+5. Added `node_key` child-task filtering, normalized DAG events, and per-AtomicTask dependency/queue/running/retry timeline segments with explicit incomplete-history markers.
+6. Added admin-only executor summaries containing only stable type/display name; Worker IDs, queues, hosts, and addresses remain hidden.
+7. Enhanced Attempt log reads with keyword/level/source filters, opaque forward/backward cursors, stable asc/desc sorting, and a UTF-8 download endpoint using the same authorization, filtering, redaction, and retention pipeline.
+8. Added `POST /api/v1/artifacts/batch-summaries`: 1..200 ordered IDs, owner-scoped batch lookup, and uniform `artifact=null` for missing, deleted, or invisible targets.
+9. Injected Asset Library's `ArtifactSummaryReader` as a Task Center consumer boundary and attached bounded, permission-trimmed summaries to task Artifact references without cross-domain private-table access.
+10. Rebuilt DAG detail results from relation-enriched task outputs so Artifact summaries are visible in both task projections and the DAG result; rejected inverted event ranges and marked inverted timeline facts incomplete.
+11. Added DTO, service, runtime adapter, dynamic projection, migration marker, route contract, log cursor/filter/download, node aggregation, Artifact batch-order, Dynamic Fork validation, DAG result enrichment, and PostgreSQL migration tests.
+12. Updated TaskWorker/API Server architecture documentation for `spec-v1.7.2`.
 
 ## Files modified
 
 - Updated `SSOT_VERSION` and the `ssot` submodule pointer.
-- Updated workflow-canvas and SSE API metadata/request/response DTOs under `backend/apis/iapiserver/`.
-- Added `backend/apis/iapiserver/meta_workflow_canvas_v17.go`.
-- Added `backend/apis/iapiserver/response_workflow_canvas.go` and its tests.
-- Updated workflow-canvas controller, routes, service, store interfaces, PostgreSQL store, server schema registration, and tests.
-- Added `backend/internal/apiserver/store/postgresql/workflow_canvas_events.go`.
-- Added the tagged PostgreSQL migration integration test `workflow_canvas_migration_integration_test.go`.
-- Updated Task Center Canvas projection and SSE projector/tests.
-- Updated generated error code source and `docs/guide/zh-CN/api/error_code_generated.md`.
-- Added `docs/guide/zh-CN/architecture/workflow-canvas-runtime.md`.
-- Updated `docs/HANDOFF.md`.
+- Updated Task Center and Asset Library DTOs under `backend/apis/iapiserver/`.
+- Added `backend/internal/apiserver/service/v1/taskcenter/observability.go` and `task_logs.go`.
+- Added `backend/internal/apiserver/service/v1/assetlibrary/summaries.go`.
+- Updated Task Center/Asset Library controller, service, store interfaces, PostgreSQL adapters, runtime adapter, reconciler, routes, bootstrap, and tests.
+- Added `backend/internal/apiserver/workflowruntime/conductor_test.go`.
+- Added `backend/internal/apiserver/store/postgresql/task_center_observability_migration_integration_test.go`.
+- Updated `docs/guide/zh-CN/architecture/taskworker-apiserver-collaboration.md` and this handoff.
 
 Pre-existing untracked Asset Library architecture documents were not modified.
 
 ## Key architectural decisions
 
-- Workflow Canvas owns editing/version/run projections; Task Center and Conductor remain the only execution and retry engine.
-- NodeDefinition versions are immutable. Deprecation blocks new references but preserves historical CanvasVersion interpretation.
-- Publishing freezes definition snapshots and uses content-addressed workflow definition identity.
-- Every CanvasRun persists its fixed request and ExecutionPlan before Task Center creation; runtime failure never falls back to local goroutines.
-- NodeRun to AtomicTask cardinality is 0..N. FlowRun is a Canvas projection, not a Task Center Group.
-- Task, Artifact, NodeRun, and CanvasRun resource versions are independent and cannot be compared across aggregates.
-- Domain facts, Canvas outbox audit rows, and Watermill reliable messages are committed transactionally.
-- Existing database data is upgraded in place and historical AtomicTask links are converted into TaskBinding rows.
+- Conductor remains the only scheduler/execution engine. Task Center stores authorized business projections and derives observable read models; it does not copy raw runtime payloads or create another history table.
+- Dynamic children receive deterministic business IDs at the runtime adapter boundary and become AtomicTask projections during reconciliation. Invalid planner output is rejected before Conductor can schedule undeclared or excessive work.
+- DAG trigger information is an immutable creation-time snapshot; deleted or invisible source resources are not re-read to rewrite history.
+- Executor snapshots contain only stable category and display name and are returned only to the existing administrator principal.
+- Asset Library owns Artifact visibility and summaries. Task Center consumes an injected bounded reader and never reads Asset Library private tables or caches a second fact source.
+- Log online reads and downloads share one authorization/filter/redaction/retention pipeline. Conductor still owns log bodies and retention.
 
 ## API, schema, and configuration changes
 
-- Added 8 workflow-canvas operations: NodeDefinition list/register/get/deprecate, draft validate, run validate, FlowRun list, and NodeRun detail.
-- Added workflow-canvas errors `160206-160209`, `160402`, `160603-160611`, and `160801-160802`.
-- Added NodeDefinition, FlowRun, NodeRun flow refs, TaskBinding, OutputBinding, Canvas outbox, and reconcile cursor tables/models.
-- Expanded CanvasVersion, CanvasRun, CanvasNodeRun, UserEvent, and related indexes/fields.
-- Added Canvas reliable outbox topics and SSE envelope IDs/event types.
-- No new runtime environment variable is required.
+- Enhanced `GET /api/v1/dag-task-groups/{dag_task_group_id}` to return `DAGTaskGroupDetail`.
+- Added `GET /api/v1/dag-task-groups/{dag_task_group_id}/events` and `/timeline`.
+- Added `node_key` filtering to `GET /api/v1/dag-task-groups/{dag_task_group_id}/tasks`.
+- Enhanced Attempt log list filters/cursors and added `GET .../logs/download`.
+- Added `POST /api/v1/artifacts/batch-summaries`.
+- Added `atomic_tasks.dag_node_key`; `task_attempts.executor_type/executor_display_name`; DAG start/completion and trigger snapshot columns; required indexes and trigger-type constraint.
+- Added idempotent backfills for legacy DAG node keys, trigger times/types, and verifiable source snapshots.
+- No new error code, event type, permission code, table, environment variable, or configuration flag was introduced.
 
 ## Remaining work
 
-1. Implement real `reuse_valid_outputs` and `reuse_required` using an Asset Library batch-summary boundary that verifies fingerprint, TTL, owner visibility, Artifact READY state, and required output completeness. Current `reuse_valid_outputs` safely reruns; `reuse_required` returns `ERR_CANVAS_REUSE_REQUIRED_UNAVAILABLE`.
-2. Add the Asset Library event consumer that advances OutputBinding to READY/FAILED, emits `canvas_node_output_available`, and only marks NodeRun successful after all required outputs are available.
-3. Implement the workflow-canvas reconciler using the persisted Task Center and Asset Library cursors to repair missed/out-of-order events.
-4. Connect the released workflow permissions to a shared fine-grained permission evaluator when that evaluator exists; current access remains constrained by authenticated creator/project/namespace/visibility checks.
-5. Add automatic flow discovery for graphs without explicit flows if product delivery requires it; current compiler preserves explicit flows and still runs all nodes with `scope=all`.
-6. Run an end-to-end API/Worker/Conductor/Artifact recovery test after the Artifact consumer and reuse boundary are available.
+1. Implement Workflow Canvas `reuse_valid_outputs` and `reuse_required` using the released Asset Library summary/reuse eligibility boundary.
+2. Add the Asset Library event consumer that advances OutputBinding to READY/FAILED and emits progressive Canvas output events.
+3. Implement the persisted Workflow Canvas reconciler for missed or out-of-order Task Center and Asset Library events.
+4. Connect released fine-grained task/workflow permissions to a shared permission evaluator when the repository provides one.
+5. Add API Server/TaskWorker/Conductor restart, Dynamic Fork, and retention integration coverage.
 
 ## Known issues and risks
 
-- OutputBinding projection is not yet driven by Asset Library events, so progressive Artifact availability is not end-to-end complete.
-- Reuse policies are contract-visible but only the safe rerun behavior is active; required reuse fails explicitly rather than silently violating intent.
-- Fine-grained workflow permission codes are not enforced because the repository has no shared permission evaluator yet.
-- Passive-only CanvasVersion publication still depends on Task Center accepting at least one executable DAG node; a passive-only product path needs an explicit SSOT/runtime decision.
-- The migration test covers PostgreSQL 16 and the known v1.0 schema. Production backup and restore rehearsal is still required before deployment.
+- Historical runtime rows created before `spec-v1.7.2` may lack intermediate projection events; current Task/Attempt facts are used as safe fallback, and timeline gaps remain `complete=false`.
+- DAG detail aggregation currently loads the authorized DAG's actual tasks and Attempts into memory. It is bounded by graph/runtime limits but should move to SQL aggregation before substantially increasing Dynamic Fork limits.
+- The repository still recognizes `system-admin` as the administrator principal because no shared permission evaluator is available; ordinary users never receive executor summaries.
+- Log availability remains bounded by Conductor retention, and the Conductor SDK decoder still depends on a correct JSON `Content-Type` for task-log responses.
+- Production database backup/restore rehearsal remains required before deploying accumulated schema upgrades.
 
 ## Verification
 
 - `go test ./backend/...` passes.
 - `go vet ./backend/...` passes.
+- Focused `go test -race` passes for WorkflowRuntime, Task Center, Asset Library, and the PostgreSQL store.
 - `git diff --check` passes.
-- `WORKFLOW_CANVAS_TEST_DSN=... go test -tags=integration ./backend/internal/apiserver/store/postgresql -run TestWorkflowCanvasV17MigrationBackfillsLegacyBindings -v` passes against disposable PostgreSQL 16.
+- Task Center and Asset Library route tests match the released OpenAPI files.
+- `ssot` resolves exactly to released tag `spec-v1.7.2`; `SSOT_VERSION.commit` matches the submodule commit.
+- The `integration`-tagged DAG observability migration test passes against a temporary isolated PostgreSQL database and verifies legacy backfills, idempotency, indexes, and the trigger-type constraint; the temporary database was removed afterward.
+- A live Conductor Dynamic Fork/restart/retention test was not run in this session.
 
 ## Recommended next task
 
-Implement the Asset Library -> Workflow Canvas output projection boundary first, then add reuse qualification on top of the same batch Artifact visibility/readiness API. This closes the largest remaining correctness gap without introducing a second execution engine.
+Implement the Asset Library OutputBinding event consumer and Workflow Canvas repair loop using the new bounded Artifact summary boundary, then add the combined restart/recovery integration suite.
 
 Next Prompt:
 

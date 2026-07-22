@@ -13,7 +13,10 @@ import (
 
 type captureAssetStore struct {
 	store.AssetV1Store
-	artifact *iapiserver.Artifact
+	artifact     *iapiserver.Artifact
+	summaryOwner string
+	summaryIDs   []string
+	summaries    map[string]*iapiserver.ArtifactReadableSummary
 }
 
 func (s *captureAssetStore) DecorateArtifacts(context.Context, string, []*iapiserver.Artifact) error {
@@ -24,6 +27,12 @@ func (s *captureAssetStore) CreateArtifact(_ context.Context, artifact *iapiserv
 	s.artifact = artifact
 	artifact.ID = "artifact-1"
 	return artifact, true, nil
+}
+
+func (s *captureAssetStore) ResolveArtifactSummaries(_ context.Context, owner string, ids []string) (map[string]*iapiserver.ArtifactReadableSummary, error) {
+	s.summaryOwner = owner
+	s.summaryIDs = append([]string(nil), ids...)
+	return s.summaries, nil
 }
 
 func TestCreateArtifactUsesAuthenticatedOwner(t *testing.T) {
@@ -56,6 +65,27 @@ func TestCreateArtifactRejectsForbiddenSourceMetadata(t *testing.T) {
 	})
 	if status := toolerrors.ToStatus(err); status.Code != code.ErrArtifactSourceForbidden {
 		t.Fatalf("error status = %#v", status)
+	}
+}
+
+func TestBatchArtifactSummariesPreservesOrderAndTrimsInvisibleItems(t *testing.T) {
+	assetStore := &captureAssetStore{summaries: map[string]*iapiserver.ArtifactReadableSummary{
+		"artifact-1": {ID: "artifact-1", OutputKey: "image", ArtifactType: "image", MediaType: "image", ProcessingStatus: "ready", RegistrationStatus: "registered", PreviewAvailable: true},
+	}}
+	service := NewStore(assetStore, nil)
+	user := &iapiserver.User{}
+	user.ID = "user-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+
+	response, err := service.BatchArtifactSummaries(ctx, &iapiserver.BatchArtifactSummaryRequest{Items: []iapiserver.BatchArtifactSummaryItem{{ID: "artifact-1"}, {ID: "missing"}, {ID: "artifact-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assetStore.summaryOwner != "user-1" || len(assetStore.summaryIDs) != 3 {
+		t.Fatalf("summary scope = owner:%q ids:%#v", assetStore.summaryOwner, assetStore.summaryIDs)
+	}
+	if response.Total != 3 || response.Items[0].Artifact == nil || response.Items[1].Artifact != nil || response.Items[2].Artifact == nil {
+		t.Fatalf("response = %#v", response)
 	}
 }
 

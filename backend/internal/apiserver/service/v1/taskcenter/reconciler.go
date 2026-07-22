@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,7 +109,25 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, ownerType, ownerID, exe
 	if err != nil {
 		return err
 	}
-	tasks, _, err := r.store.ListOwnedTasks(ctx, ownerType, ownerID, &iapiserver.AtomicTaskListRequest{})
+	var tasks []*iapiserver.AtomicTask
+	if ownerType == iapiserver.TaskOwnerTypeDAGGroup {
+		tasks, err = r.store.ListDAGObservationTasks(ctx, ownerID)
+		if err == nil {
+			var group *iapiserver.DAGTaskGroup
+			group, err = r.store.GetDAGTaskGroup(ctx, ownerID)
+			if err == nil {
+				dynamic := dynamicTasksFromExecution(group, tasks, execution)
+				if len(dynamic) > 0 {
+					err = r.store.AddOwnedAtomicTasks(ctx, ownerType, ownerID, dynamic)
+					if err == nil {
+						tasks, err = r.store.ListDAGObservationTasks(ctx, ownerID)
+					}
+				}
+			}
+		}
+	} else {
+		tasks, _, err = r.store.ListOwnedTasks(ctx, ownerType, ownerID, &iapiserver.AtomicTaskListRequest{BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{PageSize: iapiserver.MaxTaskGraphNodes}}})
+	}
 	if err != nil {
 		return err
 	}
@@ -120,6 +139,70 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, ownerType, ownerID, exe
 		}
 	}
 	return stderrors.Join(errs...)
+}
+
+// dynamicTasksFromExecution materializes Conductor Dynamic Fork children that carry the required business identity envelope.
+func dynamicTasksFromExecution(group *iapiserver.DAGTaskGroup, existing []*iapiserver.AtomicTask, execution workflowruntime.Execution) []*iapiserver.AtomicTask {
+	known := make(map[string]bool, len(existing))
+	declaredDynamic := make(map[string]bool)
+	for _, task := range existing {
+		known[task.ID] = true
+	}
+	for _, node := range group.Nodes {
+		declaredDynamic[node.Key] = node.DynamicFork
+	}
+	result := make([]*iapiserver.AtomicTask, 0)
+	for _, runtimeTask := range execution.Tasks {
+		atomicTaskID, _ := runtimeTask.Input["atomic_task_id"].(string)
+		nodeKey, _ := runtimeTask.Input["dag_node_key"].(string)
+		functionRef, _ := runtimeTask.Input["function_ref"].(string)
+		if atomicTaskID == "" || known[atomicTaskID] || !declaredDynamic[nodeKey] || functionRef == "" {
+			continue
+		}
+		arguments, _ := runtimeTask.Input["arguments"].(map[string]any)
+		childRef, _ := runtimeTask.Input["child_key"].(string)
+		if childRef == "" {
+			childRef = shortID(runtimeTask.ID)
+		}
+		childKey := nodeKey + ":" + childRef
+		if len(childKey) > 128 {
+			childKey = childKey[:128]
+		}
+		task := &iapiserver.AtomicTask{
+			FunctionRef: functionRef, Arguments: arguments, Status: runtimeTaskStatus(runtimeTask.Status), Progress: runtimeTaskProgress(runtimeTask.Status),
+			RootTaskID: atomicTaskID, OwnerType: iapiserver.TaskOwnerTypeDAGGroup, OwnerID: group.ID,
+			ChildKey: childKey, ChildOrder: dynamicChildOrder(runtimeTask.Input["child_order"]), DAGNodeKey: nodeKey, RuntimeExecutionID: execution.ID, RuntimeTaskID: runtimeTask.ID,
+			StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt),
+			Output: runtimeTask.Output, ProjectID: group.ProjectID, Namespace: group.Namespace, CreatedBy: group.CreatedBy,
+		}
+		task.ID, task.Name = atomicTaskID, childKey
+		if runtimeTask.FailureReason != "" {
+			task.LastError = iapiserver.TaskError{Message: runtimeTask.FailureReason, OccurredAt: imachinery.Now()}
+		}
+		result = append(result, task)
+		known[atomicTaskID] = true
+	}
+	return result
+}
+
+func runtimeTaskProgress(status string) float64 {
+	if iapiserver.IsAtomicTaskTerminal(runtimeTaskStatus(status)) {
+		return 1
+	}
+	return 0
+}
+
+func dynamicChildOrder(value any) int {
+	switch order := value.(type) {
+	case int:
+		return order
+	case int64:
+		return int(order)
+	case float64:
+		return int(order)
+	default:
+		return 0
+	}
 }
 
 func (r *Reconciler) reconcileScheduleExecutions(ctx context.Context) error {
@@ -237,7 +320,8 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 		current := runtimeTask
 		latest = &current
 		attemptNo := runtimeTask.RetryCount + 1
-		attempt := &iapiserver.TaskAttempt{AtomicTaskID: task.ID, AttemptNo: attemptNo, RuntimeTaskID: runtimeTask.ID, Status: attemptStatus(runtimeTask.Status), InputSnapshot: runtimeTask.Input, OutputSnapshot: runtimeTask.Output, StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt)}
+		executorType, executorName := taskExecutorSnapshot(task.FunctionRef)
+		attempt := &iapiserver.TaskAttempt{AtomicTaskID: task.ID, AttemptNo: attemptNo, RuntimeTaskID: runtimeTask.ID, Status: attemptStatus(runtimeTask.Status), InputSnapshot: runtimeTask.Input, OutputSnapshot: runtimeTask.Output, ExecutorType: executorType, ExecutorDisplayName: executorName, StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt)}
 		if externalJobID, ok := runtimeTask.Output["external_job_id"].(string); ok {
 			attempt.ExternalJobID = externalJobID
 		}
@@ -248,6 +332,8 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 		if runtimeTask.FailureReason != "" {
 			attempt.Error = iapiserver.TaskError{Message: runtimeTask.FailureReason, OccurredAt: imachinery.Now()}
 		}
+		attempt.LogsRef = iapiserver.TaskAttemptLogsRef(attempt.ID)
+		r.appendRuntimeTerminalLog(ctx, runtimeTask)
 		attempts = append(attempts, attempt)
 		if attemptNo >= task.CurrentAttempt {
 			task.CurrentAttempt = attemptNo
@@ -268,9 +354,46 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 	if iapiserver.IsAtomicTaskTerminal(task.Status) {
 		task.Progress = 1
 	}
-	event := &iapiserver.RuntimeProjectionEvent{RuntimeEventID: fmt.Sprintf("%s:%s:%s:%d", execution.ID, task.ID, latest.Status, task.CurrentAttempt), RuntimeExecutionID: execution.ID, RuntimeTaskID: task.RuntimeTaskID, EventType: iapiserver.TaskCenterEventProjectionReconciled, Payload: map[string]any{"atomic_task_id": task.ID, "status": task.Status, "resource_version": task.ResourceVersion + 1}, OccurredAt: imachinery.Now(), ProjectionStatus: iapiserver.RuntimeProjectionStatusPending}
+	payload := map[string]any{
+		"atomic_task_id": task.ID, "node_key": task.DAGNodeKey, "status": task.Status,
+		"progress": task.Progress, "resource_version": task.ResourceVersion + 1,
+		"attempt_no":   task.CurrentAttempt,
+		"output_count": outputReferenceCount(task.Output, "artifact_refs") + outputReferenceCount(task.Output, "representation_refs"),
+	}
+	if len(attempts) > 0 {
+		payload["task_attempt_id"] = attempts[len(attempts)-1].ID
+	}
+	event := &iapiserver.RuntimeProjectionEvent{RuntimeEventID: fmt.Sprintf("%s:%s:%s:%d", execution.ID, task.ID, latest.Status, task.CurrentAttempt), RuntimeExecutionID: execution.ID, RuntimeTaskID: task.RuntimeTaskID, EventType: iapiserver.TaskCenterEventProjectionReconciled, Payload: payload, OccurredAt: imachinery.Now(), ProjectionStatus: iapiserver.RuntimeProjectionStatusPending}
 	event.ID = uuid.NewString()
 	return r.store.ApplyRuntimeProjection(ctx, task, attempts, event)
+}
+
+func taskExecutorSnapshot(functionRef string) (string, string) {
+	switch {
+	case strings.HasPrefix(functionRef, "application"), strings.HasPrefix(functionRef, "comfyui"):
+		return iapiserver.TaskExecutorApplication, "Application executor"
+	case strings.HasPrefix(functionRef, "task."), strings.Contains(functionRef, "reconcile"):
+		return iapiserver.TaskExecutorSystem, "Task Center system executor"
+	default:
+		return iapiserver.TaskExecutorWorker, "Task worker"
+	}
+}
+
+func (r *Reconciler) appendRuntimeTerminalLog(ctx context.Context, task workflowruntime.ExecutionTask) {
+	var entry workflowruntime.TaskLogEntry
+	switch task.Status {
+	case "CANCELED", "TERMINATED":
+		entry = workflowruntime.LifecycleLog("attempt.canceled", workflowruntime.TaskLogLevelWarn, "Execution attempt was canceled.")
+	case "TIMED_OUT":
+		entry = workflowruntime.LifecycleLog("attempt.timed_out", workflowruntime.TaskLogLevelError, "Execution attempt timed out.")
+	default:
+		return
+	}
+	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := r.runtime.AppendTaskLog(logCtx, task.ID, entry); err != nil {
+		log.Warnf("append reconciled task lifecycle log failed: error=%v", err)
+	}
 }
 
 func runtimeTaskStatus(status string) string {
@@ -279,7 +402,7 @@ func runtimeTaskStatus(status string) string {
 		return iapiserver.AtomicTaskStatusSuccess
 	case "FAILED", "FAILED_WITH_TERMINAL_ERROR":
 		return iapiserver.AtomicTaskStatusFailed
-	case "CANCELED":
+	case "CANCELED", "TERMINATED":
 		return iapiserver.AtomicTaskStatusCanceled
 	case "TIMED_OUT":
 		return iapiserver.AtomicTaskStatusTimeout

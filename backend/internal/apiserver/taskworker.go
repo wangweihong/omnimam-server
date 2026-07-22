@@ -114,17 +114,37 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	comfyTestExecutor := appsvc.NewComfyUITestExecutor(storeIns)
 	if err := runtime.RegisterHandler("comfyui.submit", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		return comfyTestExecutor.Submit(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		output, err := comfyTestExecutor.Submit(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		if err == nil {
+			task.Log(ctx, workflowruntime.WorkerLog("comfyui.submit.ready", workflowruntime.TaskLogLevelInfo, "External job is ready for polling."))
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler("comfyui.poll", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		return comfyTestExecutor.Poll(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		output, err := comfyTestExecutor.Poll(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		if err == nil {
+			if waiting, _ := output["in_progress"].(bool); waiting {
+				key, message := "comfyui.poll.running", "External job is still running."
+				if output["queue_position"] != nil {
+					key, message = "comfyui.poll.queued", "External job is queued."
+				}
+				task.Log(ctx, workflowruntime.WorkerLog(key, workflowruntime.TaskLogLevelInfo, message))
+			} else {
+				task.Log(ctx, workflowruntime.WorkerLog("comfyui.poll.completed", workflowruntime.TaskLogLevelInfo, "External job completed."))
+			}
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler("comfyui.collect_preview", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		return comfyTestExecutor.Collect(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		output, err := comfyTestExecutor.Collect(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
+		if err == nil {
+			task.Log(ctx, workflowruntime.WorkerLog("comfyui.preview.collected", workflowruntime.TaskLogLevelInfo, fmt.Sprintf("Collected %v preview outputs.", output["output_count"])))
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
@@ -133,7 +153,11 @@ func RunTaskWorker(cfg *config.Config) error {
 		if err != nil {
 			return nil, err
 		}
-		return applicationExecutor.Execute(ctx, atomicTask)
+		output, err := applicationExecutor.Execute(ctx, atomicTask)
+		if err == nil {
+			task.Log(ctx, workflowruntime.WorkerLog("application.execution.completed", workflowruntime.TaskLogLevelInfo, "Application provider execution returned a result."))
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
@@ -142,7 +166,15 @@ func RunTaskWorker(cfg *config.Config) error {
 		if err != nil {
 			return nil, err
 		}
-		return thumbnailExecutor.Execute(ctx, atomicTask)
+		output, err := thumbnailExecutor.Execute(ctx, atomicTask)
+		if err == nil {
+			message := "Thumbnail processing completed."
+			if output["thumbnail_status"] == iapiserver.ThumbnailStatusUnsupported {
+				message = "Thumbnail generation is unsupported for this asset."
+			}
+			task.Log(ctx, workflowruntime.WorkerLog("asset.thumbnail.completed", workflowruntime.TaskLogLevelInfo, message))
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
@@ -160,11 +192,20 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	if err := runtime.RegisterHandler(taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
-		return tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments["scheduled_at"]))
+		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments["scheduled_at"]))
+		if err == nil {
+			message := "Reconcile cycle completed."
+			if summary, ok := output["reconcile_summary"].(iapiserver.ReconcileSummary); ok {
+				message = fmt.Sprintf("Reconcile cycle completed with %d scanned, %d findings, %d actions, and %d deferred.", summary.Scanned, summary.Findings, summary.ActionsCreated, summary.Deferred)
+			}
+			task.Log(ctx, workflowruntime.WorkerLog("schedule.reconcile.completed", workflowruntime.TaskLogLevelInfo, message))
+		}
+		return output, err
 	}); err != nil {
 		return err
 	}
 	if err := runtime.RegisterHandler("task.schedule.acquire", 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.started", workflowruntime.TaskLogLevelInfo, "Evaluating scheduled execution ownership."))
 		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
 		schedule, err := storeIns.TaskCenters().GetTaskSchedule(ctx, scheduleID)
 		if err != nil {
@@ -177,6 +218,7 @@ func RunTaskWorker(cfg *config.Config) error {
 				return nil, getErr
 			}
 			if existing == nil {
+				task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.misfire", workflowruntime.TaskLogLevelWarn, "Delayed schedule trigger was skipped by misfire policy."))
 				return map[string]any{
 					"status":       iapiserver.TaskSchedulePolicySkip,
 					"scheduled_at": scheduledAt.UTC().Format(time.RFC3339Nano),
@@ -192,9 +234,10 @@ func RunTaskWorker(cfg *config.Config) error {
 			return nil, err
 		}
 		if !acquired {
+			task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.overlap", workflowruntime.TaskLogLevelWarn, "Schedule trigger reused an existing execution record."))
 			return map[string]any{"schedule_execution_id": record.ID, "status": record.Status}, nil
 		}
-		targetID, err := createScheduleTarget(ctx, tasks, schedule)
+		targetID, err := createScheduleTarget(ctx, tasks, schedule, record.TriggeredAt)
 		if err != nil {
 			record.Status = iapiserver.ScheduleExecutionStatusTriggerFailed
 			record.Reason = err.Error()
@@ -205,6 +248,9 @@ func RunTaskWorker(cfg *config.Config) error {
 		record.TargetID = targetID
 		record.Status = iapiserver.ScheduleExecutionStatusRunning
 		_, err = storeIns.TaskCenters().UpdateScheduleExecution(ctx, record)
+		if err == nil {
+			task.Log(ctx, workflowruntime.WorkerLog("schedule.target.created", workflowruntime.TaskLogLevelInfo, "Scheduled target was created and started."))
+		}
 		return map[string]any{"schedule_execution_id": record.ID, "target_id": targetID, "status": record.Status}, err
 	}); err != nil {
 		return err
@@ -352,6 +398,7 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges,
 		Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: event.ProjectID,
 		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: event.IdempotencyKey,
+		TriggerType: iapiserver.DAGTriggerDomainEvent, TriggerSourceID: event.AssetVersionID, TriggerSourceName: "asset_version_representation_requested",
 	}, nil
 }
 
@@ -365,7 +412,7 @@ func (r *workerAssetRegistrar) Register(ctx context.Context, artifact *iapiserve
 	return response.Asset.ID, nil
 }
 
-func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, schedule *iapiserver.TaskSchedule) (string, error) {
+func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, schedule *iapiserver.TaskSchedule, triggeredAt imachinery.Time) (string, error) {
 	raw, err := json.Marshal(schedule.Target.Template)
 	if err != nil {
 		return "", err
@@ -398,7 +445,7 @@ func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return "", err
 		}
-		applyDAGScheduleOwnership(&req, schedule)
+		applyDAGScheduleOwnership(&req, schedule, triggeredAt)
 		created, err := tasks.CreateDAGTaskGroup(ctx, &req)
 		if err != nil {
 			return "", err
@@ -423,10 +470,16 @@ func applyGroupScheduleOwnership(req *iapiserver.TaskGroupCreateRequest, schedul
 	req.CreatedBy = schedule.CreatedBy
 }
 
-func applyDAGScheduleOwnership(req *iapiserver.DAGTaskGroupCreateRequest, schedule *iapiserver.TaskSchedule) {
+func applyDAGScheduleOwnership(req *iapiserver.DAGTaskGroupCreateRequest, schedule *iapiserver.TaskSchedule, triggerTimes ...imachinery.Time) {
 	req.ProjectID = schedule.ProjectID
 	req.Namespace = schedule.Namespace
 	req.CreatedBy = schedule.CreatedBy
+	req.TriggerType = iapiserver.DAGTriggerSchedule
+	req.TriggerSourceID = schedule.ID
+	req.TriggerSourceName = schedule.Name
+	if len(triggerTimes) > 0 {
+		req.TriggeredAt = triggerTimes[0]
+	}
 }
 
 func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, interval time.Duration) error {

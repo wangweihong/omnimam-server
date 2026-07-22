@@ -722,6 +722,10 @@ const (
 	// @CN TaskAttempt 不存在或不属于指定 AtomicTask。
 	// @EN TaskAttempt does not exist or does not belong to the AtomicTask.
 	ErrTaskAttemptNotFound int = 141001
+	// @HTTP 200
+	// @CN TaskAttempt 对应的运行时日志历史已不可用。
+	// @EN Runtime log history for the TaskAttempt is no longer available.
+	ErrTaskAttemptLogUnavailable int = 141002
 
 	// @HTTP 200
 	// @CN 当前用户缺少任务中心操作权限。

@@ -96,6 +96,18 @@ const (
 	MaxDynamicForkTasks        = 1000
 )
 
+const (
+	DAGTriggerAPI         = "API"
+	DAGTriggerSchedule    = "SCHEDULE"
+	DAGTriggerCanvas      = "CANVAS"
+	DAGTriggerDomainEvent = "DOMAIN_EVENT"
+	DAGTriggerRetry       = "RETRY"
+
+	TaskExecutorWorker      = "WORKER"
+	TaskExecutorApplication = "APPLICATION_EXECUTOR"
+	TaskExecutorSystem      = "SYSTEM"
+)
+
 // RetryPolicy controls Conductor retries for one AtomicTask.
 type RetryPolicy struct {
 	MaxAttempts          int    `json:"max_attempts,omitempty"`
@@ -122,50 +134,52 @@ type TaskError struct {
 // AtomicTask is the only business resource executed by a Worker handler.
 type AtomicTask struct {
 	imachinery.ObjectMeta
-	FunctionRef          string                 `json:"function_ref" gorm:"column:function_ref;type:varchar(256);not null;index"`
-	Arguments            map[string]any         `json:"arguments,omitempty" gorm:"-"`
-	ArgumentsShadow      string                 `json:"-" gorm:"column:arguments_json;type:text;not null;default:'{}'"`
-	RequiredCapabilities string                 `json:"required_capabilities,omitempty" gorm:"column:required_capabilities;type:text"`
-	RetryPolicy          RetryPolicy            `json:"retry_policy,omitempty" gorm:"-"`
-	RetryPolicyShadow    string                 `json:"-" gorm:"column:retry_policy_json;type:text;not null;default:'{}'"`
-	TimeoutPolicy        TimeoutPolicy          `json:"timeout_policy,omitempty" gorm:"-"`
-	TimeoutPolicyShadow  string                 `json:"-" gorm:"column:timeout_policy_json;type:text;not null;default:'{}'"`
-	CancelPolicy         map[string]any         `json:"cancel_policy,omitempty" gorm:"-"`
-	CancelPolicyShadow   string                 `json:"-" gorm:"column:cancel_policy_json;type:text;not null;default:'{}'"`
-	Status               string                 `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_atomic_tasks_status_schedule,priority:1"`
-	Progress             float64                `json:"progress" gorm:"column:progress;not null;default:0"`
-	CurrentAttempt       int                    `json:"current_attempt" gorm:"column:current_attempt;not null;default:0"`
-	Output               map[string]any         `json:"output,omitempty" gorm:"-"`
-	OutputShadow         string                 `json:"-" gorm:"column:output_json;type:text;not null;default:'{}'"`
-	LastError            TaskError              `json:"last_error,omitempty" gorm:"-"`
-	LastErrorShadow      string                 `json:"-" gorm:"column:last_error_json;type:text;not null;default:'{}'"`
-	RetryOfTaskID        string                 `json:"retry_of_task_id,omitempty" gorm:"column:retry_of_task_id;type:varchar(64);index"`
-	RetryOfTask          *AtomicTaskSummary     `json:"retry_of_task,omitempty" gorm:"-"`
-	RootTaskID           string                 `json:"root_task_id,omitempty" gorm:"column:root_task_id;type:varchar(64);index"`
-	RootTask             *AtomicTaskSummary     `json:"root_task,omitempty" gorm:"-"`
-	OwnerType            string                 `json:"owner_type,omitempty" gorm:"column:owner_type;type:varchar(32)"`
-	OwnerID              string                 `json:"owner_id,omitempty" gorm:"column:owner_id;type:varchar(64);index"`
-	Owner                *TaskOwnerSummary      `json:"owner,omitempty" gorm:"-"`
-	ChildKey             string                 `json:"child_key,omitempty" gorm:"column:child_key;type:varchar(128)"`
-	ChildOrder           int                    `json:"child_order,omitempty" gorm:"column:child_order;not null;default:0"`
-	ApplicationRunID     string                 `json:"application_run_id,omitempty" gorm:"column:application_run_id;type:varchar(64);index"`
-	CanvasRunID          string                 `json:"canvas_run_id,omitempty" gorm:"column:canvas_run_id;type:varchar(64);index"`
-	CanvasNodeRunID      string                 `json:"canvas_node_run_id,omitempty" gorm:"column:canvas_node_run_id;type:varchar(64);index"`
-	IdempotencyScope     string                 `json:"idempotency_scope,omitempty" gorm:"column:idempotency_scope;type:varchar(256)"`
-	IdempotencyKey       string                 `json:"idempotency_key,omitempty" gorm:"column:idempotency_key;type:varchar(256)"`
-	RuntimeExecutionID   string                 `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
-	RuntimeTaskID        string                 `json:"runtime_task_id,omitempty" gorm:"column:runtime_task_id;type:varchar(128)"`
-	RuntimeRevision      string                 `json:"runtime_revision,omitempty" gorm:"column:runtime_revision;type:varchar(128)"`
-	ScheduleAt           imachinery.Time        `json:"schedule_at,omitempty" gorm:"column:schedule_at;index:idx_atomic_tasks_status_schedule,priority:2"`
-	StartedAt            imachinery.Time        `json:"started_at,omitempty" gorm:"column:started_at"`
-	CompletedAt          imachinery.Time        `json:"completed_at,omitempty" gorm:"column:completed_at"`
-	CanceledAt           imachinery.Time        `json:"canceled_at,omitempty" gorm:"column:canceled_at"`
-	ProjectID            string                 `json:"project_id" gorm:"column:project_id;type:varchar(128);not null;index:idx_atomic_tasks_scope,priority:1"`
-	Namespace            string                 `json:"namespace" gorm:"column:namespace;type:varchar(128);not null;index:idx_atomic_tasks_scope,priority:2"`
-	CreatedBy            string                 `json:"created_by" gorm:"column:created_by;type:varchar(128);not null"`
-	ScheduleSource       *ScheduleSourceSummary `json:"schedule_source,omitempty" gorm:"-"` // 调度创建的根任务来源，非调度任务为空。
-	Tags                 string                 `json:"tags,omitempty" gorm:"column:tags;type:text"`
-	DeletedAt            imachinery.Time        `json:"-" gorm:"column:deleted_at;index"`
+	FunctionRef          string             `json:"function_ref" gorm:"column:function_ref;type:varchar(256);not null;index"`
+	Arguments            map[string]any     `json:"arguments,omitempty" gorm:"-"`
+	ArgumentsShadow      string             `json:"-" gorm:"column:arguments_json;type:text;not null;default:'{}'"`
+	RequiredCapabilities string             `json:"required_capabilities,omitempty" gorm:"column:required_capabilities;type:text"`
+	RetryPolicy          RetryPolicy        `json:"retry_policy,omitempty" gorm:"-"`
+	RetryPolicyShadow    string             `json:"-" gorm:"column:retry_policy_json;type:text;not null;default:'{}'"`
+	TimeoutPolicy        TimeoutPolicy      `json:"timeout_policy,omitempty" gorm:"-"`
+	TimeoutPolicyShadow  string             `json:"-" gorm:"column:timeout_policy_json;type:text;not null;default:'{}'"`
+	CancelPolicy         map[string]any     `json:"cancel_policy,omitempty" gorm:"-"`
+	CancelPolicyShadow   string             `json:"-" gorm:"column:cancel_policy_json;type:text;not null;default:'{}'"`
+	Status               string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_atomic_tasks_status_schedule,priority:1"`
+	Progress             float64            `json:"progress" gorm:"column:progress;not null;default:0"`
+	CurrentAttempt       int                `json:"current_attempt" gorm:"column:current_attempt;not null;default:0"`
+	Output               map[string]any     `json:"output,omitempty" gorm:"-"`
+	OutputShadow         string             `json:"-" gorm:"column:output_json;type:text;not null;default:'{}'"`
+	LastError            TaskError          `json:"last_error,omitempty" gorm:"-"`
+	LastErrorShadow      string             `json:"-" gorm:"column:last_error_json;type:text;not null;default:'{}'"`
+	RetryOfTaskID        string             `json:"retry_of_task_id,omitempty" gorm:"column:retry_of_task_id;type:varchar(64);index"`
+	RetryOfTask          *AtomicTaskSummary `json:"retry_of_task,omitempty" gorm:"-"`
+	RootTaskID           string             `json:"root_task_id,omitempty" gorm:"column:root_task_id;type:varchar(64);index"`
+	RootTask             *AtomicTaskSummary `json:"root_task,omitempty" gorm:"-"`
+	OwnerType            string             `json:"owner_type,omitempty" gorm:"column:owner_type;type:varchar(32)"`
+	OwnerID              string             `json:"owner_id,omitempty" gorm:"column:owner_id;type:varchar(64);index"`
+	Owner                *TaskOwnerSummary  `json:"owner,omitempty" gorm:"-"`
+	ChildKey             string             `json:"child_key,omitempty" gorm:"column:child_key;type:varchar(128)"`
+	// DAGNodeKey 保存声明 DAG 节点 key；动态 fan-out 的实际任务共享该值。
+	DAGNodeKey         string                 `json:"node_key,omitempty" gorm:"column:dag_node_key;type:varchar(128)"`
+	ChildOrder         int                    `json:"child_order,omitempty" gorm:"column:child_order;not null;default:0"`
+	ApplicationRunID   string                 `json:"application_run_id,omitempty" gorm:"column:application_run_id;type:varchar(64);index"`
+	CanvasRunID        string                 `json:"canvas_run_id,omitempty" gorm:"column:canvas_run_id;type:varchar(64);index"`
+	CanvasNodeRunID    string                 `json:"canvas_node_run_id,omitempty" gorm:"column:canvas_node_run_id;type:varchar(64);index"`
+	IdempotencyScope   string                 `json:"idempotency_scope,omitempty" gorm:"column:idempotency_scope;type:varchar(256)"`
+	IdempotencyKey     string                 `json:"idempotency_key,omitempty" gorm:"column:idempotency_key;type:varchar(256)"`
+	RuntimeExecutionID string                 `json:"runtime_execution_id,omitempty" gorm:"column:runtime_execution_id;type:varchar(128);index"`
+	RuntimeTaskID      string                 `json:"runtime_task_id,omitempty" gorm:"column:runtime_task_id;type:varchar(128)"`
+	RuntimeRevision    string                 `json:"runtime_revision,omitempty" gorm:"column:runtime_revision;type:varchar(128)"`
+	ScheduleAt         imachinery.Time        `json:"schedule_at,omitempty" gorm:"column:schedule_at;index:idx_atomic_tasks_status_schedule,priority:2"`
+	StartedAt          imachinery.Time        `json:"started_at,omitempty" gorm:"column:started_at"`
+	CompletedAt        imachinery.Time        `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	CanceledAt         imachinery.Time        `json:"canceled_at,omitempty" gorm:"column:canceled_at"`
+	ProjectID          string                 `json:"project_id" gorm:"column:project_id;type:varchar(128);not null;index:idx_atomic_tasks_scope,priority:1"`
+	Namespace          string                 `json:"namespace" gorm:"column:namespace;type:varchar(128);not null;index:idx_atomic_tasks_scope,priority:2"`
+	CreatedBy          string                 `json:"created_by" gorm:"column:created_by;type:varchar(128);not null"`
+	ScheduleSource     *ScheduleSourceSummary `json:"schedule_source,omitempty" gorm:"-"` // 调度创建的根任务来源，非调度任务为空。
+	Tags               string                 `json:"tags,omitempty" gorm:"column:tags;type:text"`
+	DeletedAt          imachinery.Time        `json:"-" gorm:"column:deleted_at;index"`
 }
 
 func (AtomicTask) TableName() string { return "atomic_tasks" }
@@ -222,11 +236,17 @@ type TaskAttempt struct {
 	Error          TaskError          `json:"error,omitempty" gorm:"-"`
 	ErrorShadow    string             `json:"-" gorm:"column:error_json;type:text;not null;default:'{}'"`
 	ExternalJobID  string             `json:"external_job_id,omitempty" gorm:"column:external_job_id;type:varchar(256);index"`
-	LogsRef        string             `json:"logs_ref,omitempty" gorm:"column:logs_ref;type:text"`
-	StartedAt      imachinery.Time    `json:"started_at,omitempty" gorm:"column:started_at"`
-	CompletedAt    imachinery.Time    `json:"completed_at,omitempty" gorm:"column:completed_at"`
-	DurationMS     int64              `json:"duration_ms" gorm:"column:duration_ms;not null;default:0"`
-	Retryable      bool               `json:"retryable" gorm:"column:retryable;not null;default:false"`
+	LogsRef        string             `json:"logs_ref,omitempty" gorm:"column:logs_ref;type:text"` // Task Center 稳定不透明日志引用，客户端不得解析为运行时地址。
+	// ExecutorType 是受控执行器类别快照，不保存 Worker ID、队列、主机或地址。
+	ExecutorType string `json:"-" gorm:"column:executor_type;type:varchar(32);not null;default:''"`
+	// ExecutorDisplayName 是执行器的稳定可读名称，仅管理员响应可见。
+	ExecutorDisplayName string `json:"-" gorm:"column:executor_display_name;type:varchar(256);not null;default:''"`
+	// Executor 是权限裁剪后的公开摘要；普通用户响应保持为空。
+	Executor    *TaskExecutorSummary `json:"executor,omitempty" gorm:"-"`
+	StartedAt   imachinery.Time      `json:"started_at,omitempty" gorm:"column:started_at"`
+	CompletedAt imachinery.Time      `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	DurationMS  int64                `json:"duration_ms" gorm:"column:duration_ms;not null;default:0"`
+	Retryable   bool                 `json:"retryable" gorm:"column:retryable;not null;default:false"`
 }
 
 func (TaskAttempt) TableName() string { return "task_attempts" }
@@ -234,6 +254,7 @@ func (a *TaskAttempt) BeforeCreate(tx *gorm.DB) error {
 	if err := a.ObjectMeta.BeforeCreate(tx); err != nil {
 		return err
 	}
+	a.ensureLogsRef()
 	return a.marshalShadows()
 }
 func (a *TaskAttempt) AfterCreate(*gorm.DB) error { return nil }
@@ -241,6 +262,7 @@ func (a *TaskAttempt) BeforeUpdate(tx *gorm.DB) error {
 	if err := a.ObjectMeta.BeforeUpdate(tx); err != nil {
 		return err
 	}
+	a.ensureLogsRef()
 	return a.marshalShadows()
 }
 func (a *TaskAttempt) AfterUpdate(*gorm.DB) error { return nil }
@@ -251,6 +273,7 @@ func (a *TaskAttempt) AfterFind(tx *gorm.DB) error {
 	unmarshalJSON(a.InputShadow, &a.InputSnapshot, "{}")
 	unmarshalJSON(a.OutputShadow, &a.OutputSnapshot, "{}")
 	unmarshalJSON(a.ErrorShadow, &a.Error, "{}")
+	a.ensureLogsRef()
 	return nil
 }
 func (a *TaskAttempt) marshalShadows() error {
@@ -259,6 +282,20 @@ func (a *TaskAttempt) marshalShadows() error {
 		jsonField{a.OutputSnapshot, &a.OutputShadow, "{}"},
 		jsonField{a.Error, &a.ErrorShadow, "{}"},
 	)
+}
+
+func (a *TaskAttempt) ensureLogsRef() {
+	if a.LogsRef == "" && a.ID != "" {
+		a.LogsRef = TaskAttemptLogsRef(a.ID)
+	}
+}
+
+// TaskAttemptLogsRef 返回不暴露 runtime backend 的稳定日志引用。
+func TaskAttemptLogsRef(attemptID string) string {
+	if attemptID == "" {
+		return ""
+	}
+	return "task-attempt-log:" + attemptID
 }
 
 // AtomicTaskTemplate is embedded in Group, DAG, and Schedule immutable snapshots.
@@ -279,14 +316,18 @@ type GroupStrategy struct {
 }
 
 type TaskSummary struct {
-	Total    int `json:"total"`
-	Pending  int `json:"pending"`
-	Blocked  int `json:"blocked"`
-	Running  int `json:"running"`
-	Success  int `json:"success"`
-	Failed   int `json:"failed"`
-	Canceled int `json:"canceled"`
-	Skipped  int `json:"skipped"`
+	Total           int `json:"total"`
+	Pending         int `json:"pending"`
+	Blocked         int `json:"blocked"`
+	Ready           int `json:"ready"`
+	Running         int `json:"running"`
+	Retrying        int `json:"retrying"`
+	CancelRequested int `json:"cancel_requested"`
+	Success         int `json:"success"`
+	Failed          int `json:"failed"`
+	Canceled        int `json:"canceled"`
+	Timeout         int `json:"timeout"`
+	Skipped         int `json:"skipped"`
 }
 
 // ScheduleSourceSummary 标识创建运行资源的调度计划与具体轮次。
@@ -418,20 +459,32 @@ type DAGEdge struct {
 // DAGTaskGroup stores an immutable validated AtomicTask DAG execution.
 type DAGTaskGroup struct {
 	imachinery.ObjectMeta
-	Nodes                    []DAGNode              `json:"nodes" gorm:"-"`
-	NodesShadow              string                 `json:"-" gorm:"column:nodes_json;type:text;not null"`
-	Edges                    []DAGEdge              `json:"edges" gorm:"-"`
-	EdgesShadow              string                 `json:"-" gorm:"column:edges_json;type:text;not null"`
-	Input                    map[string]any         `json:"input,omitempty" gorm:"-"`
-	InputShadow              string                 `json:"-" gorm:"column:input_mapping_json;type:text;not null;default:'{}'"`
-	OutputMapping            map[string]any         `json:"output_mapping,omitempty" gorm:"-"`
-	OutputMappingShadow      string                 `json:"-" gorm:"column:output_mapping_json;type:text;not null;default:'{}'"`
-	Status                   string                 `json:"status" gorm:"column:status;type:varchar(32);not null;index"`
-	Progress                 float64                `json:"progress" gorm:"column:progress;not null;default:0"`
-	Summary                  TaskSummary            `json:"summary" gorm:"-"`
-	SummaryShadow            string                 `json:"-" gorm:"column:summary_json;type:text;not null;default:'{}'"`
-	Result                   map[string]any         `json:"result,omitempty" gorm:"-"`
-	ResultShadow             string                 `json:"-" gorm:"column:result_json;type:text;not null;default:'{}'"`
+	Nodes               []DAGNode      `json:"nodes" gorm:"-"`
+	NodesShadow         string         `json:"-" gorm:"column:nodes_json;type:text;not null"`
+	Edges               []DAGEdge      `json:"edges" gorm:"-"`
+	EdgesShadow         string         `json:"-" gorm:"column:edges_json;type:text;not null"`
+	Input               map[string]any `json:"input,omitempty" gorm:"-"`
+	InputShadow         string         `json:"-" gorm:"column:input_mapping_json;type:text;not null;default:'{}'"`
+	OutputMapping       map[string]any `json:"output_mapping,omitempty" gorm:"-"`
+	OutputMappingShadow string         `json:"-" gorm:"column:output_mapping_json;type:text;not null;default:'{}'"`
+	Status              string         `json:"status" gorm:"column:status;type:varchar(32);not null;index"`
+	Progress            float64        `json:"progress" gorm:"column:progress;not null;default:0"`
+	Summary             TaskSummary    `json:"summary" gorm:"-"`
+	SummaryShadow       string         `json:"-" gorm:"column:summary_json;type:text;not null;default:'{}'"`
+	Result              map[string]any `json:"result,omitempty" gorm:"-"`
+	ResultShadow        string         `json:"-" gorm:"column:result_json;type:text;not null;default:'{}'"`
+	// StartedAt 是 DAG 首个实际任务开始执行的时间。
+	StartedAt imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
+	// CompletedAt 是 DAG 汇总进入终态的时间。
+	CompletedAt imachinery.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	// TriggerType 固定为 API、SCHEDULE、CANVAS、DOMAIN_EVENT 或 RETRY。
+	TriggerType string `json:"-" gorm:"column:trigger_type;type:varchar(32);not null;default:'API'"`
+	// TriggerSourceID 是触发时来源快照；来源删除不影响历史读取。
+	TriggerSourceID string `json:"-" gorm:"column:trigger_source_id;type:varchar(128);not null;default:''"`
+	// TriggerSourceName 是触发时的可读来源名称快照。
+	TriggerSourceName string `json:"-" gorm:"column:trigger_source_name;type:varchar(256);not null;default:''"`
+	// TriggeredAt 是服务接收 DAG 触发的时间。
+	TriggeredAt              imachinery.Time        `json:"-" gorm:"column:triggered_at"`
 	RetryOfID                string                 `json:"retry_of_id,omitempty" gorm:"column:retry_of_id;type:varchar(64);index"`
 	RetryOf                  *TaskOwnerSummary      `json:"retry_of,omitempty" gorm:"-"`
 	CanvasVersionID          string                 `json:"canvas_version_id,omitempty" gorm:"column:canvas_version_id;type:varchar(64);index"`

@@ -17,6 +17,19 @@ import (
 
 type atomicTaskResponseService struct{ taskcentersvc.TaskCenterSrv }
 
+type attemptLogResponseService struct {
+	taskcentersvc.TaskCenterSrv
+	request *iapiserver.TaskAttemptLogListRequest
+}
+
+func (s *attemptLogResponseService) ListAttemptLogs(_ context.Context, request *iapiserver.TaskAttemptLogListRequest) (*iapiserver.TaskAttemptLogListResponse, error) {
+	s.request = request
+	return &iapiserver.TaskAttemptLogListResponse{Total: 1, Items: []*iapiserver.TaskAttemptLog{{
+		Sequence: 1, Source: "LIFECYCLE", Level: "INFO", Message: "Execution attempt started.",
+		OccurredAt: imachinery.NewTime(time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)),
+	}}}, nil
+}
+
 func (atomicTaskResponseService) ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error) {
 	now := imachinery.NewTime(time.Date(2026, time.July, 20, 16, 0, 0, 0, time.UTC))
 	return &iapiserver.AtomicTaskListResponse{
@@ -108,6 +121,38 @@ func TestListAtomicTasksReturnsReleasedContract(t *testing.T) {
 	} {
 		if _, exists := item[field]; exists {
 			t.Errorf("non-contract field %q leaked in response: %#v", field, item)
+		}
+	}
+}
+
+func TestListAtomicTaskAttemptLogsAppliesDefaultsAndReturnsContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	service := &attemptLogResponseService{}
+	router := gin.New()
+	controller := NewController(service)
+	router.GET("/api/v1/atomic-tasks/:atomic_task_id/attempts/:task_attempt_id/logs", controller.ListAtomicTaskAttemptLogs)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/atomic-tasks/atomic-1/attempts/attempt-1/logs", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if service.request == nil || service.request.AtomicTaskID != "atomic-1" || service.request.TaskAttemptID != "attempt-1" || service.request.PageSize != 100 {
+		t.Fatalf("request = %#v", service.request)
+	}
+	var response struct {
+		Total int64            `json:"total"`
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Total != 1 || len(response.Items) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	for _, field := range []string{"sequence", "source", "level", "message", "occurred_at"} {
+		if _, exists := response.Items[0][field]; !exists {
+			t.Errorf("field %q missing from %#v", field, response.Items[0])
 		}
 	}
 }

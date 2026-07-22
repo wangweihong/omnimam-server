@@ -41,6 +41,28 @@ type reconcileRecoveryStoreStub struct {
 	completed *iapiserver.TaskScheduleExecution
 }
 
+type projectionStoreStub struct {
+	store.TaskCenterStore
+	applied  bool
+	task     *iapiserver.AtomicTask
+	attempts []*iapiserver.TaskAttempt
+}
+
+func (s *projectionStoreStub) ApplyRuntimeProjection(_ context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, _ *iapiserver.RuntimeProjectionEvent) (bool, error) {
+	s.applied, s.task, s.attempts = true, task, attempts
+	return true, nil
+}
+
+type failingTaskLogRuntime struct {
+	workflowruntime.UnavailableRuntime
+	appendCalls int
+}
+
+func (r *failingTaskLogRuntime) AppendTaskLog(context.Context, string, workflowruntime.TaskLogEntry) error {
+	r.appendCalls++
+	return workflowruntime.ErrUnavailable
+}
+
 func (s *reconcileRecoveryStoreStub) GetScheduleReconcileState(context.Context, string) (*iapiserver.ScheduleReconcileState, error) {
 	return s.state, nil
 }
@@ -79,6 +101,33 @@ func TestReconcileRegistryRejectsDuplicateRef(t *testing.T) {
 	}
 	if handler, ok := registry.Get("test.reconcile"); !ok || handler.DisplayName() != "Test reconcile" {
 		t.Fatalf("handler = %#v, exists = %t", handler, ok)
+	}
+}
+
+func TestProjectionKeepsCanceledResultWhenTerminalLogWriteFails(t *testing.T) {
+	storeStub := &projectionStoreStub{}
+	runtimeStub := &failingTaskLogRuntime{}
+	reconciler := &Reconciler{store: storeStub, runtime: runtimeStub}
+	task := &iapiserver.AtomicTask{Status: iapiserver.AtomicTaskStatusRunning, CurrentAttempt: 1}
+	task.ID = "atomic-1"
+	now := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	execution := workflowruntime.Execution{ID: "execution-1", Tasks: []workflowruntime.ExecutionTask{{
+		ID: "runtime-task-1", Status: "TERMINATED", Input: map[string]any{"atomic_task_id": task.ID},
+		Output: map[string]any{}, StartedAt: now, CompletedAt: now.Add(time.Second),
+	}}}
+
+	applied, err := reconciler.project(context.Background(), task, execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied || !storeStub.applied || storeStub.task.Status != iapiserver.AtomicTaskStatusCanceled {
+		t.Fatalf("projection applied=%t task=%#v", applied, storeStub.task)
+	}
+	if runtimeStub.appendCalls != 1 {
+		t.Fatalf("append calls = %d", runtimeStub.appendCalls)
+	}
+	if len(storeStub.attempts) != 1 || storeStub.attempts[0].LogsRef != iapiserver.TaskAttemptLogsRef(storeStub.attempts[0].ID) {
+		t.Fatalf("attempts = %#v", storeStub.attempts)
 	}
 }
 
@@ -262,4 +311,25 @@ func containsJSONField(data []byte, field string) bool {
 	_ = json.Unmarshal(data, &value)
 	_, ok := value[field]
 	return ok
+}
+
+func TestDynamicTasksFromExecutionMaterializesActualChildren(t *testing.T) {
+	group := &iapiserver.DAGTaskGroup{
+		Nodes:     []iapiserver.DAGNode{{Key: "images", DynamicFork: true}},
+		ProjectID: "project", Namespace: "default", CreatedBy: "user-1",
+	}
+	group.ID = "dag-1"
+	execution := workflowruntime.Execution{ID: "runtime-1", Tasks: []workflowruntime.ExecutionTask{{
+		ID: "runtime-task-1", Status: "COMPLETED", Output: map[string]any{"artifact_refs": []any{}},
+		Input: map[string]any{"atomic_task_id": "actual-1", "dag_node_key": "images", "function_ref": "image.generate", "child_key": "image_0", "child_order": float64(2), "arguments": map[string]any{"prompt": "test"}},
+	}}}
+
+	tasks := dynamicTasksFromExecution(group, nil, execution)
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v", tasks)
+	}
+	actual := tasks[0]
+	if actual.ID != "actual-1" || actual.DAGNodeKey != "images" || actual.ChildKey != "images:image_0" || actual.ChildOrder != 2 || actual.Status != iapiserver.AtomicTaskStatusSuccess {
+		t.Fatalf("actual task = %#v", actual)
+	}
 }

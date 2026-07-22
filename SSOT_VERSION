@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 1090a2531d07283d96475b3af8ffee8367697041
-contract_version: spec-v1.7.0
+commit: 7607cb2bd93f34a2cce8be8fddf8564529acff8a
+contract_version: spec-v1.7.2
 updated_at: 2026-07-22
 status: released
-note: Workflow Canvas v1.7.0 adds immutable NodeDefinition versions, typed graph/flow execution plans, scoped runs, reuse policies, FlowRun and output/task binding projections.
+note: Task Center v1.3 adds DAG run observability, enhanced execution logs, and bounded Artifact summaries.

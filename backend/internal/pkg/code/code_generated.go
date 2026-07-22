@@ -153,6 +153,7 @@ func init() {
 	register(ErrTaskLeaseInvalid, 200, map[string]string{"CN": "ExecutionLease 无效、已过期或不属于当前 Worker。", "EN": "ExecutionLease is invalid, expired, or does not belong to current worker."})
 	register(ErrTaskAttemptUpdateRejected, 200, map[string]string{"CN": "当前执行尝试不允许更新任务结果。", "EN": "Current task attempt is not allowed to update task result."})
 	register(ErrTaskAttemptNotFound, 200, map[string]string{"CN": "TaskAttempt 不存在或不属于指定 AtomicTask。", "EN": "TaskAttempt does not exist or does not belong to the AtomicTask."})
+	register(ErrTaskAttemptLogUnavailable, 200, map[string]string{"CN": "TaskAttempt 对应的运行时日志历史已不可用。", "EN": "Runtime log history for the TaskAttempt is no longer available."})
 	register(ErrTaskPermissionDenied, 200, map[string]string{"CN": "当前用户缺少任务中心操作权限。", "EN": "Current user does not have task center permission."})
 	register(ErrTaskScheduleInvalid, 200, map[string]string{"CN": "TaskSchedule 的目标、cron、时区或 runAt 不合法。", "EN": "TaskSchedule target, cron, timezone, or runAt is invalid."})
 	register(ErrTaskScheduleNotFound, 200, map[string]string{"CN": "TaskSchedule 不存在或当前调用方不可见。", "EN": "TaskSchedule does not exist or is not visible to the caller."})

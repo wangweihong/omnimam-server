@@ -3,6 +3,7 @@ package workflowruntime
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/conductor-sdk/conductor-go/sdk/settings"
 	"github.com/conductor-sdk/conductor-go/sdk/worker"
 	"github.com/conductor-sdk/conductor-go/sdk/workflow/executor"
+	"github.com/google/uuid"
 )
 
 type ConductorConfig struct {
@@ -24,9 +26,10 @@ type ConductorConfig struct {
 }
 
 type ConductorRuntime struct {
-	executor  *executor.WorkflowExecutor
-	apiClient *client.APIClient
-	runner    *worker.TaskRunner
+	executor   *executor.WorkflowExecutor
+	apiClient  *client.APIClient
+	taskClient client.TaskClient
+	runner     *worker.TaskRunner
 
 	mu              sync.Mutex
 	registeredTasks map[string]struct{}
@@ -47,9 +50,11 @@ func NewConductor(config ConductorConfig) (*ConductorRuntime, error) {
 	httpSettings.Timeout = config.HTTPTimeout
 	authSettings := settings.NewAuthenticationSettings(config.AuthKey, config.AuthSecret)
 	apiClient := client.NewAPIClient(authSettings, httpSettings)
+	registerTaskLogMetrics()
 	return &ConductorRuntime{
 		executor: executor.NewWorkflowExecutor(apiClient), apiClient: apiClient,
-		runner: worker.NewTaskRunnerWithApiClient(apiClient), registeredTasks: make(map[string]struct{}),
+		taskClient: client.NewTaskClient(apiClient),
+		runner:     worker.NewTaskRunnerWithApiClient(apiClient), registeredTasks: make(map[string]struct{}),
 		pollInterval: config.PollInterval,
 	}, nil
 }
@@ -172,6 +177,51 @@ func (r *ConductorRuntime) DeleteTerminalExecution(ctx context.Context, id strin
 	return nil
 }
 
+// AppendTaskLog 将经过 Task Center 约束的结构化日志写入对应 Conductor runtime task。
+func (r *ConductorRuntime) AppendTaskLog(ctx context.Context, runtimeTaskID string, entry TaskLogEntry) error {
+	encoded, normalized, err := encodeTaskLog(entry)
+	if err != nil {
+		taskLogWriteFailures.WithLabelValues("conductor").Inc()
+		return fmt.Errorf("encode conductor task log: %w", err)
+	}
+	response, err := r.taskClient.Log(ctx, encoded, runtimeTaskID)
+	if err != nil {
+		taskLogWriteFailures.WithLabelValues("conductor").Inc()
+		if taskLogResponseNotFound(response, err) {
+			return fmt.Errorf("%w: %v", ErrTaskLogNotFound, err)
+		}
+		return fmt.Errorf("append conductor task log: %w", err)
+	}
+	taskLogEntriesWritten.WithLabelValues("conductor", normalized.Source, normalized.Level).Inc()
+	return nil
+}
+
+// ListTaskLogs 读取、兼容解码、脱敏并稳定排序 Conductor runtime task 日志。
+func (r *ConductorRuntime) ListTaskLogs(ctx context.Context, runtimeTaskID string) ([]TaskLogEntry, error) {
+	items, response, err := r.taskClient.GetTaskLogs(ctx, runtimeTaskID)
+	if err != nil {
+		if taskLogResponseNotFound(response, err) {
+			taskLogReadFailures.WithLabelValues("conductor", "not_found").Inc()
+			return nil, fmt.Errorf("%w: %v", ErrTaskLogNotFound, err)
+		}
+		taskLogReadFailures.WithLabelValues("conductor", "unavailable").Inc()
+		return nil, fmt.Errorf("get conductor task logs: %w", err)
+	}
+	logs := make([]TaskLogEntry, 0, len(items))
+	for _, item := range items {
+		logs = append(logs, decodeTaskLog(item.Log, fromMillis(item.CreatedTime)))
+	}
+	return normalizeTaskLogs(logs), nil
+}
+
+func taskLogResponseNotFound(response *http.Response, err error) bool {
+	if response != nil && response.StatusCode == http.StatusNotFound {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such task") || strings.Contains(message, "task not found")
+}
+
 func (r *ConductorRuntime) SaveSchedule(ctx context.Context, schedule Schedule) error {
 	req := schedule.StartRequest
 	body := struct {
@@ -227,11 +277,19 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 		return fmt.Errorf("function ref %s is already registered", functionRef)
 	}
 	typed := worker.NewTypedWorker[workerInput, any](functionRef, func(ctx worker.TaskContext, input workerInput) (any, error) {
-		output, err := handler(ctx, WorkerTask{AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef, RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments})
+		logger := newBoundTaskLogger("conductor", ctx.TaskID(), r)
+		logger.Log(ctx, LifecycleLog("attempt.started", TaskLogLevelInfo, "Execution attempt started."))
+		output, err := handler(ctx, WorkerTask{AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef, RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments, Logger: logger})
 		if err != nil {
+			logger.Log(ctx, LifecycleLog("attempt.failed", TaskLogLevelError, "Execution attempt failed."))
+			return nil, err
+		}
+		if err := prepareDynamicForkOutput(output, input, r.isRegisteredTask); err != nil {
+			logger.Log(ctx, LifecycleLog("attempt.failed", TaskLogLevelError, "Dynamic Fork output validation failed."))
 			return nil, err
 		}
 		if inProgress, _ := output["in_progress"].(bool); inProgress {
+			logger.Log(ctx, LifecycleLog("attempt.waiting", TaskLogLevelInfo, "Execution is waiting for the next runtime callback."))
 			seconds := int64(1)
 			switch value := output["callback_after_seconds"].(type) {
 			case int:
@@ -245,6 +303,7 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 			delete(output, "callback_after_seconds")
 			return &model.TaskResult{WorkflowInstanceId: ctx.WorkflowInstanceID(), TaskId: ctx.TaskID(), Status: model.InProgressTask, CallbackAfterSeconds: seconds, OutputData: output}, nil
 		}
+		logger.Log(ctx, LifecycleLog("attempt.succeeded", TaskLogLevelInfo, "Execution attempt succeeded."))
 		return output, nil
 	}, worker.WithBatchSize(concurrency), worker.WithPollInterval(r.pollInterval))
 	if err := r.runner.RegisterWorker(typed); err != nil {
@@ -269,8 +328,128 @@ func (r *ConductorRuntime) Close() error {
 }
 
 type workerInput struct {
-	AtomicTaskID string         `json:"atomic_task_id"`
-	Arguments    map[string]any `json:"arguments"`
+	AtomicTaskID    string         `json:"atomic_task_id"`
+	DAGNodeKey      string         `json:"dag_node_key"`
+	FunctionRef     string         `json:"function_ref"`
+	MaxDynamicTasks int            `json:"max_dynamic_tasks"`
+	Arguments       map[string]any `json:"arguments"`
+}
+
+func (r *ConductorRuntime) isRegisteredTask(functionRef string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, exists := r.registeredTasks[functionRef]
+	return exists
+}
+
+// prepareDynamicForkOutput validates planner output and adds the deterministic identity used to project actual children.
+func prepareDynamicForkOutput(output map[string]any, input workerInput, registered func(string) bool) error {
+	if output == nil || input.AtomicTaskID == "" || input.DAGNodeKey == "" {
+		return nil
+	}
+	tasksValue, hasTasks := output["dynamic_tasks"]
+	inputsValue, hasInputs := output["dynamic_inputs"]
+	if !hasTasks && !hasInputs {
+		return nil
+	}
+	if !hasTasks || !hasInputs {
+		return fmt.Errorf("dynamic_tasks and dynamic_inputs must be returned together")
+	}
+	tasks, ok := dynamicTaskMaps(tasksValue)
+	if !ok {
+		return fmt.Errorf("dynamic_tasks must be an array of task objects")
+	}
+	if input.MaxDynamicTasks < 1 || len(tasks) > input.MaxDynamicTasks {
+		return fmt.Errorf("dynamic task count %d exceeds configured maximum %d", len(tasks), input.MaxDynamicTasks)
+	}
+	inputs, ok := dynamicInputMaps(inputsValue)
+	if !ok {
+		return fmt.Errorf("dynamic_inputs must be an object keyed by task reference")
+	}
+	output["dynamic_inputs"] = inputs
+	seenReferences := make(map[string]struct{}, len(tasks))
+	for index, task := range tasks {
+		functionRef, _ := task["name"].(string)
+		reference := dynamicTaskReference(task)
+		if functionRef == "" || reference == "" {
+			return fmt.Errorf("dynamic task at index %d requires name and task reference", index)
+		}
+		if _, duplicate := seenReferences[reference]; duplicate {
+			return fmt.Errorf("dynamic task reference %q is duplicated", reference)
+		}
+		seenReferences[reference] = struct{}{}
+		if registered == nil || !registered(functionRef) {
+			return fmt.Errorf("dynamic task function %q is not registered", functionRef)
+		}
+		childInput, ok := inputs[reference].(map[string]any)
+		if !ok || childInput == nil {
+			return fmt.Errorf("dynamic input for reference %q must be an object", reference)
+		}
+		arguments, argumentsProvided := childInput["arguments"].(map[string]any)
+		if _, exists := childInput["arguments"]; exists && !argumentsProvided {
+			return fmt.Errorf("arguments for dynamic task reference %q must be an object", reference)
+		}
+		if arguments == nil {
+			arguments = make(map[string]any, len(childInput))
+			for key, value := range childInput {
+				if key != "atomic_task_id" && key != "dag_node_key" && key != "function_ref" {
+					arguments[key] = value
+				}
+			}
+		}
+		identity := fmt.Sprintf("%s:%s:%s:%d", input.AtomicTaskID, input.DAGNodeKey, reference, index)
+		childInput["atomic_task_id"] = uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()
+		childInput["dag_node_key"] = input.DAGNodeKey
+		childInput["function_ref"] = functionRef
+		childInput["child_key"] = reference
+		childInput["child_order"] = index
+		childInput["arguments"] = arguments
+		inputs[reference] = childInput
+	}
+	return nil
+}
+
+func dynamicInputMaps(value any) (map[string]any, bool) {
+	switch inputs := value.(type) {
+	case map[string]any:
+		return inputs, true
+	case map[string]map[string]any:
+		result := make(map[string]any, len(inputs))
+		for key, input := range inputs {
+			result[key] = input
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func dynamicTaskMaps(value any) ([]map[string]any, bool) {
+	switch tasks := value.(type) {
+	case []map[string]any:
+		return tasks, true
+	case []any:
+		result := make([]map[string]any, 0, len(tasks))
+		for _, task := range tasks {
+			mapped, ok := task.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			result = append(result, mapped)
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func dynamicTaskReference(task map[string]any) string {
+	for _, key := range []string{"taskReferenceName", "task_reference_name", "reference_name"} {
+		if value, _ := task[key].(string); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func conductorTask(task Task) model.WorkflowTask {

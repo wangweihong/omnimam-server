@@ -37,6 +37,37 @@ func (s *assetV1Store) ListArtifacts(ctx context.Context, owner string, req *iap
 	return items, total, err
 }
 
+// ResolveArtifactSummaries 以固定批次读取 owner 可见 Artifact；缺失、删除或其他 owner 目标均不进入结果 map。
+func (s *assetV1Store) ResolveArtifactSummaries(ctx context.Context, owner string, ids []string) (map[string]*iapiserver.ArtifactReadableSummary, error) {
+	result := make(map[string]*iapiserver.ArtifactReadableSummary)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var artifacts []*iapiserver.Artifact
+	if err := s.ds.db.WithContext(ctx).
+		Where("id IN ? AND owner_user_id = ? AND deleted_at IS NULL", ids, owner).
+		Find(&artifacts).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if err := s.DecorateArtifacts(ctx, owner, artifacts); err != nil {
+		return nil, err
+	}
+	for _, artifact := range artifacts {
+		var assetID *string
+		if artifact.AssetID != "" {
+			value := artifact.AssetID
+			assetID = &value
+		}
+		result[artifact.ID] = &iapiserver.ArtifactReadableSummary{
+			ID: artifact.ID, OutputKey: artifact.OutputKey, ArtifactType: artifact.ArtifactType,
+			MediaType: artifact.MediaType, ProcessingStatus: artifact.ProcessingStatus,
+			RegistrationStatus: artifact.RegistrationStatus, PreviewAvailable: artifact.PreviewAvailable,
+			AssetID: assetID, Asset: artifact.Asset,
+		}
+	}
+	return result, nil
+}
+
 func (s *assetV1Store) DecorateArtifacts(ctx context.Context, owner string, items []*iapiserver.Artifact) error {
 	assetIDs := make([]string, 0, len(items))
 	versionIDs := make([]string, 0, len(items))

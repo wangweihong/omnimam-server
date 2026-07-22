@@ -2,6 +2,7 @@ package taskcenter
 
 import (
 	"maps"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
@@ -52,6 +53,30 @@ func (c *Controller) GetAtomicTask(ctx *gin.Context) {
 func (c *Controller) ListAtomicTaskAttempts(ctx *gin.Context) {
 	req := &iapiserver.TaskAttemptListRequest{AtomicTaskID: ctx.Param("atomic_task_id")}
 	core.Run(ctx, req, func(value *iapiserver.TaskAttemptListRequest) (any, error) { return c.service.ListAttempts(ctx, value) })
+}
+
+// ListAtomicTaskAttemptLogs 返回当前主体可见 Attempt 的脱敏运行时日志，不暴露 Conductor 地址或原始 payload。
+func (c *Controller) ListAtomicTaskAttemptLogs(ctx *gin.Context) {
+	req := &iapiserver.TaskAttemptLogListRequest{AtomicTaskID: ctx.Param("atomic_task_id"), TaskAttemptID: ctx.Param("task_attempt_id")}
+	core.Run(ctx, req, func(value *iapiserver.TaskAttemptLogListRequest) (any, error) {
+		return c.service.ListAttemptLogs(ctx, value)
+	})
+}
+
+// DownloadAtomicTaskAttemptLogs 下载经过相同授权、筛选和脱敏管线处理的 UTF-8 日志。
+func (c *Controller) DownloadAtomicTaskAttemptLogs(ctx *gin.Context) {
+	req := &iapiserver.TaskAttemptLogDownloadRequest{AtomicTaskID: ctx.Param("atomic_task_id"), TaskAttemptID: ctx.Param("task_attempt_id")}
+	if err := core.DecodeParameter(ctx, req); err != nil {
+		core.WriteResponse(ctx, err, nil)
+		return
+	}
+	data, err := c.service.DownloadAttemptLogs(ctx, req)
+	if err != nil {
+		core.WriteResponse(ctx, err, nil)
+		return
+	}
+	ctx.Header("Content-Disposition", "attachment; filename=task-attempt.log")
+	ctx.Data(http.StatusOK, "text/plain; charset=utf-8", data)
 }
 
 // CancelAtomicTask 请求取消非终态 AtomicTask，并返回取消后的契约投影。
@@ -114,7 +139,7 @@ func (c *Controller) CreateDAGTaskGroup(ctx *gin.Context) {
 	})
 }
 func (c *Controller) GetDAGTaskGroup(ctx *gin.Context) {
-	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetDAGTaskGroup(ctx, ctx.Param("dag_task_group_id")) })
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetDAGTaskGroupDetail(ctx, ctx.Param("dag_task_group_id")) })
 }
 
 // ListDAGTaskGroupTasks 返回 DAGTaskGroup 内当前主体可见的 AtomicTask 契约投影。
@@ -125,6 +150,20 @@ func (c *Controller) ListDAGTaskGroupTasks(ctx *gin.Context) {
 			return nil, err
 		}
 		return atomicTaskListResponse(response), nil
+	})
+}
+
+// ListDAGTaskGroupEvents 返回由 Task Center 投影白名单规范化的 DAG 执行事件。
+func (c *Controller) ListDAGTaskGroupEvents(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.DAGExecutionEventListRequest{}, func(req *iapiserver.DAGExecutionEventListRequest) (any, error) {
+		return c.service.ListDAGTaskGroupEvents(ctx, ctx.Param("dag_task_group_id"), req)
+	})
+}
+
+// ListDAGTaskGroupTimeline 返回按实际 AtomicTask 分行的依赖、排队、运行和重试等待区段。
+func (c *Controller) ListDAGTaskGroupTimeline(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.DAGTimelineListRequest{}, func(req *iapiserver.DAGTimelineListRequest) (any, error) {
+		return c.service.ListDAGTaskGroupTimeline(ctx, ctx.Param("dag_task_group_id"), req)
 	})
 }
 func (c *Controller) CancelDAGTaskGroup(ctx *gin.Context) {
@@ -210,6 +249,7 @@ func atomicTaskResponse(task *iapiserver.AtomicTask) *iapiserver.AtomicTaskRespo
 		OwnerType:          task.OwnerType,
 		OwnerID:            task.OwnerID,
 		Owner:              task.Owner,
+		NodeKey:            task.DAGNodeKey,
 		RuntimeExecutionID: task.RuntimeExecutionID,
 		RuntimeTaskID:      task.RuntimeTaskID,
 		ProjectID:          task.ProjectID,

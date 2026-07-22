@@ -1,6 +1,6 @@
 # TaskWorker 与 API Server 协作流程
 
-本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.5.1`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
+本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.2`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
 
 ## 1. 架构定位
 
@@ -124,6 +124,28 @@ sequenceDiagram
 - 自动重试由 Conductor 执行，并在同一个 AtomicTask 下投影新的 TaskAttempt；手动重试通过 API Server 创建新的 AtomicTask。
 - Task Center 事务只写业务事实和可靠 outbox；SSE projector 在独立消费事务中写 UserEvent。投影失败会 Nack 重试，不回滚或阻塞任务事实。
 
+### 4.1 Attempt 执行日志
+
+Conductor 保存日志正文，Task Center 只保存稳定、不透明的 `logs_ref=task-attempt-log:<task_attempt_id>` 并提供授权读取入口：
+
+```text
+GET /api/v1/atomic-tasks/{atomic_task_id}/attempts/{task_attempt_id}/logs
+```
+
+API Server 先校验 AtomicTask 对当前主体可见，再以父任务 ID 和 Attempt ID 联合查询归属，最后通过 `WorkflowRuntime.ListTaskLogs` 代理读取。客户端使用 `page_num/page_size` 或不透明 cursor 轮询，默认每页 100 条、最大 200 条；支持 `keyword`、`levels`、`sources`、前后方向和升降序筛选。`GET .../logs/download` 复用同一授权、过滤、排序、脱敏和 retention 管线，只跳过在线分页。日志返回 `sequence/source/level/message/occurred_at`，不向客户端暴露 Conductor 地址、runtime credential 或原始日志对象。
+
+TaskWorker 为每个 runtime task 绑定非空 `TaskLogger`。运行时统一写入 started、waiting、succeeded、failed 生命周期日志；reconciler 补充 canceled 和 timed_out；业务 executor 只记录固定阶段、状态变化和受控计数。日志不包含输入正文、URL、文件路径、Provider 原始响应或凭证。写入和读取边界均执行凭证/URL 脱敏、单行化、UTF-8 修复和 4096 字节限制。日志写入使用短超时且为 best-effort，失败只影响运维日志和指标，不改变 AtomicTask 或 TaskAttempt 结果。
+
+日志可用期跟随 Conductor runtime task history。runtime task 存在但尚无日志时返回空列表；历史已被 retention 清理时返回 `ERR_TASK_ATTEMPT_LOG_UNAVAILABLE`；Conductor 暂时不可用时返回 `ERR_WORKFLOW_RUNTIME_UNAVAILABLE`。执行日志不进入 PostgreSQL 日志表、Asset Library、Conductor UI 或用户事件 SSE。
+
+### 4.2 DAG 运行可观测读模型
+
+`GET /api/v1/dag-task-groups/{id}` 返回触发快照、开始/完成时间和全部声明节点的执行聚合；`events` 与 `timeline` 子资源分别返回白名单事件和 `DEPENDENCY_WAIT/QUEUE_WAIT/RUNNING/RETRY_WAIT` 规范化区段。历史时间边界不完整时，timeline 使用 `complete=false`，不会推断或复制 Conductor 原始 payload。
+
+每个 DAG AtomicTask 保存 `dag_node_key`。静态节点聚合唯一主任务；动态节点按共享 node key 聚合实际 child，并继续通过 `/tasks?node_key=...` 独立分页。Conductor Dynamic Fork planner 输出在 runtime adapter 边界获得确定性的 `atomic_task_id`、`dag_node_key`、`function_ref`、`child_key/order` 和 arguments envelope；reconciler 根据该 envelope 幂等物化实际 AtomicTask。调度、重试、Canvas 和领域事件在 DAG 创建时保存来源类型、时刻和可选 ID/名称快照，后续不回查改写历史。
+
+TaskAttempt 只保存执行器类别和显示名快照。该摘要仅在现有管理员主体校验通过时返回，且不含 Worker ID、队列、主机或地址。事件和时间线从 `runtime_projection_events`、AtomicTask 与 TaskAttempt 投影生成，不新增第二张运行历史表。
+
 ## 5. 用户事件与 SSE 恢复流程
 
 ```mermaid
@@ -183,7 +205,7 @@ sequenceDiagram
 
 ### 6.1 spec-v1.5.1 canonical asset-library
 
-`apiserver` 在 `/api/v1` 安装 asset-library OpenAPI 的 45 个 operation，覆盖 Asset、AssetVersion、AssetUpload、Collection、Label/Tag、Artifact、AssetRepresentation 和引用查询。旧 `/assets/upload`、旧分片上传和旧缩略图内容接口暂时保留为兼容入口，但不再拥有 canonical `GET/PATCH/DELETE /assets`。
+`apiserver` 在 `/api/v1` 安装 asset-library OpenAPI 的 46 个 operation，覆盖 Asset、AssetVersion、AssetUpload、Collection、Label/Tag、Artifact、Artifact 批量摘要、AssetRepresentation 和引用查询。旧 `/assets/upload`、旧分片上传和旧缩略图内容接口暂时保留为兼容入口，但不再拥有 canonical `GET/PATCH/DELETE /assets`。
 
 canonical 写路径只使用 `user_assets`、`asset_versions`、`asset_representations`、`blobs`、`artifacts`、上传会话、Collection 和规范化 Label/Tag 事实表。owner 始终从认证上下文注入；请求中的来源 ID、任务 ID 或兼容 owner 字段不能扩大可见范围。LocalStorage 文件访问通过 service 消费的 `ContentStorage` 接口和 `LocalContentStorage` adapter 完成，业务 service/store 不解析绝对路径。
 
@@ -214,6 +236,8 @@ sequenceDiagram
 
 当前图片 policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用固定消费者组 `task-center-representation-orchestrator` 接收事件，并以 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。消费者只接受 released 事件定义中的完整 owner、scope、media policy、profile 和 idempotency 字段；无效消息记录错误后 Nack，不降级为缺少 generate 节点的 DAG。生成器通过 `ContentStorage` 访问受控内容，输出 PNG Blob 并登记 `thumbnail` Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。preview、playback、package、manifest policy 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作。
 
+`POST /api/v1/artifacts/batch-summaries` 每批接受 1..200 个 `{id}` 并保持请求顺序。Asset Library 只按认证 owner 一次批量读取 Artifact 和同域登记素材摘要；不存在、已删除或不可见目标统一返回 `artifact=null`。Task Center 通过消费方 `ArtifactSummaryReader` 分批调用该能力，为输出引用附加一跳状态，不读取素材私表、不返回 Blob/metadata/内容 URL，也不缓存为第二事实源。
+
 ## 7. 状态投影与故障恢复
 
 当前实现由 `taskworker` 内的 reconciler 周期执行以下操作：
@@ -230,7 +254,7 @@ sequenceDiagram
 | --- | --- |
 | API Server 重启 | 已启动 execution 继续由 Conductor 管理；API Server 恢复后从业务 PostgreSQL 查询状态，不依赖旧进程内存 |
 | TaskWorker 重启 | Conductor 保留待执行和运行历史；Worker 重新注册 handler 后继续领取任务，reconciler 重新扫描非终态任务 |
-| Conductor 重启 | Conductor 从自身数据库恢复 workflow 和 task 历史；API Server 与 Worker 不切换到本地 Dispatcher |
+| Conductor 重启 | Conductor 从自身数据库恢复 workflow、task 和执行日志历史；API Server 与 Worker 不切换到本地 Dispatcher |
 | OmniMAM PostgreSQL 重启 | API 和 Worker 等待数据库恢复；业务资源与 outbox 由数据库持久化，不依赖进程内队列 |
 | outbox 消费中断 | 未 Ack 的消息由 Watermill PostgreSQL subscriber 重新投递；AtomicTask 幂等键防止重复创建 |
 | 投影遗漏或短暂失败 | reconciler 再次查询 Conductor，并幂等修复非终态 AtomicTask 和 TaskAttempt 投影 |
@@ -249,7 +273,10 @@ sequenceDiagram
 - Conductor 与 OmniMAM 业务表必须使用独立数据库或 schema，双方不得直接改写对方拥有的数据。
 - 运行时不可用时保留可恢复业务状态，不得双写旧 TaskRun 或回退到旧任务协议。
 - SSE 只消费 Task Center 与 asset-library 可靠事件，不直接读取 Conductor API/数据库，也不把 UserEvent 当作任务或素材事实源。
-- 本实现不提供旧数据 migration 或回填；新表和约束使用仓库现有 `EnsureScheme/AutoMigrate` 初始化路径。
+- TaskAttempt 日志不通过 SSE 传输；客户端只能通过 Task Center 的授权分页接口读取。
+- DAG 事件和时间线只能返回 Task Center 规范化白名单，不能透传 Conductor payload 或内部拓扑标识。
+- Task Center 解析 Artifact 输出必须经过 Asset Library 有界批量摘要边界，不能跨域读取 `artifacts` 或素材私表。
+- 新表和约束使用仓库现有 `EnsureScheme/AutoMigrate` 初始化路径；已有空 `logs_ref` 通过幂等启动回填补齐，不迁移或复制 Conductor 日志正文。
 
 ## 9. 事实源与实现索引
 
@@ -270,6 +297,9 @@ sequenceDiagram
 - [Asset Library controller](../../../../backend/internal/apiserver/controller/v1/assetlibrary/controller.go)
 - [Asset Library service 与 LocalStorage adapter](../../../../backend/internal/apiserver/service/v1/assetlibrary/service.go)
 - [Task Center service 与运行时启动](../../../../backend/internal/apiserver/service/v1/taskcenter/task_center.go)
+- [DAG 可观测详情、事件与时间线](../../../../backend/internal/apiserver/service/v1/taskcenter/observability.go)
+- [TaskAttempt 日志筛选、cursor 与下载](../../../../backend/internal/apiserver/service/v1/taskcenter/task_logs.go)
+- [Asset Library Artifact 批量摘要适配](../../../../backend/internal/apiserver/service/v1/assetlibrary/summaries.go)
 - [Conductor `WorkflowRuntime` 适配](../../../../backend/internal/apiserver/workflowruntime/conductor.go)
 - [运行时状态 reconciler](../../../../backend/internal/apiserver/service/v1/taskcenter/reconciler.go)
 - [PostgreSQL outbox](../../../../backend/internal/apiserver/store/postgresql/outbox.go)

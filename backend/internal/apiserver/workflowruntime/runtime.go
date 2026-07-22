@@ -9,6 +9,7 @@ import (
 var (
 	ErrUnavailable       = errors.New("workflow runtime unavailable")
 	ErrExecutionNotFound = errors.New("workflow execution not found")
+	ErrTaskLogNotFound   = errors.New("workflow task log not found")
 )
 
 type Task struct {
@@ -97,6 +98,14 @@ type WorkerTask struct {
 	RetryCount    int
 	RetriedTaskID string
 	Arguments     map[string]any
+	Logger        TaskLogger
+}
+
+// Log 通过运行时绑定的 best-effort logger 记录当前 Attempt 日志；缺少 logger 时安全忽略。
+func (t WorkerTask) Log(ctx context.Context, entry TaskLogEntry) {
+	if t.Logger != nil {
+		t.Logger.Log(ctx, entry)
+	}
 }
 
 type Handler func(context.Context, WorkerTask) (map[string]any, error)
@@ -123,6 +132,12 @@ type ScheduleManager interface {
 	DeleteSchedule(context.Context, string) error
 }
 
+// TaskLogManager 追加并读取 runtime task 隔离的执行日志正文。
+type TaskLogManager interface {
+	AppendTaskLog(context.Context, string, TaskLogEntry) error
+	ListTaskLogs(context.Context, string) ([]TaskLogEntry, error)
+}
+
 type WorkerRegistrar interface {
 	RegisterHandler(string, int, Handler) error
 	Close() error
@@ -132,6 +147,7 @@ type WorkflowRuntime interface {
 	DefinitionRegistrar
 	ExecutionManager
 	ScheduleManager
+	TaskLogManager
 	WorkerRegistrar
 }
 
@@ -158,6 +174,12 @@ func (UnavailableRuntime) ListTerminalExecutions(context.Context, string, time.T
 }
 func (UnavailableRuntime) DeleteTerminalExecution(context.Context, string) error {
 	return ErrUnavailable
+}
+func (UnavailableRuntime) AppendTaskLog(context.Context, string, TaskLogEntry) error {
+	return ErrUnavailable
+}
+func (UnavailableRuntime) ListTaskLogs(context.Context, string) ([]TaskLogEntry, error) {
+	return nil, ErrUnavailable
 }
 func (UnavailableRuntime) SaveSchedule(context.Context, Schedule) error { return ErrUnavailable }
 func (UnavailableRuntime) PauseSchedule(context.Context, string) error  { return ErrUnavailable }

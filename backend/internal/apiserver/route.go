@@ -192,6 +192,8 @@ func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenter
 		atomicTasks.POST("", taskCenterController.CreateAtomicTask)
 		atomicTasks.GET("/:atomic_task_id", taskCenterController.GetAtomicTask)
 		atomicTasks.GET("/:atomic_task_id/attempts", taskCenterController.ListAtomicTaskAttempts)
+		atomicTasks.GET("/:atomic_task_id/attempts/:task_attempt_id/logs", taskCenterController.ListAtomicTaskAttemptLogs)
+		atomicTasks.GET("/:atomic_task_id/attempts/:task_attempt_id/logs/download", taskCenterController.DownloadAtomicTaskAttemptLogs)
 		atomicTasks.POST("/:atomic_task_id/cancel", taskCenterController.CancelAtomicTask)
 		atomicTasks.POST("/:atomic_task_id/retry", taskCenterController.RetryAtomicTask)
 	}
@@ -210,6 +212,8 @@ func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenter
 		dagGroups.POST("", taskCenterController.CreateDAGTaskGroup)
 		dagGroups.GET("/:dag_task_group_id", taskCenterController.GetDAGTaskGroup)
 		dagGroups.GET("/:dag_task_group_id/tasks", taskCenterController.ListDAGTaskGroupTasks)
+		dagGroups.GET("/:dag_task_group_id/events", taskCenterController.ListDAGTaskGroupEvents)
+		dagGroups.GET("/:dag_task_group_id/timeline", taskCenterController.ListDAGTaskGroupTimeline)
 		dagGroups.POST("/:dag_task_group_id/cancel", taskCenterController.CancelDAGTaskGroup)
 		dagGroups.POST("/:dag_task_group_id/retry", taskCenterController.RetryDAGTaskGroup)
 	}
@@ -374,6 +378,7 @@ func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory
 	{
 		artifacts.GET("", controller.ListArtifacts)
 		artifacts.POST("", controller.CreateArtifact)
+		artifacts.POST("/batch-summaries", controller.BatchArtifactSummaries)
 		artifacts.GET("/:artifact_id", controller.GetArtifact)
 		artifacts.DELETE("/:artifact_id", controller.DeleteArtifact)
 		artifacts.POST("/:artifact_id/content", controller.UploadArtifactContent)
