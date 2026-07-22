@@ -96,6 +96,10 @@ func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
 			t.Fatalf("node[%d].key = %q, want %q", index, request.Nodes[index].Key, want)
 		}
 	}
+	generate := request.Nodes[1].Task
+	if generate.Arguments["media_type"] != "image" || generate.Arguments["max_attempts"] != 3 || generate.RetryPolicy.MaxAttempts != 3 || generate.RetryPolicy.BackoffType != "EXPONENTIAL_BACKOFF" {
+		t.Fatalf("generate task = %#v", generate)
+	}
 	if len(request.Edges) != 2 || request.Edges[0].FromNode != "inspect" || request.Edges[0].ToNode != "thumbnail:list-320" || request.Edges[1].FromNode != "thumbnail:list-320" || request.Edges[1].ToNode != "finalize" {
 		t.Fatalf("edges = %#v", request.Edges)
 	}

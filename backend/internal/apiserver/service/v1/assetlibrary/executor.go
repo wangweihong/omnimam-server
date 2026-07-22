@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	"image/png"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
@@ -83,12 +81,13 @@ func (e *RepresentationInspectExecutor) Execute(ctx context.Context, task workfl
 
 // RepresentationGenerateExecutor 从 original Blob 生成图片缩略图并幂等登记 Representation。
 type RepresentationGenerateExecutor struct {
-	store   store.AssetV1Store
-	storage ContentStorage
+	store      store.AssetV1Store
+	storage    ContentStorage
+	generators *ThumbnailGenerators
 }
 
-func NewRepresentationGenerateExecutor(factory store.Factory, storage ContentStorage) *RepresentationGenerateExecutor {
-	return &RepresentationGenerateExecutor{store: factory.AssetsV1(), storage: storage}
+func NewRepresentationGenerateExecutor(factory store.Factory, storage ContentStorage, generators *ThumbnailGenerators) *RepresentationGenerateExecutor {
+	return &RepresentationGenerateExecutor{store: factory.AssetsV1(), storage: storage, generators: generators}
 }
 
 func (e *RepresentationGenerateExecutor) Execute(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
@@ -98,7 +97,8 @@ func (e *RepresentationGenerateExecutor) Execute(ctx context.Context, task workf
 		return result, nil
 	}
 	required, _ := task.Arguments["required"].(bool)
-	if required {
+	maxAttempts := intArgument(task.Arguments["max_attempts"], 3)
+	if task.RetryCount+1 < maxAttempts {
 		return nil, err
 	}
 	task.Log(ctx, workflowruntime.WorkerLog("representation.generate.optional_failed", workflowruntime.TaskLogLevelWarn, "Optional representation generation failed and was recorded."))
@@ -107,12 +107,15 @@ func (e *RepresentationGenerateExecutor) Execute(ctx context.Context, task workf
 	typeName, _ := task.Arguments["representation_type"].(string)
 	profile, _ := task.Arguments["profile"].(string)
 	profileVersion, _ := task.Arguments["profile_version"].(string)
-	failed, registerErr := e.store.RegisterRepresentation(ctx, owner, versionID, &iapiserver.RegisterRepresentationRequest{
-		RepresentationType: typeName, Profile: profile, ProfileVersion: profileVersion,
-		Status: "failed", Required: false, ErrorDetail: "thumbnail generation failed",
+	failed, registerErr := e.store.CompleteRepresentationGeneration(ctx, owner, versionID, store.RepresentationGenerationMutation{
+		Type: typeName, Profile: profile, ProfileVersion: profileVersion,
+		Status: "failed", Required: required, RetryCount: task.RetryCount + 1, ErrorDetail: "thumbnail generation failed",
 	})
 	if registerErr != nil {
 		return nil, registerErr
+	}
+	if required {
+		return nil, err
 	}
 	return map[string]any{"asset_version_id": versionID, "representation_id": failed.ID, "status": "failed"}, nil
 }
@@ -123,7 +126,8 @@ func (e *RepresentationGenerateExecutor) generate(ctx context.Context, task work
 	typeName, _ := task.Arguments["representation_type"].(string)
 	profile, _ := task.Arguments["profile"].(string)
 	profileVersion, _ := task.Arguments["profile_version"].(string)
-	if versionID == "" || owner == "" || typeName != "thumbnail" || profile == "" || profileVersion == "" {
+	mediaType, _ := task.Arguments["media_type"].(string)
+	if versionID == "" || owner == "" || typeName != "thumbnail" || profile == "" || profileVersion == "" || mediaType == "" {
 		return nil, errors.Errorf("representation generate task arguments are invalid")
 	}
 	detail, err := e.store.GetAssetVersionDetail(ctx, owner, versionID)
@@ -149,35 +153,11 @@ func (e *RepresentationGenerateExecutor) generate(ctx context.Context, task work
 		return nil, err
 	}
 	defer reader.Close()
-	src, _, err := image.Decode(reader)
+	thumbnail, err := e.generators.Generate(ctx, ThumbnailRequest{Source: reader, MediaType: mediaType, MIMEType: content.MIMEType, SizeBytes: content.SizeBytes, MaxSide: 320})
 	if err != nil {
 		return nil, err
 	}
-	bounds := src.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	if width <= 0 || height <= 0 {
-		return nil, errors.Errorf("invalid image dimensions")
-	}
-	if width > 320 || height > 320 {
-		if width >= height {
-			height = max(1, 320*height/width)
-			width = 320
-		} else {
-			width = max(1, 320*width/height)
-			height = 320
-		}
-	}
-	thumb := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			thumb.Set(x, y, src.At(bounds.Min.X+x*bounds.Dx()/width, bounds.Min.Y+y*bounds.Dy()/height))
-		}
-	}
-	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, thumb); err != nil {
-		return nil, err
-	}
-	generated, err := e.storage.WriteDerived(ctx, "image/png", bytes.NewReader(encoded.Bytes()))
+	generated, err := e.storage.WriteDerived(ctx, thumbnail.MIMEType, bytes.NewReader(thumbnail.Content))
 	if err != nil {
 		return nil, err
 	}
@@ -185,15 +165,33 @@ func (e *RepresentationGenerateExecutor) generate(ctx context.Context, task work
 	if err != nil {
 		return nil, err
 	}
-	registered, err := e.store.RegisterRepresentation(ctx, owner, versionID, &iapiserver.RegisterRepresentationRequest{
-		RepresentationType: typeName, Profile: profile, ProfileVersion: profileVersion, BlobID: blobID,
-		Metadata: map[string]any{"width": width, "height": height, "mime_type": "image/png", "size_bytes": generated.SizeBytes},
-		Status:   "ready", Required: false,
+	registered, err := e.store.CompleteRepresentationGeneration(ctx, owner, versionID, store.RepresentationGenerationMutation{
+		Type: typeName, Profile: profile, ProfileVersion: profileVersion, BlobID: blobID,
+		Metadata: map[string]any{"width": thumbnail.Width, "height": thumbnail.Height, "mime_type": thumbnail.MIMEType, "format": thumbnail.Format, "size_bytes": generated.SizeBytes},
+		Status:   "ready", Required: false, RetryCount: task.RetryCount,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"asset_version_id": versionID, "representation_id": registered.ID, "blob_id": blobID}, nil
+}
+
+func intArgument(value any, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	case int64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	}
+	return fallback
 }
 
 func NewRepresentationFinalizeExecutor(factory store.Factory) *RepresentationFinalizeExecutor {

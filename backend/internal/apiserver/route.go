@@ -324,11 +324,11 @@ func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory
 		return
 	}
 	tasks := taskcentersvc.NewService(storeIns)
-	service := assetlibrarysvc.NewStoreWithRelations(assetStore, assetlibrarysvc.NewLocalContentStorage(storeIns), assetlibrarysvc.RelationReaders{
+	service := assetlibrarysvc.NewStoreWithRelationsAndPolicy(assetStore, assetlibrarysvc.NewLocalContentStorage(storeIns), assetlibrarysvc.RelationReaders{
 		AtomicTasks:     tasks,
 		ApplicationRuns: appplatformsvc.NewRunSummaryReader(storeIns.ApplicationPlatforms()),
 		CanvasRuns:      workflowcanvassvc.New(storeIns, tasks),
-	})
+	}, assetlibrarysvc.DefaultRepresentationPolicy{})
 	controller := assetlibraryctrl.New(service)
 
 	assets := rg.Group("/assets")

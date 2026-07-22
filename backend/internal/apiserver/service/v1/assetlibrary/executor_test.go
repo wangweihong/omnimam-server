@@ -17,7 +17,7 @@ import (
 
 type generateAssetStore struct {
 	store.AssetV1Store
-	registered *iapiserver.RegisterRepresentationRequest
+	completed *store.RepresentationGenerationMutation
 }
 
 func (s *generateAssetStore) GetAssetVersionDetail(context.Context, string, string) (*iapiserver.AssetVersionDetail, error) {
@@ -29,9 +29,9 @@ func (s *generateAssetStore) GetRepresentation(context.Context, string, string) 
 func (s *generateAssetStore) CreateRepresentationBlob(context.Context, store.StoredAssetContent) (string, error) {
 	return "thumbnail-blob", nil
 }
-func (s *generateAssetStore) RegisterRepresentation(_ context.Context, _, _ string, req *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error) {
-	s.registered = req
-	return &iapiserver.AssetRepresentation{ObjectMeta: imachinery.ObjectMeta{ID: "thumbnail-1"}, BlobID: req.BlobID}, nil
+func (s *generateAssetStore) CompleteRepresentationGeneration(_ context.Context, _, _ string, mutation store.RepresentationGenerationMutation) (*iapiserver.AssetRepresentation, error) {
+	s.completed = &mutation
+	return &iapiserver.AssetRepresentation{ObjectMeta: imachinery.ObjectMeta{ID: "thumbnail-1"}, BlobID: mutation.BlobID}, nil
 }
 
 type generateStorage struct {
@@ -103,10 +103,10 @@ func TestRepresentationGenerateCreatesThumbnailRepresentation(t *testing.T) {
 	}
 	assetStore := &generateAssetStore{}
 	storage := &generateStorage{source: encoded.Bytes()}
-	executor := &RepresentationGenerateExecutor{store: assetStore, storage: storage}
+	executor := &RepresentationGenerateExecutor{store: assetStore, storage: storage, generators: NewThumbnailGenerators(ImageThumbnailGenerator{}, nil)}
 	result, err := executor.Execute(context.Background(), workflowruntime.WorkerTask{Arguments: map[string]any{
 		"asset_version_id": "version-1", "owner_user_id": "user-1", "representation_type": "thumbnail",
-		"profile": "list-320", "profile_version": "v1", "required": false,
+		"media_type": "image", "profile": "list-320", "profile_version": "v1", "required": false,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestRepresentationGenerateCreatesThumbnailRepresentation(t *testing.T) {
 	if bounds := thumbnail.Bounds(); bounds.Dx() != 320 || bounds.Dy() != 160 {
 		t.Fatalf("thumbnail bounds = %v", bounds)
 	}
-	if result["representation_id"] != "thumbnail-1" || assetStore.registered == nil || assetStore.registered.BlobID != "thumbnail-blob" || assetStore.registered.Status != "ready" {
-		t.Fatalf("result=%#v request=%#v", result, assetStore.registered)
+	if result["representation_id"] != "thumbnail-1" || assetStore.completed == nil || assetStore.completed.BlobID != "thumbnail-blob" || assetStore.completed.Status != "ready" {
+		t.Fatalf("result=%#v mutation=%#v", result, assetStore.completed)
 	}
 }

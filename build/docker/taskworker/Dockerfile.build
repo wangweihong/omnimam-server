@@ -4,17 +4,23 @@ FROM --platform=$TARGETPLATFORM $BASE_IMAGE
 ARG TARGETPLATFORM
 ARG BASE_IMAGE
 ARG CA_CERTIFICATES_VERSION=20260601~24.04.1
+ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
 
 WORKDIR /opt/omnimam
 RUN mkdir -p /var/log/omnimam && \
     mkdir -p /etc/omnimam
 
+# 精简基础镜像没有 CA bundle；首次安装仍由 Ubuntu 仓库 GPG 签名校验，随后所有请求恢复 TLS 校验。
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     if [ `echo $BASE_IMAGE | grep -q -E "ubuntu|debian" && echo 1 || echo 0` -eq 1 ]; then \
         set -eux; \
-        if ! find /var/lib/apt/lists -type f | grep -q .; then apt-get update; fi; \
-        apt-get install -y --no-install-recommends ca-certificates="${CA_CERTIFICATES_VERSION}"; \
+        sed -i "s#http://archive.ubuntu.com/ubuntu#${UBUNTU_MIRROR}#g; s#http://security.ubuntu.com/ubuntu#${UBUNTU_MIRROR}#g" /etc/apt/sources.list.d/ubuntu.sources; \
+        apt-get -o Acquire::https::Verify-Peer=false update; \
+        apt-get -o Acquire::https::Verify-Peer=false install -y --no-install-recommends ca-certificates="${CA_CERTIFICATES_VERSION}"; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends ffmpeg="${FFMPEG_VERSION}"; \
     fi
 
 RUN if [ `echo $BASE_IMAGE | grep -q -E "ubuntu" && echo 1 || echo 0` -eq 1 ]; then \

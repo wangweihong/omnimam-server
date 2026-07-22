@@ -1012,7 +1012,7 @@ func simpleRuntimeTask(task *iapiserver.AtomicTask) workflowruntime.Task {
 		input["dag_node_key"] = task.DAGNodeKey
 		input["function_ref"] = task.FunctionRef
 	}
-	return workflowruntime.Task{Name: task.FunctionRef, ReferenceName: safeName(task.ChildKey + "_" + shortID(task.ID)), Type: "SIMPLE", Input: input}
+	return workflowruntime.Task{Name: task.FunctionRef, ReferenceName: safeName(task.ChildKey + "_" + shortID(task.ID)), Type: "SIMPLE", Input: input, Retry: workflowruntime.RetryPolicy{MaxAttempts: task.RetryPolicy.MaxAttempts, RetryDelaySeconds: task.RetryPolicy.RetryDelaySeconds, BackoffType: task.RetryPolicy.BackoffType}}
 }
 
 func validateScheduleRequest(req *iapiserver.TaskScheduleCreateRequest) error {

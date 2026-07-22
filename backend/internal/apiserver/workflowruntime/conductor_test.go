@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestConductorTaskMapsRetryPolicy(t *testing.T) {
+	task := conductorTask(Task{Name: "asset-library.representation.generate", ReferenceName: "thumbnail", Type: "SIMPLE", Retry: RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF"}})
+	if task.TaskDefinition == nil || task.TaskDefinition.RetryCount != 2 || task.TaskDefinition.RetryDelaySeconds != 5 || task.TaskDefinition.RetryLogic != "EXPONENTIAL_BACKOFF" || task.TaskDefinition.BackoffScaleFactor != 2 {
+		t.Fatalf("task definition = %#v", task.TaskDefinition)
+	}
+}
+
 func TestPrepareDynamicForkOutputAddsDeterministicBusinessIdentity(t *testing.T) {
 	output := map[string]any{
 		"dynamic_tasks": []any{

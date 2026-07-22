@@ -426,33 +426,66 @@ func publishRepresentationRequested(tx *gorm.DB, version *iapiserver.AssetVersio
 	if err := tx.Select("id", "media_type").Where("id = ? AND owner_user_id = ?", version.AssetID, version.OwnerUserID).First(&asset).Error; err != nil {
 		return err
 	}
-	requested := []map[string]any{}
-	if asset.MediaType == iapiserver.AssetMediaTypeImage {
-		requested = append(requested, map[string]any{"representation_type": "thumbnail", "profile": "list-320", "required": false})
+	return publishRepresentationRequestedWithPlan(tx, version, defaultRepresentationPlan(asset.MediaType, version.ProfileVersion))
+}
+
+func publishRepresentationRequestedWithPlan(tx *gorm.DB, version *iapiserver.AssetVersion, plan store.RepresentationPlan) error {
+	resolved, err := validateRepresentationPlan(plan, plan.MediaType, version.ProfileVersion)
+	if err != nil {
+		return err
+	}
+	requested := make([]map[string]any, 0, len(resolved.Requested))
+	for _, item := range resolved.Requested {
+		requested = append(requested, map[string]any{"representation_type": item.Type, "profile": item.Profile, "required": item.Required})
 	}
 	sourceID := fmt.Sprintf("%s:%s:representation_requested", version.ID, version.ProfileVersion)
 	return publishOutbox(tx, OutboxTopicAssetVersionRepresentationRequested, sourceID, map[string]any{
 		"source_event_id": sourceID, "source_domain": iapiserver.SSESourceDomainAssetLibrary,
 		"asset_id": version.AssetID, "asset_version_id": version.ID, "owner_user_id": version.OwnerUserID,
 		"project_id": iapiserver.DefaultTaskCenterProjectID, "namespace": iapiserver.DefaultTaskCenterNamespace,
-		"media_type": asset.MediaType, "profile_version": version.ProfileVersion,
+		"media_type": resolved.MediaType, "profile_version": version.ProfileVersion,
 		"requested_representations": requested, "idempotency_key": "asset-representations:" + version.ID + ":" + version.ProfileVersion,
 		"occurred_at": version.UpdatedAt,
 	})
 }
 
 func expectedRepresentationCount(mediaType string) int {
-	if mediaType == iapiserver.AssetMediaTypeImage {
-		return 2
-	}
-	return 1
+	return defaultRepresentationPlan(mediaType, "default-v1").ExpectedCount
 }
 
 func initialRepresentationStatuses(mediaType string) (string, string) {
-	if mediaType == iapiserver.AssetMediaTypeImage {
+	return initialRepresentationStatusesForPlan(defaultRepresentationPlan(mediaType, "default-v1"))
+}
+
+func initialRepresentationStatusesForPlan(plan store.RepresentationPlan) (string, string) {
+	if len(plan.Requested) > 0 {
 		return "pending", "none"
 	}
 	return "none", "none"
+}
+
+func defaultRepresentationPlan(mediaType, profileVersion string) store.RepresentationPlan {
+	plan := store.RepresentationPlan{MediaType: mediaType, ProfileVersion: profileVersion, ExpectedCount: 1}
+	if mediaType == iapiserver.AssetMediaTypeImage || mediaType == iapiserver.AssetMediaTypeVideo {
+		plan.ExpectedCount = 2
+		plan.Requested = []store.ExpectedRepresentation{{Type: "thumbnail", Profile: "list-320", Required: false}}
+	}
+	return plan
+}
+
+func validateRepresentationPlan(plan store.RepresentationPlan, mediaType, profileVersion string) (store.RepresentationPlan, error) {
+	if plan.MediaType == "" {
+		plan = defaultRepresentationPlan(mediaType, profileVersion)
+	}
+	if plan.MediaType != mediaType || plan.ProfileVersion != profileVersion || plan.ExpectedCount != 1+len(plan.Requested) {
+		return store.RepresentationPlan{}, errors.Errorf("representation plan is invalid")
+	}
+	for _, item := range plan.Requested {
+		if item.Type != "thumbnail" || item.Profile != "list-320" {
+			return store.RepresentationPlan{}, errors.Errorf("representation plan contains an unsupported item")
+		}
+	}
+	return plan, nil
 }
 
 func compileAssetSelector(expression *iapiserver.AssetSelectorExpression, owner string) (string, []any, error) {

@@ -214,6 +214,14 @@ func (s *assetV1Store) DeleteArtifact(ctx context.Context, owner, id string) (*i
 }
 
 func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id string, req *iapiserver.RegisterArtifactRequest) (*iapiserver.ArtifactRegistrationResponse, error) {
+	return s.registerArtifactLifecycle(ctx, owner, id, req, store.RepresentationPlan{})
+}
+
+func (s *assetV1Store) RegisterArtifactLifecycleWithPlan(ctx context.Context, owner, id string, req *iapiserver.RegisterArtifactRequest, plan store.RepresentationPlan) (*iapiserver.ArtifactRegistrationResponse, error) {
+	return s.registerArtifactLifecycle(ctx, owner, id, req, plan)
+}
+
+func (s *assetV1Store) registerArtifactLifecycle(ctx context.Context, owner, id string, req *iapiserver.RegisterArtifactRequest, plan store.RepresentationPlan) (*iapiserver.ArtifactRegistrationResponse, error) {
 	var response *iapiserver.ArtifactRegistrationResponse
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var artifact iapiserver.Artifact
@@ -234,6 +242,10 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 		profile := req.ProfileVersion
 		if profile == "" {
 			profile = artifact.ProcessingProfileVersion
+		}
+		resolvedPlan, err := validateRepresentationPlan(plan, artifact.MediaType, profile)
+		if err != nil {
+			return err
 		}
 		var asset *iapiserver.UserAsset
 		if req.Mode == "append_version" {
@@ -256,7 +268,7 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 			}
 			asset = &iapiserver.UserAsset{OwnerUserID: owner, DisplayName: name, MediaType: artifact.MediaType, SourceType: sourceType,
 				Status: iapiserver.AssetStatusActive, Labels: map[string]string{}, Tags: []string{}}
-			asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatuses(asset.MediaType)
+			asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatusesForPlan(resolvedPlan)
 			asset.ID, asset.Name = uuid.NewString(), name
 			if value, ok := artifact.Metadata["size_bytes"].(float64); ok {
 				asset.SizeBytes = int64(value)
@@ -270,7 +282,7 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 			return err
 		}
 		version := &iapiserver.AssetVersion{AssetID: asset.ID, OwnerUserID: owner, VersionNo: int(count) + 1, Status: iapiserver.AssetVersionStatusProcessing,
-			SourceType: "artifact", SourceRefID: artifact.ID, Content: map[string]any{}, Metadata: artifact.Metadata, VersionNote: req.VersionNote, ProfileVersion: profile, ExpectedCount: expectedRepresentationCount(artifact.MediaType)}
+			SourceType: "artifact", SourceRefID: artifact.ID, Content: map[string]any{}, Metadata: artifact.Metadata, VersionNote: req.VersionNote, ProfileVersion: profile, ExpectedCount: resolvedPlan.ExpectedCount}
 		version.ID, version.Name = uuid.NewString(), fmtVersionName(int(count)+1)
 		if err := tx.Create(version).Error; err != nil {
 			return err
@@ -301,7 +313,7 @@ func (s *assetV1Store) RegisterArtifactLifecycle(ctx context.Context, owner, id 
 		if err := publishArtifactRegistrationChanged(tx, &artifact, store.ArtifactRegistrationMutation{RegistrationStatus: iapiserver.ArtifactRegistrationRegistered, RegistrationResult: "created", AssetID: asset.ID, AssetVersionID: version.ID}); err != nil {
 			return err
 		}
-		if err := publishRepresentationRequested(tx, version); err != nil {
+		if err := publishRepresentationRequestedWithPlan(tx, version, resolvedPlan); err != nil {
 			return err
 		}
 		response = &iapiserver.ArtifactRegistrationResponse{ArtifactID: artifact.ID, RegistrationResult: "created", Asset: asset, AssetVersion: version}
@@ -478,7 +490,7 @@ func (s *assetV1Store) RegisterRepresentation(ctx context.Context, owner, versio
 			if req.Status == "ready" {
 				thumbnailStatus = "ready"
 			}
-			if err := tx.Model(&iapiserver.UserAsset{}).Where("id = ? AND owner_user_id = ?", version.AssetID, owner).Update("thumbnail_status", thumbnailStatus).Error; err != nil {
+			if err := tx.Model(&iapiserver.UserAsset{}).Where("id = ? AND owner_user_id = ? AND current_version_id = ?", version.AssetID, owner, version.ID).Update("thumbnail_status", thumbnailStatus).Error; err != nil {
 				return err
 			}
 		}
@@ -495,6 +507,100 @@ func (s *assetV1Store) RegisterRepresentation(ctx context.Context, owner, versio
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *assetV1Store) CompleteRepresentationGeneration(ctx context.Context, owner, versionID string, mutation store.RepresentationGenerationMutation) (*iapiserver.AssetRepresentation, error) {
+	var result *iapiserver.AssetRepresentation
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if mutation.Type == "" || mutation.Profile == "" || mutation.ProfileVersion == "" || !oneOf(mutation.Status, "ready", "failed", "irreparable") {
+			return errors.Errorf("representation generation mutation is invalid")
+		}
+		var version iapiserver.AssetVersion
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ? AND deleted_at IS NULL", versionID, owner).First(&version).Error; err != nil {
+			return err
+		}
+		if mutation.BlobID != "" {
+			var count int64
+			if err := tx.Model(&iapiserver.AssetBlob{}).Where("id = ? AND status = 'available'", mutation.BlobID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return gorm.ErrRecordNotFound
+			}
+		}
+		var item iapiserver.AssetRepresentation
+		findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("asset_version_id = ? AND representation_type = ? AND profile = ? AND profile_version = ? AND deleted_at IS NULL", versionID, mutation.Type, mutation.Profile, mutation.ProfileVersion).First(&item).Error
+		if findErr == nil && item.Status == "ready" {
+			var existingBlobAvailable int64
+			if item.BlobID != "" {
+				if err := tx.Model(&iapiserver.AssetBlob{}).Where("id = ? AND status = 'available'", item.BlobID).Count(&existingBlobAvailable).Error; err != nil {
+					return err
+				}
+			}
+			if existingBlobAvailable > 0 && mutation.Status == "ready" && item.BlobID == mutation.BlobID {
+				result = &item
+				return nil
+			}
+			if existingBlobAvailable > 0 {
+				return errors.Errorf("representation write conflict")
+			}
+		}
+		if findErr != nil && !stderrors.Is(findErr, gorm.ErrRecordNotFound) {
+			return findErr
+		}
+		if stderrors.Is(findErr, gorm.ErrRecordNotFound) {
+			item = iapiserver.AssetRepresentation{AssetVersionID: versionID, OwnerUserID: owner, RepresentationType: mutation.Type, Profile: mutation.Profile, ProfileVersion: mutation.ProfileVersion}
+			item.ID, item.Name = uuid.NewString(), mutation.Type+":"+mutation.Profile
+		}
+		item.BlobID, item.Metadata, item.Status, item.Required = mutation.BlobID, mutation.Metadata, mutation.Status, mutation.Required
+		item.RetryCount, item.RetryAfter, item.ErrorCode, item.ErrorDetail = mutation.RetryCount, mutation.RetryAfter, mutation.ErrorCode, mutation.ErrorDetail
+		if mutation.Status == "ready" {
+			item.RetryAfter, item.ErrorCode, item.ErrorDetail = nil, "", ""
+		}
+		if stderrors.Is(findErr, gorm.ErrRecordNotFound) {
+			if err := tx.Create(&item).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Save(&item).Error; err != nil {
+			return err
+		}
+		var completed, failed int64
+		if err := tx.Model(&iapiserver.AssetRepresentation{}).Where("asset_version_id = ? AND deleted_at IS NULL AND status = 'ready'", versionID).Count(&completed).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&iapiserver.AssetRepresentation{}).Where("asset_version_id = ? AND deleted_at IS NULL AND status IN ?", versionID, []string{"failed", "irreparable"}).Count(&failed).Error; err != nil {
+			return err
+		}
+		version.CompletedCount, version.FailedCount = int(completed), int(failed)
+		switch {
+		case mutation.Required && mutation.Status != "ready":
+			version.Status = iapiserver.AssetVersionStatusFailed
+		case failed > 0:
+			version.Status = iapiserver.AssetVersionStatusReadyWithWarnings
+		case completed >= int64(version.ExpectedCount):
+			version.Status = iapiserver.AssetVersionStatusReady
+		default:
+			version.Status = iapiserver.AssetVersionStatusProcessing
+		}
+		if err := tx.Save(&version).Error; err != nil {
+			return err
+		}
+		if mutation.Type == "thumbnail" {
+			thumbnailStatus := "failed"
+			if mutation.Status == "ready" {
+				thumbnailStatus = "ready"
+			}
+			if err := tx.Model(&iapiserver.UserAsset{}).Where("id = ? AND owner_user_id = ? AND current_version_id = ?", version.AssetID, owner, version.ID).Update("thumbnail_status", thumbnailStatus).Error; err != nil {
+				return err
+			}
+		}
+		if err := publishAssetVersionProcessingChanged(tx, &version, "progressed", "", "", mutation.ErrorCode); err != nil {
+			return err
+		}
+		result = &item
+		return nil
+	})
+	return result, errors.WithStack(err)
 }
 
 // CreateRepresentationBlob 幂等登记 Representation Worker 已写入受控存储的派生内容。

@@ -82,20 +82,31 @@ type service struct {
 	store   store.AssetV1Store
 	storage ContentStorage
 	readers RelationReaders
+	policy  RepresentationPolicy
 }
 
 func New(factory store.Factory, storage ContentStorage) Service {
-	return NewStore(factory.AssetsV1(), storage)
+	return NewStoreWithPolicy(factory.AssetsV1(), storage, DefaultRepresentationPolicy{})
 }
 
 // NewStore 使用消费方接口构造服务，便于路由能力探测和单元测试替换。
 func NewStore(assetStore store.AssetV1Store, storage ContentStorage) Service {
-	return &service{store: assetStore, storage: storage}
+	return NewStoreWithPolicy(assetStore, storage, DefaultRepresentationPolicy{})
+}
+
+// NewStoreWithPolicy 显式注入 Representation policy，避免业务路径硬编码媒体策略。
+func NewStoreWithPolicy(assetStore store.AssetV1Store, storage ContentStorage, policy RepresentationPolicy) Service {
+	return &service{store: assetStore, storage: storage, policy: policy}
 }
 
 // NewStoreWithRelations 注入 Artifact 跨领域受控摘要读取器；存储层仍只读取 asset-library 自有表。
 func NewStoreWithRelations(assetStore store.AssetV1Store, storage ContentStorage, readers RelationReaders) Service {
-	return &service{store: assetStore, storage: storage, readers: readers}
+	return NewStoreWithRelationsAndPolicy(assetStore, storage, readers, DefaultRepresentationPolicy{})
+}
+
+// NewStoreWithRelationsAndPolicy 是 API Server composition root 使用的完整依赖构造器。
+func NewStoreWithRelationsAndPolicy(assetStore store.AssetV1Store, storage ContentStorage, readers RelationReaders, policy RepresentationPolicy) Service {
+	return &service{store: assetStore, storage: storage, readers: readers, policy: policy}
 }
 
 func (s *service) ListAssets(ctx context.Context, req *iapiserver.UserAssetListRequest) (*iapiserver.UserAssetListResponse, error) {
@@ -313,7 +324,7 @@ func (s *service) CompleteUpload(ctx context.Context, id string, req *iapiserver
 		return nil, mapNotFound(err, code.ErrAssetUploadNotFoundOrNotVisible)
 	}
 	if upload.Status == "completed" {
-		result, err := s.store.CompleteAssetUpload(ctx, owner, id, req, store.StoredAssetContent{})
+		result, err := s.store.CompleteAssetUploadWithPlan(ctx, owner, id, req, store.StoredAssetContent{}, s.representationPlan(mediaTypeFromUpload(upload), upload.ProfileVersion))
 		return result, mapUploadError(err)
 	}
 	content, err := s.storage.FinalizeUpload(ctx, upload)
@@ -323,7 +334,7 @@ func (s *service) CompleteUpload(ctx context.Context, id string, req *iapiserver
 		}
 		return nil, errors.NewStatus(code.ErrAssetUploadStorageFailed, "upload finalization failed")
 	}
-	result, err := s.store.CompleteAssetUpload(ctx, owner, id, req, content)
+	result, err := s.store.CompleteAssetUploadWithPlan(ctx, owner, id, req, content, s.representationPlan(mediaTypeFromUpload(upload), upload.ProfileVersion))
 	return result, mapUploadError(err)
 }
 func (s *service) CancelUpload(ctx context.Context, id string) (*iapiserver.AssetUploadSession, error) {
@@ -586,8 +597,43 @@ func (s *service) RegisterArtifact(ctx context.Context, id string, req *iapiserv
 	if req.Mode == "append_version" && req.AssetID == "" {
 		return nil, errors.NewStatus(code.ErrArtifactRegistrationInvalid, "append_version requires asset_id")
 	}
-	result, err := s.store.RegisterArtifactLifecycle(ctx, owner, id, req)
+	artifact, err := s.store.GetArtifact(ctx, owner, id)
+	if err != nil {
+		return nil, mapArtifactError(err)
+	}
+	profileVersion := req.ProfileVersion
+	if profileVersion == "" {
+		profileVersion = artifact.ProcessingProfileVersion
+	}
+	result, err := s.store.RegisterArtifactLifecycleWithPlan(ctx, owner, id, req, s.representationPlan(artifact.MediaType, profileVersion))
 	return result, mapArtifactError(err)
+}
+
+func (s *service) representationPlan(mediaType, profileVersion string) store.RepresentationPlan {
+	if s.policy == nil {
+		return DefaultRepresentationPolicy{}.Plan(mediaType, profileVersion)
+	}
+	return s.policy.Plan(mediaType, profileVersion)
+}
+
+func mediaTypeFromUpload(upload *iapiserver.AssetUploadSession) string {
+	if upload == nil {
+		return "other"
+	}
+	base := strings.ToLower(strings.SplitN(upload.MIMEType, "/", 2)[0])
+	switch base {
+	case "image", "video", "audio", "text":
+		return base
+	case "model":
+		return "model_3d"
+	case "application":
+		if strings.HasSuffix(strings.ToLower(upload.FileName), ".pdf") {
+			return "pdf"
+		}
+		return "document"
+	default:
+		return "other"
+	}
 }
 
 func (s *service) ListVersions(ctx context.Context, assetID string) (*iapiserver.AssetVersionListResponse, error) {

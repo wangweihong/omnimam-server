@@ -107,6 +107,14 @@ func (s *assetV1Store) RecordAssetUploadPart(ctx context.Context, owner, id stri
 }
 
 func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string, req *iapiserver.CompleteAssetUploadRequest, content store.StoredAssetContent) (*iapiserver.CompleteAssetUploadResponse, error) {
+	return s.completeAssetUpload(ctx, owner, id, req, content, store.RepresentationPlan{})
+}
+
+func (s *assetV1Store) CompleteAssetUploadWithPlan(ctx context.Context, owner, id string, req *iapiserver.CompleteAssetUploadRequest, content store.StoredAssetContent, plan store.RepresentationPlan) (*iapiserver.CompleteAssetUploadResponse, error) {
+	return s.completeAssetUpload(ctx, owner, id, req, content, plan)
+}
+
+func (s *assetV1Store) completeAssetUpload(ctx context.Context, owner, id string, req *iapiserver.CompleteAssetUploadRequest, content store.StoredAssetContent, plan store.RepresentationPlan) (*iapiserver.CompleteAssetUploadResponse, error) {
 	var response *iapiserver.CompleteAssetUploadResponse
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var upload iapiserver.AssetUploadSession
@@ -140,10 +148,14 @@ func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string
 		if err := tx.Model(&iapiserver.AssetVersion{}).Where("asset_id = ?", asset.ID).Count(&versionCount).Error; err != nil {
 			return err
 		}
+		resolvedPlan, err := validateRepresentationPlan(plan, asset.MediaType, upload.ProfileVersion)
+		if err != nil {
+			return err
+		}
 		version := &iapiserver.AssetVersion{AssetID: asset.ID, OwnerUserID: owner, VersionNo: int(versionCount) + 1,
 			Status: iapiserver.AssetVersionStatusProcessing, SourceType: "upload", SourceRefID: upload.ID,
 			Content: map[string]any{}, Metadata: map[string]any{"mime_type": upload.MIMEType, "size_bytes": upload.SizeBytes},
-			VersionNote: upload.VersionNote, ProfileVersion: upload.ProfileVersion, ExpectedCount: expectedRepresentationCount(asset.MediaType)}
+			VersionNote: upload.VersionNote, ProfileVersion: upload.ProfileVersion, ExpectedCount: resolvedPlan.ExpectedCount}
 		version.ID, version.Name = uuid.NewString(), fmtVersionName(int(versionCount)+1)
 		if err := tx.Create(version).Error; err != nil {
 			return err
@@ -157,7 +169,7 @@ func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string
 		}
 		asset.CurrentVersionID, asset.SHA256, asset.SizeBytes = version.ID, blob.SHA256, blob.SizeBytes
 		asset.Status = iapiserver.AssetStatusActive
-		asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatuses(asset.MediaType)
+		asset.ThumbnailStatus, asset.PreviewStatus = initialRepresentationStatusesForPlan(resolvedPlan)
 		if err := tx.Save(asset).Error; err != nil {
 			return err
 		}
@@ -171,7 +183,7 @@ func (s *assetV1Store) CompleteAssetUpload(ctx context.Context, owner, id string
 		if err := tx.Save(&upload).Error; err != nil {
 			return err
 		}
-		if err := publishRepresentationRequested(tx, version); err != nil {
+		if err := publishRepresentationRequestedWithPlan(tx, version, resolvedPlan); err != nil {
 			return err
 		}
 		if err := publishOutbox(tx, OutboxTopicAssetUploaded, version.ID+":uploaded", map[string]any{"asset_id": asset.ID, "asset_version_id": version.ID, "owner_user_id": owner, "source_event_id": version.ID + ":uploaded"}); err != nil {

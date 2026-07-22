@@ -283,6 +283,8 @@ type AssetV1Store interface {
 		*iapiserver.CompleteAssetUploadRequest,
 		StoredAssetContent,
 	) (*iapiserver.CompleteAssetUploadResponse, error)
+	// CompleteAssetUploadWithPlan 在上传事务内校验并发布由 service 计算的 expected Representation 计划。
+	CompleteAssetUploadWithPlan(context.Context, string, string, *iapiserver.CompleteAssetUploadRequest, StoredAssetContent, RepresentationPlan) (*iapiserver.CompleteAssetUploadResponse, error)
 	CancelAssetUpload(context.Context, string, string) (*iapiserver.AssetUploadSession, error)
 
 	ListCollections(context.Context, string, *iapiserver.CollectionListRequest) ([]*iapiserver.AssetCollection, int64, error)
@@ -309,6 +311,8 @@ type AssetV1Store interface {
 	CompleteArtifact(context.Context, string, string, *iapiserver.CompleteArtifactRequest) (*iapiserver.Artifact, error)
 	DeleteArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
 	RegisterArtifactLifecycle(context.Context, string, string, *iapiserver.RegisterArtifactRequest) (*iapiserver.ArtifactRegistrationResponse, error)
+	// RegisterArtifactLifecycleWithPlan 在 Artifact 登记事务内应用受控 Representation 计划。
+	RegisterArtifactLifecycleWithPlan(context.Context, string, string, *iapiserver.RegisterArtifactRequest, RepresentationPlan) (*iapiserver.ArtifactRegistrationResponse, error)
 
 	ListAssetVersions(context.Context, string, string) ([]*iapiserver.AssetVersion, error)
 	CreateCanonicalVersion(context.Context, string, string, *iapiserver.CreateCanonicalVersionRequest) (*iapiserver.AssetVersion, error)
@@ -316,6 +320,12 @@ type AssetV1Store interface {
 	SetCurrentAssetVersion(context.Context, string, string, string) (*iapiserver.UserAsset, error)
 	ListRepresentations(context.Context, string, string) ([]*iapiserver.AssetRepresentation, error)
 	RegisterRepresentation(context.Context, string, string, *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error)
+	// CompleteRepresentationGeneration 允许 Worker 幂等推进 pending/failed Representation，并原子刷新版本投影。
+	CompleteRepresentationGeneration(context.Context, string, string, RepresentationGenerationMutation) (*iapiserver.AssetRepresentation, error)
+	// ListRepresentationBackfillCandidatesAfter 按稳定 AssetVersion ID 扫描当前可见素材的 expected set 事实。
+	ListRepresentationBackfillCandidatesAfter(context.Context, string, int) ([]RepresentationBackfillCandidate, error)
+	// PrepareRepresentationBackfill 在创建修复动作前推进 expected count 和缩略图投影。
+	PrepareRepresentationBackfill(context.Context, string, string, int) error
 	// CreateRepresentationBlob 幂等登记 Worker 生成的受控派生内容，返回 Blob ID。
 	CreateRepresentationBlob(context.Context, StoredAssetContent) (string, error)
 	GetRepresentation(context.Context, string, string) (*iapiserver.AssetRepresentation, *StoredAssetContent, error)
@@ -334,6 +344,50 @@ type StoredAssetContent struct {
 	SizeBytes        int64
 	MIMEType         string
 	BlobID           string
+}
+
+// ExpectedRepresentation 是 asset-library policy 交给事务层的受控派生计划项。
+type ExpectedRepresentation struct {
+	Type     string
+	Profile  string
+	Required bool
+}
+
+// RepresentationPlan 固定一个 AssetVersion 的媒体策略和 expected set。
+type RepresentationPlan struct {
+	MediaType      string
+	ProfileVersion string
+	ExpectedCount  int
+	Requested      []ExpectedRepresentation
+}
+
+// RepresentationGenerationMutation 是 Worker 对单个 expected Representation 的有限状态写入。
+type RepresentationGenerationMutation struct {
+	Type           string
+	Profile        string
+	ProfileVersion string
+	BlobID         string
+	Metadata       map[string]any
+	Status         string
+	Required       bool
+	RetryCount     int
+	RetryAfter     *imachinery.Time
+	ErrorCode      string
+	ErrorDetail    string
+}
+
+// RepresentationBackfillCandidate 是 backfill handler 所需的 owner 裁剪最小投影。
+type RepresentationBackfillCandidate struct {
+	AssetID              string
+	AssetVersionID       string
+	OwnerUserID          string
+	MediaType            string
+	ProfileVersion       string
+	RepresentationStatus string
+	RepresentationBlobOK bool
+	RetryCount           int
+	RetryAfter           *time.Time
+	SourceAvailable      bool
 }
 
 // ArtifactProcessingMutation 只允许处理模块修改 Artifact 的处理维度和受保护预览摘要。

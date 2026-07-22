@@ -454,6 +454,17 @@ func dynamicTaskReference(task map[string]any) string {
 
 func conductorTask(task Task) model.WorkflowTask {
 	ret := model.WorkflowTask{Name: task.Name, TaskReferenceName: task.ReferenceName, Type_: task.Type, InputParameters: task.Input, JoinOn: task.JoinOn, DynamicForkTasksParam: task.DynamicTasksParam, DynamicForkTasksInputParamName: task.DynamicInputParam}
+	if task.Retry.MaxAttempts > 1 {
+		backoff := task.Retry.BackoffType
+		if backoff == "" {
+			backoff = "FIXED"
+		}
+		definition := &model.TaskDef{Name: task.Name, RetryCount: int32(task.Retry.MaxAttempts - 1), RetryDelaySeconds: int32(task.Retry.RetryDelaySeconds), RetryLogic: backoff}
+		if backoff == "EXPONENTIAL_BACKOFF" {
+			definition.BackoffScaleFactor = 2
+		}
+		ret.TaskDefinition = definition
+	}
 	if len(task.ForkTasks) > 0 {
 		ret.ForkTasks = make([][]model.WorkflowTask, len(task.ForkTasks))
 		for i, branch := range task.ForkTasks {

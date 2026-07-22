@@ -21,6 +21,14 @@ type Task struct {
 	JoinOn            []string
 	DynamicTasksParam string
 	DynamicInputParam string
+	Retry             RetryPolicy
+}
+
+// RetryPolicy 是 Task Center 与具体 workflow runtime 之间的重试契约。
+type RetryPolicy struct {
+	MaxAttempts       int
+	RetryDelaySeconds int
+	BackoffType       string
 }
 
 type Definition struct {

@@ -2,86 +2,87 @@
 
 ## Current project goal
 
-Keep the server aligned with released OmniMAM SSOT contracts. The current workspace implements `spec-v1.7.1` TaskAttempt execution logs and the newly released `spec-v1.7.2` Task Center DAG observability plus Asset Library Artifact batch summaries.
+Complete canonical video thumbnail generation for `AssetVersion / AssetRepresentation` on released `spec-v1.7.2`. The implementation must keep media execution replaceable through a consumer-owned `FFmpegRuntime`, preserve Task Center/Conductor as the only scheduling path, and repair existing image/video versions through the scheduled Representation backfill.
 
 ## Completed in this session
 
-1. Fetched released tag `spec-v1.7.2`, pinned `ssot` to commit `7607cb2bd93f34a2cce8be8fddf8564529acff8a`, and synchronized `SSOT_VERSION`.
-2. Added DAG trigger snapshots (`API/SCHEDULE/CANVAS/DOMAIN_EVENT/RETRY`), start/completion times, `dag_node_key`, TaskAttempt executor snapshots, schema backfills, constraints, and query indexes.
-3. Added deterministic Dynamic Fork child identity envelopes in `ConductorRuntime`; planner output now fails closed on malformed structures, duplicate references, unregistered functions, or expansion beyond `max_dynamic_tasks`, and the reconciler idempotently materializes actual child AtomicTasks without introducing a second execution engine.
-4. Upgraded DAG detail to return trigger/time snapshots and deterministic declared-node execution aggregates with activity-first and terminal failure priority.
-5. Added `node_key` child-task filtering, normalized DAG events, and per-AtomicTask dependency/queue/running/retry timeline segments with explicit incomplete-history markers.
-6. Added admin-only executor summaries containing only stable type/display name; Worker IDs, queues, hosts, and addresses remain hidden.
-7. Enhanced Attempt log reads with keyword/level/source filters, opaque forward/backward cursors, stable asc/desc sorting, and a UTF-8 download endpoint using the same authorization, filtering, redaction, and retention pipeline.
-8. Added `POST /api/v1/artifacts/batch-summaries`: 1..200 ordered IDs, owner-scoped batch lookup, and uniform `artifact=null` for missing, deleted, or invisible targets.
-9. Injected Asset Library's `ArtifactSummaryReader` as a Task Center consumer boundary and attached bounded, permission-trimmed summaries to task Artifact references without cross-domain private-table access.
-10. Rebuilt DAG detail results from relation-enriched task outputs so Artifact summaries are visible in both task projections and the DAG result; rejected inverted event ranges and marked inverted timeline facts incomplete.
-11. Added DTO, service, runtime adapter, dynamic projection, migration marker, route contract, log cursor/filter/download, node aggregation, Artifact batch-order, Dynamic Fork validation, DAG result enrichment, and PostgreSQL migration tests.
-12. Updated TaskWorker/API Server architecture documentation for `spec-v1.7.2`.
+1. Added `RepresentationPolicy`. Image and video now expect `original/default + thumbnail/list-320`; other media retain the existing original-only policy. New image/video versions start with `expected_count=2` and `thumbnail_status=pending`, and their outbox event includes the thumbnail request.
+2. Added `ThumbnailGenerator` as the media strategy boundary. The image implementation retains the Go decoder/scaler; the video implementation owns `list-320` request/result validation and delegates frame extraction to `FFmpegRuntime`.
+3. Added the consumer-owned `FFmpegRuntime` interface and `LocalFFmpegRuntime` adapter. The adapter resolves `ffmpeg` at TaskWorker startup, uses `exec.CommandContext` without a shell, writes the verified input stream to a temporary file, extracts a representative PNG frame with `thumbnail=100`, limits the longest side to 320, and applies timeout, output, stderr, and concurrency bounds.
+4. Injected the runtime and thumbnail generators explicitly from the TaskWorker composition root. Missing FFmpeg now prevents TaskWorker startup; API Server does not gain a media-tool dependency.
+5. Added `media_type` to Representation generation tasks and mapped Task Center retry policy into Conductor inline task definitions. Generation uses three attempts, a 5-second initial delay, exponential backoff, and a 30-second policy cap.
+6. Added the Worker-only `CompleteRepresentationGeneration` transaction. It supports pending/failed repair, same-Blob idempotency, different-Blob conflict detection, Blob availability checks, error/retry cleanup on success, and atomic AssetVersion/thumbnail projection updates.
+7. Added `asset-library.representation-backfill` as the daily `03:30 UTC` SYSTEM RECONCILE schedule. It scans by stable AssetVersion ID checkpoint, caps each run at 1000 scanned versions and 100 repair actions, reuses the generate executor with stable idempotency keys, updates legacy video expected counts, and records irreparable source failures.
+8. Restricted thumbnail projection updates to the Asset's current version so historical repairs cannot overwrite the current-version list state.
+9. Added the pinned Ubuntu 24.04 FFmpeg package to the TaskWorker image only. The Dockerfile exposes `FFMPEG_VERSION` and `UBUNTU_MIRROR` build arguments.
+10. Updated the Asset Library content-model documentation and TaskWorker/API Server collaboration documentation.
+
+## Files added
+
+- `backend/internal/apiserver/service/v1/assetlibrary/representation_policy.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/thumbnail_generator.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/ffmpeg_runtime.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/representation_backfill.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/ffmpeg_runtime_test.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/thumbnail_generator_test.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/representation_backfill_test.go`
+- `backend/internal/apiserver/store/postgresql/asset_representation_backfill.go`
 
 ## Files modified
 
-- Updated `SSOT_VERSION` and the `ssot` submodule pointer.
-- Updated Task Center and Asset Library DTOs under `backend/apis/iapiserver/`.
-- Added `backend/internal/apiserver/service/v1/taskcenter/observability.go` and `task_logs.go`.
-- Added `backend/internal/apiserver/service/v1/assetlibrary/summaries.go`.
-- Updated Task Center/Asset Library controller, service, store interfaces, PostgreSQL adapters, runtime adapter, reconciler, routes, bootstrap, and tests.
-- Added `backend/internal/apiserver/workflowruntime/conductor_test.go`.
-- Added `backend/internal/apiserver/store/postgresql/task_center_observability_migration_integration_test.go`.
-- Updated `docs/guide/zh-CN/architecture/taskworker-apiserver-collaboration.md` and this handoff.
+- Asset Library service/executor/store contracts and PostgreSQL lifecycle/upload implementations under `backend/internal/apiserver/`.
+- TaskWorker composition, schedule registration, DAG generation, Task Center retry mapping, and Conductor runtime mapping/tests.
+- `build/docker/taskworker/Dockerfile.build`.
+- `docs/guide/zh-CN/architecture/asset-library-content-model.md`.
+- `docs/guide/zh-CN/architecture/taskworker-apiserver-collaboration.md`.
+- This handoff.
 
-Pre-existing untracked Asset Library architecture documents were not modified.
+No files were removed. The pre-existing untracked `docs/guide/zh-CN/architecture/asset-library-server-bulk-import.md` was not changed for this task.
 
 ## Key architectural decisions
 
-- Conductor remains the only scheduler/execution engine. Task Center stores authorized business projections and derives observable read models; it does not copy raw runtime payloads or create another history table.
-- Dynamic children receive deterministic business IDs at the runtime adapter boundary and become AtomicTask projections during reconciliation. Invalid planner output is rejected before Conductor can schedule undeclared or excessive work.
-- DAG trigger information is an immutable creation-time snapshot; deleted or invisible source resources are not re-read to rewrite history.
-- Executor snapshots contain only stable category and display name and are returned only to the existing administrator principal.
-- Asset Library owns Artifact visibility and summaries. Task Center consumes an injected bounded reader and never reads Asset Library private tables or caches a second fact source.
-- Log online reads and downloads share one authorization/filter/redaction/retention pipeline. Conductor still owns log bodies and retention.
+- `RepresentationPolicy` belongs to Asset Library and decides the expected set. Task Center only schedules the supplied plan.
+- `ThumbnailGenerator` is the image/video strategy boundary. `FFmpegRuntime` is the narrower execution boundary consumed by the video generator.
+- `LocalFFmpegRuntime` is an adapter, not business logic. A future remote or sidecar implementation only needs to satisfy the same interface and be replaced at TaskWorker bootstrap.
+- Runtime dependencies use explicit constructor injection. No global registry, `init()` registration, service locator, shell invocation, binary path, command argument, or temporary path leaks into the executor/generator contract.
+- Video thumbnails are optional PNG Representations. Final failure keeps the original usable and projects the version as `ready_with_warnings`.
+- Backfill is scheduled through the released Task Center SYSTEM RECONCILE model; no startup-wide scan or second scheduler was introduced.
+- The legacy `assets/asset_thumbnails` path remains separate and is not used by new AssetVersion work.
 
 ## API, schema, and configuration changes
 
-- Enhanced `GET /api/v1/dag-task-groups/{dag_task_group_id}` to return `DAGTaskGroupDetail`.
-- Added `GET /api/v1/dag-task-groups/{dag_task_group_id}/events` and `/timeline`.
-- Added `node_key` filtering to `GET /api/v1/dag-task-groups/{dag_task_group_id}/tasks`.
-- Enhanced Attempt log list filters/cursors and added `GET .../logs/download`.
-- Added `POST /api/v1/artifacts/batch-summaries`.
-- Added `atomic_tasks.dag_node_key`; `task_attempts.executor_type/executor_display_name`; DAG start/completion and trigger snapshot columns; required indexes and trigger-type constraint.
-- Added idempotent backfills for legacy DAG node keys, trigger times/types, and verifiable source snapshots.
-- No new error code, event type, permission code, table, environment variable, or configuration flag was introduced.
-
-## Remaining work
-
-1. Implement Workflow Canvas `reuse_valid_outputs` and `reuse_required` using the released Asset Library summary/reuse eligibility boundary.
-2. Add the Asset Library event consumer that advances OutputBinding to READY/FAILED and emits progressive Canvas output events.
-3. Implement the persisted Workflow Canvas reconciler for missed or out-of-order Task Center and Asset Library events.
-4. Connect released fine-grained task/workflow permissions to a shared permission evaluator when the repository provides one.
-5. Add API Server/TaskWorker/Conductor restart, Dynamic Fork, and retention integration coverage.
-
-## Known issues and risks
-
-- Historical runtime rows created before `spec-v1.7.2` may lack intermediate projection events; current Task/Attempt facts are used as safe fallback, and timeline gaps remain `complete=false`.
-- DAG detail aggregation currently loads the authorized DAG's actual tasks and Attempts into memory. It is bounded by graph/runtime limits but should move to SQL aggregation before substantially increasing Dynamic Fork limits.
-- The repository still recognizes `system-admin` as the administrator principal because no shared permission evaluator is available; ordinary users never receive executor summaries.
-- Log availability remains bounded by Conductor retention, and the Conductor SDK decoder still depends on a correct JSON `Content-Type` for task-log responses.
-- Production database backup/restore rehearsal remains required before deploying accumulated schema upgrades.
+- No public API, database schema, migration, permission code, event type, or public error code changed.
+- Internal Go contracts gained `RepresentationPolicy`, `ThumbnailGenerator`, `FFmpegRuntime`, Representation plan/mutation/backfill DTOs, and workflow runtime retry mapping.
+- TaskWorker image configuration gained pinned `FFMPEG_VERSION=7:6.1.1-3ubuntu5` and a configurable Ubuntu mirror build argument. API Server remains unchanged.
+- `ssot/`, its pinned commit, and `SSOT_VERSION` were not changed. Released `spec-v1.7.2` already defines the Representation policy/backfill semantics and required error codes, so no SSOT release is required.
 
 ## Verification
 
-- `go test ./backend/...` passes.
-- `go vet ./backend/...` passes.
-- Focused `go test -race` passes for WorkflowRuntime, Task Center, Asset Library, and the PostgreSQL store.
-- `git diff --check` passes.
-- Task Center and Asset Library route tests match the released OpenAPI files.
-- `ssot` resolves exactly to released tag `spec-v1.7.2`; `SSOT_VERSION.commit` matches the submodule commit.
-- The `integration`-tagged DAG observability migration test passes against a temporary isolated PostgreSQL database and verifies legacy backfills, idempotency, indexes, and the trigger-type constraint; the temporary database was removed afterward.
-- A live Conductor Dynamic Fork/restart/retention test was not run in this session.
+- `go test ./backend/...` passed after the implementation.
+- `go vet ./backend/...` passed after the implementation.
+- Focused Asset Library, WorkflowRuntime, and Task Center package tests passed.
+- The host-FFmpeg representative-frame test passed during the earlier implementation run.
+- `git diff --check` passed before documentation refresh.
+- Per the latest user instruction, no further integration, PostgreSQL, Conductor, container-runtime, deployment, browser, or end-to-end tests are to be run.
+- The TaskWorker image build is not verified: dependency download from the configured mirror exceeded the 600-second build timeout after reaching FFmpeg package resolution.
+
+## Remaining work
+
+1. Validate the TaskWorker image in the target build environment when integration/build verification is explicitly resumed.
+2. Deploy the updated TaskWorker and allow the daily backfill, or an explicitly authorized equivalent repair action, to generate thumbnails for existing videos such as `堕落天使.mp4`.
+3. Continue the previously outstanding Workflow Canvas OutputBinding event consumer and persisted repair loop after this feature is accepted.
+
+## Known issues and risks
+
+- The running environment is not changed by this workspace implementation. Existing video rows will continue to show the media-type placeholder until the new TaskWorker is built/deployed and backfill runs successfully.
+- The TaskWorker image build remains unverified because package download timed out; this is an environment/mirror verification gap, not a completed image artifact.
+- No live PostgreSQL/Conductor restart recovery or browser rendering verification was performed for this change, as requested.
+- The current scope generates thumbnails only. Playback, preview, poster, and additional video metadata remain out of scope.
+- FFmpeg is a mandatory TaskWorker startup dependency for the current local adapter. Replacing it with a remote/sidecar runtime requires a new adapter and bootstrap selection, not changes to Representation execution or persistence.
 
 ## Recommended next task
 
-Implement the Asset Library OutputBinding event consumer and Workflow Canvas repair loop using the new bounded Artifact summary boundary, then add the combined restart/recovery integration suite.
+When build/integration verification is authorized again, build the TaskWorker image in the target environment, deploy it, verify the scheduled backfill on an existing video, and confirm the resulting ready `thumbnail/list-320` Representation through the Asset Library UI/API.
 
 Next Prompt:
 

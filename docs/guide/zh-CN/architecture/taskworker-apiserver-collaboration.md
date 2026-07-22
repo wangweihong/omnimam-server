@@ -234,7 +234,9 @@ sequenceDiagram
   Task-->>Worker: finalize 按 Representation 事实汇总版本状态
 ```
 
-当前图片 policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用固定消费者组 `task-center-representation-orchestrator` 接收事件，并以 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。消费者只接受 released 事件定义中的完整 owner、scope、media policy、profile 和 idempotency 字段；无效消息记录错误后 Nack，不降级为缺少 generate 节点的 DAG。生成器通过 `ContentStorage` 访问受控内容，输出 PNG Blob 并登记 `thumbnail` Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。preview、playback、package、manifest policy 和 `representation-backfill` SYSTEM RECONCILE 仍是后续工作。
+当前 image/video policy 为 `original + thumbnail(list-320)`：上传或 Artifact 登记事务把完整计划写入 `asset_version_representation_requested`，TaskWorker 使用固定消费者组 `task-center-representation-orchestrator` 接收事件，并以 `asset-representations:<asset_version_id>:<profile_version>` 幂等创建 DAG。消费者只接受 released 事件定义中的完整 owner、scope、media policy、profile 和 idempotency 字段；无效消息记录错误后 Nack，不降级为缺少 generate 节点的 DAG。图片 generator 使用 Go 图像解码器；视频 generator 依赖消费方 `FFmpegRuntime`，生产环境注入受超时、输出上限和并发限制保护的本地 CLI adapter，后续可替换为 remote/sidecar runtime。两者都通过 `ContentStorage` 写入 PNG Blob 并幂等登记 thumbnail Representation；可选缩略图失败会登记 failed 事实，使 finalize 汇总为 `ready_with_warnings`。
+
+`asset-library.representation-backfill` SYSTEM RECONCILE 每日 `03:30 UTC` 按 AssetVersion ID checkpoint 扫描 expected set，单轮最多扫描 1000 项并创建 100 个幂等修复动作。健康项不创建任务，缺失或可重建项复用 `asset-library.representation.generate`，源内容不可恢复或达到最大重试次数的项登记稳定 irreparable 事实。preview、playback、package 和 manifest policy 仍属于后续实现工作。
 
 `POST /api/v1/artifacts/batch-summaries` 每批接受 1..200 个 `{id}` 并保持请求顺序。Asset Library 只按认证 owner 一次批量读取 Artifact 和同域登记素材摘要；不存在、已删除或不可见目标统一返回 `artifact=null`。Task Center 通过消费方 `ArtifactSummaryReader` 分批调用该能力，为输出引用附加一跳状态，不读取素材私表、不返回 Blob/metadata/内容 URL，也不缓存为第二事实源。
 
