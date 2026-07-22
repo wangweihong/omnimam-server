@@ -932,7 +932,7 @@ const (
 	ErrCollectionPinnedVersionInvalid int = 151404
 )
 
-// workflow-canvas: spec-v1.0.0 business errors.
+// workflow-canvas: spec-v1.7.0 business errors.
 const (
 	// @HTTP 200
 	// @CN Canvas 不存在或当前调用方不可见。
@@ -959,6 +959,22 @@ const (
 	// @EN ApplicationVersion or functionRef referenced by the node is unavailable.
 	ErrCanvasNodeReferenceInvalid int = 160205
 	// @HTTP 200
+	// @CN 节点定义版本不存在、已对新引用下线或当前调用方不可见。
+	// @EN The node definition version is missing, deprecated for new references, or invisible.
+	ErrWorkflowNodeDefinitionNotFound int = 160206
+	// @HTTP 200
+	// @CN 交互式节点状态不符合固定 schema、坐标系、资源引用或大小限制。
+	// @EN Interactive node state violates its fixed schema, coordinate system, resource reference, or size limits.
+	ErrWorkflowControllerStateInvalid int = 160207
+	// @HTTP 200
+	// @CN 节点配置包含未注册的脚本、HTTP、Worker、凭证或内部运行时信息。
+	// @EN Node configuration contains unregistered script, HTTP, worker, credential, or internal runtime data.
+	ErrWorkflowUnsafeNodeConfiguration int = 160208
+	// @HTTP 200
+	// @CN 相同 node_type 和 definition_version 已存在且内容不同。
+	// @EN The same node type and definition version exists with different content.
+	ErrWorkflowNodeDefinitionConflict int = 160209
+	// @HTTP 200
 	// @CN CanvasVersion 不存在或当前调用方不可见。
 	// @EN CanvasVersion does not exist or is not visible to the caller.
 	ErrCanvasVersionNotFound int = 160400
@@ -966,6 +982,10 @@ const (
 	// @CN CanvasVersion 编译或运行时定义注册失败。
 	// @EN CanvasVersion compilation or runtime definition registration failed.
 	ErrCanvasPublishFailed int = 160401
+	// @HTTP 200
+	// @CN 已发布 CanvasVersion 不允许修改或删除。
+	// @EN A published CanvasVersion cannot be modified or deleted.
+	ErrCanvasVersionImmutable int = 160402
 	// @HTTP 200
 	// @CN CanvasRun 不存在或当前调用方不可见。
 	// @EN CanvasRun does not exist or is not visible to the caller.
@@ -979,7 +999,51 @@ const (
 	// @EN CanvasRun idempotency key was used for a different version or input.
 	ErrCanvasRunIdempotencyConflict int = 160602
 	// @HTTP 200
+	// @CN 运行范围为空、包含重复或无效目标，或使用未开放的模式。
+	// @EN Run scope is empty, contains invalid targets, or uses an unavailable mode.
+	ErrCanvasRunScopeInvalid int = 160603
+	// @HTTP 200
+	// @CN 运行范围外的必需输入无法满足。
+	// @EN A required input outside the run scope cannot be satisfied.
+	ErrCanvasRunInputClosureInvalid int = 160604
+	// @HTTP 200
+	// @CN reuse_required 没有可复用结果。
+	// @EN A required reusable result is unavailable.
+	ErrCanvasReuseRequiredUnavailable int = 160605
+	// @HTTP 200
+	// @CN 必需 Artifact 不存在、不可见或未达到可用状态。
+	// @EN A required Artifact is missing, invisible, or unavailable.
+	ErrCanvasArtifactUnavailable int = 160606
+	// @HTTP 200
+	// @CN Task Center 暂时不可用；CanvasRun 已保留为可恢复状态。
+	// @EN Task Center is temporarily unavailable and the CanvasRun remains recoverable.
+	ErrCanvasTaskCreationUnavailable int = 160607
+	// @HTTP 200
+	// @CN CanvasNodeRun 不存在或当前调用方不可见。
+	// @EN CanvasNodeRun does not exist or is not visible.
+	ErrCanvasNodeRunNotFound int = 160608
+	// @HTTP 200
+	// @CN 必需输出在声明等待时间内未达到可用状态。
+	// @EN A required output did not become available within its declared timeout.
+	ErrCanvasOutputNotReadyTimeout int = 160609
+	// @HTTP 200
+	// @CN 重跑意图缺少目标、目标无效或无法满足输入闭包。
+	// @EN Retry intent lacks a valid target or cannot satisfy its input closure.
+	ErrCanvasRetryTargetInvalid int = 160610
+	// @HTTP 200
+	// @CN 当前阶段不支持该画布能力。
+	// @EN The requested Canvas capability is unavailable in this phase.
+	ErrCanvasPhaseCapabilityUnsupported int = 160611
+	// @HTTP 200
 	// @CN 当前调用方缺少工作流画布操作权限。
 	// @EN Caller does not have the required workflow canvas permission.
 	ErrCanvasPermissionDenied int = 160800
+	// @HTTP 200
+	// @CN 当前调用方无权引用节点、应用版本、函数、输入或输出资源。
+	// @EN Caller cannot reference the requested node, application, function, input, or output.
+	ErrCanvasResourceReferenceDenied int = 160801
+	// @HTTP 200
+	// @CN 当前 project、namespace 或用户的画布运行配额不足。
+	// @EN Canvas run quota is exhausted for the current project, namespace, or user.
+	ErrCanvasQuotaExceeded int = 160802
 )

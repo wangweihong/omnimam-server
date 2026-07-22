@@ -149,8 +149,17 @@ type CanvasStore interface {
 	CleanupExpiredTrash(ctx context.Context, retentionDays int) error
 }
 
-// WorkflowCanvasStore owns spec-v1.0.0 canvas drafts, immutable versions, and run projections.
+// WorkflowCanvasStore owns spec-v1.7.0 node definitions, drafts, immutable versions, and run projections.
 type WorkflowCanvasStore interface {
+	ListWorkflowNodeDefinitions(
+		context.Context,
+		*iapiserver.WorkflowNodeDefinitionListRequest,
+		string,
+		string,
+	) ([]*iapiserver.WorkflowNodeDefinition, int64, error)
+	GetWorkflowNodeDefinition(context.Context, string, string, string, string, bool) (*iapiserver.WorkflowNodeDefinition, error)
+	AddWorkflowNodeDefinitionIdempotent(context.Context, *iapiserver.WorkflowNodeDefinition) (*iapiserver.WorkflowNodeDefinition, bool, error)
+	DeprecateWorkflowNodeDefinition(context.Context, string, string, string) (*iapiserver.WorkflowNodeDefinition, error)
 	ListWorkflowCanvases(context.Context, *iapiserver.WorkflowCanvasListRequest, string, string, string) ([]*iapiserver.WorkflowCanvas, int64, error)
 	GetWorkflowCanvas(context.Context, string) (*iapiserver.WorkflowCanvas, error)
 	GetWorkflowCanvasesByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvas, error)
@@ -165,9 +174,20 @@ type WorkflowCanvasStore interface {
 	GetWorkflowCanvasRun(context.Context, string) (*iapiserver.WorkflowCanvasRun, error)
 	GetWorkflowCanvasRunsByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvasRun, error)
 	AddWorkflowCanvasRunIdempotent(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, bool, error)
-	BindWorkflowCanvasRun(context.Context, string, string, []*iapiserver.CanvasNodeRun) (*iapiserver.WorkflowCanvasRun, error)
+	BindWorkflowCanvasRun(
+		context.Context,
+		string,
+		string,
+		[]*iapiserver.CanvasFlowRun,
+		[]*iapiserver.CanvasNodeRun,
+		[]*iapiserver.CanvasNodeRunTaskBinding,
+		[]*iapiserver.CanvasNodeRunOutputBinding,
+	) (*iapiserver.WorkflowCanvasRun, error)
 	UpdateWorkflowCanvasRun(context.Context, *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, error)
+	ListCanvasFlowRuns(context.Context, *iapiserver.CanvasFlowRunListRequest) ([]*iapiserver.CanvasFlowRun, int64, error)
 	ListCanvasNodeRuns(context.Context, *iapiserver.CanvasNodeRunListRequest) ([]*iapiserver.CanvasNodeRun, int64, error)
+	GetCanvasNodeRun(context.Context, string) (*iapiserver.CanvasNodeRun, error)
+	GetCanvasNodeRunDetail(context.Context, string) ([]*iapiserver.CanvasNodeRunTaskBinding, []*iapiserver.CanvasNodeRunOutputBinding, error)
 }
 
 type ProviderStore interface {
@@ -220,7 +240,12 @@ type AssetStore interface {
 	List(ctx context.Context, req *iapiserver.AssetListRequest) ([]*iapiserver.Asset, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.Asset, error)
 	Add(ctx context.Context, data *iapiserver.Asset) (*iapiserver.Asset, error)
-	AddWithUploadEvent(ctx context.Context, data *iapiserver.Asset, thumbnail *iapiserver.AssetThumbnail, event map[string]any) (*iapiserver.Asset, *iapiserver.AssetThumbnail, error)
+	AddWithUploadEvent(
+		ctx context.Context,
+		data *iapiserver.Asset,
+		thumbnail *iapiserver.AssetThumbnail,
+		event map[string]any,
+	) (*iapiserver.Asset, *iapiserver.AssetThumbnail, error)
 	Update(ctx context.Context, data *iapiserver.Asset) (*iapiserver.Asset, error)
 	// Delete marks the asset as deleted. It does not remove asset objects, thumbnails, or relation rows.
 	Delete(ctx context.Context, id string) error
@@ -251,7 +276,13 @@ type AssetV1Store interface {
 	CreateAssetUploads(context.Context, string, []iapiserver.AssetUploadItemRequest, int64) ([]iapiserver.AssetUploadInitResult, error)
 	GetAssetUpload(context.Context, string, string) (*iapiserver.AssetUploadSession, error)
 	RecordAssetUploadPart(context.Context, string, string, iapiserver.UploadedPart) (*iapiserver.AssetUploadSession, error)
-	CompleteAssetUpload(context.Context, string, string, *iapiserver.CompleteAssetUploadRequest, StoredAssetContent) (*iapiserver.CompleteAssetUploadResponse, error)
+	CompleteAssetUpload(
+		context.Context,
+		string,
+		string,
+		*iapiserver.CompleteAssetUploadRequest,
+		StoredAssetContent,
+	) (*iapiserver.CompleteAssetUploadResponse, error)
 	CancelAssetUpload(context.Context, string, string) (*iapiserver.AssetUploadSession, error)
 
 	ListCollections(context.Context, string, *iapiserver.CollectionListRequest) ([]*iapiserver.AssetCollection, int64, error)
@@ -499,9 +530,18 @@ type ApplicationPlatformStore interface {
 	GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error)
 	AddEngineInstance(ctx context.Context, data *iapiserver.EngineInstance) (*iapiserver.EngineInstance, error)
 	UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64) (*iapiserver.EngineInstance, error)
-	UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error)
+	UpdateEngineInstanceHealth(
+		ctx context.Context,
+		data *iapiserver.EngineInstance,
+		expectedVersion int64,
+		event *iapiserver.ApplicationPlatformEvent,
+	) (*iapiserver.EngineInstance, error)
 	GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfo, error)
-	RefreshComfyUIEngineObjectInfo(context.Context, string, func(*iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error)) (*iapiserver.ComfyUIEngineObjectInfo, error)
+	RefreshComfyUIEngineObjectInfo(
+		context.Context,
+		string,
+		func(*iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error),
+	) (*iapiserver.ComfyUIEngineObjectInfo, error)
 	WithEngineInstanceLock(context.Context, string, func() error) error
 	DeleteEngineInstance(ctx context.Context, id string) error
 	CountRunsByEngineInstance(ctx context.Context, id string) (int64, error)
@@ -510,7 +550,10 @@ type ApplicationPlatformStore interface {
 	AddComfyUIWorkflow(ctx context.Context, data *iapiserver.ComfyUIWorkflow) (*iapiserver.ComfyUIWorkflow, error)
 	UpdateComfyUIWorkflow(ctx context.Context, data *iapiserver.ComfyUIWorkflow, expectedVersion int64) (*iapiserver.ComfyUIWorkflow, error)
 	ListComfyUIWorkflowDuplicateIDs(ctx context.Context, ownerUserID, checksum string) ([]string, error)
-	ListComfyUIWorkflowValidations(ctx context.Context, req *iapiserver.ComfyUIWorkflowValidationListRequest) ([]*iapiserver.ComfyUIWorkflowValidation, int64, error)
+	ListComfyUIWorkflowValidations(
+		ctx context.Context,
+		req *iapiserver.ComfyUIWorkflowValidationListRequest,
+	) ([]*iapiserver.ComfyUIWorkflowValidation, int64, error)
 	GetComfyUIWorkflowValidation(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowValidation, error)
 	AddComfyUIWorkflowValidation(ctx context.Context, data *iapiserver.ComfyUIWorkflowValidation) (*iapiserver.ComfyUIWorkflowValidation, error)
 	ListComfyUIWorkflowTestRuns(ctx context.Context, req *iapiserver.ComfyUIWorkflowTestRunListRequest) ([]*iapiserver.ComfyUIWorkflowTestRun, int64, error)
@@ -518,7 +561,12 @@ type ApplicationPlatformStore interface {
 	GetComfyUIWorkflowTestRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	AddComfyUIWorkflowTestRun(ctx context.Context, data *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	UpdateComfyUIWorkflowTestRun(ctx context.Context, data *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error)
-	ConvertComfyUIWorkflow(ctx context.Context, workflowID, ownerUserID, actorUserID, idempotencyKey string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error)
+	ConvertComfyUIWorkflow(
+		ctx context.Context,
+		workflowID, ownerUserID, actorUserID, idempotencyKey string,
+		template *iapiserver.ApplicationTemplate,
+		version *iapiserver.ApplicationTemplateVersion,
+	) (*iapiserver.ComfyUIWorkflowConvertResult, error)
 	ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) ([]*iapiserver.EngineCapabilityBinding, int64, error)
 	GetEngineBinding(ctx context.Context, id string) (*iapiserver.EngineCapabilityBinding, error)
 	AddEngineBinding(ctx context.Context, data *iapiserver.EngineCapabilityBinding) (*iapiserver.EngineCapabilityBinding, error)
@@ -526,7 +574,11 @@ type ApplicationPlatformStore interface {
 	DeleteEngineBinding(ctx context.Context, id string) error
 	ListTemplates(ctx context.Context, req *iapiserver.ApplicationTemplateListRequest) ([]*iapiserver.ApplicationTemplate, int64, error)
 	GetTemplate(ctx context.Context, id string) (*iapiserver.ApplicationTemplate, error)
-	AddTemplateWithVersion(ctx context.Context, data *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ApplicationTemplate, error)
+	AddTemplateWithVersion(
+		ctx context.Context,
+		data *iapiserver.ApplicationTemplate,
+		version *iapiserver.ApplicationTemplateVersion,
+	) (*iapiserver.ApplicationTemplate, error)
 	ListTemplateVersions(ctx context.Context, req *iapiserver.ApplicationTemplateVersionListRequest) ([]*iapiserver.ApplicationTemplateVersion, int64, error)
 	GetTemplateVersion(ctx context.Context, id string) (*iapiserver.ApplicationTemplateVersion, error)
 	AddTemplateVersion(ctx context.Context, data *iapiserver.ApplicationTemplateVersion) (*iapiserver.ApplicationTemplateVersion, error)
@@ -544,10 +596,20 @@ type ApplicationPlatformStore interface {
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
 	BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
-	ProjectApplicationRun(ctx context.Context, id string, taskVersion int64, status, failure string, outputs []map[string]any) (*iapiserver.ApplicationRun, error)
+	ProjectApplicationRun(
+		ctx context.Context,
+		id string,
+		taskVersion int64,
+		status, failure string,
+		outputs []map[string]any,
+	) (*iapiserver.ApplicationRun, error)
 	ListArtifactsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifact, error)
 	UpsertArtifact(ctx context.Context, data *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error)
-	UpdateArtifactRegistration(ctx context.Context, id, status, assetID, errorCode, failureDetail string, expectedVersion int64) (*iapiserver.ApplicationArtifact, error)
+	UpdateArtifactRegistration(
+		ctx context.Context,
+		id, status, assetID, errorCode, failureDetail string,
+		expectedVersion int64,
+	) (*iapiserver.ApplicationArtifact, error)
 }
 
 type FeatureFlagStore interface {

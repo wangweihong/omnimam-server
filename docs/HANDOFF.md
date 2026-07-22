@@ -2,76 +2,89 @@
 
 ## Current project goal
 
-Keep canonical Asset Library image uploads reliable from `asset_version_representation_requested` through the Task Center inspect/generate/finalize DAG and Blob-backed thumbnail Representation.
+Upgrade the server from released `spec-v1.6.5` to released `spec-v1.7.0` and align Workflow Canvas, Task Center projection, persistence, error codes, and SSE contracts with the redesigned workflow-canvas S1/S2.
 
 ## Completed in this session
 
-1. Diagnosed historical image Assets that stayed `thumbnail_status=pending`: their old event payloads lacked the released media policy and created only `inspect -> finalize` DAGs.
-2. Per user direction, removed legacy-payload fallback instead of implementing compatibility or historical backfill for the deleted data.
-3. Fixed the durable consumer identity to `task-center-representation-orchestrator`, matching the released domain responsibility instead of a handler-specific name.
-4. Added typed event decoding and strict validation for asset/version owner, Task Center scope, media type, profile version, requested Representation plan, and idempotency key. Incomplete events are rejected instead of silently creating a DAG without generate nodes.
-5. Added structured error logging before Nack so repeated decode or DAG creation failures identify the consumer group, message ID, and cause.
-6. Added regression tests proving a complete image event creates `inspect -> thumbnail:list-320 -> finalize`, legacy incomplete events fail, and the consumer group constant remains stable.
-7. Rebuilt API Server and TaskWorker as `thumbnail-pending-fix-amd64`, tagged the verified images as local `latest-amd64`, and deployed both.
-8. Deleted and recreated the local PostgreSQL, Conductor/Redis, log/debug, and asset volumes. Recreated one writable local StorageBackend at `/var/lib/omnimam/assets`.
-9. Completed two clean image upload smoke tests. Both reached Asset thumbnail `ready`, AssetVersion `ready 2/2`, three successful AtomicTasks, and a ready `thumbnail:list-320` PNG Representation.
-10. Restarted TaskWorker between smoke tests. The same durable consumer group resumed from offset 1 and advanced to offset 2 without replaying the first event or creating a second group.
-11. Verified thumbnail content returned HTTP 200 as a 320x180 PNG, then permanently deleted both smoke Assets and all four associated Blobs. The canonical Asset, Representation, and Blob tables are empty again.
+1. Fetched and pinned the `ssot` submodule to released `spec-v1.7.0` commit `1090a2531d07283d96475b3af8ffee8367697041`; updated `SSOT_VERSION`.
+2. Reviewed the released workflow-canvas S1/S2, architecture, schema, errors, permissions, events, and related SSE changes.
+3. Evaluated open-source reuse: retained Conductor OSS for DAG execution, existing `santhosh-tekuri/jsonschema/v6` for node schemas, and existing request validator; used ComfyUI, n8n, and Dify patterns as design references without importing a second workflow engine.
+4. Added immutable NodeDefinition registration, list/get/deprecate APIs and persistence with typed ports, JSON schemas, controlled execution binding, renderer metadata, scope, and deprecation state.
+5. Replaced the legacy graph/run contract with typed node IDs, definition versions, edges, flows, run scope, run policy, execution-plan digest, FlowRun, 1:N TaskBinding, OutputBinding, outbox, and reconcile cursor models.
+6. Added draft validation, run validation, FlowRun list, and NodeRun detail endpoints; the route set now matches the workflow-canvas v1.7 OpenAPI.
+7. Added deterministic scope compilation for `all`, `flows`, `only_nodes`, `until_nodes`, and `from_nodes`, including duplicate/unknown target validation and stable JCS/SHA256 digests.
+8. Made workflow definition identity content-addressed and CanvasVersion publish idempotent by content digest.
+9. Updated CanvasRun creation/retry/cancel semantics, recoverable `RETRYABLE_FAILED` task creation state, stable producer keys, FlowRun creation, and TaskBinding/OutputBinding persistence.
+10. Updated Task Center projection to resolve bindings by AtomicTask ID, reject stale task versions, aggregate 1:N tasks into NodeRun, aggregate FlowRun/CanvasRun, and publish Canvas semantic events.
+11. Added reliable workflow-canvas Watermill topics plus `workflow_canvas_outbox` audit records and SSE mappings for `canvas.run.*` and `canvas.node.*`.
+12. Added all new workflow-canvas business errors and regenerated Go error registration and API error documentation with `make gen`.
+13. Added a backward-compatible v1.0 -> v1.7 database backfill for workflow definition fields, run scope/policy, node IDs/execution keys, legacy AtomicTask bindings, latest published version, and new unique indexes.
+14. Added unit tests for scope compilation, invalid reuse/scope, NodeDefinition binding, response DTOs, flattened NodeRun detail, and Canvas SSE projection.
+15. Verified the legacy migration against a disposable PostgreSQL 16 instance.
 
 ## Files modified
 
-- `backend/internal/apiserver/taskworker.go`
-- `backend/internal/apiserver/taskworker_test.go`
-- `docs/guide/zh-CN/architecture/taskworker-apiserver-collaboration.md`
-- `docs/HANDOFF.md`
+- Updated `SSOT_VERSION` and the `ssot` submodule pointer.
+- Updated workflow-canvas and SSE API metadata/request/response DTOs under `backend/apis/iapiserver/`.
+- Added `backend/apis/iapiserver/meta_workflow_canvas_v17.go`.
+- Added `backend/apis/iapiserver/response_workflow_canvas.go` and its tests.
+- Updated workflow-canvas controller, routes, service, store interfaces, PostgreSQL store, server schema registration, and tests.
+- Added `backend/internal/apiserver/store/postgresql/workflow_canvas_events.go`.
+- Added the tagged PostgreSQL migration integration test `workflow_canvas_migration_integration_test.go`.
+- Updated Task Center Canvas projection and SSE projector/tests.
+- Updated generated error code source and `docs/guide/zh-CN/api/error_code_generated.md`.
+- Added `docs/guide/zh-CN/architecture/workflow-canvas-runtime.md`.
+- Updated `docs/HANDOFF.md`.
 
-No SSOT, HTTP API, database schema, permission, error code, or event type was changed.
+Pre-existing untracked Asset Library architecture documents were not modified.
 
 ## Key architectural decisions
 
-- Representation orchestration accepts only the complete released event contract; it does not infer missing media policy or route legacy payloads.
-- The durable consumer group is a stable domain-level identifier and must not be renamed when internal handlers change.
-- `thumbnail_status` is projected only by registering a thumbnail Representation. Task success alone never invents an Asset thumbnail fact.
-- Invalid durable messages remain retryable through Nack, but failures are now observable in structured logs.
-- Task Center continues to own DAG/AtomicTask state; asset-library owns Blob, Representation, AssetVersion, and thumbnail projection facts.
+- Workflow Canvas owns editing/version/run projections; Task Center and Conductor remain the only execution and retry engine.
+- NodeDefinition versions are immutable. Deprecation blocks new references but preserves historical CanvasVersion interpretation.
+- Publishing freezes definition snapshots and uses content-addressed workflow definition identity.
+- Every CanvasRun persists its fixed request and ExecutionPlan before Task Center creation; runtime failure never falls back to local goroutines.
+- NodeRun to AtomicTask cardinality is 0..N. FlowRun is a Canvas projection, not a Task Center Group.
+- Task, Artifact, NodeRun, and CanvasRun resource versions are independent and cannot be compared across aggregates.
+- Domain facts, Canvas outbox audit rows, and Watermill reliable messages are committed transactionally.
+- Existing database data is upgraded in place and historical AtomicTask links are converted into TaskBinding rows.
 
 ## API, schema, and configuration changes
 
-- No API or schema change.
-- Local deployment data was intentionally reset; prior users, assets, tasks, events, schedules, application data, and stored media were deleted.
-- Current containers use `omnimam/{apiserver,taskworker}:thumbnail-pending-fix-amd64`.
-- The same verified image IDs are locally tagged `omnimam/{apiserver,taskworker}:latest-amd64` for normal compose startup.
-- The fresh database contains one enabled, writable local StorageBackend rooted at `/var/lib/omnimam/assets`.
-- SSOT remains pinned to released contract `spec-v1.6.5` at `e3cbfef1ee55bc9a497a128bc202b1e0b44bd28f`.
-
-## Verification results
-
-- `go test ./... -count=1` passed.
-- `go test -race ./backend/internal/apiserver -run 'TestRepresentation(DAGRequest|Orchestrator)' -count=1` passed.
-- `go vet ./backend/internal/apiserver/...` passed.
-- Focused API DTO, PostgreSQL store, Asset Library, Task Center, and TaskWorker tests passed.
-- Live smoke 1: 640x360 source produced a 320x180, 614-byte PNG thumbnail; DAG and all three AtomicTasks succeeded.
-- Live smoke 2 after TaskWorker restart: 480x480 source produced a 320x320 PNG; DAG and all three AtomicTasks succeeded.
-- The only representation consumer group is `task-center-representation-orchestrator`, with acknowledged offset 2 after both uploads.
-- No `asset representation orchestration failed` log was emitted.
-- Smoke cleanup left `user_assets=0`, `asset_representations=0`, and `blobs=0`.
+- Added 8 workflow-canvas operations: NodeDefinition list/register/get/deprecate, draft validate, run validate, FlowRun list, and NodeRun detail.
+- Added workflow-canvas errors `160206-160209`, `160402`, `160603-160611`, and `160801-160802`.
+- Added NodeDefinition, FlowRun, NodeRun flow refs, TaskBinding, OutputBinding, Canvas outbox, and reconcile cursor tables/models.
+- Expanded CanvasVersion, CanvasRun, CanvasNodeRun, UserEvent, and related indexes/fields.
+- Added Canvas reliable outbox topics and SSE envelope IDs/event types.
+- No new runtime environment variable is required.
 
 ## Remaining work
 
-1. Implement the released `asset-library.representation-backfill` SYSTEM RECONCILE handler if periodic repair is still required for future transient failures. It is no longer needed for deleted historical data but remains an SSOT completeness gap.
-2. Consider bootstrapping or explicitly provisioning the default local StorageBackend during clean installation; canonical uploads currently require it to exist before content upload.
-3. Extend the Representation policy and adapters for preview, playback, package, and manifest independently of the fixed image thumbnail path.
+1. Implement real `reuse_valid_outputs` and `reuse_required` using an Asset Library batch-summary boundary that verifies fingerprint, TTL, owner visibility, Artifact READY state, and required output completeness. Current `reuse_valid_outputs` safely reruns; `reuse_required` returns `ERR_CANVAS_REUSE_REQUIRED_UNAVAILABLE`.
+2. Add the Asset Library event consumer that advances OutputBinding to READY/FAILED, emits `canvas_node_output_available`, and only marks NodeRun successful after all required outputs are available.
+3. Implement the workflow-canvas reconciler using the persisted Task Center and Asset Library cursors to repair missed/out-of-order events.
+4. Connect the released workflow permissions to a shared fine-grained permission evaluator when that evaluator exists; current access remains constrained by authenticated creator/project/namespace/visibility checks.
+5. Add automatic flow discovery for graphs without explicit flows if product delivery requires it; current compiler preserves explicit flows and still runs all nodes with `scope=all`.
+6. Run an end-to-end API/Worker/Conductor/Artifact recovery test after the Artifact consumer and reuse boundary are available.
 
 ## Known issues and risks
 
-- Backfill RECONCILE is not implemented, so a future event that permanently fails still requires operator action until that released recovery path exists.
-- A clean database has no StorageBackend seed. The current environment is configured, but another full volume reset requires recreating the local backend.
-- The frontend browser retained an old Last-Event-ID across the database reset and may log harmless missing-event lookups until its local SSE cursor is refreshed.
-- Image resizing still uses deterministic nearest-neighbor sampling; production quality/orientation/color-profile handling remains future adapter work.
+- OutputBinding projection is not yet driven by Asset Library events, so progressive Artifact availability is not end-to-end complete.
+- Reuse policies are contract-visible but only the safe rerun behavior is active; required reuse fails explicitly rather than silently violating intent.
+- Fine-grained workflow permission codes are not enforced because the repository has no shared permission evaluator yet.
+- Passive-only CanvasVersion publication still depends on Task Center accepting at least one executable DAG node; a passive-only product path needs an explicit SSOT/runtime decision.
+- The migration test covers PostgreSQL 16 and the known v1.0 schema. Production backup and restore rehearsal is still required before deployment.
+
+## Verification
+
+- `go test ./backend/...` passes.
+- `go vet ./backend/...` passes.
+- `git diff --check` passes.
+- `WORKFLOW_CANVAS_TEST_DSN=... go test -tags=integration ./backend/internal/apiserver/store/postgresql -run TestWorkflowCanvasV17MigrationBackfillsLegacyBindings -v` passes against disposable PostgreSQL 16.
 
 ## Recommended next task
 
-Implement the released Representation backfill RECONCILE path and clean-install StorageBackend provisioning, then test API Server, TaskWorker, Conductor, and PostgreSQL restart recovery with an event deliberately interrupted between outbox publication and DAG completion.
+Implement the Asset Library -> Workflow Canvas output projection boundary first, then add reuse qualification on top of the same batch Artifact visibility/readiness API. This closes the largest remaining correctness gap without introducing a second execution engine.
 
 Next Prompt:
 

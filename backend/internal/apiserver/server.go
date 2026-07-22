@@ -185,10 +185,17 @@ func (c *CompletedExtraConfig) New() error {
 
 		// canvases
 		&iapiserver.Project{},
+		&iapiserver.WorkflowNodeDefinition{},
 		&iapiserver.WorkflowCanvas{},
 		&iapiserver.CanvasVersion{},
 		&iapiserver.WorkflowCanvasRun{},
+		&iapiserver.CanvasFlowRun{},
 		&iapiserver.CanvasNodeRun{},
+		&iapiserver.CanvasNodeRunFlowRef{},
+		&iapiserver.CanvasNodeRunTaskBinding{},
+		&iapiserver.CanvasNodeRunOutputBinding{},
+		&iapiserver.WorkflowCanvasOutbox{},
+		&iapiserver.WorkflowCanvasReconcileCursor{},
 
 		// platform contracts
 		&iapiserver.Provider{},

@@ -320,6 +320,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureApplicationPlatformScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureWorkflowCanvasScheme(); err != nil {
+		return err
+	}
 	if err := ds.ensureOutboxScheme(); err != nil {
 		return err
 	}

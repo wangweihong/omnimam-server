@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: e3cbfef1ee55bc9a497a128bc202b1e0b44bd28f
-contract_version: spec-v1.6.5
-updated_at: 2026-07-21
+commit: 1090a2531d07283d96475b3af8ffee8367697041
+contract_version: spec-v1.7.0
+updated_at: 2026-07-22
 status: released
-note: ApplicationRun, Workflow Canvas, AI Chat, Asset Library, and Model Management one-hop summaries extend the related-resource response rules released under spec-v1.6.0.
+note: Workflow Canvas v1.7.0 adds immutable NodeDefinition versions, typed graph/flow execution plans, scoped runs, reuse policies, FlowRun and output/task binding projections.

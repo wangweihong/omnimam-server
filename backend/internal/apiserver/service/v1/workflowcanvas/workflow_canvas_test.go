@@ -35,7 +35,13 @@ func (s *canvasRelationStore) GetCanvasVersionsByIDs(context.Context, []string) 
 
 func (s *canvasRelationStore) GetWorkflowCanvasRunsByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvasRun, error) {
 	s.retryCalls++
-	item := &iapiserver.WorkflowCanvasRun{Status: iapiserver.CanvasRunStatusFailed, Progress: 0.5, ProjectID: "project", Namespace: "default", CreatedBy: "user-1"}
+	item := &iapiserver.WorkflowCanvasRun{
+		Status:    iapiserver.CanvasRunStatusFailed,
+		Progress:  0.5,
+		ProjectID: "project",
+		Namespace: "default",
+		CreatedBy: "user-1",
+	}
 	item.ID = "source-1"
 	return []*iapiserver.WorkflowCanvasRun{item}, nil
 }
@@ -48,7 +54,9 @@ type canvasRelationTasks struct {
 
 func (s *canvasRelationTasks) GetDAGTaskGroupSummaries(context.Context, []string) (map[string]*iapiserver.DAGTaskGroupSummary, error) {
 	s.dagCalls++
-	return map[string]*iapiserver.DAGTaskGroupSummary{"dag-1": {ID: "dag-1", Name: "Campaign DAG", Status: iapiserver.TaskGroupStatusRunning, Progress: 0.5}}, nil
+	return map[string]*iapiserver.DAGTaskGroupSummary{
+		"dag-1": {ID: "dag-1", Name: "Campaign DAG", Status: iapiserver.TaskGroupStatusRunning, Progress: 0.5},
+	}, nil
 }
 
 func (s *canvasRelationTasks) GetAtomicTaskSummaries(context.Context, []string) (map[string]*iapiserver.AtomicTaskSummary, error) {
@@ -57,7 +65,16 @@ func (s *canvasRelationTasks) GetAtomicTaskSummaries(context.Context, []string) 
 }
 
 func TestValidateGraphRejectsCycle(t *testing.T) {
-	graph := iapiserver.WorkflowCanvasGraph{Nodes: []iapiserver.WorkflowCanvasNode{{NodeKey: "a", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"function_ref": "test.a"}, InputBindings: map[string]any{}}, {NodeKey: "b", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"function_ref": "test.b"}, InputBindings: map[string]any{}}}, Edges: []iapiserver.WorkflowCanvasEdge{{FromNodeKey: "a", FromOutput: "out", ToNodeKey: "b", ToInput: "in"}, {FromNodeKey: "b", FromOutput: "out", ToNodeKey: "a", ToInput: "in"}}}
+	graph := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{NodeKey: "a", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"function_ref": "test.a"}, InputBindings: map[string]any{}},
+			{NodeKey: "b", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"function_ref": "test.b"}, InputBindings: map[string]any{}},
+		},
+		Edges: []iapiserver.WorkflowCanvasEdge{
+			{FromNodeKey: "a", FromOutput: "out", ToNodeKey: "b", ToInput: "in"},
+			{FromNodeKey: "b", FromOutput: "out", ToNodeKey: "a", ToInput: "in"},
+		},
+	}
 	err := validateGraph(graph, true)
 	if err == nil {
 		t.Fatal("expected cycle error")
@@ -86,7 +103,11 @@ func TestGetCanvasRunSummariesFiltersByCreator(t *testing.T) {
 	}
 }
 func TestValidateGraphRejectsUnsafeNodeType(t *testing.T) {
-	graph := iapiserver.WorkflowCanvasGraph{Nodes: []iapiserver.WorkflowCanvasNode{{NodeKey: "request", NodeType: "HTTP", Config: map[string]any{"url": "http://127.0.0.1"}, InputBindings: map[string]any{}}}}
+	graph := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{NodeKey: "request", NodeType: "HTTP", Config: map[string]any{"url": "http://127.0.0.1"}, InputBindings: map[string]any{}},
+		},
+	}
 	err := validateGraph(graph, true)
 	if err == nil {
 		t.Fatal("expected unsafe node type to fail")
@@ -96,8 +117,18 @@ func TestValidateGraphRejectsUnsafeNodeType(t *testing.T) {
 	}
 }
 func TestGraphDigestIsStable(t *testing.T) {
-	a := iapiserver.WorkflowCanvasGraph{Nodes: []iapiserver.WorkflowCanvasNode{{NodeKey: "node", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"b": 2, "a": 1}, InputBindings: map[string]any{}}}, Edges: []iapiserver.WorkflowCanvasEdge{}}
-	b := iapiserver.WorkflowCanvasGraph{Nodes: []iapiserver.WorkflowCanvasNode{{NodeKey: "node", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"a": 1, "b": 2}, InputBindings: map[string]any{}}}, Edges: []iapiserver.WorkflowCanvasEdge{}}
+	a := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{NodeKey: "node", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"b": 2, "a": 1}, InputBindings: map[string]any{}},
+		},
+		Edges: []iapiserver.WorkflowCanvasEdge{},
+	}
+	b := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{NodeKey: "node", NodeType: iapiserver.CanvasNodeTypeFunction, Config: map[string]any{"a": 1, "b": 2}, InputBindings: map[string]any{}},
+		},
+		Edges: []iapiserver.WorkflowCanvasEdge{},
+	}
 	da, err := graphDigest(a)
 	if err != nil {
 		t.Fatal(err)
@@ -118,15 +149,31 @@ func TestCanvasRelationsUseBoundedBatchQueries(t *testing.T) {
 	dagID, sourceID := "dag-1", "source-1"
 	runs := make([]*iapiserver.WorkflowCanvasRun, 50)
 	for index := range runs {
-		runs[index] = &iapiserver.WorkflowCanvasRun{CanvasID: "canvas-1", CanvasVersionID: "version-1", DAGTaskGroupID: &dagID, RetryOfCanvasRunID: &sourceID, ProjectID: "project", Namespace: "default", CreatedBy: "user-1"}
+		runs[index] = &iapiserver.WorkflowCanvasRun{
+			CanvasID:           "canvas-1",
+			CanvasVersionID:    "version-1",
+			DAGTaskGroupID:     &dagID,
+			RetryOfCanvasRunID: &sourceID,
+			ProjectID:          "project",
+			Namespace:          "default",
+			CreatedBy:          "user-1",
+		}
 	}
 	if err := service.attachCanvasRunRelations(t.Context(), runs); err != nil {
 		t.Fatal(err)
 	}
 	if canvasStore.canvasCalls != 1 || canvasStore.versionCalls != 1 || canvasStore.retryCalls != 1 || tasks.dagCalls != 1 {
-		t.Fatalf("relation calls = canvas:%d version:%d retry:%d dag:%d", canvasStore.canvasCalls, canvasStore.versionCalls, canvasStore.retryCalls, tasks.dagCalls)
+		t.Fatalf(
+			"relation calls = canvas:%d version:%d retry:%d dag:%d",
+			canvasStore.canvasCalls,
+			canvasStore.versionCalls,
+			canvasStore.retryCalls,
+			tasks.dagCalls,
+		)
 	}
-	if runs[0].Canvas == nil || runs[0].Canvas.Name != "Campaign" || runs[0].CanvasVersion == nil || runs[0].CanvasVersion.Version != 3 || runs[0].RetryOfCanvasRun == nil || runs[0].DAGTaskGroup == nil {
+	if runs[0].Canvas == nil || runs[0].Canvas.Name != "Campaign" || runs[0].CanvasVersion == nil || runs[0].CanvasVersion.Version != 3 ||
+		runs[0].RetryOfCanvasRun == nil ||
+		runs[0].DAGTaskGroup == nil {
 		t.Fatalf("run summaries are incomplete: %#v", runs[0])
 	}
 	nodes := []*iapiserver.CanvasNodeRun{{AtomicTaskID: stringPointer("task-1")}, {AtomicTaskID: stringPointer("task-1")}}
@@ -137,3 +184,104 @@ func TestCanvasRelationsUseBoundedBatchQueries(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func TestBuildExecutionPlanScopes(t *testing.T) {
+	graph := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{
+				NodeID:            "a",
+				NodeType:          "test.node",
+				DefinitionVersion: "1",
+			}, {NodeID: "b", NodeType: "test.node", DefinitionVersion: "1"}, {NodeID: "c", NodeType: "test.node", DefinitionVersion: "1"}, {NodeID: "d", NodeType: "test.node", DefinitionVersion: "1"},
+		},
+		Edges: []iapiserver.WorkflowCanvasEdge{
+			{EdgeID: "ab", SourceNodeID: "a", TargetNodeID: "b", ConnectionType: "data"},
+			{EdgeID: "bc", SourceNodeID: "b", TargetNodeID: "c", ConnectionType: "data"},
+		},
+		Flows: []iapiserver.WorkflowCanvasFlow{
+			{FlowID: "main", Name: "Main", EntryNodeIDs: []string{"a"}, OutputNodeIDs: []string{"c"}},
+			{FlowID: "other", Name: "Other", EntryNodeIDs: []string{"d"}, OutputNodeIDs: []string{"d"}},
+		},
+	}
+	definition := &iapiserver.WorkflowNodeDefinition{
+		NodeType:          "test.node",
+		DefinitionVersion: "1",
+		ExecutionBinding:  iapiserver.WorkflowExecutionBinding{Mode: iapiserver.CanvasExecutionAtomic},
+	}
+	version := &iapiserver.CanvasVersion{GraphSnapshot: graph, DefinitionSnapshots: []*iapiserver.WorkflowNodeDefinition{definition}}
+	policy := iapiserver.WorkflowRunPolicy{ReusePolicy: iapiserver.CanvasReuseRerunAll, FailurePolicy: iapiserver.CanvasFailureContinueFlows}
+	tests := []struct {
+		name      string
+		scope     iapiserver.WorkflowRunScope
+		wantNodes int
+		wantFlows int
+	}{
+		{name: "all", scope: iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeAll}, wantNodes: 4, wantFlows: 2},
+		{name: "flow closure", scope: iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeFlows, FlowIDs: []string{"main"}}, wantNodes: 3, wantFlows: 1},
+		{name: "until node", scope: iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeUntilNodes, NodeIDs: []string{"c"}}, wantNodes: 3},
+		{name: "from node", scope: iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeFromNodes, NodeIDs: []string{"b"}}, wantNodes: 2},
+		{name: "only node", scope: iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeOnlyNodes, NodeIDs: []string{"b"}}, wantNodes: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := buildExecutionPlan(version, tt.scope, policy, map[string]any{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Graph.Nodes) != tt.wantNodes || len(plan.Flows) != tt.wantFlows {
+				t.Fatalf("nodes=%d flows=%d", len(plan.Graph.Nodes), len(plan.Flows))
+			}
+			if plan.Digest == "" {
+				t.Fatal("empty plan digest")
+			}
+		})
+	}
+}
+
+func TestBuildExecutionPlanRejectsInvalidScopeAndRequiredReuse(t *testing.T) {
+	version := &iapiserver.CanvasVersion{
+		GraphSnapshot: iapiserver.WorkflowCanvasGraph{Nodes: []iapiserver.WorkflowCanvasNode{{NodeID: "a", NodeType: "test.node", DefinitionVersion: "1"}}},
+	}
+	_, err := buildExecutionPlan(
+		version,
+		iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeOnlyNodes, NodeIDs: []string{"a", "a"}},
+		iapiserver.WorkflowRunPolicy{ReusePolicy: iapiserver.CanvasReuseRerunAll, FailurePolicy: iapiserver.CanvasFailureContinueFlows},
+		map[string]any{},
+	)
+	if err == nil || toolboxerrors.ToStatus(err).Code != code.ErrCanvasRunScopeInvalid {
+		t.Fatalf("duplicate scope error=%v", err)
+	}
+	_, err = buildExecutionPlan(
+		version,
+		iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeAll},
+		iapiserver.WorkflowRunPolicy{ReusePolicy: iapiserver.CanvasReuseRequired, FailurePolicy: iapiserver.CanvasFailureContinueFlows},
+		map[string]any{},
+	)
+	if err == nil || toolboxerrors.ToStatus(err).Code != code.ErrCanvasReuseRequiredUnavailable {
+		t.Fatalf("reuse error=%v", err)
+	}
+}
+
+func TestValidateNodeDefinitionRequestRejectsAmbiguousExecutionBinding(t *testing.T) {
+	functionRef, versionID := "test.run", "version-1"
+	req := &iapiserver.WorkflowNodeDefinitionRegisterRequest{
+		NodeType:          "test.node",
+		DefinitionVersion: "1",
+		Title:             "Test",
+		Category:          "test",
+		NodeKind:          "processor",
+		Ports:             []iapiserver.WorkflowPortDefinition{},
+		ConfigSchema:      map[string]any{"type": "object"},
+		ExecutionBinding: iapiserver.WorkflowExecutionBinding{
+			Mode:                 iapiserver.CanvasExecutionAtomic,
+			BindingVersion:       "1",
+			FunctionRef:          &functionRef,
+			ApplicationVersionID: &versionID,
+		},
+		AvailabilityScope: iapiserver.CanvasAvailabilitySystem,
+	}
+	err := validateNodeDefinitionRequest(req)
+	if err == nil || toolboxerrors.ToStatus(err).Code != code.ErrCanvasNodeReferenceInvalid {
+		t.Fatalf("error=%v", err)
+	}
+}

@@ -3,8 +3,10 @@ package postgresql
 import (
 	"context"
 	stderrors "errors"
+	"reflect"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
 
@@ -17,10 +19,132 @@ type workflowCanvasStore struct{ ds *datastore }
 
 func newWorkflowCanvasStore(ds *datastore) *workflowCanvasStore { return &workflowCanvasStore{ds: ds} }
 
-func (s *workflowCanvasStore) ListWorkflowCanvases(ctx context.Context, req *iapiserver.WorkflowCanvasListRequest, projectID, namespace, userID string) ([]*iapiserver.WorkflowCanvas, int64, error) {
+func (s *workflowCanvasStore) ListWorkflowNodeDefinitions(
+	ctx context.Context,
+	req *iapiserver.WorkflowNodeDefinitionListRequest,
+	projectID, namespace string,
+) ([]*iapiserver.WorkflowNodeDefinition, int64, error) {
+	var items []*iapiserver.WorkflowNodeDefinition
+	filter := func(q *gorm.DB) *gorm.DB {
+		q = q.Where(
+			"availability_scope = ? OR (availability_scope = ? AND project_id = ? AND namespace = ?)",
+			iapiserver.CanvasAvailabilitySystem,
+			iapiserver.CanvasAvailabilityProject,
+			projectID,
+			namespace,
+		)
+		if req.Category != "" {
+			q = q.Where("category = ?", req.Category)
+		}
+		if req.NodeKind != "" {
+			q = q.Where("node_kind = ?", req.NodeKind)
+		}
+		if req.ExecutionMode != "" {
+			q = q.Where("execution_mode = ?", req.ExecutionMode)
+		}
+		if !req.IncludeDeprecated {
+			q = q.Where("deprecated = FALSE")
+		}
+		return q
+	}
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowNodeDefinition{}), filter).
+		Order("category ASC, node_type ASC, definition_version DESC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
+}
+
+func (s *workflowCanvasStore) GetWorkflowNodeDefinition(
+	ctx context.Context,
+	nodeType, definitionVersion, projectID, namespace string,
+	includeDeprecated bool,
+) (*iapiserver.WorkflowNodeDefinition, error) {
+	var item iapiserver.WorkflowNodeDefinition
+	query := s.ds.db.WithContext(ctx).Where("node_type = ? AND definition_version = ?", nodeType, definitionVersion).
+		Where("availability_scope = ? OR (availability_scope = ? AND project_id = ? AND namespace = ?)", iapiserver.CanvasAvailabilitySystem, iapiserver.CanvasAvailabilityProject, projectID, namespace)
+	if !includeDeprecated {
+		query = query.Where("deprecated = FALSE")
+	}
+	if err := query.First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrWorkflowNodeDefinitionNotFound, "workflow node definition not found")
+	}
+	return &item, nil
+}
+
+func (s *workflowCanvasStore) AddWorkflowNodeDefinitionIdempotent(
+	ctx context.Context,
+	data *iapiserver.WorkflowNodeDefinition,
+) (*iapiserver.WorkflowNodeDefinition, bool, error) {
+	var result *iapiserver.WorkflowNodeDefinition
+	created := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing iapiserver.WorkflowNodeDefinition
+		err := tx.Where("node_type = ? AND definition_version = ?", data.NodeType, data.DefinitionVersion).First(&existing).Error
+		if err == nil {
+			if existing.Title != data.Title || existing.Description != data.Description || existing.Category != data.Category ||
+				existing.NodeKind != data.NodeKind ||
+				!reflect.DeepEqual(existing.Ports, data.Ports) ||
+				!reflect.DeepEqual(existing.ConfigSchema, data.ConfigSchema) ||
+				!reflect.DeepEqual(existing.ControllerStateSchema, data.ControllerStateSchema) ||
+				!reflect.DeepEqual(existing.ExecutionBinding, data.ExecutionBinding) ||
+				!reflect.DeepEqual(existing.Renderer, data.Renderer) ||
+				existing.AvailabilityScope != data.AvailabilityScope {
+				return errors.NewStatus(code.ErrWorkflowNodeDefinitionConflict, "workflow node definition content differs")
+			}
+			result = &existing
+			return nil
+		}
+		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.WithStack(err)
+		}
+		if err := tx.Create(data).Error; err != nil {
+			return errors.WithStack(err)
+		}
+		result, created = data, true
+		return nil
+	})
+	return result, created, err
+}
+
+func (s *workflowCanvasStore) DeprecateWorkflowNodeDefinition(
+	ctx context.Context,
+	nodeType, definitionVersion, userID string,
+) (*iapiserver.WorkflowNodeDefinition, error) {
+	now := time.Now()
+	result := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.WorkflowNodeDefinition{}).
+		Where("node_type = ? AND definition_version = ?", nodeType, definitionVersion).
+		Updates(map[string]any{"deprecated": true, "deprecated_at": now, "updated_at": now})
+	if result.Error != nil {
+		return nil, errors.WithStack(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, errors.NewStatus(code.ErrWorkflowNodeDefinitionNotFound, "workflow node definition not found")
+	}
+	var item iapiserver.WorkflowNodeDefinition
+	if err := s.ds.db.WithContext(ctx).Where("node_type = ? AND definition_version = ?", nodeType, definitionVersion).First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
+func (s *workflowCanvasStore) ListWorkflowCanvases(
+	ctx context.Context,
+	req *iapiserver.WorkflowCanvasListRequest,
+	projectID, namespace, userID string,
+) ([]*iapiserver.WorkflowCanvas, int64, error) {
 	var items []*iapiserver.WorkflowCanvas
 	filter := func(q *gorm.DB) *gorm.DB {
-		return q.Where("project_id = ? AND namespace = ? AND created_by = ? AND deleted_at IS NULL", projectID, namespace, userID)
+		q = q.Where(
+			"project_id = ? AND namespace = ? AND (created_by = ? OR visibility = ?) AND deleted_at IS NULL",
+			projectID,
+			namespace,
+			userID,
+			iapiserver.CanvasVisibilityProject,
+		)
+		if req.Visibility != "" {
+			q = q.Where("visibility = ?", req.Visibility)
+		}
+		return q
 	}
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.WorkflowCanvas{}), filter).Order("updated_at DESC")
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
@@ -52,7 +176,11 @@ func (s *workflowCanvasStore) AddWorkflowCanvas(ctx context.Context, data *iapis
 }
 
 func (s *workflowCanvasStore) UpdateWorkflowCanvas(ctx context.Context, data *iapiserver.WorkflowCanvas, expected int64) (*iapiserver.WorkflowCanvas, error) {
-	result := s.ds.db.WithContext(ctx).Model(&iapiserver.WorkflowCanvas{}).Where("id = ? AND draft_revision = ? AND deleted_at IS NULL", data.ID, expected).Select("name", "description", "visibility", "draft_graph_json", "draft_revision", "updated_at", "resource_version").Updates(data)
+	result := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.WorkflowCanvas{}).
+		Where("id = ? AND draft_revision = ? AND deleted_at IS NULL", data.ID, expected).
+		Select("name", "description", "visibility", "draft_graph_json", "draft_revision", "updated_at", "resource_version").
+		Updates(data)
 	if result.Error != nil {
 		return nil, errors.WithStack(result.Error)
 	}
@@ -73,7 +201,13 @@ func (s *workflowCanvasStore) DeleteWorkflowCanvas(ctx context.Context, id strin
 	return nil
 }
 
-func (s *workflowCanvasStore) PublishWorkflowCanvas(ctx context.Context, canvas *iapiserver.WorkflowCanvas, version *iapiserver.CanvasVersion, expected int64) (*iapiserver.CanvasVersion, error) {
+func (s *workflowCanvasStore) PublishWorkflowCanvas(
+	ctx context.Context,
+	canvas *iapiserver.WorkflowCanvas,
+	version *iapiserver.CanvasVersion,
+	expected int64,
+) (*iapiserver.CanvasVersion, error) {
+	var published *iapiserver.CanvasVersion
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var locked iapiserver.WorkflowCanvas
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ? AND deleted_at IS NULL", canvas.ID).First(&locked).Error; err != nil {
@@ -82,16 +216,29 @@ func (s *workflowCanvasStore) PublishWorkflowCanvas(ctx context.Context, canvas 
 		if locked.DraftRevision != expected {
 			return errors.NewStatus(code.ErrCanvasRevisionConflict, "canvas draft revision changed")
 		}
+		var existing iapiserver.CanvasVersion
+		if err := tx.Where("canvas_id = ? AND content_digest = ?", canvas.ID, version.ContentDigest).First(&existing).Error; err == nil {
+			published = &existing
+			return nil
+		} else if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.WithStack(err)
+		}
 		version.Version = locked.LatestVersion + 1
 		if err := tx.Create(version).Error; err != nil {
 			return errors.WithStack(err)
 		}
-		return tx.Model(&locked).Updates(map[string]any{"latest_version": version.Version, "updated_at": time.Now()}).Error
+		if err := publishCanvasVersion(tx, version, &locked); err != nil {
+			return err
+		}
+		published = version
+		return tx.Model(&locked).
+			Updates(map[string]any{"latest_version": version.Version, "latest_published_version_id": version.ID, "updated_at": time.Now()}).
+			Error
 	})
 	if err != nil {
 		return nil, err
 	}
-	return version, nil
+	return published, nil
 }
 
 func (s *workflowCanvasStore) ListCanvasVersions(ctx context.Context, req *iapiserver.CanvasVersionListRequest) ([]*iapiserver.CanvasVersion, int64, error) {
@@ -119,7 +266,11 @@ func (s *workflowCanvasStore) GetCanvasVersionsByIDs(ctx context.Context, ids []
 	return items, errors.WithStack(err)
 }
 
-func (s *workflowCanvasStore) ListWorkflowCanvasRuns(ctx context.Context, req *iapiserver.WorkflowCanvasRunListRequest, projectID, namespace, userID string) ([]*iapiserver.WorkflowCanvasRun, int64, error) {
+func (s *workflowCanvasStore) ListWorkflowCanvasRuns(
+	ctx context.Context,
+	req *iapiserver.WorkflowCanvasRunListRequest,
+	projectID, namespace, userID string,
+) ([]*iapiserver.WorkflowCanvasRun, int64, error) {
 	var items []*iapiserver.WorkflowCanvasRun
 	filter := func(q *gorm.DB) *gorm.DB {
 		q = q.Where("project_id = ? AND namespace = ? AND created_by = ?", projectID, namespace, userID)
@@ -131,6 +282,9 @@ func (s *workflowCanvasStore) ListWorkflowCanvasRuns(ctx context.Context, req *i
 		}
 		if req.Status != "" {
 			q = q.Where("status = ?", req.Status)
+		}
+		if req.RetryOfCanvasRunID != "" {
+			q = q.Where("retry_of_canvas_run_id = ?", req.RetryOfCanvasRunID)
 		}
 		return q
 	}
@@ -156,12 +310,17 @@ func (s *workflowCanvasStore) GetWorkflowCanvasRunsByIDs(ctx context.Context, id
 	return items, errors.WithStack(err)
 }
 
-func (s *workflowCanvasStore) AddWorkflowCanvasRunIdempotent(ctx context.Context, data *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, bool, error) {
+func (s *workflowCanvasStore) AddWorkflowCanvasRunIdempotent(
+	ctx context.Context,
+	data *iapiserver.WorkflowCanvasRun,
+) (*iapiserver.WorkflowCanvasRun, bool, error) {
 	var result *iapiserver.WorkflowCanvasRun
 	created := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing iapiserver.WorkflowCanvasRun
-		err := tx.Where("project_id = ? AND namespace = ? AND created_by = ? AND idempotency_key = ?", data.ProjectID, data.Namespace, data.CreatedBy, data.IdempotencyKey).First(&existing).Error
+		err := tx.Where("project_id = ? AND namespace = ? AND created_by = ? AND idempotency_key = ?", data.ProjectID, data.Namespace, data.CreatedBy, data.IdempotencyKey).
+			First(&existing).
+			Error
 		if err == nil {
 			if existing.RequestDigest != data.RequestDigest {
 				return errors.NewStatus(code.ErrCanvasRunIdempotencyConflict, "canvas run idempotency request differs")
@@ -175,6 +334,12 @@ func (s *workflowCanvasStore) AddWorkflowCanvasRunIdempotent(ctx context.Context
 		if err := tx.Create(data).Error; err != nil {
 			return errors.WithStack(err)
 		}
+		if err := publishCanvasRunCreated(tx, data); err != nil {
+			return err
+		}
+		if err := publishCanvasRunRetryCreated(tx, data); err != nil {
+			return err
+		}
 		result = data
 		created = true
 		return nil
@@ -182,15 +347,62 @@ func (s *workflowCanvasStore) AddWorkflowCanvasRunIdempotent(ctx context.Context
 	return result, created, err
 }
 
-func (s *workflowCanvasStore) BindWorkflowCanvasRun(ctx context.Context, id, groupID string, nodes []*iapiserver.CanvasNodeRun) (*iapiserver.WorkflowCanvasRun, error) {
+func (s *workflowCanvasStore) BindWorkflowCanvasRun(
+	ctx context.Context,
+	id, groupID string,
+	flows []*iapiserver.CanvasFlowRun,
+	nodes []*iapiserver.CanvasNodeRun,
+	taskBindings []*iapiserver.CanvasNodeRunTaskBinding,
+	outputBindings []*iapiserver.CanvasNodeRunOutputBinding,
+) (*iapiserver.WorkflowCanvasRun, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ? AND task_creation_status = ?", id, iapiserver.CanvasTaskCreationPending).Updates(map[string]any{"dag_task_group_id": groupID, "task_creation_status": iapiserver.CanvasTaskCreationCreated, "status": iapiserver.CanvasRunStatusRunning}).Error; err != nil {
+		if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ? AND task_creation_status IN ?", id, []string{iapiserver.CanvasTaskCreationPending, iapiserver.CanvasTaskCreationFailed}).Updates(map[string]any{"dag_task_group_id": groupID, "task_creation_status": iapiserver.CanvasTaskCreationCreated, "task_creation_attempts": gorm.Expr("task_creation_attempts + 1"), "status": iapiserver.CanvasRunStatusRunning, "aggregate_version": gorm.Expr("aggregate_version + 1"), "started_at": time.Now()}).Error; err != nil {
 			return err
+		}
+		for _, flow := range flows {
+			if err := tx.Create(flow).Error; err != nil {
+				return err
+			}
 		}
 		for _, node := range nodes {
 			if err := tx.Create(node).Error; err != nil {
 				return err
 			}
+		}
+		nodeByExecutionKey := make(map[string]string, len(nodes))
+		for _, node := range nodes {
+			nodeByExecutionKey[node.ExecutionKey] = node.ID
+		}
+		for _, flow := range flows {
+			for _, executionKey := range flow.ExecutionKeys {
+				nodeID, ok := nodeByExecutionKey[executionKey]
+				if !ok {
+					continue
+				}
+				ref := &iapiserver.CanvasNodeRunFlowRef{CanvasNodeRunID: nodeID, CanvasFlowRunID: flow.ID}
+				ref.ID = uuid.NewString()
+				ref.Name = flow.FlowID + ":" + executionKey
+				if err := tx.Create(ref).Error; err != nil {
+					return err
+				}
+			}
+		}
+		for _, binding := range taskBindings {
+			if err := tx.Create(binding).Error; err != nil {
+				return err
+			}
+		}
+		for _, binding := range outputBindings {
+			if err := tx.Create(binding).Error; err != nil {
+				return err
+			}
+		}
+		var bound iapiserver.WorkflowCanvasRun
+		if err := tx.Where("id = ?", id).First(&bound).Error; err != nil {
+			return err
+		}
+		if err := publishCanvasRunBound(tx, &bound, len(taskBindings)); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -200,7 +412,24 @@ func (s *workflowCanvasStore) BindWorkflowCanvasRun(ctx context.Context, id, gro
 	return s.GetWorkflowCanvasRun(ctx, id)
 }
 func (s *workflowCanvasStore) UpdateWorkflowCanvasRun(ctx context.Context, data *iapiserver.WorkflowCanvasRun) (*iapiserver.WorkflowCanvasRun, error) {
-	if err := s.ds.db.WithContext(ctx).Save(data).Error; err != nil {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous iapiserver.WorkflowCanvasRun
+		if err := tx.Where("id = ?", data.ID).First(&previous).Error; err != nil {
+			return err
+		}
+		data.AggregateVersion = previous.AggregateVersion + 1
+		if err := tx.Save(data).Error; err != nil {
+			return err
+		}
+		if err := publishCanvasRunChanged(tx, previous.Status, data); err != nil {
+			return err
+		}
+		if data.Status == iapiserver.CanvasRunStatusCanceled && previous.Status != data.Status {
+			return publishCanvasRunCancelRequested(tx, data)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
@@ -212,11 +441,57 @@ func (s *workflowCanvasStore) ListCanvasNodeRuns(ctx context.Context, req *iapis
 		if req.Status != "" {
 			q = q.Where("status = ?", req.Status)
 		}
+		if req.NodeID != "" {
+			q = q.Where("node_id = ?", req.NodeID)
+		}
+		if req.FlowID != "" {
+			q = q.Where(
+				"EXISTS (SELECT 1 FROM canvas_node_run_flow_refs refs JOIN canvas_flow_runs flows ON flows.id = refs.canvas_flow_run_id WHERE refs.canvas_node_run_id = canvas_node_runs.id AND flows.flow_id = ?)",
+				req.FlowID,
+			)
+		}
 		return q
 	}
-	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.CanvasNodeRun{}), filter).Order("node_key ASC")
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.CanvasNodeRun{}), filter).Order("node_id ASC, execution_key ASC")
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
+}
+
+func (s *workflowCanvasStore) ListCanvasFlowRuns(ctx context.Context, req *iapiserver.CanvasFlowRunListRequest) ([]*iapiserver.CanvasFlowRun, int64, error) {
+	var items []*iapiserver.CanvasFlowRun
+	filter := func(q *gorm.DB) *gorm.DB {
+		q = q.Where("canvas_run_id = ?", req.CanvasRunID)
+		if req.Status != "" {
+			q = q.Where("status = ?", req.Status)
+		}
+		return q
+	}
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.CanvasFlowRun{}), filter).Order("flow_id ASC")
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	return items, total, err
+}
+
+func (s *workflowCanvasStore) GetCanvasNodeRun(ctx context.Context, id string) (*iapiserver.CanvasNodeRun, error) {
+	var item iapiserver.CanvasNodeRun
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrCanvasNodeRunNotFound, "canvas node run not found")
+	}
+	return &item, nil
+}
+
+func (s *workflowCanvasStore) GetCanvasNodeRunDetail(
+	ctx context.Context,
+	id string,
+) ([]*iapiserver.CanvasNodeRunTaskBinding, []*iapiserver.CanvasNodeRunOutputBinding, error) {
+	var tasks []*iapiserver.CanvasNodeRunTaskBinding
+	var outputs []*iapiserver.CanvasNodeRunOutputBinding
+	if err := s.ds.db.WithContext(ctx).Where("canvas_node_run_id = ?", id).Order("binding_role ASC, shard_index ASC").Find(&tasks).Error; err != nil {
+		return nil, nil, errors.WithStack(err)
+	}
+	if err := s.ds.db.WithContext(ctx).Where("canvas_node_run_id = ?", id).Order("port_key ASC, shard_index ASC").Find(&outputs).Error; err != nil {
+		return nil, nil, errors.WithStack(err)
+	}
+	return tasks, outputs, nil
 }
 
 var _ storeWorkflowCanvasContract = (*workflowCanvasStore)(nil)
@@ -226,3 +501,42 @@ type storeWorkflowCanvasContract interface {
 }
 
 var _ = imachinery.BasicQueryParam{}
+
+// ensureWorkflowCanvasScheme backfills the released v1.0 projection into the v1.7 model before enforcing new unique keys.
+func (ds *datastore) ensureWorkflowCanvasScheme() error {
+	return ds.db.Exec(`
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_versions' AND column_name='compiled_definition_name') THEN
+    EXECUTE 'UPDATE canvas_versions SET workflow_definition_name = compiled_definition_name WHERE workflow_definition_name = ''''';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_versions' AND column_name='compiled_definition_version') THEN
+    EXECUTE 'UPDATE canvas_versions SET workflow_definition_version = compiled_definition_version::text WHERE workflow_definition_version = ''''';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_node_runs' AND column_name='node_key') THEN
+    EXECUTE 'UPDATE canvas_node_runs SET node_id = node_key WHERE node_id = ''''';
+    EXECUTE 'UPDATE canvas_node_runs SET execution_key = node_key WHERE execution_key = ''''';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_node_runs' AND column_name='atomic_task_id') THEN
+    EXECUTE $migration$
+      INSERT INTO canvas_node_run_task_bindings
+        (id,name,created_at,updated_at,description,extend_shadow,resource_version,canvas_node_run_id,dag_task_group_id,atomic_task_id,task_child_key,binding_role,shard_key,task_resource_version)
+      SELECT 'legacy-binding:' || n.id, COALESCE(NULLIF(n.node_id,''),n.id), n.created_at, n.updated_at, '', '', 1,
+             n.id, r.dag_task_group_id, n.atomic_task_id, COALESCE(NULLIF(n.execution_key,''),n.id), 'primary', 'root', COALESCE(n.task_resource_version,0)
+      FROM canvas_node_runs n JOIN canvas_runs r ON r.id=n.canvas_run_id
+      WHERE n.atomic_task_id IS NOT NULL AND r.dag_task_group_id IS NOT NULL
+      ON CONFLICT DO NOTHING
+    $migration$;
+  END IF;
+END $$;
+UPDATE canvas_versions SET execution_template_digest=content_digest WHERE execution_template_digest='';
+UPDATE canvas_runs SET scope_json='{"mode":"all"}' WHERE scope_json='{}';
+UPDATE canvas_runs SET run_policy_json='{"reuse_policy":"rerun_all","failure_policy":"continue_independent_flows"}' WHERE run_policy_json='{}';
+UPDATE canvas_runs SET execution_plan_digest=request_digest WHERE execution_plan_digest='';
+UPDATE canvas_runs SET task_creation_status='RETRYABLE_FAILED' WHERE task_creation_status='FAILED';
+UPDATE canvas_node_runs SET execution_fingerprint='legacy:' || id WHERE execution_fingerprint='';
+UPDATE canvas_node_runs SET task_count=1 WHERE task_count=0 AND EXISTS (SELECT 1 FROM canvas_node_run_task_bindings b WHERE b.canvas_node_run_id=canvas_node_runs.id);
+UPDATE canvases c SET latest_published_version_id=(SELECT v.id FROM canvas_versions v WHERE v.canvas_id=c.id ORDER BY v.version DESC LIMIT 1) WHERE c.latest_version>0 AND c.latest_published_version_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_node_run_execution ON canvas_node_runs(canvas_run_id,execution_key);
+`).Error
+}

@@ -28,6 +28,14 @@ const (
 	OutboxTopicAssetVersionProcessingChanged       = "asset_version_processing_changed"
 	OutboxTopicArtifactContentCompleted            = "artifact_content_completed"
 	OutboxTopicAssetVersionRepresentationRequested = "asset_version_representation_requested"
+	OutboxTopicCanvasVersionPublished              = "canvas_version_published"
+	OutboxTopicCanvasRunCreated                    = "canvas_run_created"
+	OutboxTopicCanvasRunTaskGroupBound             = "canvas_run_task_group_bound"
+	OutboxTopicCanvasRunStatusChanged              = "canvas_run_status_changed"
+	OutboxTopicCanvasNodeRunStatusChanged          = "canvas_node_run_status_changed"
+	OutboxTopicCanvasNodeOutputAvailable           = "canvas_node_output_available"
+	OutboxTopicCanvasRunCancelRequested            = "canvas_run_cancel_requested"
+	OutboxTopicCanvasRunRetryCreated               = "canvas_run_retry_created"
 )
 
 var outboxSchema = &wmsql.DefaultPostgreSQLSchema{}
@@ -39,6 +47,9 @@ func (ds *datastore) ensureOutboxScheme() error {
 		OutboxTopicTaskAttemptStatusChanged, OutboxTopicTaskGroupStatusChanged, OutboxTopicArtifactCreated,
 		OutboxTopicArtifactProcessingChanged, OutboxTopicArtifactRegistrationChanged, OutboxTopicAssetVersionProcessingChanged,
 		OutboxTopicArtifactContentCompleted, OutboxTopicAssetVersionRepresentationRequested,
+		OutboxTopicCanvasVersionPublished, OutboxTopicCanvasRunCreated, OutboxTopicCanvasRunTaskGroupBound,
+		OutboxTopicCanvasRunStatusChanged, OutboxTopicCanvasNodeRunStatusChanged, OutboxTopicCanvasNodeOutputAvailable,
+		OutboxTopicCanvasRunCancelRequested, OutboxTopicCanvasRunRetryCreated,
 	} {
 		queries, err := outboxSchema.SchemaInitializingQueries(wmsql.SchemaInitializingQueriesParams{Topic: topic})
 		if err != nil {
@@ -85,7 +96,18 @@ func SubscribeOutbox(ctx context.Context, topic, consumerGroup string) (<-chan *
 	if err != nil {
 		return nil, err
 	}
-	subscriber, err := wmsql.NewSubscriber(wmsql.StdSQLBeginner{SQLBeginner: db}, wmsql.SubscriberConfig{ConsumerGroup: consumerGroup, PollInterval: time.Second, ResendInterval: time.Second, SchemaAdapter: outboxSchema, OffsetsAdapter: wmsql.DefaultPostgreSQLOffsetsAdapter{}, InitializeSchema: true}, watermill.NopLogger{})
+	subscriber, err := wmsql.NewSubscriber(
+		wmsql.StdSQLBeginner{SQLBeginner: db},
+		wmsql.SubscriberConfig{
+			ConsumerGroup:    consumerGroup,
+			PollInterval:     time.Second,
+			ResendInterval:   time.Second,
+			SchemaAdapter:    outboxSchema,
+			OffsetsAdapter:   wmsql.DefaultPostgreSQLOffsetsAdapter{},
+			InitializeSchema: true,
+		},
+		watermill.NopLogger{},
+	)
 	if err != nil {
 		return nil, err
 	}

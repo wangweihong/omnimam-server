@@ -28,7 +28,14 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
 )
 
-func initRouter(g *gin.Engine, applicationPlatform appplatformsvc.ApplicationPlatformSrv, taskCenter taskcentersvc.TaskCenterSrv, authOptions *options.AuthOptions, sseOptions *options.SSEOptions, mode string) {
+func initRouter(
+	g *gin.Engine,
+	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
+	taskCenter taskcentersvc.TaskCenterSrv,
+	authOptions *options.AuthOptions,
+	sseOptions *options.SSEOptions,
+	mode string,
+) {
 	InstallMiddleware(g)
 	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mode)
 }
@@ -517,6 +524,13 @@ func installPromptApis(rg *gin.RouterGroup, storeIns store.Factory) {
 
 func installCanvasApis(rg *gin.RouterGroup, service workflowcanvassvc.Service) {
 	canvasController := workflowcanvasctrl.NewController(service)
+	definitions := rg.Group("/node-definitions")
+	{
+		definitions.GET("", canvasController.ListNodeDefinitions)
+		definitions.POST("", canvasController.RegisterNodeDefinition)
+		definitions.GET("/:node_type/versions/:definition_version", canvasController.GetNodeDefinition)
+		definitions.POST("/:node_type/versions/:definition_version/deprecate", canvasController.DeprecateNodeDefinition)
+	}
 	canvasv1 := rg.Group("/canvases")
 	{
 		canvasv1.GET("", canvasController.List)
@@ -524,17 +538,21 @@ func installCanvasApis(rg *gin.RouterGroup, service workflowcanvassvc.Service) {
 		canvasv1.GET("/:canvas_id", canvasController.Get)
 		canvasv1.PATCH("/:canvas_id", canvasController.Update)
 		canvasv1.DELETE("/:canvas_id", canvasController.Delete)
+		canvasv1.POST("/:canvas_id/validate", canvasController.ValidateDraft)
 		canvasv1.POST("/:canvas_id/publish", canvasController.Publish)
 		canvasv1.GET("/:canvas_id/versions", canvasController.ListVersions)
 	}
 	rg.GET("/canvas-versions/:canvas_version_id", canvasController.GetVersion)
+	rg.POST("/canvas-versions/:canvas_version_id/validate-run", canvasController.ValidateRun)
 	runs := rg.Group("/canvas-runs")
 	{
 		runs.GET("", canvasController.ListRuns)
 		runs.POST("", canvasController.CreateRun)
 		runs.GET("/:canvas_run_id", canvasController.GetRun)
+		runs.GET("/:canvas_run_id/flows", canvasController.ListFlowRuns)
 		runs.GET("/:canvas_run_id/nodes", canvasController.ListNodeRuns)
 		runs.POST("/:canvas_run_id/cancel", canvasController.CancelRun)
 		runs.POST("/:canvas_run_id/retry", canvasController.RetryRun)
 	}
+	rg.GET("/canvas-node-runs/:canvas_node_run_id", canvasController.GetNodeRun)
 }

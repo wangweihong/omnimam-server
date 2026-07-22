@@ -24,6 +24,11 @@ const (
 	topicArtifactProcessingChanged     = "artifact_processing_changed"
 	topicArtifactRegistrationChanged   = "artifact_registration_changed"
 	topicAssetVersionProcessingChanged = "asset_version_processing_changed"
+	topicCanvasRunCreated              = "canvas_run_created"
+	topicCanvasRunTaskGroupBound       = "canvas_run_task_group_bound"
+	topicCanvasRunStatusChanged        = "canvas_run_status_changed"
+	topicCanvasNodeRunStatusChanged    = "canvas_node_run_status_changed"
+	topicCanvasNodeOutputAvailable     = "canvas_node_output_available"
 )
 
 type SubscribeFunc func(context.Context, string, string) (<-chan *message.Message, error)
@@ -53,10 +58,13 @@ func (p *Projector) Start(parent context.Context) error {
 	for _, topic := range []string{
 		topicAtomicTaskCreated, topicAtomicTaskStatusChanged, topicTaskAttemptStatusChanged, topicTaskGroupStatusChanged,
 		topicArtifactCreated, topicArtifactProcessingChanged, topicArtifactRegistrationChanged, topicAssetVersionProcessingChanged,
+		topicCanvasRunCreated, topicCanvasRunTaskGroupBound, topicCanvasRunStatusChanged, topicCanvasNodeRunStatusChanged, topicCanvasNodeOutputAvailable,
 	} {
 		consumerGroup := "sse-task-center-projector"
 		if isAssetLibraryTopic(topic) {
 			consumerGroup = "sse-asset-library-projector"
+		} else if isWorkflowCanvasTopic(topic) {
+			consumerGroup = "sse-workflow-canvas-projector"
 		}
 		messages, err := p.subscribe(ctx, topic, consumerGroup)
 		if err != nil {
@@ -117,6 +125,12 @@ type sourceEvent struct {
 	ArtifactID         string          `json:"artifact_id"`
 	AssetID            string          `json:"asset_id"`
 	AssetVersionID     string          `json:"asset_version_id"`
+	CanvasRunID        string          `json:"canvas_run_id"`
+	CanvasNodeRunID    string          `json:"canvas_node_run_id"`
+	DAGTaskGroupID     string          `json:"dag_task_group_id"`
+	NodeID             string          `json:"node_id"`
+	ExecutionKey       string          `json:"execution_key"`
+	AggregateVersion   int64           `json:"aggregate_version"`
 	ChangeType         string          `json:"change_type"`
 	RegistrationStatus string          `json:"registration_status"`
 	Status             string          `json:"status"`
@@ -136,12 +150,18 @@ func (p *Projector) project(ctx context.Context, topic string, raw []byte) error
 	if isAssetLibraryTopic(topic) {
 		recipient = source.OwnerUserID
 		expectedDomain = iapiserver.SSESourceDomainAssetLibrary
+	} else if isWorkflowCanvasTopic(topic) {
+		expectedDomain = iapiserver.SSESourceDomainWorkflowCanvas
 	}
-	if source.SourceDomain != expectedDomain || source.SourceEventID == "" || recipient == "" || source.ResourceVersion < 1 || source.OccurredAt.IsZero() {
+	version := source.ResourceVersion
+	if isWorkflowCanvasTopic(topic) {
+		version = source.AggregateVersion
+	}
+	if source.SourceDomain != expectedDomain || source.SourceEventID == "" || recipient == "" || version < 1 || source.OccurredAt.IsZero() {
 		return fmt.Errorf("SSE source event is missing routing or version fields")
 	}
 	event := &iapiserver.UserEvent{
-		RecipientUserID: recipient, EventVersion: 1, AggregateVersion: source.ResourceVersion,
+		RecipientUserID: recipient, EventVersion: 1, AggregateVersion: version,
 		CorrelationID: source.CorrelationID, ApplicationRunID: source.ApplicationRunID,
 		SourceDomain: source.SourceDomain, SourceEventID: source.SourceEventID, OccurredAt: source.OccurredAt,
 		ExpiresAt: imachinery.NewTime(source.OccurredAt.Add(p.retention)), Payload: sanitizeSourcePayload(topic, source.Payload),
@@ -173,9 +193,28 @@ func (p *Projector) project(ctx context.Context, topic string, raw []byte) error
 		event.EventType, event.AggregateType, event.AggregateID = artifactRegistrationEventType(source.RegistrationStatus), "artifact", source.ArtifactID
 		event.ArtifactID, event.AssetID, event.AssetVersionID = source.ArtifactID, source.AssetID, source.AssetVersionID
 	case topicAssetVersionProcessingChanged:
-		event.EventType, event.AggregateType, event.AggregateID = assetVersionProcessingEventType(source.Status, source.ChangeType, source.ResourceVersion), "asset_version", source.AssetVersionID
+		event.EventType, event.AggregateType, event.AggregateID = assetVersionProcessingEventType(
+			source.Status,
+			source.ChangeType,
+			source.ResourceVersion,
+		), "asset_version", source.AssetVersionID
 		event.AtomicTaskID, event.TaskGroupID = source.AtomicTaskID, source.TaskGroupID
 		event.AssetID, event.AssetVersionID = source.AssetID, source.AssetVersionID
+	case topicCanvasRunCreated:
+		event.EventType, event.AggregateType, event.AggregateID = iapiserver.UserEventCanvasRunCreated, "canvas_run", source.CanvasRunID
+		event.CanvasRunID = source.CanvasRunID
+	case topicCanvasRunTaskGroupBound:
+		event.EventType, event.AggregateType, event.AggregateID = iapiserver.UserEventCanvasRunStarted, "canvas_run", source.CanvasRunID
+		event.CanvasRunID, event.DAGTaskGroupID = source.CanvasRunID, source.DAGTaskGroupID
+	case topicCanvasRunStatusChanged:
+		event.EventType, event.AggregateType, event.AggregateID = canvasRunEventType(source.Status), "canvas_run", source.CanvasRunID
+		event.CanvasRunID = source.CanvasRunID
+	case topicCanvasNodeRunStatusChanged:
+		event.EventType, event.AggregateType, event.AggregateID = canvasNodeEventType(source.Status), "canvas_node_run", source.CanvasNodeRunID
+		event.CanvasRunID, event.CanvasNodeRunID = source.CanvasRunID, source.CanvasNodeRunID
+	case topicCanvasNodeOutputAvailable:
+		event.EventType, event.AggregateType, event.AggregateID = iapiserver.UserEventCanvasNodeOutputAvailable, "canvas_node_run", source.CanvasNodeRunID
+		event.CanvasRunID, event.CanvasNodeRunID = source.CanvasRunID, source.CanvasNodeRunID
 	default:
 		return fmt.Errorf("unsupported SSE source topic %s", topic)
 	}
@@ -198,7 +237,16 @@ func sanitizeSourcePayload(topic string, payload map[string]any) map[string]any 
 	result := make(map[string]any, len(payload))
 	for key, value := range payload {
 		switch key {
-		case "source_domain", "source_event_id", "sse_event_type", "created_by", "owner_user_id", "project_id", "namespace", "correlation_id", "resource_version", "change_type":
+		case "source_domain",
+			"source_event_id",
+			"sse_event_type",
+			"created_by",
+			"owner_user_id",
+			"project_id",
+			"namespace",
+			"correlation_id",
+			"resource_version",
+			"change_type":
 			continue
 		default:
 			result[key] = value
@@ -226,6 +274,48 @@ func sanitizeSourcePayload(topic string, payload map[string]any) map[string]any 
 		return allowPayloadFields(result, "asset_id", "asset_version_id", "status", "expected_count", "completed_count",
 			"failed_count", "task_group_id", "atomic_task_id", "error_code", "occurred_at")
 	}
+	if isWorkflowCanvasTopic(topic) {
+		if topic == topicCanvasRunCreated || topic == topicCanvasRunTaskGroupBound || topic == topicCanvasRunStatusChanged {
+			return allowPayloadFields(
+				result,
+				"canvas_run_id",
+				"canvas_id",
+				"canvas_version_id",
+				"from_status",
+				"status",
+				"progress",
+				"task_creation_status",
+				"summary",
+				"changed_flow_summaries",
+				"warnings",
+				"error_code",
+				"aggregate_version",
+				"occurred_at",
+			)
+		}
+		return allowPayloadFields(
+			result,
+			"canvas_run_id",
+			"canvas_node_run_id",
+			"node_id",
+			"execution_key",
+			"from_status",
+			"status",
+			"status_reason",
+			"result_mode",
+			"progress",
+			"port_key",
+			"shard_key",
+			"shard_index",
+			"atomic_task_id",
+			"artifact_id",
+			"artifact_summary",
+			"warnings",
+			"error_code",
+			"aggregate_version",
+			"occurred_at",
+		)
+	}
 	return result
 }
 
@@ -245,6 +335,54 @@ func isAssetLibraryTopic(topic string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isWorkflowCanvasTopic(topic string) bool {
+	switch topic {
+	case topicCanvasRunCreated, topicCanvasRunTaskGroupBound, topicCanvasRunStatusChanged, topicCanvasNodeRunStatusChanged, topicCanvasNodeOutputAvailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func canvasRunEventType(status string) string {
+	switch status {
+	case iapiserver.CanvasRunStatusPending:
+		return iapiserver.UserEventCanvasRunProgressed
+	case iapiserver.CanvasRunStatusRunning:
+		return iapiserver.UserEventCanvasRunProgressed
+	case iapiserver.CanvasRunStatusSuccess, iapiserver.CanvasRunStatusPartialSuccess:
+		return iapiserver.UserEventCanvasRunSucceeded
+	case iapiserver.CanvasRunStatusFailed, iapiserver.CanvasRunStatusTimeout:
+		return iapiserver.UserEventCanvasRunFailed
+	case iapiserver.CanvasRunStatusCanceled:
+		return iapiserver.UserEventCanvasRunCancelled
+	default:
+		return ""
+	}
+}
+func canvasNodeEventType(status string) string {
+	switch status {
+	case iapiserver.AtomicTaskStatusPending, iapiserver.AtomicTaskStatusBlocked:
+		return iapiserver.UserEventCanvasNodeQueued
+	case iapiserver.AtomicTaskStatusReady:
+		return iapiserver.UserEventCanvasNodeReady
+	case iapiserver.AtomicTaskStatusRunning:
+		return iapiserver.UserEventCanvasNodeStarted
+	case iapiserver.AtomicTaskStatusRetrying:
+		return iapiserver.UserEventCanvasNodeProgressed
+	case iapiserver.AtomicTaskStatusSuccess, iapiserver.CanvasRunStatusPartialSuccess, "REUSED":
+		return iapiserver.UserEventCanvasNodeSucceeded
+	case iapiserver.AtomicTaskStatusFailed, iapiserver.AtomicTaskStatusTimeout:
+		return iapiserver.UserEventCanvasNodeFailed
+	case iapiserver.AtomicTaskStatusSkipped:
+		return iapiserver.UserEventCanvasNodeSkipped
+	case iapiserver.AtomicTaskStatusCanceled:
+		return iapiserver.UserEventCanvasNodeCancelled
+	default:
+		return ""
 	}
 }
 

@@ -84,7 +84,9 @@ func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iap
 	created := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing iapiserver.AtomicTask
-		err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", data.ProjectID, data.Namespace, data.IdempotencyScope, data.IdempotencyKey).First(&existing).Error
+		err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", data.ProjectID, data.Namespace, data.IdempotencyScope, data.IdempotencyKey).
+			First(&existing).
+			Error
 		if err == nil {
 			if atomicTaskFingerprint(&existing) != atomicTaskFingerprint(data) {
 				return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "atomic task idempotency request differs")
@@ -169,7 +171,11 @@ func (s *taskCenterStore) GetTaskGroup(ctx context.Context, id string) (*iapiser
 	return &item, nil
 }
 
-func (s *taskCenterStore) AddTaskGroupWithTasks(ctx context.Context, group *iapiserver.TaskGroup, tasks []*iapiserver.AtomicTask) (*iapiserver.TaskGroup, bool, error) {
+func (s *taskCenterStore) AddTaskGroupWithTasks(
+	ctx context.Context,
+	group *iapiserver.TaskGroup,
+	tasks []*iapiserver.AtomicTask,
+) (*iapiserver.TaskGroup, bool, error) {
 	if group.ID == "" {
 		group.ID = uuid.NewString()
 	}
@@ -178,7 +184,9 @@ func (s *taskCenterStore) AddTaskGroupWithTasks(ctx context.Context, group *iapi
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if group.IdempotencyScope != "" && group.IdempotencyKey != "" {
 			var existing iapiserver.TaskGroup
-			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).First(&existing).Error
+			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).
+				First(&existing).
+				Error
 			if err == nil {
 				if taskGroupFingerprint(&existing) != taskGroupFingerprint(group) {
 					return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "task group idempotency request differs")
@@ -266,7 +274,11 @@ func (s *taskCenterStore) GetDAGTaskGroup(ctx context.Context, id string) (*iapi
 	return &item, nil
 }
 
-func (s *taskCenterStore) AddDAGTaskGroupWithTasks(ctx context.Context, group *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTask) (*iapiserver.DAGTaskGroup, bool, error) {
+func (s *taskCenterStore) AddDAGTaskGroupWithTasks(
+	ctx context.Context,
+	group *iapiserver.DAGTaskGroup,
+	tasks []*iapiserver.AtomicTask,
+) (*iapiserver.DAGTaskGroup, bool, error) {
 	if group.ID == "" {
 		group.ID = uuid.NewString()
 	}
@@ -275,7 +287,9 @@ func (s *taskCenterStore) AddDAGTaskGroupWithTasks(ctx context.Context, group *i
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if group.IdempotencyScope != "" && group.IdempotencyKey != "" {
 			var existing iapiserver.DAGTaskGroup
-			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).First(&existing).Error
+			err := tx.Where("project_id = ? AND namespace = ? AND idempotency_scope = ? AND idempotency_key = ?", group.ProjectID, group.Namespace, group.IdempotencyScope, group.IdempotencyKey).
+				First(&existing).
+				Error
 			if err == nil {
 				if dagTaskGroupFingerprint(&existing) != dagTaskGroupFingerprint(group) {
 					return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "dag task group idempotency request differs")
@@ -325,7 +339,11 @@ func (s *taskCenterStore) UpdateDAGTaskGroup(ctx context.Context, data *iapiserv
 	return data, nil
 }
 
-func (s *taskCenterStore) ListOwnedTasks(ctx context.Context, ownerType, ownerID string, req *iapiserver.AtomicTaskListRequest) ([]*iapiserver.AtomicTask, int64, error) {
+func (s *taskCenterStore) ListOwnedTasks(
+	ctx context.Context,
+	ownerType, ownerID string,
+	req *iapiserver.AtomicTaskListRequest,
+) ([]*iapiserver.AtomicTask, int64, error) {
 	req.OwnerID = ownerID
 	var items []*iapiserver.AtomicTask
 	filter := func(query *gorm.DB) *gorm.DB {
@@ -418,7 +436,11 @@ func (s *taskCenterStore) AddTaskSchedule(ctx context.Context, data *iapiserver.
 }
 
 // EnsureSystemTaskSchedule 依靠 system_key 唯一索引原子补齐系统计划和一对一状态，多 Worker 并发启动只会创建一份。
-func (s *taskCenterStore) EnsureSystemTaskSchedule(ctx context.Context, data *iapiserver.TaskSchedule, state *iapiserver.ScheduleReconcileState) (*iapiserver.TaskSchedule, bool, error) {
+func (s *taskCenterStore) EnsureSystemTaskSchedule(
+	ctx context.Context,
+	data *iapiserver.TaskSchedule,
+	state *iapiserver.ScheduleReconcileState,
+) (*iapiserver.TaskSchedule, bool, error) {
 	created := false
 	result := data
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -447,7 +469,10 @@ func (s *taskCenterStore) UpdateTaskSchedule(ctx context.Context, data *iapiserv
 	return data, nil
 }
 
-func (s *taskCenterStore) ListScheduleExecutions(ctx context.Context, req *iapiserver.ScheduleExecutionListRequest) ([]*iapiserver.TaskScheduleExecution, int64, error) {
+func (s *taskCenterStore) ListScheduleExecutions(
+	ctx context.Context,
+	req *iapiserver.ScheduleExecutionListRequest,
+) ([]*iapiserver.TaskScheduleExecution, int64, error) {
 	var items []*iapiserver.TaskScheduleExecution
 	filter := func(query *gorm.DB) *gorm.DB {
 		query = query.Where("schedule_id = ?", req.ScheduleID)
@@ -500,7 +525,11 @@ func (s *taskCenterStore) ListLatestScheduleExecutions(ctx context.Context, sche
 	return result, nil
 }
 
-func (s *taskCenterStore) ListScheduleSources(ctx context.Context, targetType string, targetIDs []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+func (s *taskCenterStore) ListScheduleSources(
+	ctx context.Context,
+	targetType string,
+	targetIDs []string,
+) (map[string]*iapiserver.ScheduleSourceSummary, error) {
 	result := make(map[string]*iapiserver.ScheduleSourceSummary)
 	if len(targetIDs) == 0 {
 		return result, nil
@@ -526,12 +555,20 @@ func (s *taskCenterStore) ListScheduleSources(ctx context.Context, targetType st
 		if _, exists := result[row.TargetID]; exists {
 			continue
 		}
-		result[row.TargetID] = &iapiserver.ScheduleSourceSummary{ScheduleID: row.ScheduleID, ScheduleName: row.ScheduleName, ScheduleExecutionID: row.ScheduleExecutionID, ScheduledAt: row.ScheduledAt}
+		result[row.TargetID] = &iapiserver.ScheduleSourceSummary{
+			ScheduleID:          row.ScheduleID,
+			ScheduleName:        row.ScheduleName,
+			ScheduleExecutionID: row.ScheduleExecutionID,
+			ScheduledAt:         row.ScheduledAt,
+		}
 	}
 	return result, nil
 }
 
-func (s *taskCenterStore) AddProjectionEventIdempotent(ctx context.Context, data *iapiserver.RuntimeProjectionEvent) (*iapiserver.RuntimeProjectionEvent, bool, error) {
+func (s *taskCenterStore) AddProjectionEventIdempotent(
+	ctx context.Context,
+	data *iapiserver.RuntimeProjectionEvent,
+) (*iapiserver.RuntimeProjectionEvent, bool, error) {
 	var existing iapiserver.RuntimeProjectionEvent
 	err := s.ds.db.WithContext(ctx).Where("runtime_event_id = ?", data.RuntimeEventID).First(&existing).Error
 	if err == nil {
@@ -591,7 +628,12 @@ func (s *taskCenterStore) ListActiveScheduleExecutions(ctx context.Context, limi
 	return items, errors.WithStack(err)
 }
 
-func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, event *iapiserver.RuntimeProjectionEvent) (bool, error) {
+func (s *taskCenterStore) ApplyRuntimeProjection(
+	ctx context.Context,
+	task *iapiserver.AtomicTask,
+	attempts []*iapiserver.TaskAttempt,
+	event *iapiserver.RuntimeProjectionEvent,
+) (bool, error) {
 	applied := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		type attemptChange struct {
@@ -696,20 +738,62 @@ func (s *taskCenterStore) ApplyRuntimeProjection(ctx context.Context, task *iapi
 }
 
 func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
-	status := task.Status
-	if status == iapiserver.AtomicTaskStatusCancelRequested {
-		status = iapiserver.AtomicTaskStatusRunning
+	var binding iapiserver.CanvasNodeRunTaskBinding
+	if err := tx.Where("atomic_task_id = ?", task.ID).First(&binding).Error; err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
 	}
-	values := map[string]any{"atomic_task_id": task.ID, "status": status, "progress": task.Progress, "output_json": mustJSON(task.Output), "last_error_json": mustJSON(task.LastError), "task_resource_version": task.ResourceVersion, "updated_at": time.Now()}
-	if iapiserver.IsAtomicTaskTerminal(task.Status) {
+	if binding.TaskResourceVersion >= task.ResourceVersion {
+		return nil
+	}
+	var previousNode iapiserver.CanvasNodeRun
+	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&previousNode).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&binding).Updates(map[string]any{"task_resource_version": task.ResourceVersion, "updated_at": time.Now()}).Error; err != nil {
+		return err
+	}
+	var nodeBindings []*iapiserver.CanvasNodeRunTaskBinding
+	if err := tx.Where("canvas_node_run_id = ?", binding.CanvasNodeRunID).Find(&nodeBindings).Error; err != nil {
+		return err
+	}
+	taskIDs := make([]string, 0, len(nodeBindings))
+	for _, item := range nodeBindings {
+		taskIDs = append(taskIDs, item.AtomicTaskID)
+	}
+	var boundTasks []*iapiserver.AtomicTask
+	if err := tx.Where("id IN ?", taskIDs).Find(&boundTasks).Error; err != nil {
+		return err
+	}
+	nodeStatus, nodeProgress, lastError, nodeTerminal := aggregateCanvasNodeTasks(boundTasks)
+	values := map[string]any{
+		"status":            nodeStatus,
+		"progress":          nodeProgress,
+		"last_error_json":   mustJSON(lastError),
+		"aggregate_version": gorm.Expr("aggregate_version + 1"),
+		"updated_at":        time.Now(),
+	}
+	if nodeTerminal {
 		values["finished_at"] = time.Now()
 	}
-	result := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ? AND task_resource_version < ?", task.CanvasNodeRunID, task.ResourceVersion).Updates(values)
+	result := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ?", binding.CanvasNodeRunID).Updates(values)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		return nil
+	}
+	var currentNode iapiserver.CanvasNodeRun
+	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&currentNode).Error; err != nil {
+		return err
+	}
+	if err := publishCanvasNodeChanged(tx, previousNode.Status, &currentNode); err != nil {
+		return err
+	}
+	if err := recalculateCanvasFlows(tx, currentNode.ID); err != nil {
+		return err
 	}
 	var nodes []*iapiserver.CanvasNodeRun
 	if err := tx.Where("canvas_run_id = ?", task.CanvasRunID).Find(&nodes).Error; err != nil {
@@ -721,7 +805,6 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 	failed := false
 	canceled := false
 	timedOut := false
-	output := map[string]any{}
 	for _, node := range nodes {
 		progress += node.Progress
 		switch node.Status {
@@ -736,7 +819,8 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 			terminal = false
 		case iapiserver.AtomicTaskStatusSuccess:
 			summary.Success++
-			output[node.NodeKey] = node.Output
+		case iapiserver.CanvasRunStatusPartialSuccess:
+			summary.Success++
 		case iapiserver.AtomicTaskStatusFailed:
 			summary.Failed++
 			failed = true
@@ -766,11 +850,177 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 			runStatus = iapiserver.CanvasRunStatusSuccess
 		}
 	}
-	runValues := map[string]any{"status": runStatus, "progress": progress, "summary_json": mustJSON(summary), "output_json": mustJSON(output), "task_resource_version": task.ResourceVersion, "updated_at": time.Now()}
+	progressSummary := iapiserver.WorkflowProgressSummary{
+		Progress:  progress,
+		Total:     summary.Total,
+		Completed: summary.Success + summary.Failed + summary.Canceled + summary.Skipped,
+		Success:   summary.Success,
+		Failed:    summary.Failed,
+		Canceled:  summary.Canceled,
+		Skipped:   summary.Skipped,
+		Running:   summary.Running,
+	}
+	runValues := map[string]any{
+		"status":            runStatus,
+		"progress":          progress,
+		"summary_json":      mustJSON(progressSummary),
+		"aggregate_version": gorm.Expr("aggregate_version + 1"),
+		"updated_at":        time.Now(),
+	}
 	if terminal {
 		runValues["finished_at"] = time.Now()
 	}
-	return tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ? AND task_resource_version < ?", task.CanvasRunID, task.ResourceVersion).Updates(runValues).Error
+	var previousRun iapiserver.WorkflowCanvasRun
+	if err := tx.Where("id = ?", task.CanvasRunID).First(&previousRun).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ?", task.CanvasRunID).Updates(runValues).Error; err != nil {
+		return err
+	}
+	var currentRun iapiserver.WorkflowCanvasRun
+	if err := tx.Where("id = ?", task.CanvasRunID).First(&currentRun).Error; err != nil {
+		return err
+	}
+	return publishCanvasRunChanged(tx, previousRun.Status, &currentRun)
+}
+
+func aggregateCanvasNodeTasks(tasks []*iapiserver.AtomicTask) (string, float64, iapiserver.TaskError, bool) {
+	if len(tasks) == 0 {
+		return iapiserver.AtomicTaskStatusPending, 0, iapiserver.TaskError{}, false
+	}
+	progress := 0.0
+	terminal := true
+	status := iapiserver.AtomicTaskStatusSuccess
+	lastError := iapiserver.TaskError{}
+	for _, task := range tasks {
+		progress += task.Progress
+		switch task.Status {
+		case iapiserver.AtomicTaskStatusFailed:
+			status = iapiserver.AtomicTaskStatusFailed
+			lastError = task.LastError
+		case iapiserver.AtomicTaskStatusTimeout:
+			if status != iapiserver.AtomicTaskStatusFailed {
+				status = iapiserver.AtomicTaskStatusTimeout
+			}
+			lastError = task.LastError
+		case iapiserver.AtomicTaskStatusCanceled:
+			if status != iapiserver.AtomicTaskStatusFailed && status != iapiserver.AtomicTaskStatusTimeout {
+				status = iapiserver.AtomicTaskStatusCanceled
+			}
+		case iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusCancelRequested:
+			terminal = false
+			if status == iapiserver.AtomicTaskStatusSuccess {
+				status = iapiserver.AtomicTaskStatusRunning
+			}
+		case iapiserver.AtomicTaskStatusRetrying:
+			terminal = false
+			if status == iapiserver.AtomicTaskStatusSuccess {
+				status = iapiserver.AtomicTaskStatusRetrying
+			}
+		case iapiserver.AtomicTaskStatusReady:
+			terminal = false
+			if status == iapiserver.AtomicTaskStatusSuccess {
+				status = iapiserver.AtomicTaskStatusReady
+			}
+		case iapiserver.AtomicTaskStatusBlocked:
+			terminal = false
+			if status == iapiserver.AtomicTaskStatusSuccess {
+				status = iapiserver.AtomicTaskStatusBlocked
+			}
+		case iapiserver.AtomicTaskStatusPending:
+			terminal = false
+			if status == iapiserver.AtomicTaskStatusSuccess {
+				status = iapiserver.AtomicTaskStatusPending
+			}
+		}
+	}
+	return status, progress / float64(len(tasks)), lastError, terminal
+}
+
+func recalculateCanvasFlows(tx *gorm.DB, nodeRunID string) error {
+	var refs []*iapiserver.CanvasNodeRunFlowRef
+	if err := tx.Where("canvas_node_run_id = ?", nodeRunID).Find(&refs).Error; err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		var nodeRefs []*iapiserver.CanvasNodeRunFlowRef
+		if err := tx.Where("canvas_flow_run_id = ?", ref.CanvasFlowRunID).Find(&nodeRefs).Error; err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(nodeRefs))
+		for _, item := range nodeRefs {
+			ids = append(ids, item.CanvasNodeRunID)
+		}
+		var nodes []*iapiserver.CanvasNodeRun
+		if err := tx.Where("id IN ?", ids).Find(&nodes).Error; err != nil {
+			return err
+		}
+		status, progress, summary, terminal := aggregateCanvasNodes(nodes)
+		values := map[string]any{
+			"status":            status,
+			"progress":          progress,
+			"summary_json":      mustJSON(summary),
+			"aggregate_version": gorm.Expr("aggregate_version + 1"),
+			"updated_at":        time.Now(),
+		}
+		if terminal {
+			values["finished_at"] = time.Now()
+		}
+		if err := tx.Model(&iapiserver.CanvasFlowRun{}).Where("id = ?", ref.CanvasFlowRunID).Updates(values).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func aggregateCanvasNodes(nodes []*iapiserver.CanvasNodeRun) (string, float64, iapiserver.WorkflowProgressSummary, bool) {
+	summary := iapiserver.WorkflowProgressSummary{Total: len(nodes)}
+	if len(nodes) == 0 {
+		return iapiserver.CanvasRunStatusPending, 0, summary, false
+	}
+	terminal := true
+	progress := 0.0
+	for _, node := range nodes {
+		progress += node.Progress
+		switch node.Status {
+		case iapiserver.AtomicTaskStatusSuccess, "REUSED":
+			summary.Success++
+			summary.Completed++
+		case iapiserver.CanvasRunStatusPartialSuccess:
+			summary.Success++
+			summary.Completed++
+			summary.Warnings++
+		case iapiserver.AtomicTaskStatusFailed, iapiserver.AtomicTaskStatusTimeout:
+			summary.Failed++
+			summary.Completed++
+		case iapiserver.AtomicTaskStatusCanceled:
+			summary.Canceled++
+			summary.Completed++
+		case iapiserver.AtomicTaskStatusSkipped:
+			summary.Skipped++
+			summary.Completed++
+		default:
+			terminal = false
+			summary.Running++
+		}
+	}
+	progress /= float64(len(nodes))
+	summary.Progress = progress
+	status := iapiserver.CanvasRunStatusRunning
+	if !terminal {
+		return status, progress, summary, false
+	}
+	switch {
+	case summary.Failed > 0 && summary.Success > 0:
+		status = iapiserver.CanvasRunStatusPartialSuccess
+	case summary.Failed > 0:
+		status = iapiserver.CanvasRunStatusFailed
+	case summary.Canceled > 0 && summary.Success == 0:
+		status = iapiserver.CanvasRunStatusCanceled
+	default:
+		status = iapiserver.CanvasRunStatusSuccess
+	}
+	return status, progress, summary, true
 }
 
 func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
@@ -794,7 +1044,10 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 		case iapiserver.AtomicTaskStatusBlocked:
 			summary.Blocked++
 			terminal = false
-		case iapiserver.AtomicTaskStatusReady, iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusRetrying, iapiserver.AtomicTaskStatusCancelRequested:
+		case iapiserver.AtomicTaskStatusReady,
+			iapiserver.AtomicTaskStatusRunning,
+			iapiserver.AtomicTaskStatusRetrying,
+			iapiserver.AtomicTaskStatusCancelRequested:
 			summary.Running++
 			terminal = false
 		case iapiserver.AtomicTaskStatusSuccess:
@@ -856,7 +1109,10 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 	return nil
 }
 
-func (s *taskCenterStore) AcquireScheduleExecution(ctx context.Context, data *iapiserver.TaskScheduleExecution) (*iapiserver.TaskScheduleExecution, bool, error) {
+func (s *taskCenterStore) AcquireScheduleExecution(
+	ctx context.Context,
+	data *iapiserver.TaskScheduleExecution,
+) (*iapiserver.TaskScheduleExecution, bool, error) {
 	var result *iapiserver.TaskScheduleExecution
 	acquired := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -905,7 +1161,8 @@ func (s *taskCenterStore) AcquireScheduleExecution(ctx context.Context, data *ia
 func (s *taskCenterStore) WithScheduleReconcileLock(ctx context.Context, scheduleID string, fn func() error) (bool, error) {
 	acquired := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))", "task-center-reconcile:"+scheduleID).Scan(&acquired).Error; err != nil || !acquired {
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))", "task-center-reconcile:"+scheduleID).Scan(&acquired).Error; err != nil ||
+			!acquired {
 			return err
 		}
 		return fn()
@@ -944,7 +1201,11 @@ func (s *taskCenterStore) GetScheduleReconcileState(ctx context.Context, schedul
 }
 
 // CompleteScheduleReconcile 原子提交轮次终态、checkpoint 和不回退的累计统计。
-func (s *taskCenterStore) CompleteScheduleReconcile(ctx context.Context, execution *iapiserver.TaskScheduleExecution, state *iapiserver.ScheduleReconcileState) error {
+func (s *taskCenterStore) CompleteScheduleReconcile(
+	ctx context.Context,
+	execution *iapiserver.TaskScheduleExecution,
+	state *iapiserver.ScheduleReconcileState,
+) error {
 	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.TaskScheduleExecution
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&previous, "id = ?", execution.ID).Error; err != nil {
@@ -967,11 +1228,24 @@ func (s *taskCenterStore) CompleteScheduleReconcile(ctx context.Context, executi
 }
 
 func isScheduleExecutionTerminal(status string) bool {
-	return status == iapiserver.ScheduleExecutionStatusSuccess || status == iapiserver.ScheduleExecutionStatusFailed || status == iapiserver.ScheduleExecutionStatusCanceled || status == iapiserver.ScheduleExecutionStatusSkippedOverlap || status == iapiserver.ScheduleExecutionStatusTriggerFailed
+	return status == iapiserver.ScheduleExecutionStatusSuccess || status == iapiserver.ScheduleExecutionStatusFailed ||
+		status == iapiserver.ScheduleExecutionStatusCanceled ||
+		status == iapiserver.ScheduleExecutionStatusSkippedOverlap ||
+		status == iapiserver.ScheduleExecutionStatusTriggerFailed
 }
 
 func publishScheduleExecutionEvent(tx *gorm.DB, execution *iapiserver.TaskScheduleExecution) error {
-	payload := map[string]any{"task_schedule_id": execution.ScheduleID, "schedule_execution_id": execution.ID, "scheduled_at": execution.ScheduledAt, "execution_mode": execution.ExecutionMode, "status": execution.Status, "target_type": execution.TargetType, "target_id": execution.TargetID, "reason": execution.Reason, "occurred_at": imachinery.Now()}
+	payload := map[string]any{
+		"task_schedule_id":      execution.ScheduleID,
+		"schedule_execution_id": execution.ID,
+		"scheduled_at":          execution.ScheduledAt,
+		"execution_mode":        execution.ExecutionMode,
+		"status":                execution.Status,
+		"target_type":           execution.TargetType,
+		"target_id":             execution.TargetID,
+		"reason":                execution.Reason,
+		"occurred_at":           imachinery.Now(),
+	}
 	if execution.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
 		payload["reconcile_summary"] = execution.ReconcileSummary
 	} else {
@@ -1003,7 +1277,8 @@ func applyScheduleSummaryTransition(schedule *iapiserver.TaskSchedule, from, to 
 		}
 		return
 	}
-	if (from == iapiserver.ScheduleExecutionStatusTriggered || from == iapiserver.ScheduleExecutionStatusRunning) && isScheduleExecutionTerminal(to) && schedule.Summary.Running > 0 {
+	if (from == iapiserver.ScheduleExecutionStatusTriggered || from == iapiserver.ScheduleExecutionStatusRunning) && isScheduleExecutionTerminal(to) &&
+		schedule.Summary.Running > 0 {
 		schedule.Summary.Running--
 	}
 	switch to {
@@ -1018,7 +1293,12 @@ func applyScheduleSummaryTransition(schedule *iapiserver.TaskSchedule, from, to 
 	}
 }
 
-func (s *taskCenterStore) PruneReconcileExecutions(ctx context.Context, scheduleID string, retention iapiserver.HistoryRetention, now time.Time) (int64, error) {
+func (s *taskCenterStore) PruneReconcileExecutions(
+	ctx context.Context,
+	scheduleID string,
+	retention iapiserver.HistoryRetention,
+	now time.Time,
+) (int64, error) {
 	var deleted int64
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var keepIDs []string
@@ -1026,7 +1306,9 @@ func (s *taskCenterStore) PruneReconcileExecutions(ctx context.Context, schedule
 			if limit <= 0 {
 				return nil
 			}
-			q := tx.Model(&iapiserver.TaskScheduleExecution{}).Select("id").Where("schedule_id = ? AND execution_mode = ? AND status IN ?", scheduleID, iapiserver.TaskScheduleModeReconcile, statuses)
+			q := tx.Model(&iapiserver.TaskScheduleExecution{}).
+				Select("id").
+				Where("schedule_id = ? AND execution_mode = ? AND status IN ?", scheduleID, iapiserver.TaskScheduleModeReconcile, statuses)
 			if cutoff != nil {
 				q = q.Where("completed_at >= ?", *cutoff)
 			}
@@ -1047,7 +1329,12 @@ func (s *taskCenterStore) PruneReconcileExecutions(ctx context.Context, schedule
 		if err := collect([]string{iapiserver.ScheduleExecutionStatusFailed, iapiserver.ScheduleExecutionStatusTriggerFailed}, retention.FailureCount, &cutoff); err != nil {
 			return err
 		}
-		q := tx.Where("schedule_id = ? AND execution_mode = ? AND status NOT IN ?", scheduleID, iapiserver.TaskScheduleModeReconcile, []string{iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusRunning})
+		q := tx.Where(
+			"schedule_id = ? AND execution_mode = ? AND status NOT IN ?",
+			scheduleID,
+			iapiserver.TaskScheduleModeReconcile,
+			[]string{iapiserver.ScheduleExecutionStatusTriggered, iapiserver.ScheduleExecutionStatusRunning},
+		)
 		if len(keepIDs) > 0 {
 			q = q.Where("id NOT IN ?", keepIDs)
 		}
