@@ -100,7 +100,12 @@ func RunTaskWorker(cfg *config.Config) error {
 	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
 	artifactProcessExecutor := assetlibrarysvc.NewArtifactProcessExecutor(storeIns)
 	assetStorage := assetlibrarysvc.NewLocalContentStorage(storeIns)
-	representationInspectExecutor := assetlibrarysvc.NewRepresentationInspectExecutor(storeIns)
+	ffprobeInspector, err := assetlibrarysvc.NewLocalFFprobeMediaMetadataInspector()
+	if err != nil {
+		return errors.Wrap(err, "construct ffprobe metadata inspector")
+	}
+	mediaMetadataInspectors := assetlibrarysvc.NewMediaMetadataInspectors(assetlibrarysvc.ImageMediaMetadataInspector{}, ffprobeInspector)
+	representationInspectExecutor := assetlibrarysvc.NewRepresentationInspectExecutor(storeIns, assetStorage, mediaMetadataInspectors)
 	ffmpegRuntime, err := assetlibrarysvc.NewLocalFFmpegRuntime()
 	if err != nil {
 		return errors.Wrap(err, "construct ffmpeg runtime")

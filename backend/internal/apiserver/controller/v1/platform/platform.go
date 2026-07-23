@@ -161,30 +161,6 @@ func (pc *PlatformController) PutSystemLLMConfig(c *gin.Context) {
 	)
 }
 
-func (pc *PlatformController) ListStorageBackends(c *gin.Context) {
-	core.Run(c, &iapiserver.StorageBackendListRequest{}, func(r *iapiserver.StorageBackendListRequest) (any, error) {
-		return pc.srv.Platforms().StorageBackendList(c, r)
-	})
-}
-
-func (pc *PlatformController) CreateStorageBackend(c *gin.Context) {
-	core.Run(
-		c,
-		&iapiserver.StorageBackendCreateRequest{},
-		func(r *iapiserver.StorageBackendCreateRequest) (any, error) {
-			return pc.srv.Platforms().StorageBackendCreate(c, r)
-		},
-	)
-}
-
-func (pc *PlatformController) UpdateStorageBackend(c *gin.Context) {
-	req := &iapiserver.StorageBackendUpdateRequest{ID: c.Param("backend_id")}
-	core.Run(c, req, func(r *iapiserver.StorageBackendUpdateRequest) (any, error) {
-		return pc.srv.Platforms().StorageBackendUpdate(c, req)
-	})
-
-}
-
 func (pc *PlatformController) UploadAsset(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {

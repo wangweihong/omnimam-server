@@ -200,6 +200,9 @@
 | ErrAssetPermanentDeleteBlocked | 150607 | 200 | The asset is strongly referenced and cannot be permanently deleted. | 素材仍被强引用，不能永久删除。 |
 | ErrAssetResourceVersionConflict | 150608 | 200 | The asset or collection resource version conflicts. | 素材或 Collection 版本冲突。 |
 | ErrAssetVersionContentInvalid | 150609 | 200 | The asset version content is invalid. | 素材版本内容无效。 |
+| ErrAssetStoragePermissionDenied | 150610 | 200 | The current user is not an administrator and cannot inspect or manage Blobs and StorageBackends. | 当前用户不是管理员，不能查看或管理 Blob 与 StorageBackend。 |
+| ErrAssetBlobNotFound | 150611 | 200 | The Blob does not exist. | Blob 不存在。 |
+| ErrAssetStorageBackendNotFound | 150612 | 200 | The StorageBackend does not exist. | StorageBackend 不存在。 |
 | ErrArtifactRegistrationInvalid | 150800 | 200 | The Artifact creation or registration request is invalid. | Artifact 创建或登记请求无效。 |
 | ErrArtifactOwnerMismatch | 150801 | 200 | The Artifact owner does not match. | Artifact owner 不匹配。 |
 | ErrArtifactContentUnavailable | 150802 | 200 | The Artifact content is unavailable. | Artifact 内容不可读取。 |

@@ -116,6 +116,10 @@ type thumbnailStorageStore struct {
 	item *iapiserver.StorageBackend
 }
 
+func (s *thumbnailStorageStore) GetBlob(context.Context, string) (*iapiserver.AssetBlob, error) {
+	return nil, nil
+}
+
 func (s *thumbnailStorageStore) Get(context.Context, string) (*iapiserver.StorageBackend, error) {
 	return s.item, nil
 }

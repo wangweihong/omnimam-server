@@ -229,6 +229,8 @@ type SystemLLMConfigStore interface {
 }
 
 type StorageBackendStore interface {
+	// GetBlob 读取全局 Blob 物理元数据，仅供完成管理员鉴权后的 storage-inspection 服务调用。
+	GetBlob(ctx context.Context, id string) (*iapiserver.AssetBlob, error)
 	List(ctx context.Context, req *iapiserver.StorageBackendListRequest) ([]*iapiserver.StorageBackend, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.StorageBackend, error)
 	Add(ctx context.Context, data *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error)
@@ -320,6 +322,10 @@ type AssetV1Store interface {
 	SetCurrentAssetVersion(context.Context, string, string, string) (*iapiserver.UserAsset, error)
 	ListRepresentations(context.Context, string, string) ([]*iapiserver.AssetRepresentation, error)
 	RegisterRepresentation(context.Context, string, string, *iapiserver.RegisterRepresentationRequest) (*iapiserver.AssetRepresentation, error)
+	// ApplyAssetMediaMetadata 原子写回 original 探测事实，并仅在版本仍为 current 时刷新 UserAsset 投影。
+	ApplyAssetMediaMetadata(context.Context, string, string, AssetMediaMetadataMutation) error
+	// ListAssetMediaMetadataBackfillCandidatesAfter 按稳定 Asset ID 扫描当前版本缺失媒体元数据的素材。
+	ListAssetMediaMetadataBackfillCandidatesAfter(context.Context, string, int) ([]AssetMediaMetadataBackfillCandidate, error)
 	// CompleteRepresentationGeneration 允许 Worker 幂等推进 pending/failed Representation，并原子刷新版本投影。
 	CompleteRepresentationGeneration(context.Context, string, string, RepresentationGenerationMutation) (*iapiserver.AssetRepresentation, error)
 	// ListRepresentationBackfillCandidatesAfter 按稳定 AssetVersion ID 扫描当前可见素材的 expected set 事实。
@@ -374,6 +380,25 @@ type RepresentationGenerationMutation struct {
 	RetryAfter     *imachinery.Time
 	ErrorCode      string
 	ErrorDetail    string
+}
+
+// AssetMediaMetadataMutation 是 representation.inspect 对原始媒体元数据的有限写回。
+type AssetMediaMetadataMutation struct {
+	AssetID                  string
+	OriginalRepresentationID string
+	MIMEType                 string
+	SizeBytes                int64
+	Width                    int
+	Height                   int
+	DurationSeconds          float64
+}
+
+// AssetMediaMetadataBackfillCandidate 是一次性运维回填所需的当前版本最小投影。
+type AssetMediaMetadataBackfillCandidate struct {
+	AssetID        string
+	AssetVersionID string
+	OwnerUserID    string
+	MediaType      string
 }
 
 // RepresentationBackfillCandidate 是 backfill handler 所需的 owner 裁剪最小投影。

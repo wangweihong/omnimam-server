@@ -77,19 +77,6 @@ type PlatformSrv interface {
 	DefaultModelSave(ctx context.Context, usage string, req *iapiserver.DefaultModelSaveRequest) (*iapiserver.SystemLLMConfig, error)
 	ModelOptionList(ctx context.Context, req *iapiserver.ProviderModelListRequest) (*iapiserver.ModelOptionListResponse, error)
 
-	StorageBackendList(
-		ctx context.Context,
-		req *iapiserver.StorageBackendListRequest,
-	) (*iapiserver.StorageBackendListResponse, error)
-	StorageBackendCreate(
-		ctx context.Context,
-		req *iapiserver.StorageBackendCreateRequest,
-	) (*iapiserver.StorageBackend, error)
-	StorageBackendUpdate(
-		ctx context.Context,
-		req *iapiserver.StorageBackendUpdateRequest,
-	) (*iapiserver.StorageBackend, error)
-
 	AssetUpload(
 		ctx context.Context,
 		file *multipart.FileHeader,
@@ -1304,87 +1291,6 @@ func stringSliceEqual(left []string, right []string) bool {
 	return true
 }
 
-func (s *platformService) StorageBackendList(
-	ctx context.Context,
-	req *iapiserver.StorageBackendListRequest,
-) (*iapiserver.StorageBackendListResponse, error) {
-	items, total, err := s.store.StorageBackends().List(ctx, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return &iapiserver.StorageBackendListResponse{ListRet: imachinery.ListRet{Total: total}, Backends: items}, nil
-}
-
-func (s *platformService) StorageBackendCreate(
-	ctx context.Context,
-	req *iapiserver.StorageBackendCreateRequest,
-) (*iapiserver.StorageBackend, error) {
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	readonly := false
-	if req.Readonly != nil {
-		readonly = *req.Readonly
-	}
-	backend := &iapiserver.StorageBackend{
-		Type:     req.Type,
-		Root:     req.Root,
-		Config:   req.Config,
-		Enabled:  enabled,
-		Readonly: readonly,
-		Quota:    req.Quota,
-	}
-	backend.Name = req.Name
-	if backend.Type == iapiserver.StorageBackendTypeLocal {
-		root, err := normalizeLocalRoot(backend.Root)
-		if err != nil {
-			return nil, err
-		}
-		backend.Root = root
-	}
-	return s.store.StorageBackends().Add(ctx, backend)
-}
-
-func (s *platformService) StorageBackendUpdate(
-	ctx context.Context,
-	req *iapiserver.StorageBackendUpdateRequest,
-) (*iapiserver.StorageBackend, error) {
-	backend, err := s.store.StorageBackends().Get(ctx, req.ID)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if req.Name != nil {
-		backend.Name = *req.Name
-	}
-	if req.Type != nil {
-		backend.Type = *req.Type
-	}
-	if req.Root != nil {
-		backend.Root = *req.Root
-	}
-	if req.Config != nil {
-		backend.Config = *req.Config
-	}
-	if req.Enabled != nil {
-		backend.Enabled = *req.Enabled
-	}
-	if req.Readonly != nil {
-		backend.Readonly = *req.Readonly
-	}
-	if req.Quota != nil {
-		backend.Quota = *req.Quota
-	}
-	if backend.Type == iapiserver.StorageBackendTypeLocal {
-		root, err := normalizeLocalRoot(backend.Root)
-		if err != nil {
-			return nil, err
-		}
-		backend.Root = root
-	}
-	return s.store.StorageBackends().Update(ctx, backend)
-}
-
 func (s *platformService) AssetUpload(
 	ctx context.Context,
 	fileHeader *multipart.FileHeader,
@@ -2070,6 +1976,8 @@ func defaultPermissions() []string {
 		"asset.content.read",
 		"asset.representation.read",
 		"asset.reference.read",
+		"asset.storage.read",
+		"asset.storage.manage",
 		"provider.manage",
 		"storage.manage",
 		"MODEL_CONFIG_READ",

@@ -29,7 +29,7 @@ type ContentRead struct {
 	Filename  string
 }
 
-// Service 实现 spec-v1.5.1 asset-library 公共契约并强制当前用户隔离。
+// Service 实现 spec-v1.7.4 asset-library 公共契约；普通资源强制用户隔离，物理存储检查强制管理员鉴权。
 type Service interface {
 	ListAssets(context.Context, *iapiserver.UserAssetListRequest) (*iapiserver.UserAssetListResponse, error)
 	CreateAsset(context.Context, *iapiserver.CreateCanonicalAssetRequest) (*iapiserver.AssetDetail, error)
@@ -43,6 +43,11 @@ type Service interface {
 	UploadContent(context.Context, string, int, string, string, io.Reader) (*iapiserver.AssetUploadSession, error)
 	CompleteUpload(context.Context, string, *iapiserver.CompleteAssetUploadRequest) (*iapiserver.CompleteAssetUploadResponse, error)
 	CancelUpload(context.Context, string) (*iapiserver.AssetUploadSession, error)
+	GetBlob(context.Context, string) (*iapiserver.AssetBlobDetail, error)
+	ListStorageBackends(context.Context, *iapiserver.StorageBackendListRequest) (*iapiserver.StorageBackendListResponse, error)
+	CreateStorageBackend(context.Context, *iapiserver.StorageBackendCreateRequest) (*iapiserver.StorageBackendDetail, error)
+	GetStorageBackend(context.Context, string) (*iapiserver.StorageBackendDetail, error)
+	UpdateStorageBackend(context.Context, string, *iapiserver.StorageBackendUpdateRequest) (*iapiserver.StorageBackendDetail, error)
 	ListCollections(context.Context, *iapiserver.CollectionListRequest) (*iapiserver.CollectionListResponse, error)
 	GetCollection(context.Context, string, imachinery.PagingParams) (*iapiserver.CollectionDetail, error)
 	CreateCollection(context.Context, *iapiserver.CreateCollectionRequest) (*iapiserver.AssetCollection, error)
@@ -79,14 +84,41 @@ type Service interface {
 }
 
 type service struct {
-	store   store.AssetV1Store
-	storage ContentStorage
-	readers RelationReaders
-	policy  RepresentationPolicy
+	store             store.AssetV1Store
+	storage           ContentStorage
+	readers           RelationReaders
+	policy            RepresentationPolicy
+	storageInspection StorageInspectionStore
+	storageAdmin      StorageAdminAuthorizer
+}
+
+// ServiceOption 为 composition root 注入可替换的 asset-library 消费方边界。
+type ServiceOption func(*service)
+
+// WithStorageInspection 注入管理员物理存储检查所需的 repository 与鉴权器。
+func WithStorageInspection(repository StorageInspectionStore, authorizer StorageAdminAuthorizer) ServiceOption {
+	return func(s *service) {
+		s.storageInspection = repository
+		s.storageAdmin = authorizer
+	}
+}
+
+func applyServiceOptions(s *service, options ...ServiceOption) *service {
+	for _, option := range options {
+		if option != nil {
+			option(s)
+		}
+	}
+	return s
 }
 
 func New(factory store.Factory, storage ContentStorage) Service {
-	return NewStoreWithPolicy(factory.AssetsV1(), storage, DefaultRepresentationPolicy{})
+	return NewStoreWithPolicy(
+		factory.AssetsV1(),
+		storage,
+		DefaultRepresentationPolicy{},
+		WithStorageInspection(factory.StorageBackends(), NewRoleStorageAdminAuthorizer(factory.Roles(), factory.UserRoles())),
+	)
 }
 
 // NewStore 使用消费方接口构造服务，便于路由能力探测和单元测试替换。
@@ -95,8 +127,8 @@ func NewStore(assetStore store.AssetV1Store, storage ContentStorage) Service {
 }
 
 // NewStoreWithPolicy 显式注入 Representation policy，避免业务路径硬编码媒体策略。
-func NewStoreWithPolicy(assetStore store.AssetV1Store, storage ContentStorage, policy RepresentationPolicy) Service {
-	return &service{store: assetStore, storage: storage, policy: policy}
+func NewStoreWithPolicy(assetStore store.AssetV1Store, storage ContentStorage, policy RepresentationPolicy, options ...ServiceOption) Service {
+	return applyServiceOptions(&service{store: assetStore, storage: storage, policy: policy}, options...)
 }
 
 // NewStoreWithRelations 注入 Artifact 跨领域受控摘要读取器；存储层仍只读取 asset-library 自有表。
@@ -105,8 +137,8 @@ func NewStoreWithRelations(assetStore store.AssetV1Store, storage ContentStorage
 }
 
 // NewStoreWithRelationsAndPolicy 是 API Server composition root 使用的完整依赖构造器。
-func NewStoreWithRelationsAndPolicy(assetStore store.AssetV1Store, storage ContentStorage, readers RelationReaders, policy RepresentationPolicy) Service {
-	return &service{store: assetStore, storage: storage, readers: readers, policy: policy}
+func NewStoreWithRelationsAndPolicy(assetStore store.AssetV1Store, storage ContentStorage, readers RelationReaders, policy RepresentationPolicy, options ...ServiceOption) Service {
+	return applyServiceOptions(&service{store: assetStore, storage: storage, readers: readers, policy: policy}, options...)
 }
 
 func (s *service) ListAssets(ctx context.Context, req *iapiserver.UserAssetListRequest) (*iapiserver.UserAssetListResponse, error) {

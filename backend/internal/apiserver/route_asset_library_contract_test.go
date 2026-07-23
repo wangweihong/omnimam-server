@@ -14,7 +14,12 @@ type assetContractRouteFactory struct {
 	assetStore store.AssetV1Store
 }
 
-func (f assetContractRouteFactory) AssetsV1() store.AssetV1Store                         { return f.assetStore }
+func (f assetContractRouteFactory) AssetsV1() store.AssetV1Store { return f.assetStore }
+func (f assetContractRouteFactory) StorageBackends() store.StorageBackendStore {
+	return routeStorageStore{}
+}
+func (f assetContractRouteFactory) Roles() store.RoleStore                               { return routeRoleStore{} }
+func (f assetContractRouteFactory) UserRoles() store.UserRoleStore                       { return routeUserRoleStore{} }
 func (f assetContractRouteFactory) TaskCenters() store.TaskCenterStore                   { return nil }
 func (f assetContractRouteFactory) ApplicationPlatforms() store.ApplicationPlatformStore { return nil }
 func (f assetContractRouteFactory) WorkflowCanvases() store.WorkflowCanvasStore          { return nil }
@@ -35,6 +40,7 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 		handlers[key] = route.Handler
 	}
 	expected := []string{
+		"GET /api/v1/blobs/:blob_id", "GET /api/v1/storage-backends", "POST /api/v1/storage-backends", "GET /api/v1/storage-backends/:backend_id", "PATCH /api/v1/storage-backends/:backend_id",
 		"GET /api/v1/assets", "POST /api/v1/assets", "GET /api/v1/assets/:asset_id", "PATCH /api/v1/assets/:asset_id", "DELETE /api/v1/assets/:asset_id",
 		"POST /api/v1/assets/:asset_id/restore", "DELETE /api/v1/assets/:asset_id/permanent", "POST /api/v1/assets/batch-labels",
 		"POST /api/v1/asset-uploads", "POST /api/v1/asset-uploads/:upload_id/content", "POST /api/v1/asset-uploads/:upload_id/complete", "DELETE /api/v1/asset-uploads/:upload_id",
@@ -47,8 +53,8 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 		"GET /api/v1/asset-representations/:representation_id", "GET /api/v1/asset-representations/:representation_id/content", "GET /api/v1/asset-representations/:representation_id/access-url",
 		"GET /api/v1/assets/:asset_id/relations", "GET /api/v1/assets/:asset_id/lineage", "GET /api/v1/assets/:asset_id/references", "GET /api/v1/assets/:asset_id/usages",
 	}
-	if len(expected) != 46 {
-		t.Fatalf("test fixture has %d operations, want 46", len(expected))
+	if len(expected) != 51 {
+		t.Fatalf("test fixture has %d operations, want 51", len(expected))
 	}
 	for _, route := range expected {
 		if _, ok := actual[route]; !ok {
@@ -66,3 +72,7 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 }
 
 type routeAssetStore struct{ store.AssetV1Store }
+
+type routeStorageStore struct{ store.StorageBackendStore }
+type routeRoleStore struct{ store.RoleStore }
+type routeUserRoleStore struct{ store.UserRoleStore }

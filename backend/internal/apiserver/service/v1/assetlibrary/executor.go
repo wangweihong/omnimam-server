@@ -58,11 +58,15 @@ func (e *ArtifactProcessExecutor) Execute(ctx context.Context, task workflowrunt
 // RepresentationFinalizeExecutor 汇总当前 Representation 事实，不从 AtomicTask 终态推断素材状态。
 type RepresentationFinalizeExecutor struct{ store store.AssetV1Store }
 
-// RepresentationInspectExecutor 校验版本事实并返回由 asset-library policy 形成的派生计划。
-type RepresentationInspectExecutor struct{ store store.AssetV1Store }
+// RepresentationInspectExecutor 校验版本事实，并从 original 内容探测和持久化媒体元数据。
+type RepresentationInspectExecutor struct {
+	store     store.AssetV1Store
+	storage   ContentStorage
+	inspector MediaMetadataInspector
+}
 
-func NewRepresentationInspectExecutor(factory store.Factory) *RepresentationInspectExecutor {
-	return &RepresentationInspectExecutor{store: factory.AssetsV1()}
+func NewRepresentationInspectExecutor(factory store.Factory, storage ContentStorage, inspector MediaMetadataInspector) *RepresentationInspectExecutor {
+	return &RepresentationInspectExecutor{store: factory.AssetsV1(), storage: storage, inspector: inspector}
 }
 
 func (e *RepresentationInspectExecutor) Execute(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
@@ -71,12 +75,64 @@ func (e *RepresentationInspectExecutor) Execute(ctx context.Context, task workfl
 	if versionID == "" || owner == "" {
 		return nil, errors.Errorf("representation inspect task requires asset_version_id and owner_user_id")
 	}
-	if _, err := e.store.GetAssetVersionDetail(ctx, owner, versionID); err != nil {
+	detail, err := e.store.GetAssetVersionDetail(ctx, owner, versionID)
+	if err != nil {
 		return nil, err
 	}
 	mediaType, _ := task.Arguments["media_type"].(string)
+	if mediaType == iapiserver.AssetMediaTypeImage || mediaType == iapiserver.AssetMediaTypeVideo || mediaType == iapiserver.AssetMediaTypeAudio {
+		if err := e.inspectOriginalMedia(ctx, owner, mediaType, detail); err != nil {
+			return nil, err
+		}
+	}
 	task.Log(ctx, workflowruntime.WorkerLog("representation.inspect.completed", workflowruntime.TaskLogLevelInfo, "AssetVersion representation requirements were inspected."))
 	return map[string]any{"asset_version_id": versionID, "media_type": mediaType}, nil
+}
+
+func (e *RepresentationInspectExecutor) inspectOriginalMedia(ctx context.Context, owner, mediaType string, detail *iapiserver.AssetVersionDetail) error {
+	if e == nil || e.storage == nil || e.inspector == nil || detail == nil || detail.Version == nil {
+		return errors.Errorf("representation media inspection dependencies are unavailable")
+	}
+	var original *iapiserver.AssetRepresentation
+	for _, item := range detail.Representations {
+		if item != nil && item.RepresentationType == iapiserver.AssetRepresentationOriginal && item.Status == "ready" {
+			original = item
+			break
+		}
+	}
+	if original == nil {
+		return errors.Errorf("original representation is unavailable for media inspection")
+	}
+	_, content, err := e.store.GetRepresentation(ctx, owner, original.ID)
+	if err != nil {
+		return err
+	}
+	if content == nil {
+		return errors.Errorf("original representation content is unavailable for media inspection")
+	}
+	reader, err := e.storage.Open(ctx, *content)
+	if err != nil {
+		return err
+	}
+	metadata, inspectErr := e.inspector.Inspect(ctx, MediaMetadataRequest{
+		Source: reader, MediaType: mediaType, MIMEType: content.MIMEType, SizeBytes: content.SizeBytes,
+	})
+	closeErr := reader.Close()
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if closeErr != nil {
+		return errors.WithStack(closeErr)
+	}
+	return e.store.ApplyAssetMediaMetadata(ctx, owner, detail.Version.ID, store.AssetMediaMetadataMutation{
+		AssetID:                  detail.Version.AssetID,
+		OriginalRepresentationID: original.ID,
+		MIMEType:                 content.MIMEType,
+		SizeBytes:                content.SizeBytes,
+		Width:                    metadata.Width,
+		Height:                   metadata.Height,
+		DurationSeconds:          metadata.DurationSeconds,
+	})
 }
 
 // RepresentationGenerateExecutor 从 original Blob 生成图片缩略图并幂等登记 Representation。

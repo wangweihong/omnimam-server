@@ -573,6 +573,8 @@ func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
 		"asset.content.read",
 		"asset.representation.read",
 		"asset.reference.read",
+		"asset.storage.read",
+		"asset.storage.manage",
 		"task.atomic.operate",
 		"task.group.operate",
 		"task.schedule.manage",
@@ -672,6 +674,10 @@ func (f *testFactory) Close() error                         { return nil }
 
 type testStorageBackendStore struct {
 	item *iapiserver.StorageBackend
+}
+
+func (s *testStorageBackendStore) GetBlob(context.Context, string) (*iapiserver.AssetBlob, error) {
+	return nil, nil
 }
 
 func (s *testStorageBackendStore) List(context.Context, *iapiserver.StorageBackendListRequest) ([]*iapiserver.StorageBackend, int64, error) {

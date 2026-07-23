@@ -4,12 +4,14 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -601,6 +603,74 @@ func (s *assetV1Store) CompleteRepresentationGeneration(ctx context.Context, own
 		return nil
 	})
 	return result, errors.WithStack(err)
+}
+
+// ApplyAssetMediaMetadata 原子更新版本与 original Representation metadata，并保护 current Asset 投影不被旧版本迟到任务覆盖。
+func (s *assetV1Store) ApplyAssetMediaMetadata(ctx context.Context, owner, versionID string, mutation store.AssetMediaMetadataMutation) error {
+	if owner == "" || versionID == "" || mutation.AssetID == "" || mutation.OriginalRepresentationID == "" ||
+		mutation.SizeBytes < 0 || mutation.Width < 0 || mutation.Height < 0 || mutation.DurationSeconds < 0 ||
+		math.IsNaN(mutation.DurationSeconds) || math.IsInf(mutation.DurationSeconds, 0) {
+		return errors.Errorf("asset media metadata mutation is invalid")
+	}
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 统一按 Asset -> Version -> Representation 加锁，避免与切换 current version 的事务形成反向锁序。
+		var asset iapiserver.UserAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ?", mutation.AssetID, owner).
+			First(&asset).Error; err != nil {
+			return err
+		}
+		var version iapiserver.AssetVersion
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ? AND asset_id = ? AND deleted_at IS NULL", versionID, owner, mutation.AssetID).
+			First(&version).Error; err != nil {
+			return err
+		}
+		var original iapiserver.AssetRepresentation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ? AND asset_version_id = ? AND representation_type = ? AND deleted_at IS NULL",
+				mutation.OriginalRepresentationID, owner, versionID, iapiserver.AssetRepresentationOriginal).
+			First(&original).Error; err != nil {
+			return err
+		}
+
+		version.Metadata = applyMediaMetadata(version.Metadata, mutation)
+		if err := tx.Save(&version).Error; err != nil {
+			return err
+		}
+		original.Metadata = applyMediaMetadata(original.Metadata, mutation)
+		if err := tx.Save(&original).Error; err != nil {
+			return err
+		}
+
+		if asset.CurrentVersionID != versionID {
+			return nil
+		}
+		asset.Width, asset.Height, asset.DurationSeconds = mutation.Width, mutation.Height, mutation.DurationSeconds
+		return tx.Save(&asset).Error
+	})
+	return errors.WithStack(err)
+}
+
+func applyMediaMetadata(current map[string]any, mutation store.AssetMediaMetadataMutation) map[string]any {
+	result := maputil.Clone(current)
+	if result == nil {
+		result = make(map[string]any, 5)
+	}
+	if mutation.MIMEType != "" {
+		result["mime_type"] = mutation.MIMEType
+	}
+	result["size_bytes"] = mutation.SizeBytes
+	if mutation.Width > 0 {
+		result["width"] = mutation.Width
+	}
+	if mutation.Height > 0 {
+		result["height"] = mutation.Height
+	}
+	if mutation.DurationSeconds > 0 {
+		result["duration_seconds"] = mutation.DurationSeconds
+	}
+	return result
 }
 
 // CreateRepresentationBlob 幂等登记 Representation Worker 已写入受控存储的派生内容。

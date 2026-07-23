@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 4949983e76c5f15448e1b94d9260c93fb2a55ad5
-contract_version: spec-v1.7.3
+commit: 7fb6edf8ef69886eabe7e206379a7fe1858500ee
+contract_version: spec-v1.7.4
 updated_at: 2026-07-23
 status: released
-note: Task Center v1.4 adds compatible multilingual names for newly created system-named task resources.
+note: Asset Library v0.6 adds admin-only Blob and StorageBackend detail contracts with full physical configuration fields.

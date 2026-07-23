@@ -760,7 +760,7 @@ const (
 	ErrTaskSystemScheduleOperationRestricted int = 141405
 )
 
-// asset-library: spec-v1.5.1 business errors.
+// asset-library: spec-v1.7.4 business errors.
 const (
 	// @HTTP 200
 	// @CN 统一选择器表达式语法错误。
@@ -846,6 +846,18 @@ const (
 	// @CN 素材版本内容无效。
 	// @EN The asset version content is invalid.
 	ErrAssetVersionContentInvalid int = 150609
+	// @HTTP 200
+	// @CN 当前用户不是管理员，不能查看或管理 Blob 与 StorageBackend。
+	// @EN The current user is not an administrator and cannot inspect or manage Blobs and StorageBackends.
+	ErrAssetStoragePermissionDenied int = 150610
+	// @HTTP 200
+	// @CN Blob 不存在。
+	// @EN The Blob does not exist.
+	ErrAssetBlobNotFound int = 150611
+	// @HTTP 200
+	// @CN StorageBackend 不存在。
+	// @EN The StorageBackend does not exist.
+	ErrAssetStorageBackendNotFound int = 150612
 	// @HTTP 200
 	// @CN Artifact 创建或登记请求无效。
 	// @EN The Artifact creation or registration request is invalid.

@@ -23,6 +23,10 @@ type localBackendStore struct {
 	backend *iapiserver.StorageBackend
 }
 
+func (s localBackendStore) GetBlob(context.Context, string) (*iapiserver.AssetBlob, error) {
+	return nil, nil
+}
+
 func (s localBackendStore) GetDefaultLocal(context.Context) (*iapiserver.StorageBackend, error) {
 	return s.backend, nil
 }

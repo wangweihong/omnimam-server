@@ -222,6 +222,14 @@ S3/MinIO 环境需要 StorageAdapter registry 按 Blob 的 backend type 分发 `
 
 对于服务器批量导入，导入源目录与 StorageBackend 是两个概念：Import Source 是只读来源，StorageBackend 是系统接管后的受管目标。多个来源目录可以导入同一个 StorageBackend，不应仅因为文件原来位于多个目录，就把这些目录都登记为长期受管后端。
 
+### 6.2 管理员物理存储检查
+
+从 `spec-v1.7.4` 开始，Blob 与 StorageBackend 作为全局基础设施事实提供独立的管理员检查入口。`ADMIN`、`SUPER_ADMIN` 可以从 Representation 的 `blob_id` 查询 Blob 详情，再通过 `storage_backend_id` 显式查询后端配置；Blob 响应不递归内嵌 StorageBackend。
+
+管理员接口会原样返回 Blob `object_key`、StorageBackend `root` 和完整 `config`，其中可能包含路径或凭证。因此所有 Blob 详情以及 StorageBackend 列表、详情、创建和更新都必须在读取目标 repository 前完成管理员鉴权。普通素材、Representation、Artifact、任务输出和跨域摘要仍不得返回这些字段。
+
+StorageBackend 列表只执行一次全局查询，规范字段为 `items`；`backends` 是内容完全相同的旧客户端兼容别名。该管理员投影不改变普通素材按 owner 隔离和受控内容读取的规则。
+
 ## 7. 创建与处理链路
 
 ### 7.1 文件上传或服务器批量导入
@@ -243,7 +251,10 @@ sequenceDiagram
     AssetDB->>AssetDB: representation_requested outbox
     AssetDB-->>Source: 返回 processing 版本
     AssetDB->>Task: 幂等创建 build DAG
-    Task->>Worker: inspect / generate
+    Task->>Worker: inspect original
+    Worker->>Storage: 受控读取 original Blob
+    Worker->>AssetDB: 写回宽高/时长 metadata
+    Task->>Worker: generate
     Worker->>Storage: 写入派生 Blob
     Worker->>AssetDB: 幂等登记 thumbnail/preview/playback
     AssetDB->>AssetDB: 汇总 AssetVersion 状态
@@ -255,8 +266,12 @@ Asset、AssetVersion、original Representation 和 Representation 请求 outbox 
 
 - asset-library 决定某媒体类型和 profile version 需要哪些 Representation。
 - Task Center 只负责任务编排、重试和运行历史，不发明媒体策略。
+- `representation.inspect` 从 original Representation 受控读取内容：JPEG/PNG/GIF 使用 Go 图片头解码，WebP、视频和音频使用可替换的 ffprobe adapter；探测结果写入 AssetVersion 与 original Representation metadata。
+- 只有被探测版本仍等于 `Asset.current_version_id` 时，才同步刷新 Asset 的 `width`、`height` 和 `duration_seconds` 列表投影，防止旧版本迟到任务覆盖当前版本。
 - Worker 读取受控 original 内容、生成派生 Blob，再通过受控写能力登记 Representation。
 - Worker/Task Center 只传递 AssetVersion、Representation 和 Blob 的小型引用，不在任务状态中保存大文件或永久 URL。
+
+历史零值素材使用 `assetmetadatabackfill` 运维命令修复。命令按稳定 Asset ID 分批扫描当前版本，只处理图片缺宽高、视频缺宽高/时长、音频缺时长的记录，并复用上述 original 探测与事务写回能力；它不新增 API、Task 类型或第二份 metadata 事实源。
 
 ### 7.2 Artifact 登记
 
@@ -385,7 +400,7 @@ Asset: 夜景人物生成提示词
 - 独立业务内容是否创建新 Asset，而不是滥用 Representation？
 - 文件型版本是否有 ready 的 original Representation？
 - Representation 是否固定 profile 与 profile version 并可幂等登记？
-- Blob 是否只保存物理内容事实，object key 是否对外隐藏？
+- Blob 是否只保存物理内容事实，object key 是否仅通过已鉴权的管理员存储检查接口返回？
 - 内容读取是否沿 Representation -> Version -> Asset 校验 owner？
 - UI 是否依据版本/Representation 状态，而不是 Task 成功状态？
 - 删除 Blob 前是否同时检查 Representation 和 Artifact 引用？

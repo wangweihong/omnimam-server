@@ -17,7 +17,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
-// Controller 将 spec-v1.5.1 asset-library HTTP 契约映射到领域 service。
+// Controller 将 spec-v1.7.4 asset-library HTTP 契约映射到领域 service。
 type Controller struct{ service assetlibrarysvc.Service }
 
 func New(service assetlibrarysvc.Service) *Controller { return &Controller{service: service} }
@@ -64,6 +64,37 @@ func (c *Controller) CompleteUpload(ctx *gin.Context) {
 }
 func (c *Controller) CancelUpload(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.CancelUpload(ctx, ctx.Param("upload_id")) })
+}
+
+// GetBlob 返回管理员可见的完整 object key，不递归嵌入 StorageBackend 配置。
+func (c *Controller) GetBlob(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.GetBlob(ctx, ctx.Param("blob_id")) })
+}
+
+// ListStorageBackends 返回一次查询生成的 items 及兼容 backends 别名，包含完整 root 和 config。
+func (c *Controller) ListStorageBackends(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StorageBackendListRequest{}, func(req *iapiserver.StorageBackendListRequest) (any, error) {
+		return c.service.ListStorageBackends(ctx, req)
+	})
+}
+
+// CreateStorageBackend 创建全局存储后端配置；service 在任何 store 写入前执行管理员鉴权。
+func (c *Controller) CreateStorageBackend(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StorageBackendCreateRequest{}, func(req *iapiserver.StorageBackendCreateRequest) (any, error) {
+		return c.service.CreateStorageBackend(ctx, req)
+	})
+}
+
+// GetStorageBackend 返回管理员可见的完整 root 和 config。
+func (c *Controller) GetStorageBackend(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.GetStorageBackend(ctx, ctx.Param("backend_id")) })
+}
+
+// UpdateStorageBackend 更新全局存储后端配置；service 在任何 store 读取前执行管理员鉴权。
+func (c *Controller) UpdateStorageBackend(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StorageBackendUpdateRequest{}, func(req *iapiserver.StorageBackendUpdateRequest) (any, error) {
+		return c.service.UpdateStorageBackend(ctx, ctx.Param("backend_id"), req)
+	})
 }
 
 func (c *Controller) ListCollections(ctx *gin.Context) {

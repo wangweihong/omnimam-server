@@ -31,6 +31,8 @@ const (
 	StorageBackendTypeS3    = "s3"
 	StorageBackendTypeOSS   = "oss"
 	StorageBackendTypeMinIO = "minio"
+	StorageBackendTypeCOS   = "cos"
+	StorageBackendTypeAzure = "azure_blob"
 
 	AssetMediaTypeImage          = "image"
 	AssetMediaTypeVideo          = "video"
@@ -229,13 +231,51 @@ func (SystemLLMConfig) TableName() string { return "user_default_model_configs" 
 
 type StorageBackend struct {
 	imachinery.ObjectMeta
-	Type         string         `json:"type"             gorm:"column:type;type:varchar(64);not null;index"`
-	Root         string         `json:"root"             gorm:"column:root;type:varchar(1024)"`
-	Config       map[string]any `json:"config,omitempty" gorm:"-"`
-	ConfigShadow string         `json:"-"                gorm:"column:config;type:text"`
-	Enabled      bool           `json:"enabled"          gorm:"column:enabled;type:boolean;not null;default:true"`
-	Readonly     bool           `json:"readonly"         gorm:"column:readonly;type:boolean;not null;default:false"`
-	Quota        int64          `json:"quota"            gorm:"column:quota"`
+	// Type 标识存储协议；第一阶段运行时只提供 local adapter，其余枚举为后续适配预留。
+	Type string `json:"type" gorm:"column:type;type:varchar(64);not null;index"`
+	// Root 保存管理员可见的物理根位置，只能通过 storage-inspection 管理员接口返回。
+	Root string `json:"-" gorm:"column:root;type:varchar(1024);not null;default:''"`
+	// Config 保存完整后端配置，可能包含凭证，不得进入普通素材、任务输出或跨域摘要。
+	Config map[string]any `json:"-" gorm:"-"`
+	// ConfigShadow 是 Config 的数据库 JSON 影子字段，业务代码不得直接修改。
+	ConfigShadow string `json:"-"                gorm:"column:config;type:text;not null;default:'{}'"`
+	// Enabled 表示该后端是否可被运行时选择。
+	Enabled bool `json:"enabled" gorm:"column:enabled;type:boolean;not null;default:true"`
+	// Readonly 表示后端只能读取，上传与派生写入不得选择该后端。
+	Readonly bool `json:"readonly" gorm:"column:readonly;type:boolean;not null;default:false"`
+	// Quota 是后端配置的字节配额；零表示未设置配额。
+	Quota int64 `json:"quota" gorm:"column:quota;not null;default:0"`
+}
+
+// StorageBackendDetail 是仅管理员可见的完整物理存储配置投影。
+// Root 与 Config 不做脱敏，因此不得嵌入普通素材、Representation、Artifact 或任务响应。
+type StorageBackendDetail struct {
+	// ID 是全局 StorageBackend 标识。
+	ID string `json:"id"`
+	// Name 是管理员维护的后端显示名称。
+	Name string `json:"name"`
+	// Description 是管理员维护的后端说明。
+	Description string `json:"description"`
+	// Extend 返回受控扩展字段；无扩展时返回空对象。
+	Extend map[string]any `json:"extend"`
+	// Type 标识存储协议。
+	Type string `json:"type"`
+	// Root 是完整物理根位置，仅管理员可见。
+	Root string `json:"root"`
+	// Config 是完整后端配置，可能包含凭证，仅管理员可见。
+	Config map[string]any `json:"config"`
+	// Enabled 表示运行时是否可选择该后端。
+	Enabled bool `json:"enabled"`
+	// Readonly 表示该后端是否禁止写入。
+	Readonly bool `json:"readonly"`
+	// Quota 是字节配额，零表示未设置。
+	Quota int64 `json:"quota"`
+	// ResourceVersion 用于配置更新审计与并发识别。
+	ResourceVersion int64 `json:"resource_version"`
+	// CreatedAt 是后端配置创建时间。
+	CreatedAt imachinery.Time `json:"created_at"`
+	// UpdatedAt 是后端配置最后更新时间。
+	UpdatedAt imachinery.Time `json:"updated_at"`
 }
 
 func (StorageBackend) TableName() string { return "storage_backends" }
@@ -247,12 +287,16 @@ func (b *StorageBackend) BeforeCreate(tx *gorm.DB) error {
 	return b.marshalShadows()
 }
 
+func (*StorageBackend) AfterCreate(*gorm.DB) error { return nil }
+
 func (b *StorageBackend) BeforeUpdate(tx *gorm.DB) error {
 	if err := b.ObjectMeta.BeforeUpdate(tx); err != nil {
 		return err
 	}
 	return b.marshalShadows()
 }
+
+func (*StorageBackend) AfterUpdate(*gorm.DB) error { return nil }
 
 func (b *StorageBackend) AfterFind(tx *gorm.DB) error {
 	if err := b.ObjectMeta.AfterFind(tx); err != nil {
@@ -275,8 +319,8 @@ type Asset struct {
 	imachinery.ObjectMeta
 	MediaType        string         `json:"media_type"         gorm:"column:media_type;type:varchar(64);not null;index"`
 	MimeType         string         `json:"mime_type"          gorm:"column:mime_type;type:varchar(128);index"`
-	StorageBackendID string         `json:"storage_backend_id" gorm:"column:storage_backend_id;type:varchar(64);not null;index"`
-	ObjectKey        string         `json:"object_key"         gorm:"column:object_key;type:varchar(1024);not null"`
+	StorageBackendID string         `json:"-"                  gorm:"column:storage_backend_id;type:varchar(64);not null;index"`
+	ObjectKey        string         `json:"-"                  gorm:"column:object_key;type:varchar(1024);not null"`
 	Size             int64          `json:"size"               gorm:"column:size;index"`
 	Checksum         string         `json:"checksum"           gorm:"column:checksum;type:varchar(128);index"`
 	Width            int            `json:"width"              gorm:"column:width;index"`
@@ -328,9 +372,9 @@ type AssetThumbnail struct {
 	// AssetID 指向原始素材，缩略图任务完成后仍通过该字段回写归属。
 	AssetID string `json:"asset_id"           gorm:"column:asset_id;type:varchar(64);not null;index"`
 	// StorageBackendID 标识缩略图对象所在存储后端，通常沿用原素材后端。
-	StorageBackendID string `json:"storage_backend_id" gorm:"column:storage_backend_id;type:varchar(64);not null;index"`
+	StorageBackendID string `json:"-"                  gorm:"column:storage_backend_id;type:varchar(64);not null;index"`
 	// ObjectKey 是缩略图对象在存储后端中的 key，pending/unsupported 时允许为空。
-	ObjectKey string `json:"object_key"         gorm:"column:object_key;type:varchar(1024)"`
+	ObjectKey string `json:"-"                  gorm:"column:object_key;type:varchar(1024)"`
 	// Width 保存生成后缩略图宽度，任务未完成时为零值。
 	Width int `json:"width"              gorm:"column:width"`
 	// Height 保存生成后缩略图高度，任务未完成时为零值。

@@ -1,6 +1,7 @@
 package iapiserver
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -266,36 +267,80 @@ type (
 type (
 	StorageBackendListRequest struct {
 		imachinery.BasicQueryParam
-		Type    string `json:"type"    form:"type"`
-		Enabled *bool  `json:"enabled" form:"enabled"`
+		// Type 按已发布的存储后端类型过滤全局配置。
+		Type string `json:"type" form:"type" binding:"omitempty,oneof=local s3 minio oss cos azure_blob"`
+		// Enabled 按启用状态过滤；空值表示不过滤。
+		Enabled *bool `json:"enabled" form:"enabled"`
 	}
 
 	StorageBackendListResponse struct {
 		imachinery.ListRet
-		Backends []*StorageBackend `json:"backends"`
+		// Items 是规范列表字段，单次查询后生成。
+		Items []*StorageBackendDetail `json:"items"`
+		// Backends 是旧客户端兼容别名，内容必须与 Items 相同。
+		Backends []*StorageBackendDetail `json:"backends"`
 	}
 
 	StorageBackendCreateRequest struct {
-		Name     string         `json:"name"     binding:"required"`
-		Type     string         `json:"type"     binding:"required"`
-		Root     string         `json:"root"`
-		Config   map[string]any `json:"config"`
-		Enabled  *bool          `json:"enabled"`
-		Readonly *bool          `json:"readonly"`
-		Quota    int64          `json:"quota"`
+		// Name 是管理员识别该物理后端的显示名称。
+		Name string `json:"name" binding:"required,max=255"`
+		// Type 选择存储协议；运行时是否已提供对应 adapter 由 bootstrap 决定。
+		Type string `json:"type" binding:"required,oneof=local s3 minio oss cos azure_blob"`
+		// Root 是完整物理根位置，最长 1024 字符。
+		Root string `json:"root" binding:"max=1024"`
+		// Config 是完整后端配置，管理员接口原样保存和返回。
+		Config map[string]any `json:"config"`
+		// Enabled 控制运行时是否可选择该后端；省略时默认 true。
+		Enabled *bool `json:"enabled"`
+		// Readonly 禁止运行时向该后端写入；省略时默认 false。
+		Readonly *bool `json:"readonly"`
+		// Quota 是非负字节配额，零表示未设置。
+		Quota int64 `json:"quota" binding:"gte=0"`
 	}
 
 	StorageBackendUpdateRequest struct {
-		ID       string          `json:"id"`
-		Name     *string         `json:"name"`
-		Type     *string         `json:"type"`
-		Root     *string         `json:"root"`
-		Config   *map[string]any `json:"config"`
-		Enabled  *bool           `json:"enabled"`
-		Readonly *bool           `json:"readonly"`
-		Quota    *int64          `json:"quota"`
+		// ID 来自 backend_id 路径参数，客户端 JSON 不能覆盖。
+		ID string `json:"-"`
+		// Name 非空时替换显示名称。
+		Name *string `json:"name" binding:"omitempty,min=1,max=255"`
+		// Type 非空时替换存储协议。
+		Type *string `json:"type" binding:"omitempty,oneof=local s3 minio oss cos azure_blob"`
+		// Root 非空时替换完整物理根位置。
+		Root *string `json:"root" binding:"omitempty,max=1024"`
+		// Config 非空时整体替换完整后端配置。
+		Config *map[string]any `json:"config"`
+		// Enabled 非空时切换运行时选择状态。
+		Enabled *bool `json:"enabled"`
+		// Readonly 非空时切换只读状态。
+		Readonly *bool `json:"readonly"`
+		// Quota 非空时替换非负字节配额。
+		Quota *int64 `json:"quota" binding:"omitempty,gte=0"`
 	}
 )
+
+// SetDefaults 对齐 StorageBackend 列表契约的默认分页大小 50。
+func (r *StorageBackendListRequest) SetDefaults() {
+	if r.PageSize == 0 {
+		r.PageSize = 50
+	}
+}
+
+// Validate 限制管理员存储列表每页最多返回 200 项。
+func (r *StorageBackendListRequest) Validate() error {
+	if r.PageSize > 200 {
+		return errors.New("page_size must be less than or equal to 200")
+	}
+	_, err := r.PagingParams.Normalize()
+	return err
+}
+
+// Validate 确保 PATCH 至少包含一个已发布的可更新字段。
+func (r *StorageBackendUpdateRequest) Validate() error {
+	if r.Name == nil && r.Type == nil && r.Root == nil && r.Config == nil && r.Enabled == nil && r.Readonly == nil && r.Quota == nil {
+		return errors.New("at least one storage backend field is required")
+	}
+	return nil
+}
 
 type (
 	AssetListRequest struct {
@@ -329,7 +374,7 @@ type (
 	}
 
 	AssetSearchParseResponse struct {
-		Query     AssetListRequest `json:"query"`
+		Query        AssetListRequest `json:"query"`
 		AtomicTaskID string           `json:"atomic_task_id,omitempty"`
 	}
 
@@ -345,8 +390,8 @@ type (
 	}
 
 	AssetUploadResponse struct {
-		Asset    *AssetRecord `json:"asset"`
-		AtomicTasks []*AtomicTask   `json:"atomic_tasks,omitempty"`
+		Asset       *AssetRecord  `json:"asset"`
+		AtomicTasks []*AtomicTask `json:"atomic_tasks,omitempty"`
 	}
 
 	AssetChunkUploadInitRequest struct {

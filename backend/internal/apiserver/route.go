@@ -288,13 +288,6 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 	rg.PUT("/default-models/:usage", platformController.PutDefaultModel)
 	rg.GET("/model-options", platformController.ListModelOptions)
 
-	storage := rg.Group("/storage-backends")
-	{
-		storage.GET("", platformController.ListStorageBackends)
-		storage.POST("", platformController.CreateStorageBackend)
-		storage.PATCH("/:backend_id", platformController.UpdateStorageBackend)
-	}
-
 	assets := rg.Group("/assets")
 	{
 		assets.POST("/upload", platformController.UploadAsset)
@@ -328,8 +321,20 @@ func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory
 		AtomicTasks:     tasks,
 		ApplicationRuns: appplatformsvc.NewRunSummaryReader(storeIns.ApplicationPlatforms()),
 		CanvasRuns:      workflowcanvassvc.New(storeIns, tasks),
-	}, assetlibrarysvc.DefaultRepresentationPolicy{})
+	}, assetlibrarysvc.DefaultRepresentationPolicy{}, assetlibrarysvc.WithStorageInspection(
+		storeIns.StorageBackends(),
+		assetlibrarysvc.NewRoleStorageAdminAuthorizer(storeIns.Roles(), storeIns.UserRoles()),
+	))
 	controller := assetlibraryctrl.New(service)
+
+	rg.GET("/blobs/:blob_id", controller.GetBlob)
+	storageBackends := rg.Group("/storage-backends")
+	{
+		storageBackends.GET("", controller.ListStorageBackends)
+		storageBackends.POST("", controller.CreateStorageBackend)
+		storageBackends.GET("/:backend_id", controller.GetStorageBackend)
+		storageBackends.PATCH("/:backend_id", controller.UpdateStorageBackend)
+	}
 
 	assets := rg.Group("/assets")
 	{

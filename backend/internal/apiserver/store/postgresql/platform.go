@@ -328,6 +328,14 @@ type storageBackendStore struct{ ds *datastore }
 
 func newStorageBackend(ds *datastore) *storageBackendStore { return &storageBackendStore{ds: ds} }
 
+func (s *storageBackendStore) GetBlob(ctx context.Context, id string) (*iapiserver.AssetBlob, error) {
+	var item iapiserver.AssetBlob
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
 func (s *storageBackendStore) List(
 	ctx context.Context,
 	req *iapiserver.StorageBackendListRequest,

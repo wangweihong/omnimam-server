@@ -17,15 +17,52 @@ const (
 	AssetRepresentationCanonical = "canonical"
 )
 
-// AssetBlob 记录受 StorageBackend 管理的物理内容；API 不返回 object_key。
+// AssetBlob 记录受 StorageBackend 管理的物理内容；普通素材 API 不返回物理定位字段，管理员详情单独投影。
 type AssetBlob struct {
 	imachinery.ObjectMeta
+	// StorageBackendID 指向承载该内容的全局存储后端，仅管理员物理检查接口可见。
 	StorageBackendID string `json:"-" gorm:"column:storage_backend_id;type:text;not null;index;uniqueIndex:idx_blob_backend_object,priority:1"`
-	ObjectKey        string `json:"-" gorm:"column:object_key;type:text;not null;uniqueIndex:idx_blob_backend_object,priority:2"`
-	SHA256           string `json:"sha256" gorm:"column:sha256;type:text;not null;index"`
-	SizeBytes        int64  `json:"size_bytes" gorm:"column:size_bytes;not null"`
-	MIMEType         string `json:"mime_type" gorm:"column:mime_type;type:text;not null"`
-	Status           string `json:"status" gorm:"column:status;type:text;not null;index"`
+	// ObjectKey 是后端内完整对象键，仅管理员物理检查接口可见。
+	ObjectKey string `json:"-" gorm:"column:object_key;type:text;not null;uniqueIndex:idx_blob_backend_object,priority:2"`
+	// SHA256 是内容摘要，用于完整性检查与受控去重。
+	SHA256 string `json:"sha256" gorm:"column:sha256;type:text;not null;index"`
+	// SizeBytes 是 Blob 的实际字节数。
+	SizeBytes int64 `json:"size_bytes" gorm:"column:size_bytes;not null"`
+	// MIMEType 是已登记内容的媒体类型。
+	MIMEType string `json:"mime_type" gorm:"column:mime_type;type:text;not null"`
+	// Status 表示物理内容是否可用、损坏、缺失或处于删除流程。
+	Status string `json:"status" gorm:"column:status;type:text;not null;index"`
+}
+
+// AssetBlobDetail 是仅管理员可见的 Blob 物理存储投影。
+// 它只返回 StorageBackend ID，不递归嵌入可能包含凭证的后端配置。
+type AssetBlobDetail struct {
+	// ID 是全局 Blob 标识。
+	ID string `json:"id"`
+	// Name 是 Blob 的通用资源名称。
+	Name string `json:"name"`
+	// Description 是 Blob 的通用资源说明。
+	Description string `json:"description"`
+	// Extend 返回受控扩展字段；无扩展时返回空对象。
+	Extend map[string]any `json:"extend"`
+	// StorageBackendID 指向承载该内容的 StorageBackend。
+	StorageBackendID string `json:"storage_backend_id"`
+	// ObjectKey 是后端内完整对象键，仅管理员可见。
+	ObjectKey string `json:"object_key"`
+	// SHA256 是内容摘要。
+	SHA256 string `json:"sha256"`
+	// SizeBytes 是内容字节数。
+	SizeBytes int64 `json:"size_bytes"`
+	// MIMEType 是内容媒体类型。
+	MIMEType string `json:"mime_type"`
+	// Status 表示物理内容当前可用性与删除状态。
+	Status string `json:"status"`
+	// ResourceVersion 用于识别 Blob 元数据版本。
+	ResourceVersion int64 `json:"resource_version"`
+	// CreatedAt 是 Blob 登记时间。
+	CreatedAt imachinery.Time `json:"created_at"`
+	// UpdatedAt 是 Blob 元数据最后更新时间。
+	UpdatedAt imachinery.Time `json:"updated_at"`
 }
 
 func (AssetBlob) TableName() string                 { return "blobs" }
