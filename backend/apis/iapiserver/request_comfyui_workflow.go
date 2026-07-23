@@ -95,10 +95,18 @@ type ComfyUIWorkflowTestParameter struct {
 	InputName string `json:"input_name" binding:"required"`
 	Value     any    `json:"value"`
 }
+
+// ComfyUIWorkflowTestOutputSelection 标识试运行需要收集临时预览的工作流输出候选。
+type ComfyUIWorkflowTestOutputSelection struct {
+	NodeID      string `json:"node_id" binding:"required"`
+	OutputIndex int    `json:"output_index" binding:"min=0"`
+}
+
 type ComfyUIWorkflowTestRunCreateRequest struct {
-	EngineInstanceID string                         `json:"engine_instance_id" binding:"required"`
-	Parameters       []ComfyUIWorkflowTestParameter `json:"parameters" binding:"max=256,dive"`
-	IdempotencyKey   string                         `json:"idempotency_key" binding:"required,max=256"`
+	EngineInstanceID string                               `json:"engine_instance_id" binding:"required"`
+	Parameters       []ComfyUIWorkflowTestParameter       `json:"parameters" binding:"max=256,dive"`
+	Outputs          []ComfyUIWorkflowTestOutputSelection `json:"outputs" binding:"required,min=1,max=256,dive"`
+	IdempotencyKey   string                               `json:"idempotency_key" binding:"required,max=256"`
 }
 type ComfyUIWorkflowConvertRequest struct {
 	Name                   string         `json:"name" binding:"required"`

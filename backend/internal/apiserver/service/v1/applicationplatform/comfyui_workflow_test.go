@@ -189,5 +189,5 @@ func currentTestCatalog() *iapiserver.ComfyUIEngineObjectInfo {
 }
 
 func saveImageTestCatalog() *iapiserver.ComfyUIEngineObjectInfo {
-	return &iapiserver.ComfyUIEngineObjectInfo{ObjectInfo: map[string]any{"SaveImage": map[string]any{"input": map[string]any{"optional": map[string]any{"images": []any{"IMAGE"}}}, "output": []any{"IMAGE"}}}, RefreshedAt: imachinery.Now()}
+	return &iapiserver.ComfyUIEngineObjectInfo{ObjectInfo: map[string]any{"SaveImage": map[string]any{"input": map[string]any{"optional": map[string]any{"images": []any{"IMAGE"}}}, "output": []any{"IMAGE"}, "output_node": true}}, RefreshedAt: imachinery.Now()}
 }

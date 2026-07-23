@@ -232,31 +232,33 @@ type ComfyUIWorkflowTestEngineSnapshot struct {
 }
 type ComfyUIWorkflowTestRun struct {
 	imachinery.ObjectMeta
-	WorkflowID             string                            `json:"workflow_id" gorm:"column:workflow_id;type:text;not null;index"`
-	OwnerUserID            string                            `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:uk_comfy_test_owner_key"`
-	RequestedByUserID      string                            `json:"-" gorm:"column:requested_by_user_id;type:text;not null"`
-	EngineInstanceID       string                            `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
-	EngineInstanceSnapshot ComfyUIWorkflowTestEngineSnapshot `json:"engine_instance_snapshot" gorm:"-"`
-	EngineSnapshotShadow   string                            `json:"-" gorm:"column:engine_instance_snapshot_json;type:text;not null"`
-	ParameterOverrideCount int                               `json:"parameter_override_count" gorm:"-"`
-	WorkflowValidationID   string                            `json:"workflow_validation_id" gorm:"column:workflow_validation_id;type:text;not null"`
-	DAGTaskGroupID         *string                           `json:"dag_task_group_id" gorm:"column:dag_task_group_id;type:text;index"`
-	ExternalJobID          *string                           `json:"external_job_id" gorm:"column:external_job_id;type:text;index"`
-	IdempotencyKey         string                            `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:uk_comfy_test_owner_key"`
-	TaskCreationStatus     string                            `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
-	TaskCreationFailure    *string                           `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text"`
-	WorkflowSnapshot       map[string]any                    `json:"-" gorm:"-"`
-	WorkflowSnapshotShadow string                            `json:"-" gorm:"column:workflow_snapshot_json;type:text;not null"`
-	Parameters             []ComfyUIWorkflowTestParameter    `json:"parameter_snapshot" gorm:"-"`
-	ParametersShadow       string                            `json:"-" gorm:"column:parameter_snapshot_json;type:text;not null;default:'[]'"`
-	Steps                  []ComfyUIWorkflowTestStep         `json:"steps" gorm:"-"`
-	StepsShadow            string                            `json:"-" gorm:"column:steps_json;type:text;not null;default:'[]'"`
-	Outputs                []ComfyUIWorkflowTestOutput       `json:"outputs" gorm:"-"`
-	OutputsShadow          string                            `json:"-" gorm:"column:outputs_json;type:text;not null;default:'[]'"`
-	Status                 string                            `json:"status" gorm:"column:status;type:text;not null;default:'PENDING';index"`
-	Progress               int                               `json:"progress" gorm:"column:progress;not null;default:0"`
-	CurrentStep            *string                           `json:"current_step" gorm:"column:current_step;type:text"`
-	FailureSummary         *string                           `json:"failure_summary" gorm:"column:failure_summary;type:text"`
+	WorkflowID             string                               `json:"workflow_id" gorm:"column:workflow_id;type:text;not null;index"`
+	OwnerUserID            string                               `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index;uniqueIndex:uk_comfy_test_owner_key"`
+	RequestedByUserID      string                               `json:"-" gorm:"column:requested_by_user_id;type:text;not null"`
+	EngineInstanceID       string                               `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
+	EngineInstanceSnapshot ComfyUIWorkflowTestEngineSnapshot    `json:"engine_instance_snapshot" gorm:"-"`
+	EngineSnapshotShadow   string                               `json:"-" gorm:"column:engine_instance_snapshot_json;type:text;not null"`
+	ParameterOverrideCount int                                  `json:"parameter_override_count" gorm:"-"`
+	WorkflowValidationID   string                               `json:"workflow_validation_id" gorm:"column:workflow_validation_id;type:text;not null"`
+	DAGTaskGroupID         *string                              `json:"dag_task_group_id" gorm:"column:dag_task_group_id;type:text;index"`
+	ExternalJobID          *string                              `json:"external_job_id" gorm:"column:external_job_id;type:text;index"`
+	IdempotencyKey         string                               `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:uk_comfy_test_owner_key"`
+	TaskCreationStatus     string                               `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
+	TaskCreationFailure    *string                              `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text"`
+	WorkflowSnapshot       map[string]any                       `json:"-" gorm:"-"`
+	WorkflowSnapshotShadow string                               `json:"-" gorm:"column:workflow_snapshot_json;type:text;not null"`
+	Parameters             []ComfyUIWorkflowTestParameter       `json:"parameter_snapshot" gorm:"-"`
+	ParametersShadow       string                               `json:"-" gorm:"column:parameter_snapshot_json;type:text;not null;default:'[]'"`
+	OutputSelections       []ComfyUIWorkflowTestOutputSelection `json:"output_snapshot" gorm:"-"`
+	OutputSelectionsShadow string                               `json:"-" gorm:"column:output_snapshot_json;type:text;not null;default:'[]'"`
+	Steps                  []ComfyUIWorkflowTestStep            `json:"steps" gorm:"-"`
+	StepsShadow            string                               `json:"-" gorm:"column:steps_json;type:text;not null;default:'[]'"`
+	Outputs                []ComfyUIWorkflowTestOutput          `json:"outputs" gorm:"-"`
+	OutputsShadow          string                               `json:"-" gorm:"column:outputs_json;type:text;not null;default:'[]'"`
+	Status                 string                               `json:"status" gorm:"column:status;type:text;not null;default:'PENDING';index"`
+	Progress               int                                  `json:"progress" gorm:"column:progress;not null;default:0"`
+	CurrentStep            *string                              `json:"current_step" gorm:"column:current_step;type:text"`
+	FailureSummary         *string                              `json:"failure_summary" gorm:"column:failure_summary;type:text"`
 }
 
 func (ComfyUIWorkflowTestRun) TableName() string { return "aiapp_comfyui_workflow_test_runs" }
@@ -279,6 +281,7 @@ func (r *ComfyUIWorkflowTestRun) AfterFind(*gorm.DB) error {
 	unmarshalShadow(r.EngineSnapshotShadow, &r.EngineInstanceSnapshot)
 	unmarshalShadow(r.ParametersShadow, &r.Parameters)
 	r.ParameterOverrideCount = len(r.Parameters)
+	unmarshalShadow(r.OutputSelectionsShadow, &r.OutputSelections)
 	unmarshalShadow(r.StepsShadow, &r.Steps)
 	var storedOutputs []storedComfyUIWorkflowTestOutput
 	unmarshalShadow(r.OutputsShadow, &storedOutputs)
@@ -298,7 +301,7 @@ func (r *ComfyUIWorkflowTestRun) marshal() error {
 		value    any
 		target   *string
 		fallback string
-	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.Steps, &r.StepsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
+	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.OutputSelections, &r.OutputSelectionsShadow, "[]"}, {r.Steps, &r.StepsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
 		if err := marshalShadow(item.value, item.target, item.fallback); err != nil {
 			return err
 		}

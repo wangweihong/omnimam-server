@@ -40,6 +40,7 @@ func (s *applicationPlatformService) ListComfyUIWorkflowTestRuns(ctx context.Con
 		_, _ = s.projectComfyTestRun(ctx, item)
 		if !req.Detail {
 			item.Parameters = nil
+			item.OutputSelections = nil
 			item.Steps = nil
 			item.Outputs = nil
 		}
@@ -58,7 +59,9 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if existing, findErr := s.Store.ApplicationPlatforms().GetComfyUIWorkflowTestRunByIdempotency(ctx, workflow.OwnerUserID, req.IdempotencyKey); findErr == nil {
 		existingParametersDigest, existingDigestErr := canonicalJSONDigest(existing.Parameters)
 		requestParametersDigest, requestDigestErr := canonicalJSONDigest(req.Parameters)
-		if existingDigestErr != nil || requestDigestErr != nil || existing.WorkflowID != workflowID || existing.EngineInstanceID != req.EngineInstanceID || existingParametersDigest != requestParametersDigest {
+		existingOutputsDigest, existingOutputsDigestErr := canonicalJSONDigest(existing.OutputSelections)
+		requestOutputsDigest, requestOutputsDigestErr := canonicalJSONDigest(req.Outputs)
+		if existingDigestErr != nil || requestDigestErr != nil || existingOutputsDigestErr != nil || requestOutputsDigestErr != nil || existing.WorkflowID != workflowID || existing.EngineInstanceID != req.EngineInstanceID || existingParametersDigest != requestParametersDigest || existingOutputsDigest != requestOutputsDigest {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "idempotency key payload differs")
 		}
 		return s.projectComfyTestRun(ctx, existing)
@@ -74,7 +77,11 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestIncompatible, "workflow is incompatible with target engine")
 	}
 	workflow.InputCandidates = parsed.inputs
+	workflow.OutputCandidates = parsed.outputs
 	if err := validateTestParameters(workflow, req.Parameters); err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUITestParameterInvalid, err.Error())
+	}
+	if err := validateTestOutputs(workflow, req.Outputs); err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestParameterInvalid, err.Error())
 	}
 	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, Status: iapiserver.ComfyUIValidationCompatible, ComfyUIVersion: catalog.ComfyUIVersion, NodeSummary: map[string]any{"total": parsed.summary.TotalNodes}, DependencySummary: map[string]any{"total": len(parsed.dependencies)}, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
@@ -89,7 +96,7 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if engine.Region != "" {
 		engineSnapshot.Region = &engine.Region
 	}
-	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), Parameters: req.Parameters, Status: iapiserver.TaskGroupStatusPending, Progress: 0, Steps: defaultTestSteps(), Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
+	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), Parameters: req.Parameters, OutputSelections: req.Outputs, Status: iapiserver.TaskGroupStatusPending, Progress: 0, Steps: defaultTestSteps(), Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
 	run.ID = uuid.NewString()
 	run.Name = "ComfyUI workflow test"
 	run, err = s.Store.ApplicationPlatforms().AddComfyUIWorkflowTestRun(ctx, run)
@@ -250,6 +257,30 @@ func validateTestParameters(workflow *iapiserver.ComfyUIWorkflow, parameters []i
 		}
 		if seen[key] {
 			return fmt.Errorf("parameter %s/%s is duplicated", item.NodeID, item.InputName)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func validateTestOutputs(workflow *iapiserver.ComfyUIWorkflow, outputs []iapiserver.ComfyUIWorkflowTestOutputSelection) error {
+	if len(outputs) == 0 {
+		return fmt.Errorf("at least one output candidate is required")
+	}
+	allowed := map[string]struct{}{}
+	for _, item := range workflow.OutputCandidates {
+		if item.Extractable && (item.MediaType == "image" || item.MediaType == "text") {
+			allowed[fmt.Sprintf("%s\x00%d", item.NodeID, item.OutputIndex)] = struct{}{}
+		}
+	}
+	seen := map[string]bool{}
+	for _, item := range outputs {
+		key := fmt.Sprintf("%s\x00%d", item.NodeID, item.OutputIndex)
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("output %s/%d cannot be collected", item.NodeID, item.OutputIndex)
+		}
+		if seen[key] {
+			return fmt.Errorf("output %s/%d is duplicated", item.NodeID, item.OutputIndex)
 		}
 		seen[key] = true
 	}

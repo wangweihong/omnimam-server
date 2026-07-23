@@ -44,13 +44,16 @@ func TestValidateEngineAuthRejectsMismatchedUnion(t *testing.T) {
 
 func TestParseComfyUIWorkflowDerivesCandidatesAndRejectsBrokenReferences(t *testing.T) {
 	workflow := map[string]any{"1": map[string]any{"class_type": "LoadImage", "inputs": map[string]any{"image": "input.png"}}, "2": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": []any{"1", float64(0)}}}}
-	objectInfo := map[string]any{"LoadImage": map[string]any{"input": map[string]any{"required": map[string]any{"image": []any{"STRING", map[string]any{}}}}, "output": []any{"IMAGE"}, "output_name": []any{"IMAGE"}}, "SaveImage": map[string]any{"input": map[string]any{"required": map[string]any{"images": []any{"IMAGE", map[string]any{}}}}, "output": []any{}}}
+	objectInfo := map[string]any{"LoadImage": map[string]any{"input": map[string]any{"required": map[string]any{"image": []any{"STRING", map[string]any{}}}}, "output": []any{"IMAGE"}, "output_name": []any{"IMAGE"}, "output_node": false}, "SaveImage": map[string]any{"input": map[string]any{"required": map[string]any{"images": []any{"IMAGE", map[string]any{}}}}, "output": []any{}, "output_node": true}}
 	parsed, err := parseComfyUIWorkflow(workflow, nil, objectInfo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.summary.TotalNodes != 2 || len(parsed.inputs) != 2 || len(parsed.outputs) != 1 {
 		t.Fatalf("unexpected parse result: %#v", parsed)
+	}
+	if parsed.outputs[0].Extractable {
+		t.Fatalf("non-output node was marked extractable: %#v", parsed.outputs[0])
 	}
 	workflow["2"].(map[string]any)["inputs"].(map[string]any)["images"] = []any{"missing", float64(0)}
 	if _, err := parseComfyUIWorkflow(workflow, nil, objectInfo); err == nil {

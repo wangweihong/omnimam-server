@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 7fb6edf8ef69886eabe7e206379a7fe1858500ee
-contract_version: spec-v1.7.4
+commit: a6e36d07554459ec3ee3cf308563857212f624cb
+contract_version: spec-v1.7.6
 updated_at: 2026-07-23
 status: released
-note: Asset Library v0.6 adds admin-only Blob and StorageBackend detail contracts with full physical configuration fields.
+note: Application Platform v1.3 adds workflow test output snapshots and restricts extractable candidates to ComfyUI output nodes.

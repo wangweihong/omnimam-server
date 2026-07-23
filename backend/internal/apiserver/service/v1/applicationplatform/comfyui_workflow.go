@@ -467,13 +467,14 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 		}
 		outputTypes := anySlice(info["output"])
 		outputNames := anySlice(info["output_name"])
+		outputNode, _ := info["output_node"].(bool)
 		for index, rawType := range outputTypes {
 			name := ""
 			if index < len(outputNames) {
 				name = stringValue(outputNames[index])
 			}
 			dataType := stringValue(rawType)
-			candidate := iapiserver.ComfyUIWorkflowOutputCandidate{NodeID: id, OutputIndex: index, OutputName: name, DataType: dataType, Extractable: true, MediaType: comfyUIMediaType(dataType)}
+			candidate := iapiserver.ComfyUIWorkflowOutputCandidate{NodeID: id, OutputIndex: index, OutputName: name, DataType: dataType, Extractable: outputNode, MediaType: comfyUIMediaType(dataType)}
 			result.outputs = append(result.outputs, candidate)
 			node.Outputs = append(node.Outputs, map[string]any{"output_index": index, "output_name": name, "data_type": dataType})
 		}
@@ -856,7 +857,9 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 	}
 	candidates := map[string]struct{}{}
 	for _, item := range workflow.OutputCandidates {
-		candidates[fmt.Sprintf("%s:%d", item.NodeID, item.OutputIndex)] = struct{}{}
+		if item.Extractable {
+			candidates[fmt.Sprintf("%s:%d", item.NodeID, item.OutputIndex)] = struct{}{}
+		}
 	}
 	outputKeys := map[string]bool{}
 	for _, raw := range outputs {

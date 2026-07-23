@@ -100,7 +100,7 @@ func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (ma
 		return nil, err
 	}
 	entry := mapValue(history[*run.ExternalJobID])
-	outputs := collectTestOutputs(mapValue(entry["outputs"]))
+	outputs := collectTestOutputs(mapValue(entry["outputs"]), run.OutputSelections)
 	run.Outputs = outputs
 	run.Status = iapiserver.TaskGroupStatusSuccess
 	run.Progress = 100
@@ -163,9 +163,17 @@ func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, 
 	}
 	return nil
 }
-func collectTestOutputs(outputs map[string]any) []iapiserver.ComfyUIWorkflowTestOutput {
+func collectTestOutputs(outputs map[string]any, selections []iapiserver.ComfyUIWorkflowTestOutputSelection) []iapiserver.ComfyUIWorkflowTestOutput {
 	result := []iapiserver.ComfyUIWorkflowTestOutput{}
+	selectedNodes := map[string]bool{}
+	for _, selection := range selections {
+		selectedNodes[selection.NodeID] = true
+	}
 	for nodeID, raw := range outputs {
+		// Empty selections only occur on legacy runs created before output snapshots existed.
+		if len(selectedNodes) > 0 && !selectedNodes[nodeID] {
+			continue
+		}
 		output := mapValue(raw)
 		for _, image := range anySlice(output["images"]) {
 			item := mapValue(image)
