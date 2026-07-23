@@ -17,6 +17,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -569,12 +570,15 @@ func (s *taskCenterStore) ListScheduleSources(
 		TargetID            string
 		ScheduleID          string
 		ScheduleName        string
+		NameSource          string
+		SystemNameKey       string
+		SystemNameParams    string
 		ScheduleExecutionID string
 		ScheduledAt         imachinery.Time
 	}
 	err := s.ds.db.WithContext(ctx).
 		Table("task_schedule_executions AS execution").
-		Select("execution.target_id, schedule.id AS schedule_id, schedule.name AS schedule_name, execution.id AS schedule_execution_id, execution.scheduled_at").
+		Select("execution.target_id, schedule.id AS schedule_id, schedule.name AS schedule_name, schedule.name_source, schedule.system_name_key, schedule.system_name_params_json AS system_name_params, execution.id AS schedule_execution_id, execution.scheduled_at").
 		Joins("JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id").
 		Where("execution.target_type = ? AND execution.target_id IN ?", targetType, targetIDs).
 		Order("execution.scheduled_at DESC").
@@ -586,9 +590,17 @@ func (s *taskCenterStore) ListScheduleSources(
 		if _, exists := result[row.TargetID]; exists {
 			continue
 		}
+		var nameI18n map[string]string
+		if row.NameSource == iapiserver.TaskNameSourceSystem && row.SystemNameKey != "" {
+			params := map[string]string{}
+			if json.Unmarshal([]byte(row.SystemNameParams), &params) == nil {
+				nameI18n, _ = taskname.Resolve(row.SystemNameKey, params)
+			}
+		}
 		result[row.TargetID] = &iapiserver.ScheduleSourceSummary{
 			ScheduleID:          row.ScheduleID,
 			ScheduleName:        row.ScheduleName,
+			ScheduleNameI18n:    nameI18n,
 			ScheduleExecutionID: row.ScheduleExecutionID,
 			ScheduledAt:         row.ScheduledAt,
 		}

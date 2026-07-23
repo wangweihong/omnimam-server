@@ -1,6 +1,6 @@
 # TaskWorker 与 API Server 协作流程
 
-本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.2`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
+本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.3`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
 
 ## 1. 架构定位
 
@@ -37,6 +37,12 @@ flowchart LR
 | Conductor 数据库 | 保存 Conductor workflow、task、schedule 和重试历史 | 不作为前端或其他业务领域的查询入口 |
 
 业务代码只依赖 `WorkflowRuntime` 接口。生产环境使用 `ConductorRuntime`，测试可以注入 fake；Controller、Service 和其他领域不得直接依赖 Conductor API 或数据库。
+
+### 2.1 系统任务名称本地化
+
+后端内部创建的系统 AtomicTask、TaskGroup、DAGTaskGroup 和 TaskSchedule 通过 `SystemNameSpec` 传递稳定名称 key 与受控字符串参数。Task Center 将 `name_source=SYSTEM`、`system_name_key` 和参数 JSON 持久化，兼容 `name` 固定保存名称目录的 `en-US` 值；查询时由 `taskname` 目录生成至少包含 `zh-CN`、`en-US` 的 `name_i18n`。
+
+`name_i18n` 同时投影到资源本体及 retry、owner、target、schedule source、DAG timeline 等一跳摘要。公开创建请求无法设置 `SystemNameSpec`；用户名称固定为 `USER`，旧行也按默认 `USER` 处理，不根据英文文本、创建者或 functionRef 猜测并回填。手动重试与 Group/DAG 子任务复制稳定 key 和参数，因此后续扩展语言只需更新名称目录，不改 API 结构或历史业务名称。
 
 ## 3. 启动协作
 
@@ -272,6 +278,7 @@ sequenceDiagram
 - 不得新增或恢复 TaskRun、TaskDefinition、ExecutionLease、Worker claim/heartbeat、watchdog 或自研 DAG 状态机。
 - 用户和其他业务领域不得直接调用 Conductor API、读取 Conductor 数据库或使用 Conductor UI 代替 Task Center。
 - 用户输入只能选择已注册的 `functionRef`，不得提交任意 HTTP、INLINE、脚本、Worker 名、凭证或内部运行时配置。
+- 公开请求不得设置系统名称 key、参数或来源；系统名称只能由受控后端创建路径从名称目录解析。
 - Conductor 与 OmniMAM 业务表必须使用独立数据库或 schema，双方不得直接改写对方拥有的数据。
 - 运行时不可用时保留可恢复业务状态，不得双写旧 TaskRun 或回退到旧任务协议。
 - SSE 只消费 Task Center 与 asset-library 可靠事件，不直接读取 Conductor API/数据库，也不把 UserEvent 当作任务或素材事实源。

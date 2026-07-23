@@ -164,12 +164,13 @@ type DAGTimelineSegment struct {
 }
 
 type DAGTimelineRow struct {
-	NodeKey        string                `json:"node_key"`
-	AtomicTaskID   string                `json:"atomic_task_id"`
-	AtomicTaskName string                `json:"atomic_task_name"`
-	Status         string                `json:"status"`
-	Complete       bool                  `json:"complete"`
-	Segments       []*DAGTimelineSegment `json:"segments"`
+	NodeKey            string                `json:"node_key"`
+	AtomicTaskID       string                `json:"atomic_task_id"`
+	AtomicTaskName     string                `json:"atomic_task_name"`
+	AtomicTaskNameI18n map[string]string     `json:"atomic_task_name_i18n,omitempty"`
+	Status             string                `json:"status"`
+	Complete           bool                  `json:"complete"`
+	Segments           []*DAGTimelineSegment `json:"segments"`
 }
 
 type DAGTimelineListResponse struct {

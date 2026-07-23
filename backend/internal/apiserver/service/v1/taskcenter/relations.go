@@ -253,35 +253,35 @@ func atomicTaskSummary(task *iapiserver.AtomicTask) *iapiserver.AtomicTaskSummar
 	if task == nil {
 		return nil
 	}
-	return &iapiserver.AtomicTaskSummary{ID: task.ID, Name: task.Name, Status: task.Status, Progress: task.Progress, FunctionRef: task.FunctionRef}
+	return &iapiserver.AtomicTaskSummary{ID: task.ID, Name: task.Name, NameI18n: localizedName(task.TaskNameMeta), Status: task.Status, Progress: task.Progress, FunctionRef: task.FunctionRef}
 }
 
 func taskGroupSummary(group *iapiserver.TaskGroup) *iapiserver.TaskOwnerSummary {
 	if group == nil {
 		return nil
 	}
-	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeGroup, ID: group.ID, Name: group.Name, Status: group.Status, Progress: group.Progress}
+	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeGroup, ID: group.ID, Name: group.Name, NameI18n: localizedName(group.TaskNameMeta), Status: group.Status, Progress: group.Progress}
 }
 
 func dagTaskGroupSummary(group *iapiserver.DAGTaskGroup) *iapiserver.TaskOwnerSummary {
 	if group == nil {
 		return nil
 	}
-	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeDAGGroup, ID: group.ID, Name: group.Name, Status: group.Status, Progress: group.Progress}
+	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeDAGGroup, ID: group.ID, Name: group.Name, NameI18n: localizedName(group.TaskNameMeta), Status: group.Status, Progress: group.Progress}
 }
 
 func taskScheduleOwnerSummary(schedule *iapiserver.TaskSchedule) *iapiserver.TaskOwnerSummary {
 	if schedule == nil {
 		return nil
 	}
-	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeSchedule, ID: schedule.ID, Name: schedule.Name, Status: schedule.Status}
+	return &iapiserver.TaskOwnerSummary{Type: iapiserver.TaskOwnerTypeSchedule, ID: schedule.ID, Name: schedule.Name, NameI18n: localizedName(schedule.TaskNameMeta), Status: schedule.Status}
 }
 
 func taskScheduleSummary(schedule *iapiserver.TaskSchedule) *iapiserver.TaskScheduleSummary {
 	if schedule == nil {
 		return nil
 	}
-	return &iapiserver.TaskScheduleSummary{ID: schedule.ID, Name: schedule.Name, Status: schedule.Status}
+	return &iapiserver.TaskScheduleSummary{ID: schedule.ID, Name: schedule.Name, NameI18n: localizedName(schedule.TaskNameMeta), Status: schedule.Status}
 }
 
 func visibleRelatedTask(ctx context.Context, parent, related *iapiserver.AtomicTask) bool {

@@ -366,7 +366,7 @@ func terminalDAGEventType(status string) string {
 }
 
 func buildTimelineRow(group *iapiserver.DAGTaskGroup, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, predecessors []string, completionByNode map[string]imachinery.Time) *iapiserver.DAGTimelineRow {
-	row := &iapiserver.DAGTimelineRow{NodeKey: task.DAGNodeKey, AtomicTaskID: task.ID, AtomicTaskName: task.Name, Status: task.Status, Complete: true, Segments: []*iapiserver.DAGTimelineSegment{}}
+	row := &iapiserver.DAGTimelineRow{NodeKey: task.DAGNodeKey, AtomicTaskID: task.ID, AtomicTaskName: task.Name, AtomicTaskNameI18n: localizedName(task.TaskNameMeta), Status: task.Status, Complete: true, Segments: []*iapiserver.DAGTimelineSegment{}}
 	start := group.TriggeredAt
 	if start.IsZero() {
 		start = group.CreatedAt

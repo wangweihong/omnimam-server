@@ -16,6 +16,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -99,7 +100,7 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 		return s.failComfyTestRun(ctx, run, fmt.Errorf("task center is unavailable"))
 	}
 	args := map[string]any{"test_run_id": run.ID}
-	dag, err := s.Tasks.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: "ComfyUI workflow test", Description: workflow.Name, Nodes: []iapiserver.DAGNode{{Key: "submit", Task: iapiserver.AtomicTaskTemplate{Key: "submit", Name: "Submit prompt", FunctionRef: comfySubmitFunction, Arguments: args}}, {Key: "poll", Task: iapiserver.AtomicTaskTemplate{Key: "poll", Name: "Poll queue and history", FunctionRef: comfyPollFunction, Arguments: args}}, {Key: "collect_preview", Task: iapiserver.AtomicTaskTemplate{Key: "collect_preview", Name: "Collect temporary preview", FunctionRef: comfyCollectFunction, Arguments: args}}}, Edges: []iapiserver.DAGEdge{{FromNode: "submit", ToNode: "poll"}, {FromNode: "poll", ToNode: "collect_preview"}}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, IdempotencyScope: "comfyui-workflow-test", IdempotencyKey: req.IdempotencyKey, CreatedBy: p.UserID})
+	dag, err := s.Tasks.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: "ComfyUI workflow test", SystemName: iapiserver.SystemNameSpec{Key: taskname.ComfyUIWorkflowTest}, Description: workflow.Name, Nodes: []iapiserver.DAGNode{{Key: "submit", Task: iapiserver.AtomicTaskTemplate{Key: "submit", Name: "Submit prompt", SystemName: iapiserver.SystemNameSpec{Key: taskname.ComfyUISubmit}, FunctionRef: comfySubmitFunction, Arguments: args}}, {Key: "poll", Task: iapiserver.AtomicTaskTemplate{Key: "poll", Name: "Poll queue and history", SystemName: iapiserver.SystemNameSpec{Key: taskname.ComfyUIPoll}, FunctionRef: comfyPollFunction, Arguments: args}}, {Key: "collect_preview", Task: iapiserver.AtomicTaskTemplate{Key: "collect_preview", Name: "Collect temporary preview", SystemName: iapiserver.SystemNameSpec{Key: taskname.ComfyUICollectPreview}, FunctionRef: comfyCollectFunction, Arguments: args}}}, Edges: []iapiserver.DAGEdge{{FromNode: "submit", ToNode: "poll"}, {FromNode: "poll", ToNode: "collect_preview"}}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, IdempotencyScope: "comfyui-workflow-test", IdempotencyKey: req.IdempotencyKey, CreatedBy: p.UserID})
 	if err != nil {
 		return s.failComfyTestRun(ctx, run, err)
 	}

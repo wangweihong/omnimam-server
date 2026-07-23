@@ -106,6 +106,13 @@ func (s *taskCenterService) EnsureSystemReconcileSchedule(ctx context.Context, s
 	if schedule == nil || schedule.SystemKey == "" || schedule.ReconcileSpec == nil {
 		return nil, errors.NewStatus(code.ErrTaskReconcileConfigInvalid, "system reconcile schedule is invalid")
 	}
+	nameSpec := systemNameSpec(schedule.TaskNameMeta)
+	if nameSpec.Key == "" {
+		return nil, errors.NewStatus(code.ErrTaskReconcileConfigInvalid, "system reconcile schedule name is invalid")
+	}
+	if err := assignSystemName(&schedule.Name, &schedule.TaskNameMeta, nameSpec); err != nil {
+		return nil, errors.NewStatus(code.ErrTaskReconcileConfigInvalid, err.Error())
+	}
 	handler, ok := s.reconciles.Get(schedule.ReconcileSpec.ReconcileRef)
 	if !ok {
 		return nil, errors.NewStatus(code.ErrTaskReconcileRefUnregistered, "reconcile handler is not registered")
@@ -141,6 +148,7 @@ func (s *taskCenterService) EnsureSystemReconcileSchedule(ctx context.Context, s
 	if err := s.runtime.SaveSchedule(ctx, runtimeSchedule(created, start)); err != nil {
 		return nil, runtimeError(err)
 	}
+	projectLocalizedName(&created.TaskNameMeta)
 	return s.decorateReconcileSchedule(created), nil
 }
 

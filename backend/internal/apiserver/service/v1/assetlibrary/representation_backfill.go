@@ -8,6 +8,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 )
 
 const (
@@ -97,6 +98,7 @@ func (h *RepresentationBackfillHandler) Reconcile(ctx context.Context, req taskc
 		}
 		result.Actions = append(result.Actions, &iapiserver.AtomicTaskCreateRequest{
 			Key: "thumbnail:" + thumbnailListProfile, Name: "Backfill AssetVersion thumbnail",
+			SystemName:  iapiserver.SystemNameSpec{Key: taskname.BackfillThumbnail},
 			FunctionRef: FunctionRepresentationGenerate, RequiredCapabilities: FunctionRepresentationGenerate,
 			Arguments:        map[string]any{"asset_id": item.AssetID, "asset_version_id": item.AssetVersionID, "owner_user_id": item.OwnerUserID, "media_type": item.MediaType, "representation_type": "thumbnail", "profile": thumbnailListProfile, "profile_version": item.ProfileVersion, "required": false, "max_attempts": maxRepresentationAttempts},
 			RetryPolicy:      iapiserver.RetryPolicy{MaxAttempts: maxRepresentationAttempts, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF", MaxRetryDelaySeconds: 30},

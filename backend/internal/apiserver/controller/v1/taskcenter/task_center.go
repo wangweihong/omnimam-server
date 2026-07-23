@@ -229,6 +229,7 @@ func atomicTaskResponse(task *iapiserver.AtomicTask) *iapiserver.AtomicTaskRespo
 		AtomicTaskTemplate: iapiserver.AtomicTaskTemplate{
 			Key:                  task.ChildKey,
 			Name:                 task.Name,
+			NameI18n:             maps.Clone(task.NameI18n),
 			FunctionRef:          task.FunctionRef,
 			Arguments:            maps.Clone(task.Arguments),
 			RequiredCapabilities: task.RequiredCapabilities,

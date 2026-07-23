@@ -94,6 +94,8 @@ const (
 	MaxTaskGraphNodes          = 1000
 	MaxTaskGraphEdges          = 5000
 	MaxDynamicForkTasks        = 1000
+	TaskNameSourceUser         = "USER"
+	TaskNameSourceSystem       = "SYSTEM"
 )
 
 const (
@@ -131,9 +133,44 @@ type TaskError struct {
 	OccurredAt imachinery.Time `json:"occurred_at,omitempty"`
 }
 
+// SystemNameSpec 是只允许后端内部创建路径设置的稳定系统名称引用。
+type SystemNameSpec struct {
+	Key    string            `json:"-"`
+	Params map[string]string `json:"-"`
+}
+
+// TaskNameMeta 持久化名称来源和系统名称引用；多语言投影本身不入库。
+type TaskNameMeta struct {
+	NameSource             string            `json:"-" gorm:"column:name_source;type:varchar(16);not null;default:'USER'"`
+	SystemNameKey          string            `json:"-" gorm:"column:system_name_key;type:varchar(256);not null;default:''"`
+	SystemNameParams       map[string]string `json:"-" gorm:"-"`
+	SystemNameParamsShadow string            `json:"-" gorm:"column:system_name_params_json;type:text;not null;default:'{}'"`
+	NameI18n               map[string]string `json:"name_i18n,omitempty" gorm:"-"`
+}
+
+func (m *TaskNameMeta) normalize() {
+	if m.NameSource == "" {
+		m.NameSource = TaskNameSourceUser
+	}
+	if m.SystemNameParams == nil {
+		m.SystemNameParams = map[string]string{}
+	}
+}
+
+func (m *TaskNameMeta) marshal() error {
+	m.normalize()
+	return marshalJSONFields(jsonField{m.SystemNameParams, &m.SystemNameParamsShadow, "{}"})
+}
+
+func (m *TaskNameMeta) unmarshal() {
+	m.normalize()
+	unmarshalJSON(m.SystemNameParamsShadow, &m.SystemNameParams, "{}")
+}
+
 // AtomicTask is the only business resource executed by a Worker handler.
 type AtomicTask struct {
 	imachinery.ObjectMeta
+	TaskNameMeta
 	FunctionRef          string             `json:"function_ref" gorm:"column:function_ref;type:varchar(256);not null;index"`
 	Arguments            map[string]any     `json:"arguments,omitempty" gorm:"-"`
 	ArgumentsShadow      string             `json:"-" gorm:"column:arguments_json;type:text;not null;default:'{}'"`
@@ -208,9 +245,13 @@ func (t *AtomicTask) AfterFind(tx *gorm.DB) error {
 	unmarshalJSON(t.CancelPolicyShadow, &t.CancelPolicy, "{}")
 	unmarshalJSON(t.OutputShadow, &t.Output, "{}")
 	unmarshalJSON(t.LastErrorShadow, &t.LastError, "{}")
+	t.TaskNameMeta.unmarshal()
 	return nil
 }
 func (t *AtomicTask) marshalShadows() error {
+	if err := t.TaskNameMeta.marshal(); err != nil {
+		return err
+	}
 	return marshalJSONFields(
 		jsonField{t.Arguments, &t.ArgumentsShadow, "{}"},
 		jsonField{t.RetryPolicy, &t.RetryPolicyShadow, "{}"},
@@ -300,13 +341,15 @@ func TaskAttemptLogsRef(attemptID string) string {
 
 // AtomicTaskTemplate is embedded in Group, DAG, and Schedule immutable snapshots.
 type AtomicTaskTemplate struct {
-	Key                  string         `json:"key"`
-	Name                 string         `json:"name,omitempty"`
-	FunctionRef          string         `json:"function_ref"`
-	Arguments            map[string]any `json:"arguments,omitempty"`
-	RequiredCapabilities string         `json:"required_capabilities,omitempty"`
-	RetryPolicy          RetryPolicy    `json:"retry_policy,omitempty"`
-	TimeoutPolicy        TimeoutPolicy  `json:"timeout_policy,omitempty"`
+	Key                  string            `json:"key"`
+	Name                 string            `json:"name,omitempty"`
+	NameI18n             map[string]string `json:"name_i18n,omitempty"`
+	SystemName           SystemNameSpec    `json:"-"`
+	FunctionRef          string            `json:"function_ref"`
+	Arguments            map[string]any    `json:"arguments,omitempty"`
+	RequiredCapabilities string            `json:"required_capabilities,omitempty"`
+	RetryPolicy          RetryPolicy       `json:"retry_policy,omitempty"`
+	TimeoutPolicy        TimeoutPolicy     `json:"timeout_policy,omitempty"`
 }
 
 type GroupStrategy struct {
@@ -332,62 +375,69 @@ type TaskSummary struct {
 
 // ScheduleSourceSummary 标识创建运行资源的调度计划与具体轮次。
 type ScheduleSourceSummary struct {
-	ScheduleID          string          `json:"schedule_id"`           // 来源 TaskSchedule 标识。
-	ScheduleName        string          `json:"schedule_name"`         // 来源计划的可读名称。
-	ScheduleExecutionID string          `json:"schedule_execution_id"` // 实际创建该目标的调度轮次。
-	ScheduledAt         imachinery.Time `json:"scheduled_at"`          // 该轮次的计划触发时间。
+	ScheduleID          string            `json:"schedule_id"`                  // 来源 TaskSchedule 标识。
+	ScheduleName        string            `json:"schedule_name"`                // 来源计划的可读名称。
+	ScheduleNameI18n    map[string]string `json:"schedule_name_i18n,omitempty"` // 系统计划的多语言名称。
+	ScheduleExecutionID string            `json:"schedule_execution_id"`        // 实际创建该目标的调度轮次。
+	ScheduledAt         imachinery.Time   `json:"scheduled_at"`                 // 该轮次的计划触发时间。
 }
 
 // AtomicTaskSummary 是关联响应使用的一跳任务摘要，不携带参数、输出、错误或其他关联。
 type AtomicTaskSummary struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Status      string  `json:"status"`
-	Progress    float64 `json:"progress"`
-	FunctionRef string  `json:"function_ref,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	NameI18n    map[string]string `json:"name_i18n,omitempty"`
+	Status      string            `json:"status"`
+	Progress    float64           `json:"progress"`
+	FunctionRef string            `json:"function_ref,omitempty"`
 }
 
 // DAGTaskGroupSummary 是跨领域读取 DAG 运行状态的一跳摘要，不包含节点、边或运行时标识。
 type DAGTaskGroupSummary struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Status   string  `json:"status"`
-	Progress float64 `json:"progress"`
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	NameI18n map[string]string `json:"name_i18n,omitempty"`
+	Status   string            `json:"status"`
+	Progress float64           `json:"progress"`
 }
 
 // TaskOwnerSummary 是 AtomicTask 多态 owner 以及 Group/DAG 重试来源的一跳摘要。
 type TaskOwnerSummary struct {
-	Type     string  `json:"type"`
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Status   string  `json:"status"`
-	Progress float64 `json:"progress,omitempty"`
+	Type     string            `json:"type"`
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	NameI18n map[string]string `json:"name_i18n,omitempty"`
+	Status   string            `json:"status"`
+	Progress float64           `json:"progress,omitempty"`
 }
 
 // TaskScheduleSummary 是执行历史关联的计划摘要，不携带 target 模板或运行历史。
 type TaskScheduleSummary struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	NameI18n map[string]string `json:"name_i18n,omitempty"`
+	Status   string            `json:"status"`
 }
 
 // TaskTargetSummary 是可展示且可导航的调度目标轻量投影，不包含大型输入输出。
 type TaskTargetSummary struct {
-	Type             string  `json:"type"`                         // 目标为 AtomicTask、TaskGroup 或 DAGTaskGroup。
-	ID               string  `json:"id,omitempty"`                 // 实际目标标识；未创建目标时为空。
-	Name             string  `json:"name"`                         // 目标或模板的可读名称。
-	Status           string  `json:"status,omitempty"`             // 实际目标的当前状态。
-	Progress         float64 `json:"progress,omitempty"`           // 实际目标的 0 到 1 进度。
-	FunctionRef      string  `json:"function_ref,omitempty"`       // AtomicTask 注册执行函数。
-	TaskCount        int     `json:"task_count,omitempty"`         // Group/DAG 包含的任务数量。
-	ApplicationRunID string  `json:"application_run_id,omitempty"` // 可选应用运行业务引用。
-	CanvasRunID      string  `json:"canvas_run_id,omitempty"`      // 可选画布运行业务引用。
-	CanvasNodeRunID  string  `json:"canvas_node_run_id,omitempty"` // 可选画布节点运行引用。
+	Type             string            `json:"type"`                         // 目标为 AtomicTask、TaskGroup 或 DAGTaskGroup。
+	ID               string            `json:"id,omitempty"`                 // 实际目标标识；未创建目标时为空。
+	Name             string            `json:"name"`                         // 目标或模板的可读名称。
+	NameI18n         map[string]string `json:"name_i18n,omitempty"`          // 系统目标的多语言名称。
+	Status           string            `json:"status,omitempty"`             // 实际目标的当前状态。
+	Progress         float64           `json:"progress,omitempty"`           // 实际目标的 0 到 1 进度。
+	FunctionRef      string            `json:"function_ref,omitempty"`       // AtomicTask 注册执行函数。
+	TaskCount        int               `json:"task_count,omitempty"`         // Group/DAG 包含的任务数量。
+	ApplicationRunID string            `json:"application_run_id,omitempty"` // 可选应用运行业务引用。
+	CanvasRunID      string            `json:"canvas_run_id,omitempty"`      // 可选画布运行业务引用。
+	CanvasNodeRunID  string            `json:"canvas_node_run_id,omitempty"` // 可选画布节点运行引用。
 }
 
 // TaskGroup is a SERIAL or PARALLEL composition of AtomicTask templates.
 type TaskGroup struct {
 	imachinery.ObjectMeta
+	TaskNameMeta
 	Mode                     string                 `json:"mode" gorm:"column:mode;type:varchar(16);not null"`
 	Tasks                    []AtomicTaskTemplate   `json:"tasks" gorm:"-"`
 	TasksShadow              string                 `json:"-" gorm:"column:task_templates_json;type:text;not null"`
@@ -436,9 +486,13 @@ func (g *TaskGroup) AfterFind(tx *gorm.DB) error {
 	unmarshalJSON(g.StrategyShadow, &g.Strategy, "{}")
 	unmarshalJSON(g.SummaryShadow, &g.Summary, "{}")
 	unmarshalJSON(g.ResultShadow, &g.Result, "{}")
+	g.TaskNameMeta.unmarshal()
 	return nil
 }
 func (g *TaskGroup) marshalShadows() error {
+	if err := g.TaskNameMeta.marshal(); err != nil {
+		return err
+	}
 	return marshalJSONFields(jsonField{g.Tasks, &g.TasksShadow, "[]"}, jsonField{g.Strategy, &g.StrategyShadow, "{}"}, jsonField{g.Summary, &g.SummaryShadow, "{}"}, jsonField{g.Result, &g.ResultShadow, "{}"})
 }
 
@@ -459,6 +513,7 @@ type DAGEdge struct {
 // DAGTaskGroup stores an immutable validated AtomicTask DAG execution.
 type DAGTaskGroup struct {
 	imachinery.ObjectMeta
+	TaskNameMeta
 	Nodes               []DAGNode      `json:"nodes" gorm:"-"`
 	NodesShadow         string         `json:"-" gorm:"column:nodes_json;type:text;not null"`
 	Edges               []DAGEdge      `json:"edges" gorm:"-"`
@@ -526,9 +581,13 @@ func (g *DAGTaskGroup) AfterFind(tx *gorm.DB) error {
 	unmarshalJSON(g.OutputMappingShadow, &g.OutputMapping, "{}")
 	unmarshalJSON(g.SummaryShadow, &g.Summary, "{}")
 	unmarshalJSON(g.ResultShadow, &g.Result, "{}")
+	g.TaskNameMeta.unmarshal()
 	return nil
 }
 func (g *DAGTaskGroup) marshalShadows() error {
+	if err := g.TaskNameMeta.marshal(); err != nil {
+		return err
+	}
 	return marshalJSONFields(jsonField{g.Nodes, &g.NodesShadow, "[]"}, jsonField{g.Edges, &g.EdgesShadow, "[]"}, jsonField{g.Input, &g.InputShadow, "{}"}, jsonField{g.OutputMapping, &g.OutputMappingShadow, "{}"}, jsonField{g.Summary, &g.SummaryShadow, "{}"}, jsonField{g.Result, &g.ResultShadow, "{}"})
 }
 
@@ -581,6 +640,7 @@ type ReconcileSummary struct {
 // TaskSchedule persistently triggers an AtomicTask, TaskGroup, or DAGTaskGroup template.
 type TaskSchedule struct {
 	imachinery.ObjectMeta
+	TaskNameMeta
 	ExecutionMode                  string                 `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED';index:idx_task_schedules_mode_status,priority:1"` // MATERIALIZED 保留完整作业历史，RECONCILE 保存轻量巡检历史。
 	ManagementMode                 string                 `json:"management_mode" gorm:"column:management_mode;type:varchar(16);not null;default:'USER'"`                                                       // USER 可常规管理，SYSTEM 仅管理员可调整安全参数。
 	SystemKey                      string                 `json:"system_key" gorm:"column:system_key;type:varchar(256);not null;default:''"`                                                                    // SYSTEM 计划的全局幂等键，非空时由数据库保证唯一。
@@ -646,9 +706,13 @@ func (s *TaskSchedule) AfterFind(tx *gorm.DB) error {
 	}
 	unmarshalJSON(s.HistoryRetentionShadow, &s.HistoryRetention, "{}")
 	unmarshalJSON(s.SummaryShadow, &s.Summary, "{}")
+	s.TaskNameMeta.unmarshal()
 	return nil
 }
 func (s *TaskSchedule) marshalShadows() error {
+	if err := s.TaskNameMeta.marshal(); err != nil {
+		return err
+	}
 	s.TargetType = s.Target.Type
 	if s.ReconcileSpec != nil {
 		s.ReconcileRef = s.ReconcileSpec.ReconcileRef

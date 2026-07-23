@@ -17,6 +17,7 @@ import (
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
@@ -918,6 +919,7 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 		RequiredCapabilities: "application-platform", ApplicationRunID: run.ID,
 		IdempotencyScope: "application-run", IdempotencyKey: run.IdempotencyKey,
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
+		SystemName: iapiserver.SystemNameSpec{Key: taskname.ApplicationRun},
 	})
 	if err != nil {
 		return s.failTaskBinding(ctx, run, err)

@@ -8,7 +8,9 @@ import (
 
 	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -31,7 +33,8 @@ func (s *misfireStoreStub) GetScheduleExecutionAt(context.Context, string, time.
 
 type systemScheduleStoreStub struct {
 	store.TaskCenterStore
-	schedule *iapiserver.TaskSchedule
+	schedule        *iapiserver.TaskSchedule
+	ensuredSchedule *iapiserver.TaskSchedule
 }
 
 type reconcileRecoveryStoreStub struct {
@@ -80,6 +83,10 @@ func (*reconcileRecoveryStoreStub) WithScheduleReconcileLock(_ context.Context, 
 func (s *systemScheduleStoreStub) GetTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error) {
 	return s.schedule, nil
 }
+func (s *systemScheduleStoreStub) EnsureSystemTaskSchedule(_ context.Context, schedule *iapiserver.TaskSchedule, _ *iapiserver.ScheduleReconcileState) (*iapiserver.TaskSchedule, bool, error) {
+	s.ensuredSchedule = schedule
+	return schedule, true, nil
+}
 func (*systemScheduleStoreStub) ListLatestScheduleExecutions(context.Context, []string) (map[string]*iapiserver.TaskScheduleExecution, error) {
 	return map[string]*iapiserver.TaskScheduleExecution{}, nil
 }
@@ -101,6 +108,33 @@ func TestReconcileRegistryRejectsDuplicateRef(t *testing.T) {
 	}
 	if handler, ok := registry.Get("test.reconcile"); !ok || handler.DisplayName() != "Test reconcile" {
 		t.Fatalf("handler = %#v, exists = %t", handler, ok)
+	}
+}
+
+func TestEnsureSystemReconcileScheduleResolvesLocalizedName(t *testing.T) {
+	registry := NewReconcileRegistry()
+	if err := registry.Register(reconcileHandlerStub{ref: "test.reconcile"}); err != nil {
+		t.Fatal(err)
+	}
+	storage := &systemScheduleStoreStub{}
+	service := &taskCenterService{store: storage, runtime: workflowruntime.NewFake(), reconciles: registry}
+	schedule := &iapiserver.TaskSchedule{
+		ObjectMeta:     imachinery.ObjectMeta{Name: "internal-key"},
+		TaskNameMeta:   iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.EngineHealthReconcile},
+		SystemKey:      "test.reconcile",
+		CronExpression: "0 0 3 * * *",
+		TimeZone:       "UTC",
+		ReconcileSpec:  &iapiserver.ReconcileSpec{ReconcileRef: "test.reconcile", Config: map[string]any{}, MaxParallelism: 1, MaxItemsPerRun: 1, PerItemTimeoutSeconds: 1, OverallTimeoutSeconds: 1},
+	}
+	created, err := service.EnsureSystemReconcileSchedule(context.Background(), schedule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.ensuredSchedule == nil || created.Name != "Application engine health reconcile" {
+		t.Fatalf("created schedule = %#v", created)
+	}
+	if created.NameI18n[taskname.LanguageChinese] != "应用引擎健康巡检" {
+		t.Fatalf("name_i18n = %#v", created.NameI18n)
 	}
 }
 

@@ -127,6 +127,7 @@ func (s *taskCenterService) ListAtomicTasks(ctx context.Context, req *iapiserver
 	if err != nil {
 		return nil, err
 	}
+	localizeAtomicTasks(items)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetAtomic, atomicTaskIDs(items))
 	if err != nil {
 		return nil, err
@@ -147,6 +148,7 @@ func (s *taskCenterService) GetAtomicTask(ctx context.Context, id string) (*iapi
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
+	projectLocalizedName(&item.TaskNameMeta)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetAtomic, []string{item.ID})
 	if err != nil {
 		return nil, err
@@ -168,7 +170,8 @@ func (s *taskCenterService) GetAtomicTaskSummaries(ctx context.Context, ids []st
 		if item == nil || !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 			continue
 		}
-		result[item.ID] = &iapiserver.AtomicTaskSummary{ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef}
+		projectLocalizedName(&item.TaskNameMeta)
+		result[item.ID] = &iapiserver.AtomicTaskSummary{ID: item.ID, Name: item.Name, NameI18n: localizedName(item.TaskNameMeta), Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef}
 	}
 	return result, nil
 }
@@ -203,7 +206,10 @@ func (s *taskCenterService) CreateAtomicTask(ctx context.Context, req *iapiserve
 	if createdBy == "" {
 		createdBy = taskActor(ctx)
 	}
-	task := atomicTaskFromRequest(req, createdBy)
+	task, err := atomicTaskFromRequest(req, createdBy)
+	if err != nil {
+		return nil, err
+	}
 	task.ID = uuid.NewString()
 	task.RootTaskID = task.ID
 	task.Status = iapiserver.AtomicTaskStatusPending
@@ -251,7 +257,7 @@ func (s *taskCenterService) RetryAtomicTask(ctx context.Context, id string, _ *i
 	if source.Status != iapiserver.AtomicTaskStatusFailed && source.Status != iapiserver.AtomicTaskStatusTimeout && source.Status != iapiserver.AtomicTaskStatusCanceled {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "atomic task cannot be manually retried")
 	}
-	req := &iapiserver.AtomicTaskCreateRequest{Key: source.ChildKey, Name: source.Name, Description: source.Description, FunctionRef: source.FunctionRef, Arguments: source.Arguments, RequiredCapabilities: source.RequiredCapabilities, RetryPolicy: source.RetryPolicy, TimeoutPolicy: source.TimeoutPolicy, ProjectID: source.ProjectID, Namespace: source.Namespace}
+	req := &iapiserver.AtomicTaskCreateRequest{Key: source.ChildKey, Name: source.Name, Description: source.Description, FunctionRef: source.FunctionRef, Arguments: source.Arguments, RequiredCapabilities: source.RequiredCapabilities, RetryPolicy: source.RetryPolicy, TimeoutPolicy: source.TimeoutPolicy, ProjectID: source.ProjectID, Namespace: source.Namespace, SystemName: systemNameSpec(source.TaskNameMeta)}
 	retried, err := s.CreateAtomicTask(ctx, req)
 	if err != nil {
 		return retried, err
@@ -271,6 +277,7 @@ func (s *taskCenterService) ListTaskGroups(ctx context.Context, req *iapiserver.
 	if err != nil {
 		return nil, err
 	}
+	localizeTaskGroups(items)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetGroup, taskGroupIDs(items))
 	if err != nil {
 		return nil, err
@@ -291,6 +298,7 @@ func (s *taskCenterService) GetTaskGroup(ctx context.Context, id string) (*iapis
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrTaskGroupNotFound, "task group not found")
 	}
+	projectLocalizedName(&item.TaskNameMeta)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetGroup, []string{item.ID})
 	if err != nil {
 		return nil, err
@@ -309,6 +317,7 @@ func (s *taskCenterService) ListTaskGroupTasks(ctx context.Context, id string, r
 	if err != nil {
 		return nil, err
 	}
+	localizeAtomicTasks(items)
 	if err := s.attachAtomicTaskRelations(ctx, items); err != nil {
 		return nil, err
 	}
@@ -333,7 +342,13 @@ func (s *taskCenterService) CreateTaskGroup(ctx context.Context, req *iapiserver
 	group.ID = uuid.NewString()
 	group.Name = req.Name
 	group.Description = req.Description
-	tasks := tasksFromTemplates(req.Tasks, group.ID, iapiserver.TaskOwnerTypeGroup, req.ProjectID, req.Namespace, group.CreatedBy)
+	if err := assignSystemName(&group.Name, &group.TaskNameMeta, req.SystemName); err != nil {
+		return nil, err
+	}
+	tasks, err := tasksFromTemplates(req.Tasks, group.ID, iapiserver.TaskOwnerTypeGroup, req.ProjectID, req.Namespace, group.CreatedBy)
+	if err != nil {
+		return nil, err
+	}
 	createdGroup, created, err := s.store.AddTaskGroupWithTasks(ctx, group, tasks)
 	if err != nil || !created {
 		return createdGroup, err
@@ -378,7 +393,7 @@ func (s *taskCenterService) RetryTaskGroup(ctx context.Context, id string) (*iap
 	if !iapiserver.IsTaskGroupTerminal(source.Status) {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "task group cannot be rerun")
 	}
-	created, err := s.CreateTaskGroup(ctx, &iapiserver.TaskGroupCreateRequest{Name: source.Name, Description: source.Description, Mode: source.Mode, Tasks: source.Tasks, Strategy: source.Strategy, ProjectID: source.ProjectID, Namespace: source.Namespace})
+	created, err := s.CreateTaskGroup(ctx, &iapiserver.TaskGroupCreateRequest{Name: source.Name, Description: source.Description, Mode: source.Mode, Tasks: source.Tasks, Strategy: source.Strategy, ProjectID: source.ProjectID, Namespace: source.Namespace, SystemName: systemNameSpec(source.TaskNameMeta)})
 	if err != nil {
 		return created, err
 	}
@@ -393,6 +408,7 @@ func (s *taskCenterService) ListDAGTaskGroups(ctx context.Context, req *iapiserv
 	if err != nil {
 		return nil, err
 	}
+	localizeDAGTaskGroups(items)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetDAG, dagTaskGroupIDs(items))
 	if err != nil {
 		return nil, err
@@ -413,6 +429,7 @@ func (s *taskCenterService) GetDAGTaskGroup(ctx context.Context, id string) (*ia
 	if !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 		return nil, errors.NewStatus(code.ErrDAGTaskGroupNotFound, "dag task group not found")
 	}
+	projectLocalizedName(&item.TaskNameMeta)
 	sources, err := s.store.ListScheduleSources(ctx, iapiserver.TaskScheduleTargetDAG, []string{item.ID})
 	if err != nil {
 		return nil, err
@@ -434,7 +451,8 @@ func (s *taskCenterService) GetDAGTaskGroupSummaries(ctx context.Context, ids []
 		if item == nil || !canReadTaskCreatedBy(ctx, item.CreatedBy) {
 			continue
 		}
-		result[item.ID] = &iapiserver.DAGTaskGroupSummary{ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress}
+		projectLocalizedName(&item.TaskNameMeta)
+		result[item.ID] = &iapiserver.DAGTaskGroupSummary{ID: item.ID, Name: item.Name, NameI18n: localizedName(item.TaskNameMeta), Status: item.Status, Progress: item.Progress}
 	}
 	return result, nil
 }
@@ -447,6 +465,7 @@ func (s *taskCenterService) ListDAGTaskGroupTasks(ctx context.Context, id string
 	if err != nil {
 		return nil, err
 	}
+	localizeAtomicTasks(items)
 	if err := s.attachAtomicTaskRelations(ctx, items); err != nil {
 		return nil, err
 	}
@@ -483,7 +502,13 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	group.ID = uuid.NewString()
 	group.Name = req.Name
 	group.Description = req.Description
-	tasks := tasksFromDAG(req.Nodes, group.ID, req.ProjectID, req.Namespace, group.CreatedBy)
+	if err := assignSystemName(&group.Name, &group.TaskNameMeta, req.SystemName); err != nil {
+		return nil, err
+	}
+	tasks, err := tasksFromDAG(req.Nodes, group.ID, req.ProjectID, req.Namespace, group.CreatedBy)
+	if err != nil {
+		return nil, err
+	}
 	definition := dagDefinition(group, tasks, layers)
 	group.RuntimeDefinitionName = definition.Name
 	group.RuntimeDefinitionVersion = definition.Version
@@ -530,7 +555,7 @@ func (s *taskCenterService) RetryDAGTaskGroup(ctx context.Context, id string) (*
 	if !iapiserver.IsTaskGroupTerminal(source.Status) {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "dag task group cannot be rerun")
 	}
-	created, err := s.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: source.Name, Description: source.Description, Nodes: source.Nodes, Edges: source.Edges, Input: source.Input, OutputMapping: source.OutputMapping, CanvasVersionID: source.CanvasVersionID, ProjectID: source.ProjectID, Namespace: source.Namespace, TriggerType: iapiserver.DAGTriggerRetry, TriggerSourceID: source.ID, TriggerSourceName: source.Name})
+	created, err := s.CreateDAGTaskGroup(ctx, &iapiserver.DAGTaskGroupCreateRequest{Name: source.Name, Description: source.Description, Nodes: source.Nodes, Edges: source.Edges, Input: source.Input, OutputMapping: source.OutputMapping, CanvasVersionID: source.CanvasVersionID, ProjectID: source.ProjectID, Namespace: source.Namespace, TriggerType: iapiserver.DAGTriggerRetry, TriggerSourceID: source.ID, TriggerSourceName: source.Name, SystemName: systemNameSpec(source.TaskNameMeta)})
 	if err != nil {
 		return created, err
 	}
@@ -544,6 +569,7 @@ func (s *taskCenterService) ListTaskSchedules(ctx context.Context, req *iapiserv
 	if err != nil {
 		return nil, err
 	}
+	localizeTaskSchedules(items)
 	for _, item := range items {
 		s.decorateReconcileSchedule(item)
 		item.TargetSummary = scheduleTemplateSummary(item)
@@ -561,6 +587,7 @@ func (s *taskCenterService) GetTaskSchedule(ctx context.Context, id string) (*ia
 	if !canReadTaskSchedule(ctx, item) {
 		return nil, errors.NewStatus(code.ErrTaskScheduleNotFound, "task schedule not found")
 	}
+	projectLocalizedName(&item.TaskNameMeta)
 	item.TargetSummary = scheduleTemplateSummary(item)
 	if err := s.attachLatestScheduleExecutions(ctx, []*iapiserver.TaskSchedule{item}); err != nil {
 		return nil, err
@@ -594,7 +621,10 @@ func (s *taskCenterService) RegisterDAGDefinition(ctx context.Context, name stri
 	if err != nil {
 		return nil, err
 	}
-	tasks := tasksFromDAG(req.Nodes, name, req.ProjectID, req.Namespace, iapiserver.DefaultTaskCenterCreatedBy)
+	tasks, err := tasksFromDAG(req.Nodes, name, req.ProjectID, req.Namespace, iapiserver.DefaultTaskCenterCreatedBy)
+	if err != nil {
+		return nil, err
+	}
 	definition := dagDefinition(&iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, OutputMapping: req.OutputMapping}, tasks, layers)
 	definition.Name = name
 	definition.Version = version
@@ -885,19 +915,22 @@ func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapi
 	return layers, nil
 }
 
-func atomicTaskFromRequest(req *iapiserver.AtomicTaskCreateRequest, createdBy string) *iapiserver.AtomicTask {
+func atomicTaskFromRequest(req *iapiserver.AtomicTaskCreateRequest, createdBy string) (*iapiserver.AtomicTask, error) {
 	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, OwnerType: req.OwnerType, OwnerID: req.OwnerID, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	task.Name = req.Name
 	if task.Name == "" {
 		task.Name = req.Key
 	}
+	if err := assignSystemName(&task.Name, &task.TaskNameMeta, req.SystemName); err != nil {
+		return nil, err
+	}
 	task.Description = req.Description
 	if task.Arguments == nil {
 		task.Arguments = map[string]any{}
 	}
-	return task
+	return task, nil
 }
-func tasksFromTemplates(templates []iapiserver.AtomicTaskTemplate, ownerID, ownerType, projectID, namespace, createdBy string) []*iapiserver.AtomicTask {
+func tasksFromTemplates(templates []iapiserver.AtomicTaskTemplate, ownerID, ownerType, projectID, namespace, createdBy string) ([]*iapiserver.AtomicTask, error) {
 	tasks := make([]*iapiserver.AtomicTask, 0, len(templates))
 	for index, template := range templates {
 		task := &iapiserver.AtomicTask{FunctionRef: template.FunctionRef, Arguments: template.Arguments, RequiredCapabilities: template.RequiredCapabilities, RetryPolicy: template.RetryPolicy, TimeoutPolicy: template.TimeoutPolicy, Status: iapiserver.AtomicTaskStatusBlocked, OwnerType: ownerType, OwnerID: ownerID, ChildKey: template.Key, ChildOrder: index, ProjectID: projectID, Namespace: namespace, CreatedBy: createdBy}
@@ -907,21 +940,27 @@ func tasksFromTemplates(templates []iapiserver.AtomicTaskTemplate, ownerID, owne
 		if task.Name == "" {
 			task.Name = template.Key
 		}
+		if err := assignSystemName(&task.Name, &task.TaskNameMeta, template.SystemName); err != nil {
+			return nil, err
+		}
 		tasks = append(tasks, task)
 	}
-	return tasks
+	return tasks, nil
 }
-func tasksFromDAG(nodes []iapiserver.DAGNode, ownerID, projectID, namespace, createdBy string) []*iapiserver.AtomicTask {
+func tasksFromDAG(nodes []iapiserver.DAGNode, ownerID, projectID, namespace, createdBy string) ([]*iapiserver.AtomicTask, error) {
 	templates := make([]iapiserver.AtomicTaskTemplate, len(nodes))
 	for i, node := range nodes {
 		templates[i] = node.Task
 		templates[i].Key = node.Key
 	}
-	tasks := tasksFromTemplates(templates, ownerID, iapiserver.TaskOwnerTypeDAGGroup, projectID, namespace, createdBy)
+	tasks, err := tasksFromTemplates(templates, ownerID, iapiserver.TaskOwnerTypeDAGGroup, projectID, namespace, createdBy)
+	if err != nil {
+		return nil, err
+	}
 	for index, task := range tasks {
 		task.DAGNodeKey = nodes[index].Key
 	}
-	return tasks
+	return tasks, nil
 }
 
 func atomicDefinition(task *iapiserver.AtomicTask) workflowruntime.Definition {
@@ -1113,7 +1152,7 @@ func scheduleTemplateSummary(schedule *iapiserver.TaskSchedule) *iapiserver.Task
 	if schedule == nil || schedule.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
 		return nil
 	}
-	summary := &iapiserver.TaskTargetSummary{Type: schedule.Target.Type, Name: schedule.Name}
+	summary := &iapiserver.TaskTargetSummary{Type: schedule.Target.Type, Name: schedule.Name, NameI18n: localizedName(schedule.TaskNameMeta)}
 	raw, err := json.Marshal(schedule.Target.Template)
 	if err != nil {
 		return summary
@@ -1151,15 +1190,15 @@ func scheduleTemplateSummary(schedule *iapiserver.TaskSchedule) *iapiserver.Task
 }
 
 func atomicTargetSummary(item *iapiserver.AtomicTask) *iapiserver.TaskTargetSummary {
-	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetAtomic, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef, ApplicationRunID: item.ApplicationRunID, CanvasRunID: item.CanvasRunID, CanvasNodeRunID: item.CanvasNodeRunID}
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetAtomic, ID: item.ID, Name: item.Name, NameI18n: localizedName(item.TaskNameMeta), Status: item.Status, Progress: item.Progress, FunctionRef: item.FunctionRef, ApplicationRunID: item.ApplicationRunID, CanvasRunID: item.CanvasRunID, CanvasNodeRunID: item.CanvasNodeRunID}
 }
 
 func groupTargetSummary(item *iapiserver.TaskGroup) *iapiserver.TaskTargetSummary {
-	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetGroup, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetGroup, ID: item.ID, Name: item.Name, NameI18n: localizedName(item.TaskNameMeta), Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
 }
 
 func dagTargetSummary(item *iapiserver.DAGTaskGroup) *iapiserver.TaskTargetSummary {
-	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetDAG, ID: item.ID, Name: item.Name, Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
+	return &iapiserver.TaskTargetSummary{Type: iapiserver.TaskScheduleTargetDAG, ID: item.ID, Name: item.Name, NameI18n: localizedName(item.TaskNameMeta), Status: item.Status, Progress: item.Progress, TaskCount: item.Summary.Total}
 }
 
 func (s *taskCenterService) attachExecutionTargets(ctx context.Context, schedule *iapiserver.TaskSchedule, executions []*iapiserver.TaskScheduleExecution) error {

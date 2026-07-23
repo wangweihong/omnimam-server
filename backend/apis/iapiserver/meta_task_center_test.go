@@ -61,12 +61,12 @@ func TestTaskAttemptLogsRefIsStableAcrossPersistenceHooks(t *testing.T) {
 	}
 }
 
-func TestTaskCenterV172PersistenceFieldsUseReleasedColumns(t *testing.T) {
+func TestTaskCenterV173PersistenceFieldsUseReleasedColumns(t *testing.T) {
 	taskSchema, err := schema.Parse(&AtomicTask{}, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, column := range []string{"dag_node_key"} {
+	for _, column := range []string{"dag_node_key", "name_source", "system_name_key", "system_name_params_json"} {
 		if taskSchema.LookUpField(column) == nil {
 			t.Fatalf("AtomicTask column %s is missing", column)
 		}
@@ -87,6 +87,17 @@ func TestTaskCenterV172PersistenceFieldsUseReleasedColumns(t *testing.T) {
 	for _, column := range []string{"started_at", "completed_at", "trigger_type", "trigger_source_id", "trigger_source_name", "triggered_at"} {
 		if dagSchema.LookUpField(column) == nil {
 			t.Fatalf("DAGTaskGroup column %s is missing", column)
+		}
+	}
+	for name, model := range map[string]any{"TaskGroup": &TaskGroup{}, "TaskSchedule": &TaskSchedule{}} {
+		parsed, parseErr := schema.Parse(model, &sync.Map{}, schema.NamingStrategy{})
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		for _, column := range []string{"name_source", "system_name_key", "system_name_params_json"} {
+			if parsed.LookUpField(column) == nil {
+				t.Fatalf("%s column %s is missing", name, column)
+			}
 		}
 	}
 }

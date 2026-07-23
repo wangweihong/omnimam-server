@@ -38,6 +38,7 @@ type AtomicTaskCreateRequest struct {
 	CreatedBy            string         `json:"-"` // 内部调度触发时显式传递的计划创建者。
 	OwnerType            string         `json:"-"` // 内部调度目标的归属类型，HTTP 客户端不可设置。
 	OwnerID              string         `json:"-"` // 内部调度目标的来源计划 ID。
+	SystemName           SystemNameSpec `json:"-"` // 仅内部创建路径可设置的系统名称 key 与参数。
 }
 
 type TaskAttemptListRequest struct {
@@ -132,6 +133,7 @@ type TaskGroupCreateRequest struct {
 	IdempotencyScope string               `json:"idempotency_scope" binding:"omitempty,max=256"`
 	IdempotencyKey   string               `json:"idempotency_key" binding:"omitempty,max=256"`
 	CreatedBy        string               `json:"-"` // 内部调度触发时显式传递的计划创建者。
+	SystemName       SystemNameSpec       `json:"-"` // 仅内部创建路径可设置的系统名称 key 与参数。
 }
 
 type DAGTaskGroupListRequest struct {
@@ -160,6 +162,7 @@ type DAGTaskGroupCreateRequest struct {
 	TriggerSourceID   string          `json:"-"` // 内部触发来源 ID 快照，HTTP 客户端不可设置。
 	TriggerSourceName string          `json:"-"` // 内部触发来源名称快照，HTTP 客户端不可设置。
 	TriggeredAt       imachinery.Time `json:"-"` // 内部触发时刻快照，HTTP 客户端不可设置。
+	SystemName        SystemNameSpec  `json:"-"` // 仅内部创建路径可设置的系统名称 key 与参数。
 }
 
 // DAGExecutionEventListRequest 过滤规范化运行投影事件，不接受原始运行时字段名。

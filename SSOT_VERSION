@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 7607cb2bd93f34a2cce8be8fddf8564529acff8a
-contract_version: spec-v1.7.2
-updated_at: 2026-07-22
+commit: 4949983e76c5f15448e1b94d9260c93fb2a55ad5
+contract_version: spec-v1.7.3
+updated_at: 2026-07-23
 status: released
-note: Task Center v1.3 adds DAG run observability, enhanced execution logs, and bounded Artifact summaries.
+note: Task Center v1.4 adds compatible multilingual names for newly created system-named task resources.

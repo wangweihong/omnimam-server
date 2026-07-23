@@ -23,6 +23,7 @@ import (
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 )
 
@@ -292,7 +293,7 @@ func RunTaskWorker(cfg *config.Config) error {
 			}
 			thumbnail, err := storeIns.AssetThumbnails().GetByAsset(ctx, event.AssetID)
 			if err == nil {
-				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: "thumbnail", Name: "Generate asset thumbnail", FunctionRef: platformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "thumbnail_id": thumbnail.ID}, RequiredCapabilities: platformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: "asset-thumbnail", IdempotencyKey: "thumbnail:" + event.AssetID + ":" + event.ProfileVersion})
+				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: "thumbnail", Name: "Generate asset thumbnail", FunctionRef: platformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "thumbnail_id": thumbnail.ID}, RequiredCapabilities: platformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: "asset-thumbnail", IdempotencyKey: "thumbnail:" + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
 			}
 			if err != nil {
 				msg.Nack()
@@ -340,7 +341,7 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 				continue
 			}
 			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
-				Key: "artifact-process", Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess,
+				Key: "artifact-process", Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess, SystemName: iapiserver.SystemNameSpec{Key: taskname.ArtifactProcess},
 				Arguments:            map[string]any{"artifact_id": event.ArtifactID, "owner_user_id": event.OwnerUserID},
 				RequiredCapabilities: assetlibrarysvc.FunctionArtifactProcess,
 				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
@@ -389,16 +390,16 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 		return nil, errors.Errorf("representation requested event is incomplete")
 	}
 	nodes := []iapiserver.DAGNode{
-		{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": event.ProfileVersion}}},
+		{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationInspect}, FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": event.ProfileVersion}}},
 	}
 	for _, requested := range event.RequestedRepresentations {
 		if requested.RepresentationType == "" || requested.Profile == "" {
 			return nil, errors.Errorf("representation requested event contains an invalid representation")
 		}
 		childKey := requested.RepresentationType + ":" + requested.Profile
-		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required, "max_attempts": 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF", MaxRetryDelaySeconds: 30}}})
+		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{"representation_type": requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required, "max_attempts": 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF", MaxRetryDelaySeconds: 30}}})
 	}
-	nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
+	nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationFinalize}, FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
 	edges := make([]iapiserver.DAGEdge, 0, max(1, 2*len(event.RequestedRepresentations)))
 	for _, node := range nodes[1 : len(nodes)-1] {
 		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: "finalize"})
@@ -407,7 +408,7 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: "finalize"})
 	}
 	return &iapiserver.DAGTaskGroupCreateRequest{
-		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges,
+		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationBuild},
 		Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: event.ProjectID,
 		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: event.IdempotencyKey,
 		TriggerType: iapiserver.DAGTriggerDomainEvent, TriggerSourceID: event.AssetVersionID, TriggerSourceName: "asset_version_representation_requested",
@@ -499,17 +500,17 @@ func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCen
 		interval = 30 * time.Second
 	}
 	cron := healthCron(interval)
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.engine-health", Description: "Periodic EngineInstance health reconcile"}, SystemKey: appsvc.EngineHealthReconcileRef, CronExpression: cron, TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: appsvc.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.engine-health", Description: "Periodic EngineInstance health reconcile"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.EngineHealthReconcile}, SystemKey: appsvc.EngineHealthReconcileRef, CronExpression: cron, TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: appsvc.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 
 func ensureComfyUIObjectInfoSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.comfyui-object-info-refresh", Description: "Daily ComfyUI object_info refresh"}, SystemKey: appsvc.ComfyUIObjectInfoReconcileRef, CronExpression: "0 0 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: appsvc.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.comfyui-object-info-refresh", Description: "Daily ComfyUI object_info refresh"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.ObjectInfoRefresh}, SystemKey: appsvc.ComfyUIObjectInfoReconcileRef, CronExpression: "0 0 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: appsvc.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 
 func ensureRepresentationBackfillSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: assetlibrarysvc.RepresentationBackfillRef, Description: "Daily AssetVersion representation backfill"}, SystemKey: assetlibrarysvc.RepresentationBackfillRef, CronExpression: "0 30 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: assetlibrarysvc.RepresentationBackfillRef, Config: map[string]any{"max_actions_per_run": 100}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: assetlibrarysvc.RepresentationBackfillRef, Description: "Daily AssetVersion representation backfill"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.RepresentationBackfill}, SystemKey: assetlibrarysvc.RepresentationBackfillRef, CronExpression: "0 30 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: assetlibrarysvc.RepresentationBackfillRef, Config: map[string]any{"max_actions_per_run": 100}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 
