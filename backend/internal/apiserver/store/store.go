@@ -568,6 +568,7 @@ type TaskCenterStore interface {
 	// ListDAGObservationTasks 批量读取一个已授权 DAG 的实际任务投影，供详情、事件和时间线聚合。
 	ListDAGObservationTasks(context.Context, string) ([]*iapiserver.AtomicTask, error)
 	AddOwnedAtomicTasks(context.Context, string, string, []*iapiserver.AtomicTask) error
+	RepairTerminalTaskOwner(context.Context, string, string) error
 	ListTaskSchedules(context.Context, *iapiserver.TaskScheduleListRequest) ([]*iapiserver.TaskSchedule, int64, error)
 	// GetTaskSchedulesByIDs 批量读取关联摘要使用的 TaskSchedule，调用方仍需执行主体可见性过滤。
 	GetTaskSchedulesByIDs(context.Context, []string) ([]*iapiserver.TaskSchedule, error)
@@ -646,7 +647,14 @@ type ApplicationPlatformStore interface {
 	GetComfyUIWorkflowTestRun(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	GetComfyUIWorkflowTestRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	AddComfyUIWorkflowTestRun(ctx context.Context, data *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error)
-	UpdateComfyUIWorkflowTestRun(ctx context.Context, data *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error)
+	// BindComfyUIWorkflowTestRunDAG records the canonical Task Center owner after DAG creation succeeds.
+	BindComfyUIWorkflowTestRunDAG(ctx context.Context, testRunID, dagTaskGroupID string) (*iapiserver.ComfyUIWorkflowTestRun, error)
+	// SetComfyUIWorkflowTestRunExternalJob records the provider job identifier without copying execution state.
+	SetComfyUIWorkflowTestRunExternalJob(ctx context.Context, testRunID, externalJobID string) (*iapiserver.ComfyUIWorkflowTestRun, error)
+	// SetComfyUIWorkflowTestRunOutputs stores only the selected temporary preview descriptors.
+	SetComfyUIWorkflowTestRunOutputs(ctx context.Context, testRunID string, outputs []iapiserver.ComfyUIWorkflowTestOutput) (*iapiserver.ComfyUIWorkflowTestRun, error)
+	// FailComfyUIWorkflowTestRunCreation records a failure that occurs before a DAG can be bound.
+	FailComfyUIWorkflowTestRunCreation(ctx context.Context, testRunID, failure string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	ConvertComfyUIWorkflow(
 		ctx context.Context,
 		workflowID, ownerUserID, actorUserID, idempotencyKey string,

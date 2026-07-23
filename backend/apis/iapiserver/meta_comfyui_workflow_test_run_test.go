@@ -15,7 +15,6 @@ func TestComfyUIWorkflowTestRunSnapshots(t *testing.T) {
 			EngineInstanceSnapshot: ComfyUIWorkflowTestEngineSnapshot{ID: "engine-a", Name: "ComfyUI-A", Region: &region},
 			Parameters:             []ComfyUIWorkflowTestParameter{{NodeID: "3", InputName: "seed", Value: float64(42)}},
 			OutputSelections:       []ComfyUIWorkflowTestOutputSelection{{NodeID: "9", OutputIndex: 0}},
-			Steps:                  defaultSnapshotTestSteps(),
 			Outputs:                []ComfyUIWorkflowTestOutput{},
 		}
 
@@ -29,7 +28,6 @@ func TestComfyUIWorkflowTestRunSnapshots(t *testing.T) {
 			EngineSnapshotShadow:   run.EngineSnapshotShadow,
 			ParametersShadow:       run.ParametersShadow,
 			OutputSelectionsShadow: run.OutputSelectionsShadow,
-			StepsShadow:            run.StepsShadow,
 			OutputsShadow:          run.OutputsShadow,
 			WorkflowSnapshotShadow: "{}",
 		}
@@ -59,8 +57,4 @@ func TestComfyUIWorkflowTestRunSnapshots(t *testing.T) {
 		So(value, ShouldContainSubstring, `"outputs":null`)
 		So(strings.Contains(value, "base_url"), ShouldBeFalse)
 	})
-}
-
-func defaultSnapshotTestSteps() []ComfyUIWorkflowTestStep {
-	return []ComfyUIWorkflowTestStep{{Key: "submit", Label: "提交", Status: "PENDING"}}
 }

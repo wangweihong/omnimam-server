@@ -51,6 +51,34 @@ type projectionStoreStub struct {
 	attempts []*iapiserver.TaskAttempt
 }
 
+type ownerRepairStoreStub struct {
+	store.TaskCenterStore
+	dag         *iapiserver.DAGTaskGroup
+	repairCalls int
+}
+
+func (s *ownerRepairStoreStub) ListDAGObservationTasks(context.Context, string) ([]*iapiserver.AtomicTask, error) {
+	return []*iapiserver.AtomicTask{}, nil
+}
+
+func (s *ownerRepairStoreStub) GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error) {
+	return s.dag, nil
+}
+
+func (s *ownerRepairStoreStub) RepairTerminalTaskOwner(context.Context, string, string) error {
+	s.repairCalls++
+	return nil
+}
+
+type ownerRepairRuntime struct {
+	workflowruntime.UnavailableRuntime
+	execution workflowruntime.Execution
+}
+
+func (r ownerRepairRuntime) GetExecution(context.Context, string) (workflowruntime.Execution, error) {
+	return r.execution, nil
+}
+
 func (s *projectionStoreStub) ApplyRuntimeProjection(_ context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, _ *iapiserver.RuntimeProjectionEvent) (bool, error) {
 	s.applied, s.task, s.attempts = true, task, attempts
 	return true, nil
@@ -162,6 +190,20 @@ func TestProjectionKeepsCanceledResultWhenTerminalLogWriteFails(t *testing.T) {
 	}
 	if len(storeStub.attempts) != 1 || storeStub.attempts[0].LogsRef != iapiserver.TaskAttemptLogsRef(storeStub.attempts[0].ID) {
 		t.Fatalf("attempts = %#v", storeStub.attempts)
+	}
+}
+
+func TestReconcileOwnerRepairsAggregateWhenRuntimeProjectionIsUnchanged(t *testing.T) {
+	dag := &iapiserver.DAGTaskGroup{RuntimeExecutionID: "execution-1"}
+	dag.ID = "dag-1"
+	storage := &ownerRepairStoreStub{dag: dag}
+	reconciler := &Reconciler{store: storage, runtime: ownerRepairRuntime{execution: workflowruntime.Execution{ID: "execution-1"}}}
+
+	if err := reconciler.reconcileOwner(context.Background(), iapiserver.TaskOwnerTypeDAGGroup, dag.ID, dag.RuntimeExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	if storage.repairCalls != 1 {
+		t.Fatalf("repair calls=%d, want 1", storage.repairCalls)
 	}
 }
 

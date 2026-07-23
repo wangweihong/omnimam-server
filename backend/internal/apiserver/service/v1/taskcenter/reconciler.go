@@ -132,9 +132,18 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, ownerType, ownerID, exe
 		return err
 	}
 	var errs []error
+	projectionApplied := false
 	for _, task := range tasks {
 		task.RuntimeExecutionID = executionID
-		if _, err := r.project(ctx, task, execution); err != nil {
+		applied, projectErr := r.project(ctx, task, execution)
+		if projectErr != nil {
+			errs = append(errs, projectErr)
+		} else if applied {
+			projectionApplied = true
+		}
+	}
+	if !projectionApplied {
+		if err := r.store.RepairTerminalTaskOwner(ctx, ownerType, ownerID); err != nil {
 			errs = append(errs, err)
 		}
 	}

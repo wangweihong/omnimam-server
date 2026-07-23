@@ -16,6 +16,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -36,8 +37,11 @@ func (s *applicationPlatformService) ListComfyUIWorkflowTestRuns(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
+	projectComfyTestRunSummaries(ctx, s.Tasks, items)
 	for _, item := range items {
-		_, _ = s.projectComfyTestRun(ctx, item)
+		if req.Detail {
+			_, _ = s.projectComfyTestRun(ctx, item)
+		}
 		if !req.Detail {
 			item.Parameters = nil
 			item.OutputSelections = nil
@@ -96,7 +100,7 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if engine.Region != "" {
 		engineSnapshot.Region = &engine.Region
 	}
-	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), Parameters: req.Parameters, OutputSelections: req.Outputs, Status: iapiserver.TaskGroupStatusPending, Progress: 0, Steps: defaultTestSteps(), Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
+	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), Parameters: req.Parameters, OutputSelections: req.Outputs, Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
 	run.ID = uuid.NewString()
 	run.Name = "ComfyUI workflow test"
 	run, err = s.Store.ApplicationPlatforms().AddComfyUIWorkflowTestRun(ctx, run)
@@ -111,11 +115,11 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if err != nil {
 		return s.failComfyTestRun(ctx, run, err)
 	}
-	run.DAGTaskGroupID = &dag.ID
-	run.TaskCreationStatus = iapiserver.TaskCreationCreated
-	run.Status = dag.Status
-	run.Progress = int(dag.Progress * 100)
-	return s.Store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
+	bound, err := s.Store.ApplicationPlatforms().BindComfyUIWorkflowTestRunDAG(ctx, run.ID, dag.ID)
+	if err != nil {
+		return nil, err
+	}
+	return s.projectComfyTestRun(ctx, bound)
 }
 
 func (s *applicationPlatformService) GetComfyUIWorkflowTestRun(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
@@ -200,6 +204,7 @@ func (s *applicationPlatformService) visibleComfyTestRun(ctx context.Context, id
 	return run, nil
 }
 func (s *applicationPlatformService) projectComfyTestRun(ctx context.Context, run *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+	applyComfyTestRunCreationProjection(run)
 	for index := range run.Outputs {
 		if run.Outputs[index].Kind == "image" {
 			value := "/api/v1/comfyui-workflow-test-runs/" + run.ID + "/outputs/" + run.Outputs[index].ID + "/content"
@@ -213,34 +218,180 @@ func (s *applicationPlatformService) projectComfyTestRun(ctx context.Context, ru
 	if err != nil {
 		return run, nil
 	}
-	tasksResp, _ := s.Tasks.ListDAGTaskGroupTasks(ctx, dag.ID, &iapiserver.AtomicTaskListRequest{BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{PageSize: 100}}})
+	tasksResp, taskErr := s.Tasks.ListDAGTaskGroupTasks(ctx, dag.ID, &iapiserver.AtomicTaskListRequest{BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{PageSize: 100}}})
+	if taskErr != nil || tasksResp == nil {
+		return run, nil
+	}
+	applyComfyTestRunProjection(run, dag, tasksResp.Items)
+	return run, nil
+}
+
+func applyComfyTestRunProjection(run *iapiserver.ComfyUIWorkflowTestRun, dag *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTask) {
 	run.Status = dag.Status
-	run.Progress = int(dag.Progress * 100)
-	for i := range run.Steps {
-		for _, task := range tasksResp.Items {
-			if task.ChildKey == run.Steps[i].Key {
-				run.Steps[i].AtomicTaskID = &task.ID
-				run.Steps[i].Status = task.Status
-				run.Steps[i].Progress = int(task.Progress * 100)
-				if run.Steps[i].Status == iapiserver.AtomicTaskStatusRunning {
-					run.CurrentStep = &run.Steps[i].Key
+	run.Progress = dag.Progress
+	run.CurrentStep = nil
+	run.FailureSummary = nil
+	run.Steps = make([]iapiserver.ComfyUIWorkflowTestStep, 0, len(dag.Nodes))
+
+	byKey := make(map[string]*iapiserver.AtomicTask, len(tasks))
+	for _, task := range tasks {
+		if task != nil {
+			key := task.DAGNodeKey
+			if key == "" {
+				key = task.ChildKey
+			}
+			byKey[key] = task
+		}
+	}
+	currentPriority := 100
+	for _, node := range dag.Nodes {
+		step := iapiserver.ComfyUIWorkflowTestStep{Key: node.Key, Label: node.Task.Name, Status: iapiserver.AtomicTaskStatusPending}
+		task := byKey[node.Key]
+		if task == nil {
+			run.Steps = append(run.Steps, step)
+			continue
+		}
+		if task.Name != "" {
+			step.Label = task.Name
+		}
+		step.AtomicTaskID = &task.ID
+		step.Status = task.Status
+		step.Progress = task.Progress
+		if node.Key != "collect_preview" {
+			step.ExternalJobID = comfyTestExternalJobID(run.ExternalJobID, task.Output)
+		}
+		if state, ok := task.Output["provider_state"].(string); ok && state != "" {
+			step.ProviderState = &state
+		}
+		step.QueuePosition = comfyTestQueuePosition(task.Output["queue_position"])
+		if priority := comfyTestCurrentStepPriority(task.Status); priority < currentPriority {
+			currentPriority = priority
+			run.CurrentStep = &step.Key
+		}
+		if task.Status == iapiserver.AtomicTaskStatusFailed || task.Status == iapiserver.AtomicTaskStatusTimeout {
+			if summary := comfyTestTaskErrorSummary(task.LastError); summary != "" {
+				step.Error = &summary
+				if run.FailureSummary == nil {
+					run.FailureSummary = &summary
 				}
 			}
 		}
+		run.Steps = append(run.Steps, step)
 	}
-	_, _ = s.Store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
-	return run, nil
+	if isComfyTestRunTerminal(dag.Status) {
+		run.CurrentStep = nil
+	}
+}
+
+func projectComfyTestRunSummaries(ctx context.Context, tasks taskcenter.TaskCenterSrv, runs []*iapiserver.ComfyUIWorkflowTestRun) {
+	ids := make([]string, 0, len(runs))
+	for _, run := range runs {
+		applyComfyTestRunCreationProjection(run)
+		if run.DAGTaskGroupID != nil {
+			ids = append(ids, *run.DAGTaskGroupID)
+		}
+	}
+	if tasks == nil || len(ids) == 0 {
+		return
+	}
+	summaries, err := tasks.GetDAGTaskGroupSummaries(ctx, ids)
+	if err != nil {
+		return
+	}
+	for _, run := range runs {
+		if run.DAGTaskGroupID == nil {
+			continue
+		}
+		if summary := summaries[*run.DAGTaskGroupID]; summary != nil {
+			run.Status = summary.Status
+			run.Progress = summary.Progress
+		}
+	}
+}
+
+func applyComfyTestRunCreationProjection(run *iapiserver.ComfyUIWorkflowTestRun) {
+	run.Status = iapiserver.TaskGroupStatusPending
+	run.Progress = 0
+	run.CurrentStep = nil
+	run.FailureSummary = nil
+	if run.TaskCreationStatus == iapiserver.TaskCreationFailed {
+		run.Status = iapiserver.TaskGroupStatusFailed
+		run.FailureSummary = run.TaskCreationFailure
+	}
+}
+
+func comfyTestQueuePosition(value any) *int {
+	var position int
+	switch typed := value.(type) {
+	case int:
+		position = typed
+	case int64:
+		position = int(typed)
+	case float64:
+		position = int(typed)
+	case *int:
+		if typed == nil {
+			return nil
+		}
+		position = *typed
+	default:
+		return nil
+	}
+	if position <= 0 {
+		return nil
+	}
+	return &position
+}
+
+func comfyTestExternalJobID(stored *string, output map[string]any) *string {
+	if stored != nil && *stored != "" {
+		return stored
+	}
+	for _, key := range []string{"external_job_id", "prompt_id"} {
+		if value, ok := output[key].(string); ok && value != "" {
+			return &value
+		}
+	}
+	return nil
+}
+
+func comfyTestCurrentStepPriority(status string) int {
+	switch status {
+	case iapiserver.AtomicTaskStatusRunning, iapiserver.AtomicTaskStatusCancelRequested:
+		return 0
+	case iapiserver.AtomicTaskStatusRetrying:
+		return 1
+	case iapiserver.AtomicTaskStatusReady:
+		return 2
+	default:
+		return 100
+	}
+}
+
+func comfyTestTaskErrorSummary(taskError iapiserver.TaskError) string {
+	for _, value := range []string{taskError.Message, taskError.Detail, taskError.Code} {
+		if summary := strings.TrimSpace(value); summary != "" {
+			return summary
+		}
+	}
+	return ""
+}
+
+func isComfyTestRunTerminal(status string) bool {
+	switch status {
+	case iapiserver.TaskGroupStatusSuccess, iapiserver.TaskGroupStatusFailed, iapiserver.TaskGroupStatusTimeout, iapiserver.TaskGroupStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 func (s *applicationPlatformService) failComfyTestRun(ctx context.Context, run *iapiserver.ComfyUIWorkflowTestRun, cause error) (*iapiserver.ComfyUIWorkflowTestRun, error) {
 	message := cause.Error()
-	run.TaskCreationStatus = iapiserver.TaskCreationFailed
-	run.TaskCreationFailure = &message
-	run.Status = iapiserver.TaskGroupStatusFailed
-	updated, _ := s.Store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
+	updated, _ := s.Store.ApplicationPlatforms().FailComfyUIWorkflowTestRunCreation(ctx, run.ID, message)
+	if updated != nil {
+		applyComfyTestRunCreationProjection(updated)
+	}
 	return updated, cause
-}
-func defaultTestSteps() []iapiserver.ComfyUIWorkflowTestStep {
-	return []iapiserver.ComfyUIWorkflowTestStep{{Key: "submit", Label: "提交", Status: "PENDING"}, {Key: "poll", Label: "轮询", Status: "PENDING"}, {Key: "collect_preview", Label: "收集预览", Status: "PENDING"}}
 }
 func validateTestParameters(workflow *iapiserver.ComfyUIWorkflow, parameters []iapiserver.ComfyUIWorkflowTestParameter) error {
 	allowed := map[string]iapiserver.ComfyUIWorkflowInputCandidate{}

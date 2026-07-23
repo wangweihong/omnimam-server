@@ -101,3 +101,30 @@ func TestDAGTaskGroupFingerprintIgnoresRuntimeState(t *testing.T) {
 		t.Fatal("runtime state must not change an idempotent request fingerprint")
 	}
 }
+
+func TestOwnerStatusTreatsBlockedDescendantsAsTerminalAfterFailure(t *testing.T) {
+	tests := []struct {
+		name         string
+		statuses     []string
+		wantStatus   string
+		wantTerminal bool
+	}{
+		{name: "failed predecessor blocks descendant", statuses: []string{iapiserver.AtomicTaskStatusSuccess, iapiserver.AtomicTaskStatusFailed, iapiserver.AtomicTaskStatusBlocked}, wantStatus: iapiserver.TaskGroupStatusFailed, wantTerminal: true},
+		{name: "timeout predecessor blocks descendant", statuses: []string{iapiserver.AtomicTaskStatusTimeout, iapiserver.AtomicTaskStatusBlocked}, wantStatus: iapiserver.TaskGroupStatusTimeout, wantTerminal: true},
+		{name: "active independent branch remains running", statuses: []string{iapiserver.AtomicTaskStatusFailed, iapiserver.AtomicTaskStatusBlocked, iapiserver.AtomicTaskStatusRunning}, wantStatus: iapiserver.TaskGroupStatusRunning, wantTerminal: false},
+		{name: "pending independent branch remains running", statuses: []string{iapiserver.AtomicTaskStatusFailed, iapiserver.AtomicTaskStatusBlocked, iapiserver.AtomicTaskStatusPending}, wantStatus: iapiserver.TaskGroupStatusRunning, wantTerminal: false},
+		{name: "blocked without terminal cause remains running", statuses: []string{iapiserver.AtomicTaskStatusSuccess, iapiserver.AtomicTaskStatusBlocked}, wantStatus: iapiserver.TaskGroupStatusRunning, wantTerminal: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tasks := make([]*iapiserver.AtomicTask, 0, len(tt.statuses))
+			for _, status := range tt.statuses {
+				tasks = append(tasks, &iapiserver.AtomicTask{Status: status})
+			}
+			status, terminal := ownerStatusAndTerminal(tasks)
+			if status != tt.wantStatus || terminal != tt.wantTerminal {
+				t.Fatalf("owner status=%s terminal=%t, want %s/%t", status, terminal, tt.wantStatus, tt.wantTerminal)
+			}
+		})
+	}
+}

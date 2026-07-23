@@ -206,7 +206,7 @@ type ComfyUIWorkflowTestStep struct {
 	Label         string  `json:"label"`
 	AtomicTaskID  *string `json:"atomic_task_id"`
 	Status        string  `json:"status"`
-	Progress      int     `json:"progress"`
+	Progress      float64 `json:"progress"`
 	ExternalJobID *string `json:"external_job_id"`
 	ProviderState *string `json:"provider_state"`
 	QueuePosition *int    `json:"queue_position"`
@@ -252,13 +252,12 @@ type ComfyUIWorkflowTestRun struct {
 	OutputSelections       []ComfyUIWorkflowTestOutputSelection `json:"output_snapshot" gorm:"-"`
 	OutputSelectionsShadow string                               `json:"-" gorm:"column:output_snapshot_json;type:text;not null;default:'[]'"`
 	Steps                  []ComfyUIWorkflowTestStep            `json:"steps" gorm:"-"`
-	StepsShadow            string                               `json:"-" gorm:"column:steps_json;type:text;not null;default:'[]'"`
 	Outputs                []ComfyUIWorkflowTestOutput          `json:"outputs" gorm:"-"`
 	OutputsShadow          string                               `json:"-" gorm:"column:outputs_json;type:text;not null;default:'[]'"`
-	Status                 string                               `json:"status" gorm:"column:status;type:text;not null;default:'PENDING';index"`
-	Progress               int                                  `json:"progress" gorm:"column:progress;not null;default:0"`
-	CurrentStep            *string                              `json:"current_step" gorm:"column:current_step;type:text"`
-	FailureSummary         *string                              `json:"failure_summary" gorm:"column:failure_summary;type:text"`
+	Status                 string                               `json:"status" gorm:"-"`
+	Progress               float64                              `json:"progress" gorm:"-"`
+	CurrentStep            *string                              `json:"current_step" gorm:"-"`
+	FailureSummary         *string                              `json:"failure_summary" gorm:"-"`
 }
 
 func (ComfyUIWorkflowTestRun) TableName() string { return "aiapp_comfyui_workflow_test_runs" }
@@ -282,7 +281,6 @@ func (r *ComfyUIWorkflowTestRun) AfterFind(*gorm.DB) error {
 	unmarshalShadow(r.ParametersShadow, &r.Parameters)
 	r.ParameterOverrideCount = len(r.Parameters)
 	unmarshalShadow(r.OutputSelectionsShadow, &r.OutputSelections)
-	unmarshalShadow(r.StepsShadow, &r.Steps)
 	var storedOutputs []storedComfyUIWorkflowTestOutput
 	unmarshalShadow(r.OutputsShadow, &storedOutputs)
 	r.Outputs = make([]ComfyUIWorkflowTestOutput, 0, len(storedOutputs))
@@ -301,7 +299,7 @@ func (r *ComfyUIWorkflowTestRun) marshal() error {
 		value    any
 		target   *string
 		fallback string
-	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.OutputSelections, &r.OutputSelectionsShadow, "[]"}, {r.Steps, &r.StepsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
+	}{{r.WorkflowSnapshot, &r.WorkflowSnapshotShadow, "{}"}, {r.EngineInstanceSnapshot, &r.EngineSnapshotShadow, "{}"}, {r.Parameters, &r.ParametersShadow, "[]"}, {r.OutputSelections, &r.OutputSelectionsShadow, "[]"}, {storedOutputs, &r.OutputsShadow, "[]"}} {
 		if err := marshalShadow(item.value, item.target, item.fallback); err != nil {
 			return err
 		}

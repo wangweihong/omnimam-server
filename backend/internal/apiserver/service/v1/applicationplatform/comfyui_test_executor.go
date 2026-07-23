@@ -48,8 +48,7 @@ func (e *ComfyUITestExecutor) Submit(ctx context.Context, testRunID string) (map
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "ComfyUI response does not contain prompt_id")
 	}
 	run.ExternalJobID = &promptID
-	setRunStep(run, "submit", iapiserver.AtomicTaskStatusSuccess, 100, &promptID, nil, nil)
-	_, err = e.store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
+	_, err = e.store.ApplicationPlatforms().SetComfyUIWorkflowTestRunExternalJob(ctx, run.ID, promptID)
 	return map[string]any{"prompt_id": promptID, "external_job_id": promptID}, err
 }
 
@@ -69,22 +68,13 @@ func (e *ComfyUITestExecutor) Poll(ctx context.Context, testRunID string) (map[s
 	entry := mapValue(history[promptID])
 	if len(entry) == 0 {
 		queuePosition := comfyQueuePosition(ctx, engine, promptID)
-		state := "queued"
-		setRunStep(run, "poll", iapiserver.AtomicTaskStatusRunning, 25, &promptID, &state, queuePosition)
-		_, _ = e.store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
-		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID, "queue_position": queuePosition}, nil
+		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID, "provider_state": "queued", "queue_position": queuePosition}, nil
 	}
 	status := mapValue(entry["status"])
 	if completed, _ := status["completed"].(bool); !completed {
-		state := "running"
-		setRunStep(run, "poll", iapiserver.AtomicTaskStatusRunning, 60, &promptID, &state, nil)
-		_, _ = e.store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
-		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID}, nil
+		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID, "provider_state": "running"}, nil
 	}
-	state := "completed"
-	setRunStep(run, "poll", iapiserver.AtomicTaskStatusSuccess, 100, &promptID, &state, nil)
-	_, err = e.store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
-	return map[string]any{"prompt_id": promptID, "history": entry}, err
+	return map[string]any{"prompt_id": promptID, "provider_state": "completed"}, nil
 }
 
 func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (map[string]any, error) {
@@ -101,12 +91,7 @@ func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (ma
 	}
 	entry := mapValue(history[*run.ExternalJobID])
 	outputs := collectTestOutputs(mapValue(entry["outputs"]), run.OutputSelections)
-	run.Outputs = outputs
-	run.Status = iapiserver.TaskGroupStatusSuccess
-	run.Progress = 100
-	setRunStep(run, "collect_preview", iapiserver.AtomicTaskStatusSuccess, 100, run.ExternalJobID, nil, nil)
-	run.CurrentStep = nil
-	_, err = e.store.ApplicationPlatforms().UpdateComfyUIWorkflowTestRun(ctx, run)
+	_, err = e.store.ApplicationPlatforms().SetComfyUIWorkflowTestRunOutputs(ctx, run.ID, outputs)
 	return map[string]any{"prompt_id": *run.ExternalJobID, "output_count": len(outputs)}, err
 }
 
@@ -131,19 +116,6 @@ func deepCopyMap(value map[string]any) map[string]any {
 		}
 	}
 	return result
-}
-func setRunStep(run *iapiserver.ComfyUIWorkflowTestRun, key, status string, progress int, jobID, state *string, queue *int) {
-	for index := range run.Steps {
-		if run.Steps[index].Key == key {
-			run.Steps[index].Status = status
-			run.Steps[index].Progress = progress
-			run.Steps[index].ExternalJobID = jobID
-			run.Steps[index].ProviderState = state
-			run.Steps[index].QueuePosition = queue
-			run.CurrentStep = &run.Steps[index].Key
-			return
-		}
-	}
 }
 func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, promptID string) *int {
 	queue, err := invokeProvider(ctx, engine, http.MethodGet, "/queue", nil)

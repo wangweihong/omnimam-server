@@ -1085,10 +1085,6 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 	summary := iapiserver.TaskSummary{Total: len(tasks)}
 	progress := 0.0
 	result := map[string]any{}
-	terminal := true
-	failed := false
-	canceled := false
-	timedOut := false
 	var startedAt, completedAt imachinery.Time
 	for _, task := range tasks {
 		progress += task.Progress
@@ -1101,34 +1097,25 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 		switch task.Status {
 		case iapiserver.AtomicTaskStatusPending:
 			summary.Pending++
-			terminal = false
 		case iapiserver.AtomicTaskStatusBlocked:
 			summary.Blocked++
-			terminal = false
 		case iapiserver.AtomicTaskStatusReady:
 			summary.Ready++
-			terminal = false
 		case iapiserver.AtomicTaskStatusRunning:
 			summary.Running++
-			terminal = false
 		case iapiserver.AtomicTaskStatusRetrying:
 			summary.Retrying++
-			terminal = false
 		case iapiserver.AtomicTaskStatusCancelRequested:
 			summary.CancelRequested++
-			terminal = false
 		case iapiserver.AtomicTaskStatusSuccess:
 			summary.Success++
 			result[task.ChildKey] = task.Output
 		case iapiserver.AtomicTaskStatusFailed:
 			summary.Failed++
-			failed = true
 		case iapiserver.AtomicTaskStatusCanceled:
 			summary.Canceled++
-			canceled = true
 		case iapiserver.AtomicTaskStatusTimeout:
 			summary.Timeout++
-			timedOut = true
 		case iapiserver.AtomicTaskStatusSkipped:
 			summary.Skipped++
 		}
@@ -1136,19 +1123,7 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 	if len(tasks) > 0 {
 		progress /= float64(len(tasks))
 	}
-	status := iapiserver.TaskGroupStatusRunning
-	if terminal {
-		switch {
-		case failed:
-			status = iapiserver.TaskGroupStatusFailed
-		case timedOut:
-			status = iapiserver.TaskGroupStatusTimeout
-		case canceled:
-			status = iapiserver.TaskGroupStatusCanceled
-		default:
-			status = iapiserver.TaskGroupStatusSuccess
-		}
-	}
+	status, terminal := ownerStatusAndTerminal(tasks)
 	switch ownerType {
 	case iapiserver.TaskOwnerTypeGroup:
 		var group iapiserver.TaskGroup
@@ -1183,6 +1158,59 @@ func recalculateOwner(tx *gorm.DB, ownerType, ownerID string) error {
 		return projectTaskGroupChanged(tx, ownerType, &previous, &group, false)
 	}
 	return nil
+}
+
+func (s *taskCenterStore) RepairTerminalTaskOwner(ctx context.Context, ownerType, ownerID string) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var tasks []*iapiserver.AtomicTask
+		if err := tx.Where("owner_type = ? AND owner_id = ?", ownerType, ownerID).Find(&tasks).Error; err != nil {
+			return err
+		}
+		if len(tasks) == 0 {
+			return nil
+		}
+		if _, terminal := ownerStatusAndTerminal(tasks); !terminal {
+			return nil
+		}
+		return recalculateOwner(tx, ownerType, ownerID)
+	}))
+}
+
+func ownerStatusAndTerminal(tasks []*iapiserver.AtomicTask) (string, bool) {
+	active := false
+	blocked := false
+	failed := false
+	canceled := false
+	timedOut := false
+	for _, task := range tasks {
+		switch task.Status {
+		case iapiserver.AtomicTaskStatusPending, iapiserver.AtomicTaskStatusReady, iapiserver.AtomicTaskStatusRunning,
+			iapiserver.AtomicTaskStatusRetrying, iapiserver.AtomicTaskStatusCancelRequested:
+			active = true
+		case iapiserver.AtomicTaskStatusBlocked:
+			blocked = true
+		case iapiserver.AtomicTaskStatusFailed:
+			failed = true
+		case iapiserver.AtomicTaskStatusCanceled:
+			canceled = true
+		case iapiserver.AtomicTaskStatusTimeout:
+			timedOut = true
+		}
+	}
+	terminalCause := failed || timedOut || canceled
+	if active || (blocked && !terminalCause) {
+		return iapiserver.TaskGroupStatusRunning, false
+	}
+	switch {
+	case failed:
+		return iapiserver.TaskGroupStatusFailed, true
+	case timedOut:
+		return iapiserver.TaskGroupStatusTimeout, true
+	case canceled:
+		return iapiserver.TaskGroupStatusCanceled, true
+	default:
+		return iapiserver.TaskGroupStatusSuccess, true
+	}
 }
 
 func (s *taskCenterStore) AcquireScheduleExecution(

@@ -116,26 +116,43 @@ func (s *applicationPlatformStore) AddComfyUIWorkflowTestRun(ctx context.Context
 	}
 	return data, nil
 }
-func (s *applicationPlatformStore) UpdateComfyUIWorkflowTestRun(ctx context.Context, data *iapiserver.ComfyUIWorkflowTestRun) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+func (s *applicationPlatformStore) BindComfyUIWorkflowTestRunDAG(ctx context.Context, testRunID, dagTaskGroupID string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+	updates := map[string]any{
+		"dag_task_group_id":     dagTaskGroupID,
+		"task_creation_status":  iapiserver.TaskCreationCreated,
+		"task_creation_failure": nil,
+		"updated_at":            imachinery.Now(),
+		"resource_version":      gorm.Expr("resource_version + 1"),
+	}
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowTestRun{}).Where("id = ?", testRunID).Updates(updates).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return s.GetComfyUIWorkflowTestRun(ctx, testRunID)
+}
+func (s *applicationPlatformStore) SetComfyUIWorkflowTestRunExternalJob(ctx context.Context, testRunID, externalJobID string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+	updates := map[string]any{"external_job_id": externalJobID, "updated_at": imachinery.Now(), "resource_version": gorm.Expr("resource_version + 1")}
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowTestRun{}).Where("id = ?", testRunID).Updates(updates).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return s.GetComfyUIWorkflowTestRun(ctx, testRunID)
+}
+func (s *applicationPlatformStore) SetComfyUIWorkflowTestRunOutputs(ctx context.Context, testRunID string, outputs []iapiserver.ComfyUIWorkflowTestOutput) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+	data := &iapiserver.ComfyUIWorkflowTestRun{Outputs: outputs}
 	if err := data.MarshalShadows(); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	updates := map[string]any{
-		"external_job_id": data.ExternalJobID, "task_creation_status": data.TaskCreationStatus,
-		"task_creation_failure": data.TaskCreationFailure, "steps_json": data.StepsShadow, "outputs_json": data.OutputsShadow,
-		"status": data.Status, "progress": data.Progress, "current_step": data.CurrentStep,
-		"failure_summary": data.FailureSummary, "updated_at": imachinery.Now(),
-		"resource_version": gorm.Expr("resource_version + 1"),
-	}
-	// A Worker may project execution state before CreateDAGTaskGroup returns.
-	// Never let that stale snapshot erase the binding written by the creator.
-	if data.DAGTaskGroupID != nil {
-		updates["dag_task_group_id"] = data.DAGTaskGroupID
-	}
-	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowTestRun{}).Where("id = ?", data.ID).Updates(updates).Error; err != nil {
+	updates := map[string]any{"outputs_json": data.OutputsShadow, "updated_at": imachinery.Now(), "resource_version": gorm.Expr("resource_version + 1")}
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowTestRun{}).Where("id = ?", testRunID).Updates(updates).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return s.GetComfyUIWorkflowTestRun(ctx, data.ID)
+	return s.GetComfyUIWorkflowTestRun(ctx, testRunID)
+}
+func (s *applicationPlatformStore) FailComfyUIWorkflowTestRunCreation(ctx context.Context, testRunID, failure string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+	updates := map[string]any{"task_creation_status": iapiserver.TaskCreationFailed, "task_creation_failure": failure, "updated_at": imachinery.Now(), "resource_version": gorm.Expr("resource_version + 1")}
+	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowTestRun{}).Where("id = ?", testRunID).Updates(updates).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return s.GetComfyUIWorkflowTestRun(ctx, testRunID)
 }
 
 func (s *applicationPlatformStore) ConvertComfyUIWorkflow(ctx context.Context, workflowID, owner, actor, key string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
