@@ -8,6 +8,11 @@
 - 图片、视频、音频、PDF 等 heavy asset 列表必须使用 thumbnail、placeholder 或 derived preview，不能直接渲染原始文件。
 - 凡是 provider、remote client、auth mode、storage、queue、cache、scheduler、policy、strategy 等可替换边界，必须采用“消费方 interface + adapter 实现 + bootstrap 注入/registry 选择”的结构。业务层不得直接依赖具体实现，不得在 service 中硬编码 provider switch。不要滥用 interface，DTO、稳定内部 helper、无替换需求的实现不需要抽象。新增边界时同时提供 fake/mock/noop 测试替身，并说明后续如何扩展第二种实现。
 
+## api 设计规则
+- apis/iapiserver的对外参数禁止直接使用time.Time，必须使用imachinery.Time。
+- apis中所有需要克隆/深拷贝必须通过// +k8s:deepcopy-gen=true 注释标记，通过make gen.deepcopy 生成 deepcopy 函数。除非特殊情况得到用户允许，否则严禁自行实现 deepcopy或者相关的结构体复制 函数。
+- 除非特殊情况得到用户允许，否则严禁直接将apis中的字段定义未map[string]any,map[string]interface{},[]map[string]any,[]map[string]interface{}等任意类型。
+
 ## Task Center 与 WorkflowRuntime
 
 - Task Center 是 AtomicTask、TaskAttempt、TaskGroup、DAGTaskGroup、TaskSchedule、ScheduleExecution 和业务状态投影的事实源；Conductor OSS 负责内部调度、自动重试、超时、Worker 分发、DAG 状态机和运行历史。
@@ -60,3 +65,7 @@
 - 新增通用函数或者异步函数、slice、sets、fields、waitgroup、http请求等功能前必须先查复用：优先读取 `third_party/gotoolbox/README*` 采集 `github.com/wangweihong/gotoolbox` 功能包列表以及对应包的README.md的函数列表；如果有功能类似则优先复用。
 - 确认 gotoolbox、仓库 `/pkg`、`backend/pkg`、`backend/internal/pkg` 都无合适能力后，才允许新增本地 helper，并说明原因。
 - 多个外部服务健康检测或连接测试必须考虑网络延迟，默认并发检测，整体/单项超时时间限制为 5 秒；特殊情况实现前说明原因。等待、重试、超时控制优先用 `github.com/wangweihong/gotoolbox/pkg/wait`，必要时结合 gotoolbox waitgroup 等并发辅助包。
+- 新增 string、map、slice、set、convert、concurrency、wait、httpcli、validation 等通用 helper/function 前，必须先查复用：读取 `third_party/gotoolbox/README*`；README 不存在时，从 `third_party/gotoolbox/pkg/**` 的包目录、源码、测试和示例采集包列表，并查看对应包导出函数。
+- 只有确认 `github.com/wangweihong/gotoolbox`、仓库 `/pkg`、`backend/pkg`、`backend/internal/pkg` 都没有合适公共函数后，才允许新增本地 helper；必须先判断能否做成可复用通用泛型函数，避免只服务单个业务场景。
+- 新增 HTTP client 请求、外部 API 调用封装、provider 或 gateway 调用时，必须优先使用 `github.com/wangweihong/gotoolbox` 的 `httpcli` 包；只有 `httpcli` 不能满足明确需求时，才允许使用标准库或其他 HTTP client，并在实现前说明原因和 trade-off。
+- 新增 public 或 internal library code 必须补单元测试；library unit test 沿用当前项目 GoConvey 约定，使用 `github.com/smartystreets/goconvey/convey` 的 dot import。

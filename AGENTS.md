@@ -166,3 +166,6 @@ Next Prompt:
 
 Read docs/HANDOFF.md, verify the current implementation, and continue with the next outstanding task. Do not repeat completed work.
 ```
+
+## 引入新二进制限制
+未经用户许可，禁止自行在backend/cmd/ 目录下引入新的二进制文件。
