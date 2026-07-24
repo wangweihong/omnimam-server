@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -301,7 +302,7 @@ func (s *aiChatStore) CreateMessageGeneration(
 		if err := ensureNoActiveGeneration(tx, ownerUserID, topic.ID); err != nil {
 			return err
 		}
-		now := time.Now()
+		now := imachinery.Now()
 		userMsg := &iapiserver.AIChatMessage{
 			TopicID:         topic.ID,
 			OwnerUserID:     ownerUserID,
@@ -453,7 +454,7 @@ func (s *aiChatStore) StopGeneration(
 		if generation.Status != iapiserver.AIChatStatusQueued && generation.Status != iapiserver.AIChatStatusGenerating {
 			return nil
 		}
-		now := time.Now()
+		now := imachinery.Now()
 		if err := tx.Model(&iapiserver.AIChatMessage{}).
 			Where("owner_user_id = ? AND id = ?", ownerUserID, generation.AssistantMessageID).
 			Update("status", iapiserver.AIChatStatusInterrupted).Error; err != nil {

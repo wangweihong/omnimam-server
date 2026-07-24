@@ -2,7 +2,6 @@ package iapiserver
 
 import (
 	"encoding/json"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -157,7 +156,7 @@ type AIChatTopic struct {
 	// BranchSourceMessageID 记录分支来源消息，用于回溯上下文来源。
 	BranchSourceMessageID string `json:"branch_source_message_id" gorm:"column:branch_source_message_id;type:varchar(64);index:idx_ai_chat_topics_branch_source,priority:2"`
 	// LastActiveAt 用于话题列表按最近交互排序，消息创建和生成状态变化会更新。
-	LastActiveAt time.Time `json:"last_active_at"           gorm:"column:last_active_at;index:idx_ai_chat_topics_owner_activity,priority:3,sort:desc"`
+	LastActiveAt imachinery.Time `json:"last_active_at"           gorm:"column:last_active_at;index:idx_ai_chat_topics_owner_activity,priority:3,sort:desc"`
 	// DeletedAt 用于用户话题软删除，保留历史消息数据。
 	DeletedAt string `json:"-"                        gorm:"column:deleted_at;type:text;default:'';index"`
 }
@@ -172,7 +171,7 @@ func (t *AIChatTopic) BeforeCreate(tx *gorm.DB) error {
 		t.Name = t.Title
 	}
 	if t.LastActiveAt.IsZero() {
-		t.LastActiveAt = t.CreatedAt.Time
+		t.LastActiveAt = t.CreatedAt
 	}
 	return nil
 }
@@ -272,7 +271,7 @@ func (m *AIChatMessage) AfterFind(tx *gorm.DB) error {
 	return unmarshalAIChatJSON(m.AttachmentIconsShadow, &m.AttachmentIcons)
 }
 
-// AIChatGeneration 记录一次模型生成过程，承载 stop/regenerate 等操作的运行状态。	
+// AIChatGeneration 记录一次模型生成过程，承载 stop/regenerate 等操作的运行状态。
 // +k8s:deepcopy-gen=true
 type AIChatGeneration struct {
 	imachinery.ObjectMeta
@@ -291,11 +290,11 @@ type AIChatGeneration struct {
 	// AssistantID 记录本次生成使用的助手，纯翻译或默认生成可为空。
 	AssistantID string `json:"assistant_id"         gorm:"column:assistant_id;type:varchar(64)"`
 	// StartedAt 记录模型调用开始时间，用于前端展示和运行诊断。
-	StartedAt *time.Time `json:"started_at,omitempty" gorm:"column:started_at"`
+	StartedAt *imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
 	// CompletedAt 记录生成完成或失败时间，对外沿用当前 draft 的 finished_at 字段。
-	CompletedAt *time.Time `json:"finished_at,omitempty" gorm:"column:finished_at"`
+	CompletedAt *imachinery.Time `json:"finished_at,omitempty" gorm:"column:finished_at"`
 	// StoppedAt 是停止请求的运行态字段，当前不作为 S2 响应字段落库。
-	StoppedAt *time.Time `json:"-" gorm:"-"`
+	StoppedAt imachinery.Time `json:"-" gorm:"-"`
 	// ErrorCode 保存生成失败时的业务错误码，成功生成时为空。
 	ErrorCode string `json:"error_code,omitempty" gorm:"column:error_code;type:varchar(64)"`
 	// ErrorMessage 保存生成失败时的可观测错误信息，避免静默吞错。

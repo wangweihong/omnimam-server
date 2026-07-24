@@ -95,7 +95,6 @@ type OperationExecutorDefinition struct {
 }
 
 // ApplicationEngineType 是系统启动时注册的不可写引擎类型。
-// +k8s:deepcopy-gen=true
 type ApplicationEngineType struct {
 	ID                         string                    `json:"id" yaml:"id"`
 	Name                       string                    `json:"name" yaml:"name"`
@@ -117,7 +116,6 @@ type ProviderLifecycle struct {
 	ReplacementModelID string `json:"replacement_model_id,omitempty" yaml:"replacement_model_id,omitempty"`
 }
 
-// +k8s:deepcopy-gen=true
 type ProviderCapabilityModel struct {
 	ID                  string            `json:"id" yaml:"id"`
 	ProviderModelID     string            `json:"provider_model_id" yaml:"provider_model_id"`
@@ -504,6 +502,7 @@ type ApplicationTemplateVersionSummary struct {
 }
 
 // ProviderCapabilityRefSummary 是运行快照中的非敏感 ProviderCapability 与 Operation 摘要。
+// +k8s:deepcopy-gen=true
 type ProviderCapabilityRefSummary struct {
 	ID            string  `json:"id"`
 	Name          string  `json:"name"`
@@ -523,7 +522,15 @@ type EngineInstanceRefSummary struct {
 }
 
 // AtomicTaskRefSummary 复用 Task Center 的一跳任务摘要语义。
-type AtomicTaskRefSummary = AtomicTaskSummary
+// +k8s:deepcopy-gen=true
+type AtomicTaskRefSummary struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	NameI18n    map[string]string `json:"name_i18n,omitempty"`
+	Status      string            `json:"status"`
+	Progress    float64           `json:"progress"`
+	FunctionRef string            `json:"function_ref,omitempty"`
+}
 
 func (ApplicationVersion) TableName() string { return "aiapp_application_versions" }
 func (v *ApplicationVersion) BeforeCreate(tx *gorm.DB) error {
@@ -556,6 +563,7 @@ func (v *ApplicationVersion) marshal() error {
 	return marshalShadow(v.ParameterPolicies, &v.ParameterPoliciesShadow, "{}")
 }
 
+// +k8s:deepcopy-gen=true
 type ApplicationRun struct {
 	imachinery.ObjectMeta
 	OwnerUserID                    string                 `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
@@ -637,6 +645,8 @@ func (r *ApplicationRun) marshal() error {
 	return nil
 }
 
+// ApplicationArtifact 是应用运行的工件。
+// +k8s:deepcopy-gen=true
 type ApplicationArtifact struct {
 	imachinery.ObjectMeta
 	OwnerUserID               string  `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index"`

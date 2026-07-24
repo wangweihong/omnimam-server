@@ -1,10 +1,11 @@
 package iapiserver
 
 import (
-	"encoding/json"
+	//"encoding/json"
 
 	"gorm.io/gorm"
-
+	"github.com/wangweihong/gotoolbox/pkg/json"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
@@ -249,7 +250,7 @@ func (v *AssetVersion) marshal() error {
 	if err := marshalAssetLifecycleJSON(v.Content, &v.ContentShadow, v.Metadata, &v.MetadataShadow); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(nonNilMap(v.ProcessingError))
+	raw, err := json.Marshal(maputil.NonNilMap(v.ProcessingError))
 	if err != nil {
 		return err
 	}
@@ -262,7 +263,7 @@ func marshalAssetLifecycleJSON(content map[string]any, contentShadow *string, me
 		value  map[string]any
 		shadow *string
 	}{{content, contentShadow}, {metadata, metadataShadow}} {
-		raw, err := json.Marshal(nonNilMap(item.value))
+		raw, err := json.Marshal(maputil.NonNilMap(item.value))
 		if err != nil {
 			return err
 		}
@@ -285,11 +286,4 @@ func unmarshalAssetLifecycleJSON(contentShadow string, content *map[string]any, 
 		}
 	}
 	return nil
-}
-
-func nonNilMap(value map[string]any) map[string]any {
-	if value == nil {
-		return map[string]any{}
-	}
-	return value
 }

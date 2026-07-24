@@ -22,6 +22,28 @@ func (ext Extend) String() string {
 	return string(data)
 }
 
+func (ext *Extend) DeepCopyInto(out *Extend) {
+	if ext == nil || out == nil {
+		return
+	}
+	if ext.StringAny != nil {
+		out.StringAny = ext.StringAny.DeepCopy()
+		return
+	}
+}
+
+func (ext *Extend) DeepCopy() *Extend {
+	if ext == nil {
+		return nil
+	}
+	out := new(Extend)
+	if ext.StringAny != nil {
+		out.StringAny = ext.StringAny.DeepCopy()
+		return out
+	}
+	return out
+}
+
 // Merge merge extend fields from extendShadow.q
 func (ext Extend) Merge(extendShadow string) Extend {
 	var extend Extend

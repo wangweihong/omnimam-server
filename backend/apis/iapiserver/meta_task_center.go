@@ -1,3 +1,5 @@
+// +k8s:deepcopy-gen=package
+
 package iapiserver
 
 import (
@@ -125,6 +127,7 @@ type TimeoutPolicy struct {
 }
 
 // TaskError is a stable, user-safe execution failure summary.
+// +k8s:deepcopy-gen=true
 type TaskError struct {
 	Code       string          `json:"code,omitempty"`
 	Message    string          `json:"message,omitempty"`
@@ -134,12 +137,14 @@ type TaskError struct {
 }
 
 // SystemNameSpec 是只允许后端内部创建路径设置的稳定系统名称引用。
+// +k8s:deepcopy-gen=true
 type SystemNameSpec struct {
 	Key    string            `json:"-"`
 	Params map[string]string `json:"-"`
 }
 
 // TaskNameMeta 持久化名称来源和系统名称引用；多语言投影本身不入库。
+// +k8s:deepcopy-gen=true
 type TaskNameMeta struct {
 	NameSource             string            `json:"-" gorm:"column:name_source;type:varchar(16);not null;default:'USER'"`
 	SystemNameKey          string            `json:"-" gorm:"column:system_name_key;type:varchar(256);not null;default:''"`
@@ -378,6 +383,7 @@ type TaskSummary struct {
 }
 
 // ScheduleSourceSummary 标识创建运行资源的调度计划与具体轮次。
+// +k8s:deepcopy-gen=true
 type ScheduleSourceSummary struct {
 	ScheduleID          string            `json:"schedule_id"`                  // 来源 TaskSchedule 标识。
 	ScheduleName        string            `json:"schedule_name"`                // 来源计划的可读名称。
@@ -387,6 +393,7 @@ type ScheduleSourceSummary struct {
 }
 
 // AtomicTaskSummary 是关联响应使用的一跳任务摘要，不携带参数、输出、错误或其他关联。
+// +k8s:deepcopy-gen=true
 type AtomicTaskSummary struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -395,7 +402,16 @@ type AtomicTaskSummary struct {
 	Progress    float64           `json:"progress"`
 	FunctionRef string            `json:"function_ref,omitempty"`
 }
-
+func (v *AtomicTaskSummary) ToAtomicTaskSummary() AtomicTaskRefSummary {
+	return AtomicTaskRefSummary{
+		ID:          v.ID,
+		Name:        v.Name,
+		NameI18n:    v.NameI18n,
+		Status:      v.Status,
+		Progress:    v.Progress,
+		FunctionRef: v.FunctionRef,
+	}
+}
 // DAGTaskGroupSummary 是跨领域读取 DAG 运行状态的一跳摘要，不包含节点、边或运行时标识。
 type DAGTaskGroupSummary struct {
 	ID       string            `json:"id"`
@@ -406,6 +422,7 @@ type DAGTaskGroupSummary struct {
 }
 
 // TaskOwnerSummary 是 AtomicTask 多态 owner 以及 Group/DAG 重试来源的一跳摘要。
+// +k8s:deepcopy-gen=true
 type TaskOwnerSummary struct {
 	Type     string            `json:"type"`
 	ID       string            `json:"id"`
@@ -416,6 +433,7 @@ type TaskOwnerSummary struct {
 }
 
 // TaskScheduleSummary 是执行历史关联的计划摘要，不携带 target 模板或运行历史。
+// +k8s:deepcopy-gen=true
 type TaskScheduleSummary struct {
 	ID       string            `json:"id"`
 	Name     string            `json:"name"`
@@ -502,6 +520,8 @@ func (g *TaskGroup) marshalShadows() error {
 	return marshalJSONFields(jsonField{g.Tasks, &g.TasksShadow, "[]"}, jsonField{g.Strategy, &g.StrategyShadow, "{}"}, jsonField{g.Summary, &g.SummaryShadow, "{}"}, jsonField{g.Result, &g.ResultShadow, "{}"})
 }
 
+// DAGNode is the node in a DAG.
+// +k8s:deepcopy-gen=true
 type DAGNode struct {
 	Key             string             `json:"key"`
 	Task            AtomicTaskTemplate `json:"task"`
@@ -510,6 +530,8 @@ type DAGNode struct {
 	MaxDynamicTasks int                `json:"max_dynamic_tasks,omitempty"`
 }
 
+// DAGEdge is the edge between two nodes in a DAG.
+// +k8s:deepcopy-gen=true
 type DAGEdge struct {
 	FromNode    string         `json:"from_node"`
 	ToNode      string         `json:"to_node"`
@@ -598,11 +620,14 @@ func (g *DAGTaskGroup) marshalShadows() error {
 	return marshalJSONFields(jsonField{g.Nodes, &g.NodesShadow, "[]"}, jsonField{g.Edges, &g.EdgesShadow, "[]"}, jsonField{g.Input, &g.InputShadow, "{}"}, jsonField{g.OutputMapping, &g.OutputMappingShadow, "{}"}, jsonField{g.Summary, &g.SummaryShadow, "{}"}, jsonField{g.Result, &g.ResultShadow, "{}"})
 }
 
+// ScheduleTarget 是调度任务的目标。
+// +k8s:deepcopy-gen=true
 type ScheduleTarget struct {
 	Type     string         `json:"type"`
 	Template map[string]any `json:"template"`
 }
 
+// ScheduleSummary 是调度任务的摘要。
 type ScheduleSummary struct {
 	TotalTriggered int `json:"total_triggered"`
 	Running        int `json:"running"`
@@ -613,6 +638,7 @@ type ScheduleSummary struct {
 }
 
 // ReconcileSpec 描述后端注册巡检器的受控运行参数；reconcile_ref 不能由公开更新接口更换。
+// +k8s:deepcopy-gen=true
 type ReconcileSpec struct {
 	ReconcileRef          string         `json:"reconcile_ref"`                   // 后端 ReconcileRegistry 中的稳定引用。
 	DisplayName           string         `json:"display_name,omitempty" gorm:"-"` // 后端注册器提供的可读名称，不持久化。
@@ -624,6 +650,7 @@ type ReconcileSpec struct {
 }
 
 // HistoryRetention 控制 RECONCILE 轻量业务历史与运行时历史的有限保留。
+// +k8s:deepcopy-gen=true
 type HistoryRetention struct {
 	SuccessCount            int `json:"success_count"`
 	FailureCount            int `json:"failure_count"`
@@ -633,6 +660,7 @@ type HistoryRetention struct {
 }
 
 // ReconcileSummary 是单轮巡检的低成本结果摘要，不包含逐项检测详情。
+// +k8s:deepcopy-gen=true
 type ReconcileSummary struct {
 	Scanned            int            `json:"scanned"`
 	Findings           int            `json:"findings"`

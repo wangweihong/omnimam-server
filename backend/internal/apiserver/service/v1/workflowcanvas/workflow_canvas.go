@@ -736,7 +736,8 @@ func (s *service) GetNodeRun(ctx context.Context, id string) (*iapiserver.Canvas
 		summaries, summaryErr := s.tasks.GetAtomicTaskSummaries(ctx, sliceutil.Unique(ids))
 		if summaryErr == nil {
 			for _, binding := range tasks {
-				binding.AtomicTask = summaries[binding.AtomicTaskID]
+				task := summaries[binding.AtomicTaskID].ToAtomicTaskSummary()
+				binding.AtomicTask = &task
 			}
 		}
 	}
@@ -832,6 +833,7 @@ func (s *service) attachCanvasRunRelations(ctx context.Context, runs []*iapiserv
 		}
 		if run.DAGTaskGroupID != nil {
 			dagIDs = append(dagIDs, *run.DAGTaskGroupID)
+			sliceutil.Append(dagIDs, *run.DAGTaskGroupID)
 		}
 	}
 
@@ -910,7 +912,8 @@ func (s *service) attachCanvasNodeRunRelations(ctx context.Context, runs []*iapi
 	}
 	for _, run := range runs {
 		if run != nil && run.AtomicTaskID != nil {
-			run.AtomicTask = summaries[*run.AtomicTaskID]
+			task := summaries[*run.AtomicTaskID].ToAtomicTaskSummary()
+			run.AtomicTask = &task
 		}
 	}
 }

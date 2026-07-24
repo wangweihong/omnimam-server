@@ -199,7 +199,7 @@ type AssetCollection struct {
 }
 
 // CollectionSummary 是 Collection 的一跳可读摘要，不包含父级和成员。
-// +k8s:deepcopy-gen=true
+
 type CollectionSummary struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
