@@ -95,6 +95,7 @@ type OperationExecutorDefinition struct {
 }
 
 // ApplicationEngineType 是系统启动时注册的不可写引擎类型。
+// +k8s:deepcopy-gen=true
 type ApplicationEngineType struct {
 	ID                         string                    `json:"id" yaml:"id"`
 	Name                       string                    `json:"name" yaml:"name"`
@@ -116,6 +117,7 @@ type ProviderLifecycle struct {
 	ReplacementModelID string `json:"replacement_model_id,omitempty" yaml:"replacement_model_id,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
 type ProviderCapabilityModel struct {
 	ID                  string            `json:"id" yaml:"id"`
 	ProviderModelID     string            `json:"provider_model_id" yaml:"provider_model_id"`
@@ -128,6 +130,7 @@ type ProviderCapabilityModel struct {
 	Limits              map[string]any    `json:"limits,omitempty" yaml:"limits,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
 type ProviderCapabilityOperation struct {
 	ID                     string   `json:"id" yaml:"id"`
 	CapabilityDefinitionID string   `json:"capability_definition_id" yaml:"capability_definition_id"`
@@ -137,6 +140,7 @@ type ProviderCapabilityOperation struct {
 	Description            string   `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
 type ProviderCapabilityVariant struct {
 	ID                    string            `json:"id" yaml:"id"`
 	ModelID               string            `json:"model_id" yaml:"model_id"`
@@ -150,6 +154,7 @@ type ProviderCapabilityVariant struct {
 
 // AIAppProviderCapability 是从启动目录加载的只读能力清单，不持久化到数据库。
 // Go 名称带领域前缀，避免与 model-management 的同名资源混淆。
+// +k8s:deepcopy-gen=true
 type AIAppProviderCapability struct {
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
 	ID            string `json:"id" yaml:"id"`

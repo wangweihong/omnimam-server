@@ -12,6 +12,7 @@
 - apis/iapiserver的对外参数禁止直接使用time.Time，必须使用imachinery.Time。
 - apis中所有需要克隆/深拷贝必须通过// +k8s:deepcopy-gen=true 注释标记，通过make gen.deepcopy 生成 deepcopy 函数。除非特殊情况得到用户允许，否则严禁自行实现 deepcopy或者相关的结构体复制 函数。
 - 除非特殊情况得到用户允许，否则严禁直接将apis中的字段定义未map[string]any,map[string]interface{},[]map[string]any,[]map[string]interface{}等任意类型。
+- apis中禁止使用类型重定义，避免deepcopy-gen失效。
 
 ## Task Center 与 WorkflowRuntime
 

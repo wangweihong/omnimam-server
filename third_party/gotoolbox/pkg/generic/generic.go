@@ -18,3 +18,10 @@ type Ordered interface {
 type comparable interface {
 	int | int8 | int16 | int32 | int64 | uint | uint8 | uint32 | uint64 | float32 | float64 | string
 }
+
+func GetIfNotNil[T any](s T, k *T) T {
+	if k != nil {
+		return *k
+	}
+	return s
+}

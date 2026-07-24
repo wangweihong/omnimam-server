@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/generic"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"gorm.io/gorm"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -153,27 +155,17 @@ func (s *service) UpdateStorageBackend(ctx context.Context, id string, req *iapi
 	if err != nil {
 		return nil, mapStorageInspectionNotFound(err, code.ErrAssetStorageBackendNotFound)
 	}
-	if req.Name != nil {
-		backend.Name = *req.Name
-	}
-	if req.Type != nil {
-		backend.Type = *req.Type
-	}
-	if req.Root != nil {
-		backend.Root = *req.Root
-	}
+
+	backend.Name = generic.GetIfNotNil(backend.Name, req.Name)
+	backend.Type = generic.GetIfNotNil(backend.Type, req.Type)
+	backend.Root = generic.GetIfNotNil(backend.Root, req.Root)
+	backend.Enabled = generic.GetIfNotNil(backend.Enabled, req.Enabled)
+	backend.Readonly = generic.GetIfNotNil(backend.Readonly, req.Readonly)
+	backend.Quota = generic.GetIfNotNil(backend.Quota, req.Quota)
 	if req.Config != nil {
 		backend.Config = maps.Clone(*req.Config)
 	}
-	if req.Enabled != nil {
-		backend.Enabled = *req.Enabled
-	}
-	if req.Readonly != nil {
-		backend.Readonly = *req.Readonly
-	}
-	if req.Quota != nil {
-		backend.Quota = *req.Quota
-	}
+
 	if err := normalizeStorageBackend(backend); err != nil {
 		return nil, err
 	}
@@ -222,8 +214,8 @@ func projectStorageBackend(item *iapiserver.StorageBackend) *iapiserver.StorageB
 		return nil
 	}
 	return &iapiserver.StorageBackendDetail{
-		ID: item.ID, Name: item.Name, Description: item.Description, Extend: cloneStringAny(item.Extend),
-		Type: item.Type, Root: item.Root, Config: cloneStringAny(item.Config), Enabled: item.Enabled,
+		ID: item.ID, Name: item.Name, Description: item.Description, Extend: item.Extend.DeepCopy(),
+		Type: item.Type, Root: item.Root, Config: maputil.StringAny(item.Config).DeepCopy(), Enabled: item.Enabled,
 		Readonly: item.Readonly, Quota: item.Quota, ResourceVersion: item.ResourceVersion,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
@@ -234,16 +226,9 @@ func projectBlobDetail(item *iapiserver.AssetBlob) *iapiserver.AssetBlobDetail {
 		return nil
 	}
 	return &iapiserver.AssetBlobDetail{
-		ID: item.ID, Name: item.Name, Description: item.Description, Extend: cloneStringAny(item.Extend),
+		ID: item.ID, Name: item.Name, Description: item.Description, Extend: item.Extend.DeepCopy(),
 		StorageBackendID: item.StorageBackendID, ObjectKey: item.ObjectKey, SHA256: item.SHA256,
 		SizeBytes: item.SizeBytes, MIMEType: item.MIMEType, Status: item.Status,
 		ResourceVersion: item.ResourceVersion, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
-}
-
-func cloneStringAny(source map[string]any) map[string]any {
-	if source == nil {
-		return map[string]any{}
-	}
-	return maps.Clone(source)
 }

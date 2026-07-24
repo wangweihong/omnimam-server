@@ -8,7 +8,6 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/json"
 )
 
-
 type StringAny map[string]any
 
 func NonNilMap(value map[string]any) map[string]any {
@@ -29,6 +28,9 @@ func NewStringAny() StringAny {
 }
 
 func (m StringAny) DeepCopy() StringAny {
+	if m == nil {
+		return make(map[string]any)
+	}
 	return maps.Clone(m)
 }
 

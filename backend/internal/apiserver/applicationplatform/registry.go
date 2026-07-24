@@ -2,7 +2,6 @@ package applicationplatform
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,7 +11,7 @@ import (
 	"time"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -107,7 +106,7 @@ func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
 			item.CapabilityDefinitions["en-US"] = append(item.CapabilityDefinitions["en-US"], definition.NameI18n["en-US"])
 		}
 		r.engineTypes[item.ID] = item
-		r.engineList = append(r.engineList, cloneApplicationEngineType(item))
+		r.engineList = append(r.engineList, item.DeepCopy())
 	}
 	sort.Slice(r.engineList, func(i, j int) bool { return r.engineList[i].ID < r.engineList[j].ID })
 	return r, nil
@@ -116,7 +115,7 @@ func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
 func (r *RuntimeRegistry) EngineTypes() []*iapiserver.ApplicationEngineType {
 	items := make([]*iapiserver.ApplicationEngineType, 0, len(r.engineList))
 	for _, item := range r.engineList {
-		items = append(items, cloneApplicationEngineType(*item))
+		items = append(items, item.DeepCopy())
 	}
 	return items
 }
@@ -126,7 +125,7 @@ func (r *RuntimeRegistry) EngineType(id string) (*iapiserver.ApplicationEngineTy
 	if !ok {
 		return nil, false
 	}
-	return cloneApplicationEngineType(item), true
+	return item.DeepCopy(), true
 }
 
 func (r *RuntimeRegistry) Capability(id string) (*iapiserver.CapabilityDefinition, bool) {
@@ -135,33 +134,10 @@ func (r *RuntimeRegistry) Capability(id string) (*iapiserver.CapabilityDefinitio
 		return nil, false
 	}
 	copyItem := item
-	copyItem.NameI18n = cloneStringMap(item.NameI18n)
+	copyItem.NameI18n = maputil.StringString(item.NameI18n).DeepCopy()
 	copyItem.InputMediaTypes = append([]string(nil), item.InputMediaTypes...)
 	copyItem.OutputMediaTypes = append([]string(nil), item.OutputMediaTypes...)
 	return &copyItem, true
-}
-
-func cloneApplicationEngineType(item iapiserver.ApplicationEngineType) *iapiserver.ApplicationEngineType {
-	copyItem := item
-	copyItem.AuthenticationTypes = append([]string(nil), item.AuthenticationTypes...)
-	copyItem.OperationExecutors = cloneStringMap(item.OperationExecutors)
-	copyItem.AuthenticationConfigSchema = make(map[string]map[string]any, len(item.AuthenticationConfigSchema))
-	for key, value := range item.AuthenticationConfigSchema {
-		copyItem.AuthenticationConfigSchema[key] = deepcopy.AnyMapClone(value)
-	}
-	copyItem.CapabilityDefinitions = make(map[string][]string, len(item.CapabilityDefinitions))
-	for language, names := range item.CapabilityDefinitions {
-		copyItem.CapabilityDefinitions[language] = append([]string(nil), names...)
-	}
-	return &copyItem
-}
-
-func cloneStringMap(source map[string]string) map[string]string {
-	result := make(map[string]string, len(source))
-	for key, value := range source {
-		result[key] = value
-	}
-	return result
 }
 
 func (r *RuntimeRegistry) operationExecutor(engineTypeID, capabilityID string) (iapiserver.OperationExecutorDefinition, bool) {
@@ -472,7 +448,7 @@ func (r *ProviderCapabilityRegistry) Status() string { return r.status }
 func (r *ProviderCapabilityRegistry) Capabilities() []*iapiserver.AIAppProviderCapability {
 	items := make([]*iapiserver.AIAppProviderCapability, 0, len(r.ordered))
 	for _, item := range r.ordered {
-		items = append(items, cloneCapability(item))
+		items = append(items, item.DeepCopy())
 	}
 	return items
 }
@@ -482,7 +458,7 @@ func (r *ProviderCapabilityRegistry) Get(id string) (*iapiserver.AIAppProviderCa
 	if !ok {
 		return nil, false
 	}
-	return cloneCapability(item), true
+	return item.DeepCopy(), true
 }
 
 // RequiredBindingsForEngineType 返回指定 EngineType 必须具备的内置不可变绑定。
@@ -492,7 +468,7 @@ func (r *ProviderCapabilityRegistry) RequiredBindingsForEngineType(engineTypeID 
 		if item.ApplicationEngineTypeID != engineTypeID || item.Kind != iapiserver.ProviderCapabilityKindEngineBinding || item.Origin != iapiserver.ProviderCapabilityOriginBuiltin || item.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || item.Availability != iapiserver.ProviderCapabilityAvailable {
 			continue
 		}
-		items = append(items, cloneCapability(item))
+		items = append(items, item.DeepCopy())
 	}
 	return items
 }
@@ -504,13 +480,6 @@ func (r *ProviderCapabilityRegistry) Results() []*iapiserver.ProviderCapabilityL
 		items = append(items, &copyItem)
 	}
 	return items
-}
-
-func cloneCapability(source *iapiserver.AIAppProviderCapability) *iapiserver.AIAppProviderCapability {
-	data, _ := json.Marshal(source)
-	var target iapiserver.AIAppProviderCapability
-	_ = json.Unmarshal(data, &target)
-	return &target
 }
 
 func isYAMLFile(name string) bool {
