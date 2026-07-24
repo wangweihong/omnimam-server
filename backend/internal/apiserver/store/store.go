@@ -663,9 +663,10 @@ type ApplicationPlatformStore interface {
 	SetComfyUIWorkflowTestRunOutputs(ctx context.Context, testRunID string, outputs []iapiserver.ComfyUIWorkflowTestOutput) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	// FailComfyUIWorkflowTestRunCreation records a failure that occurs before a DAG can be bound.
 	FailComfyUIWorkflowTestRunCreation(ctx context.Context, testRunID, failure string) (*iapiserver.ComfyUIWorkflowTestRun, error)
+	GetComfyUIWorkflowConversion(ctx context.Context, workflowID, ownerUserID, idempotencyKey string) (*iapiserver.ComfyUIWorkflowConvertResult, error)
 	ConvertComfyUIWorkflow(
 		ctx context.Context,
-		workflowID, ownerUserID, actorUserID, idempotencyKey string,
+		workflowID, ownerUserID, idempotencyKey string,
 		template *iapiserver.ApplicationTemplate,
 		version *iapiserver.ApplicationTemplateVersion,
 	) (*iapiserver.ComfyUIWorkflowConvertResult, error)

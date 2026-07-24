@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"gorm.io/gorm"
 )
 
 func (s *applicationPlatformService) ListComfyUIWorkflows(ctx context.Context, req *iapiserver.ComfyUIWorkflowListRequest) (*iapiserver.ComfyUIWorkflowListResponse, error) {
@@ -260,18 +262,15 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if workflow.Converted() {
-		if workflow.ConversionIdempotencyKey == nil || *workflow.ConversionIdempotencyKey != req.IdempotencyKey {
-			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowAlreadyConverted, "workflow was already converted")
-		}
-		return s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, p.UserID, req.IdempotencyKey, &iapiserver.ApplicationTemplate{}, &iapiserver.ApplicationTemplateVersion{})
+	if workflow.APIConversionStatus != iapiserver.ComfyUIAPIConversionReady || len(workflow.APIWorkflow) == 0 {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
 	}
-	validation, err := s.Store.ApplicationPlatforms().GetComfyUIWorkflowValidation(ctx, req.WorkflowValidationID)
-	if err != nil || validation.WorkflowID != id || validation.OwnerUserID != workflow.OwnerUserID {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIValidationNotFound, "validation not found")
+	existing, lookupErr := s.Store.ApplicationPlatforms().GetComfyUIWorkflowConversion(ctx, id, workflow.OwnerUserID, req.IdempotencyKey)
+	if lookupErr == nil {
+		return existing, nil
 	}
-	if validation.Status != iapiserver.ComfyUIValidationCompatible {
-		return nil, errors.NewStatus(code.ErrAIAppComfyUIValidationNotCompatible, "validation is not compatible")
+	if !stderrors.Is(errors.Cause(lookupErr), gorm.ErrRecordNotFound) {
+		return nil, lookupErr
 	}
 	if _, ok := s.Runtime.Capability(req.CapabilityDefinitionID); !ok {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "capability definition is not registered")
@@ -285,13 +284,10 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 	}
 	var result *iapiserver.ComfyUIWorkflowConvertResult
 	var revision string
-	err = s.Store.ApplicationPlatforms().WithEngineInstanceLock(ctx, validation.EngineInstanceID, func() error {
-		engine, catalog, lockErr := s.usableComfyUIObjectInfo(ctx, validation.EngineInstanceID)
+	err = s.Store.ApplicationPlatforms().WithEngineInstanceLock(ctx, req.EngineInstanceID, func() error {
+		_, catalog, lockErr := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 		if lockErr != nil {
 			return lockErr
-		}
-		if !engineMatchesComfyUITemplateRestrictions(engine, req.TemplateContract) {
-			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "validation engine does not satisfy template restrictions")
 		}
 		parsed, lockErr := parseComfyUIWorkflow(workflow.APIWorkflow, workflow.VisualWorkflow, catalog.ObjectInfo)
 		if lockErr != nil {
@@ -308,16 +304,16 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 		if lockErr != nil {
 			return lockErr
 		}
-		template := &iapiserver.ApplicationTemplate{OwnerUserID: workflow.OwnerUserID, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, CapabilityDefinitionID: req.CapabilityDefinitionID}
+		template := &iapiserver.ApplicationTemplate{OwnerUserID: workflow.OwnerUserID, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, CapabilityDefinitionID: req.CapabilityDefinitionID, ComfyUIConversionIdempotencyKey: stringPtr(req.IdempotencyKey)}
 		template.Name, template.Description = req.Name, req.Description
-		version := &iapiserver.ApplicationTemplateVersion{Status: iapiserver.VersionStatusDraft, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, SourceRevision: revision, WorkflowContractRevision: &revision, SourceComfyUIWorkflowID: stringPtr(id), SourceWorkflowValidationID: stringPtr(validation.ID), TemplateContract: req.TemplateContract, ComfyUIAPIWorkflow: workflow.APIWorkflow}
-		result, lockErr = s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, p.UserID, req.IdempotencyKey, template, version)
+		version := &iapiserver.ApplicationTemplateVersion{Status: iapiserver.VersionStatusDraft, CapabilitySourceType: iapiserver.CapabilitySourceComfyUIWorkflow, SourceRevision: revision, WorkflowContractRevision: &revision, SourceComfyUIWorkflowID: stringPtr(id), TemplateContract: req.TemplateContract, ComfyUIAPIWorkflow: workflow.APIWorkflow}
+		result, lockErr = s.Store.ApplicationPlatforms().ConvertComfyUIWorkflow(ctx, id, workflow.OwnerUserID, req.IdempotencyKey, template, version)
 		return lockErr
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.publish(ctx, "comfyui_workflow_converted", id+":"+result.ApplicationTemplate.ID, map[string]any{"workflow_id": id, "owner_user_id": workflow.OwnerUserID, "actor_user_id": p.UserID, "workflow_validation_id": validation.ID, "application_template_id": result.ApplicationTemplate.ID, "application_template_version_id": result.ApplicationTemplateVersion.ID, "workflow_contract_revision": revision, "converted_at": imachinery.Now()})
+	s.publish(ctx, "comfyui_workflow_converted", id+":"+result.ApplicationTemplate.ID, map[string]any{"workflow_id": id, "owner_user_id": workflow.OwnerUserID, "actor_user_id": p.UserID, "engine_instance_id": req.EngineInstanceID, "application_template_id": result.ApplicationTemplate.ID, "application_template_version_id": result.ApplicationTemplateVersion.ID, "workflow_contract_revision": revision, "converted_at": imachinery.Now()})
 	return result, nil
 }
 

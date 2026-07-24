@@ -3,11 +3,34 @@ package applicationplatform
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
+
+func TestRuntimeRegistryDerivesLocalizedCapabilityNames(t *testing.T) {
+	runtime, err := LoadRuntimeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, ok := runtime.EngineType("comfyui")
+	if !ok {
+		t.Fatal("comfyui engine type is missing")
+	}
+	wantCN := []string{"图像编辑", "文生图", "图像放大", "图生视频", "文生视频", "视频编辑"}
+	wantEN := []string{"Image Editing", "Text to Image", "Image Upscaling", "Image to Video", "Text to Video", "Video Editing"}
+	if !reflect.DeepEqual(engine.CapabilityDefinitions["zh-CN"], wantCN) || !reflect.DeepEqual(engine.CapabilityDefinitions["en-US"], wantEN) {
+		t.Fatalf("unexpected localized capability names: %#v", engine.CapabilityDefinitions)
+	}
+	engine.OperationExecutors["unexpected"] = "mutated"
+	engine.CapabilityDefinitions["zh-CN"][0] = "mutated"
+	again, _ := runtime.EngineType("comfyui")
+	if _, exists := again.OperationExecutors["unexpected"]; exists || again.CapabilityDefinitions["zh-CN"][0] != wantCN[0] {
+		t.Fatalf("engine type snapshot mutated registry: %#v", again)
+	}
+}
 
 const validCapabilityManifest = `schema_version: "1.0"
 id: test-provider

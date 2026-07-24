@@ -75,10 +75,10 @@ const (
 
 // CapabilityDefinition 描述平台内置的统一业务能力分类。
 type CapabilityDefinition struct {
-	ID               string   `json:"id" yaml:"id"`
-	Name             string   `json:"name" yaml:"name"`
-	InputMediaTypes  []string `json:"input_media_types" yaml:"input_media_types"`
-	OutputMediaTypes []string `json:"output_media_types" yaml:"output_media_types"`
+	ID               string            `json:"id" yaml:"id"`
+	NameI18n         map[string]string `json:"name_i18n" yaml:"name_i18n"`
+	InputMediaTypes  []string          `json:"input_media_types" yaml:"input_media_types"`
+	OutputMediaTypes []string          `json:"output_media_types" yaml:"output_media_types"`
 }
 
 // EngineAdapterDefinition 描述只读 Runtime Registry 中的平台协议适配器。
@@ -95,6 +95,7 @@ type OperationExecutorDefinition struct {
 }
 
 // ApplicationEngineType 是系统启动时注册的不可写引擎类型。
+// +k8s:deepcopy-gen=true
 type ApplicationEngineType struct {
 	ID                         string                    `json:"id" yaml:"id"`
 	Name                       string                    `json:"name" yaml:"name"`
@@ -103,8 +104,11 @@ type ApplicationEngineType struct {
 	AuthenticationTypes        []string                  `json:"authentication_types" yaml:"authentication_types"`
 	AuthenticationConfigSchema map[string]map[string]any `json:"authentication_config_schema" yaml:"authentication_config_schema"`
 	OperationExecutors         map[string]string         `json:"operation_executors" yaml:"operation_executors"`
+	// CapabilityDefinitions 按 OperationExecutors key 字典序返回中英文能力名称。
+	CapabilityDefinitions map[string][]string `json:"capability_definitions" yaml:"-"`
 }
 
+// +k8s:deepcopy-gen=true
 type ProviderLifecycle struct {
 	Status             string `json:"status" yaml:"status"`
 	AvailableSince     string `json:"available_since,omitempty" yaml:"available_since,omitempty"`
@@ -113,6 +117,7 @@ type ProviderLifecycle struct {
 	ReplacementModelID string `json:"replacement_model_id,omitempty" yaml:"replacement_model_id,omitempty"`
 }
 
+// +k8s:deepcopy-gen=true
 type ProviderCapabilityModel struct {
 	ID                  string            `json:"id" yaml:"id"`
 	ProviderModelID     string            `json:"provider_model_id" yaml:"provider_model_id"`
@@ -383,6 +388,8 @@ type ApplicationTemplate struct {
 	CapabilitySourceType   string  `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null;index"`
 	CapabilityDefinitionID string  `json:"capability_definition_id" gorm:"column:capability_definition_id;type:text;not null;index"`
 	CurrentVersionID       *string `json:"current_version_id" gorm:"column:current_version_id;type:text"`
+	// ComfyUIConversionIdempotencyKey 只用于 ComfyUI 工作流转换重试，不通过 API 返回。
+	ComfyUIConversionIdempotencyKey *string `json:"-" gorm:"column:comfyui_conversion_idempotency_key;type:text"`
 }
 
 func (ApplicationTemplate) TableName() string                 { return "aiapp_application_templates" }
@@ -403,7 +410,6 @@ type ApplicationTemplateVersion struct {
 	ProviderOperationID        *string          `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
 	WorkflowContractRevision   *string          `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
 	SourceComfyUIWorkflowID    *string          `json:"source_comfyui_workflow_id" gorm:"column:source_comfyui_workflow_id;type:text"`
-	SourceWorkflowValidationID *string          `json:"source_workflow_validation_id" gorm:"column:source_workflow_validation_id;type:text"`
 	TemplateContract           map[string]any   `json:"template_contract" gorm:"-"`
 	TemplateContractShadow     string           `json:"-" gorm:"column:template_contract_json;type:text;not null"`
 	ComfyUIAPIWorkflow         map[string]any   `json:"comfyui_api_workflow" gorm:"-"`

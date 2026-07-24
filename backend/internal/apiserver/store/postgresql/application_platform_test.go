@@ -6,13 +6,15 @@ import (
 )
 
 func TestApplicationPlatformLegacyMigrationIsConditional(t *testing.T) {
-	for _, marker := range []string{"pg_advisory_xact_lock", "information_schema.columns", "source_engine_instance_id", "reset_application_runs", "reset_test_dags", "reset_atomic_tasks", "reset_artifacts", "watermill_%", "aiapp_engine_instances", "column_name='template_id'", "column_name='run_mode'", "DROP TABLE IF EXISTS"} {
+	for _, marker := range []string{"pg_advisory_xact_lock", "information_schema.columns", "converted_application_template_id", "aiapp_engine_instances", "DROP TABLE IF EXISTS"} {
 		if !strings.Contains(applicationPlatformLegacySchemaSQL, marker) {
 			t.Fatalf("legacy migration missing %q", marker)
 		}
 	}
-	if strings.Contains(applicationPlatformConstraintsSQL, "fk_aiapp_comfyui_workflow_source_engine") || strings.Contains(applicationPlatformConstraintsSQL, "source_engine_instance_id") {
-		t.Fatal("application platform constraints still recreate the removed workflow source engine")
+	for _, removed := range []string{"source_engine_instance_id", "converted_application_template_id", "source_workflow_validation_id", "reset_application_runs", "watermill_%"} {
+		if strings.Contains(applicationPlatformConstraintsSQL, removed) || strings.Contains(applicationPlatformLegacySchemaSQL, removed) && removed != "converted_application_template_id" {
+			t.Fatalf("application platform migration still contains removed compatibility marker %q", removed)
+		}
 	}
 }
 
@@ -21,7 +23,7 @@ func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 		"idx_aiapp_engine_instances_name",
 		"fk_aiapp_comfyui_object_info_engine",
 		"idx_aiapp_binding_engine_capability",
-		"idx_aiapp_comfyui_workflows_conversion_key",
+		"idx_aiapp_templates_conversion_key",
 		"idx_aiapp_comfyui_validations_engine_status",
 		"idx_aiapp_template_versions_number",
 		"idx_aiapp_application_versions_semver",
@@ -32,9 +34,7 @@ func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 		"ck_aiapp_template_version_source",
 		"ck_aiapp_comfyui_workflow_checksums",
 		"ck_aiapp_comfyui_workflow_source",
-		"ck_aiapp_comfyui_workflow_conversion",
 		"ck_aiapp_comfyui_validation_status",
-		"fk_aiapp_comfyui_workflow_converted_version",
 		"ck_aiapp_application_version_published_at",
 		"ck_aiapp_run_task_creation",
 		"ck_aiapp_artifact_registration",

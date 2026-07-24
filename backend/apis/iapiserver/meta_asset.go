@@ -21,7 +21,7 @@ type AssetLibrary struct {
 func (AssetLibrary) TableName() string {
 	return "asset_libraries"
 }
-
+// +k8s:deepcopy-gen=true
 type AssetCategory struct {
 	imachinery.ObjectMeta
 	LibraryID string `json:"library_id" gorm:"column:library_id;type:varchar(64);not null;index"`
@@ -34,6 +34,7 @@ func (AssetCategory) TableName() string {
 	return "asset_categories"
 }
 
+// +k8s:deepcopy-gen=true
 type AssetItemClassification struct {
 	Summary    string                        `json:"summary"`
 	Categories map[string][]string           `json:"categories"`
@@ -44,12 +45,14 @@ type AssetItemClassification struct {
 	UpdatedAt  int64                         `json:"updated_at"`
 }
 
+// +k8s:deepcopy-gen=true
 type AssetClassificationFlatItem struct {
 	Dimension string `json:"dimension"`
 	Label     string `json:"label"`
 	Tag       string `json:"tag"`
 }
 
+// +k8s:deepcopy-gen=true
 type AssetItemRegistration struct {
 	ProviderID   string `json:"provider_id"`
 	ProjectName  string `json:"project_name"`
@@ -61,6 +64,7 @@ type AssetItemRegistration struct {
 	RegisteredAt int64  `json:"registered_at"`
 }
 
+// +k8s:deepcopy-gen=true
 type AssetItem struct {
 	imachinery.ObjectMeta
 	LibraryID  string `json:"library_id"  gorm:"column:library_id;type:varchar(64);not null;index"`
@@ -83,6 +87,7 @@ const (
 	CanvasKindSmart   = "smart"
 )
 
+// +k8s:deepcopy-gen=true
 type PromptLibrary struct {
 	imachinery.ObjectMeta
 	System   bool `json:"system"   gorm:"column:system;type:boolean;not null;default:false"`
@@ -103,6 +108,7 @@ func (PromptCategory) TableName() string {
 	return "prompt_categories"
 }
 
+// +k8s:deepcopy-gen=true
 type PromptItem struct {
 	imachinery.ObjectMeta
 	LibraryID  string            `json:"library_id"       gorm:"column:library_id;type:varchar(64);not null;index"`
@@ -126,6 +132,7 @@ func (Project) TableName() string {
 	return "projects"
 }
 
+// +k8s:deepcopy-gen=true
 type Canvas struct {
 	imachinery.ObjectMeta
 	Title       string  `json:"title"                 gorm:"column:title;type:varchar(80);not null"`

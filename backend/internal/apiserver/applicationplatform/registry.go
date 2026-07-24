@@ -12,11 +12,11 @@ import (
 	"time"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-	"gopkg.in/yaml.v3"
-
+	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed assets/runtime-registry.yaml assets/provider-capability.schema.yaml assets/builtin-provider-capabilities/*.yaml
@@ -58,7 +58,7 @@ func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
 		engineList:   make([]*iapiserver.ApplicationEngineType, 0, len(document.ApplicationEngineTypes)),
 	}
 	for _, item := range document.CapabilityDefinitions {
-		if item.ID == "" || r.capabilities[item.ID].ID != "" {
+		if item.ID == "" || r.capabilities[item.ID].ID != "" || item.NameI18n["zh-CN"] == "" || item.NameI18n["en-US"] == "" {
 			return nil, fmt.Errorf("invalid or duplicate capability definition %q", item.ID)
 		}
 		r.capabilities[item.ID] = item
@@ -91,15 +91,23 @@ func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
 		if r.adapters[item.EngineAdapterID].ID == "" {
 			return nil, fmt.Errorf("engine type %s references unknown adapter %s", item.ID, item.EngineAdapterID)
 		}
+		capabilityIDs := make([]string, 0, len(item.OperationExecutors))
 		for capabilityID, executorID := range item.OperationExecutors {
 			executor := r.executors[executorID]
 			if executor.ID == "" || !containsString(executor.CapabilityDefinitionIDs, capabilityID) {
 				return nil, fmt.Errorf("engine type %s has invalid executor mapping %s=%s", item.ID, capabilityID, executorID)
 			}
+			capabilityIDs = append(capabilityIDs, capabilityID)
+		}
+		sort.Strings(capabilityIDs)
+		item.CapabilityDefinitions = map[string][]string{"zh-CN": {}, "en-US": {}}
+		for _, capabilityID := range capabilityIDs {
+			definition := r.capabilities[capabilityID]
+			item.CapabilityDefinitions["zh-CN"] = append(item.CapabilityDefinitions["zh-CN"], definition.NameI18n["zh-CN"])
+			item.CapabilityDefinitions["en-US"] = append(item.CapabilityDefinitions["en-US"], definition.NameI18n["en-US"])
 		}
 		r.engineTypes[item.ID] = item
-		copyItem := item
-		r.engineList = append(r.engineList, &copyItem)
+		r.engineList = append(r.engineList, cloneApplicationEngineType(item))
 	}
 	sort.Slice(r.engineList, func(i, j int) bool { return r.engineList[i].ID < r.engineList[j].ID })
 	return r, nil
@@ -108,8 +116,7 @@ func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
 func (r *RuntimeRegistry) EngineTypes() []*iapiserver.ApplicationEngineType {
 	items := make([]*iapiserver.ApplicationEngineType, 0, len(r.engineList))
 	for _, item := range r.engineList {
-		copyItem := *item
-		items = append(items, &copyItem)
+		items = append(items, cloneApplicationEngineType(*item))
 	}
 	return items
 }
@@ -119,12 +126,42 @@ func (r *RuntimeRegistry) EngineType(id string) (*iapiserver.ApplicationEngineTy
 	if !ok {
 		return nil, false
 	}
-	return &item, true
+	return cloneApplicationEngineType(item), true
 }
 
 func (r *RuntimeRegistry) Capability(id string) (*iapiserver.CapabilityDefinition, bool) {
 	item, ok := r.capabilities[id]
-	return &item, ok
+	if !ok {
+		return nil, false
+	}
+	copyItem := item
+	copyItem.NameI18n = cloneStringMap(item.NameI18n)
+	copyItem.InputMediaTypes = append([]string(nil), item.InputMediaTypes...)
+	copyItem.OutputMediaTypes = append([]string(nil), item.OutputMediaTypes...)
+	return &copyItem, true
+}
+
+func cloneApplicationEngineType(item iapiserver.ApplicationEngineType) *iapiserver.ApplicationEngineType {
+	copyItem := item
+	copyItem.AuthenticationTypes = append([]string(nil), item.AuthenticationTypes...)
+	copyItem.OperationExecutors = cloneStringMap(item.OperationExecutors)
+	copyItem.AuthenticationConfigSchema = make(map[string]map[string]any, len(item.AuthenticationConfigSchema))
+	for key, value := range item.AuthenticationConfigSchema {
+		copyItem.AuthenticationConfigSchema[key] = deepcopy.AnyMapClone(value)
+	}
+	copyItem.CapabilityDefinitions = make(map[string][]string, len(item.CapabilityDefinitions))
+	for language, names := range item.CapabilityDefinitions {
+		copyItem.CapabilityDefinitions[language] = append([]string(nil), names...)
+	}
+	return &copyItem
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 func (r *RuntimeRegistry) operationExecutor(engineTypeID, capabilityID string) (iapiserver.OperationExecutorDefinition, bool) {

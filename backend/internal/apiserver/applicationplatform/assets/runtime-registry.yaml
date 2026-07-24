@@ -4,16 +4,16 @@ description: >-
   EngineType、Adapter、OperationExecutor 和鉴权结构，不是运行时配置，也不提供写 API。
 x-s1-refs:
   user_stories: [US-AIAPP-039, US-AIAPP-041, US-AIAPP-042]
-  business_rules: [BR-AIAPP-140, BR-AIAPP-144, BR-AIAPP-151]
+  business_rules: [BR-AIAPP-140, BR-AIAPP-144, BR-AIAPP-151, BR-AIAPP-193]
 
 capability_definitions:
-  - {id: video.text_to_video, name: 文生视频, input_media_types: [text], output_media_types: [video]}
-  - {id: video.image_to_video, name: 图生视频, input_media_types: [text, image], output_media_types: [video]}
-  - {id: video.video_edit, name: 视频编辑, input_media_types: [text, image, video, audio], output_media_types: [video]}
-  - {id: image.text_to_image, name: 文生图, input_media_types: [text], output_media_types: [image]}
-  - {id: image.edit, name: 图像编辑, input_media_types: [text, image], output_media_types: [image]}
-  - {id: image.upscale, name: 图像放大, input_media_types: [image], output_media_types: [image]}
-  - {id: text.chat_completion, name: 对话补全, input_media_types: [text, json], output_media_types: [text, json]}
+  - {id: video.text_to_video, name_i18n: {zh-CN: 文生视频, en-US: Text to Video}, input_media_types: [text], output_media_types: [video]}
+  - {id: video.image_to_video, name_i18n: {zh-CN: 图生视频, en-US: Image to Video}, input_media_types: [text, image], output_media_types: [video]}
+  - {id: video.video_edit, name_i18n: {zh-CN: 视频编辑, en-US: Video Editing}, input_media_types: [text, image, video, audio], output_media_types: [video]}
+  - {id: image.text_to_image, name_i18n: {zh-CN: 文生图, en-US: Text to Image}, input_media_types: [text], output_media_types: [image]}
+  - {id: image.edit, name_i18n: {zh-CN: 图像编辑, en-US: Image Editing}, input_media_types: [text, image], output_media_types: [image]}
+  - {id: image.upscale, name_i18n: {zh-CN: 图像放大, en-US: Image Upscaling}, input_media_types: [image], output_media_types: [image]}
+  - {id: text.chat_completion, name_i18n: {zh-CN: 对话补全, en-US: Chat Completion}, input_media_types: [text, json], output_media_types: [text, json]}
 
 engine_adapters:
   - id: comfyui

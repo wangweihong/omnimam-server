@@ -168,6 +168,7 @@ func (m *TaskNameMeta) unmarshal() {
 }
 
 // AtomicTask is the only business resource executed by a Worker handler.
+// +k8s:deepcopy-gen=true
 type AtomicTask struct {
 	imachinery.ObjectMeta
 	TaskNameMeta
@@ -263,6 +264,7 @@ func (t *AtomicTask) marshalShadows() error {
 }
 
 // TaskAttempt records one Conductor execution attempt for an AtomicTask.
+// +k8s:deepcopy-gen=true
 type TaskAttempt struct {
 	imachinery.ObjectMeta
 	AtomicTaskID   string             `json:"atomic_task_id" gorm:"column:atomic_task_id;type:varchar(64);not null;uniqueIndex:idx_task_attempts_task_no,priority:1;index"`
@@ -340,6 +342,7 @@ func TaskAttemptLogsRef(attemptID string) string {
 }
 
 // AtomicTaskTemplate is embedded in Group, DAG, and Schedule immutable snapshots.
+// +k8s:deepcopy-gen=true
 type AtomicTaskTemplate struct {
 	Key                  string            `json:"key"`
 	Name                 string            `json:"name,omitempty"`
@@ -358,6 +361,7 @@ type GroupStrategy struct {
 	MaxParallelism  int  `json:"max_parallelism"`
 }
 
+// +k8s:deepcopy-gen=true
 type TaskSummary struct {
 	Total           int `json:"total"`
 	Pending         int `json:"pending"`
@@ -420,6 +424,7 @@ type TaskScheduleSummary struct {
 }
 
 // TaskTargetSummary 是可展示且可导航的调度目标轻量投影，不包含大型输入输出。
+// +k8s:deepcopy-gen=true
 type TaskTargetSummary struct {
 	Type             string            `json:"type"`                         // 目标为 AtomicTask、TaskGroup 或 DAGTaskGroup。
 	ID               string            `json:"id,omitempty"`                 // 实际目标标识；未创建目标时为空。
@@ -435,6 +440,7 @@ type TaskTargetSummary struct {
 }
 
 // TaskGroup is a SERIAL or PARALLEL composition of AtomicTask templates.
+// +k8s:deepcopy-gen=true
 type TaskGroup struct {
 	imachinery.ObjectMeta
 	TaskNameMeta
@@ -511,6 +517,7 @@ type DAGEdge struct {
 }
 
 // DAGTaskGroup stores an immutable validated AtomicTask DAG execution.
+// +k8s:deepcopy-gen=true
 type DAGTaskGroup struct {
 	imachinery.ObjectMeta
 	TaskNameMeta
@@ -638,6 +645,7 @@ type ReconcileSummary struct {
 }
 
 // TaskSchedule persistently triggers an AtomicTask, TaskGroup, or DAGTaskGroup template.
+// +k8s:deepcopy-gen=true
 type TaskSchedule struct {
 	imachinery.ObjectMeta
 	TaskNameMeta
@@ -734,6 +742,7 @@ func (s *TaskSchedule) marshalShadows() error {
 }
 
 // TaskScheduleExecution records every scheduled time, including overlap skips.
+// +k8s:deepcopy-gen=true
 type TaskScheduleExecution struct {
 	imachinery.ObjectMeta
 	ScheduleID             string               `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
@@ -776,6 +785,7 @@ func (e *TaskScheduleExecution) AfterFind(tx *gorm.DB) error {
 }
 
 // ScheduleReconcileState 是 TaskSchedule 的内部一对一投影，不嵌入 ObjectMeta，避免被误当作可独立命名、删除的普通资源。
+// +k8s:deepcopy-gen=true
 type ScheduleReconcileState struct {
 	ScheduleID                string           `json:"schedule_id" gorm:"column:schedule_id;primaryKey;type:varchar(64)"`
 	Checkpoint                map[string]any   `json:"-" gorm:"-"`
@@ -821,6 +831,7 @@ func (s *ScheduleReconcileState) marshalShadows() error {
 }
 
 // RuntimeProjectionEvent makes Conductor event projection idempotent and replayable.
+// +k8s:deepcopy-gen=true
 type RuntimeProjectionEvent struct {
 	imachinery.ObjectMeta
 	RuntimeEventID     string          `json:"runtime_event_id" gorm:"column:runtime_event_id;type:varchar(256);not null;uniqueIndex"`

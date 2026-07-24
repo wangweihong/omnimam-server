@@ -68,6 +68,7 @@ type RelatedResourceSummary struct {
 }
 
 // Artifact 是 asset-library 拥有的受控制品事实；内容正文和 Provider 响应不得进入事件 payload。
+// +k8s:deepcopy-gen=true
 type Artifact struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 固定为受信 producer 对应的当前用户，是事件投影的 recipient。
@@ -178,6 +179,7 @@ func (a *Artifact) marshal() error {
 }
 
 // AssetVersion 是 user asset 的不可变内容版本及 Representation 处理汇总事实。
+// +k8s:deepcopy-gen=true
 type AssetVersion struct {
 	imachinery.ObjectMeta
 	// AssetID 指向所属 UserAsset。

@@ -3,6 +3,7 @@ package applicationplatform
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -44,6 +45,7 @@ type workflowStore struct {
 	workflow         *iapiserver.ComfyUIWorkflow
 	validation       *iapiserver.ComfyUIWorkflowValidation
 	convertedVersion *iapiserver.ApplicationTemplateVersion
+	convertCalls     int
 	engine           *iapiserver.EngineInstance
 	engineErr        error
 	catalog          *iapiserver.ComfyUIEngineObjectInfo
@@ -53,6 +55,7 @@ type workflowStore struct {
 	updatedWorkflow  *iapiserver.ComfyUIWorkflow
 	updatedVersion   int64
 	updateErr        error
+	conversionResult *iapiserver.ComfyUIWorkflowConvertResult
 }
 
 type recordingWorkflowParser struct {
@@ -115,9 +118,16 @@ func (s *workflowStore) AddComfyUIWorkflowValidation(_ context.Context, validati
 	s.addedValidation = validation
 	return validation, nil
 }
-func (s *workflowStore) ConvertComfyUIWorkflow(_ context.Context, workflowID, _, _, _ string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
-	template.ID = "template-1"
-	version.ID = "version-1"
+func (s *workflowStore) GetComfyUIWorkflowConversion(context.Context, string, string, string) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
+	if s.conversionResult == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return s.conversionResult, nil
+}
+func (s *workflowStore) ConvertComfyUIWorkflow(_ context.Context, workflowID, _, _ string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
+	s.convertCalls++
+	template.ID = fmt.Sprintf("template-%d", s.convertCalls)
+	version.ID = fmt.Sprintf("version-%d", s.convertCalls)
 	version.ApplicationTemplateID = template.ID
 	version.Version = 1
 	s.convertedVersion = version
@@ -264,13 +274,11 @@ func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
 	}
 	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", APIConversionStatus: iapiserver.ComfyUIAPIConversionReady, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": "value"}}}}
 	workflow.ID = "workflow-1"
-	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: workflow.ID, OwnerUserID: "user-1", EngineInstanceID: "engine-1", Status: iapiserver.ComfyUIValidationCompatible}
-	validation.ID = "validation-1"
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
-	applicationStore := &workflowStore{workflow: workflow, validation: validation, engine: engine, catalog: saveImageTestCatalog()}
+	applicationStore := &workflowStore{workflow: workflow, engine: engine, catalog: saveImageTestCatalog()}
 	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Events: NoopEventPublisher{}}}
-	request := &iapiserver.ComfyUIWorkflowConvertRequest{Name: "Template", CapabilityDefinitionID: "image.text_to_image", WorkflowValidationID: validation.ID, IdempotencyKey: "convert-1", TemplateContract: map[string]any{"inputs": []any{}, "fixed_parameters": []any{}, "parameter_mappings": []any{}, "outputs": []any{map[string]any{"key": "image", "node_id": "1", "output_index": float64(0), "data_type": "IMAGE", "media_type": "image"}}, "engine_restrictions": map[string]any{}}}
+	request := &iapiserver.ComfyUIWorkflowConvertRequest{Name: "Template", EngineInstanceID: engine.ID, CapabilityDefinitionID: "image.text_to_image", IdempotencyKey: "convert-1", TemplateContract: map[string]any{"inputs": []any{}, "fixed_parameters": []any{}, "parameter_mappings": []any{}, "outputs": []any{map[string]any{"key": "image", "node_id": "1", "output_index": float64(0), "data_type": "IMAGE", "media_type": "image"}}, "engine_restrictions": map[string]any{}}}
 	result, err := service.ConvertComfyUIWorkflow(context.Background(), workflow.ID, request)
 	if err != nil {
 		t.Fatal(err)
@@ -279,11 +287,26 @@ func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
 		t.Fatalf("unexpected version: %d", result.ApplicationTemplateVersion.Version)
 	}
 	version := applicationStore.convertedVersion
-	if version.SourceComfyUIWorkflowID == nil || *version.SourceComfyUIWorkflowID != workflow.ID || version.SourceWorkflowValidationID == nil || *version.SourceWorkflowValidationID != validation.ID {
+	if version.SourceComfyUIWorkflowID == nil || *version.SourceComfyUIWorkflowID != workflow.ID {
 		t.Fatalf("source relationship missing: %#v", version)
 	}
 	if version.WorkflowContractRevision == nil {
 		t.Fatalf("immutable snapshot incomplete: %#v", version)
+	}
+	applicationStore.conversionResult = result
+	engine.HealthStatus = iapiserver.EngineHealthOffline
+	replayed, err := service.ConvertComfyUIWorkflow(context.Background(), workflow.ID, request)
+	if err != nil || replayed.ApplicationTemplate.ID != result.ApplicationTemplate.ID || applicationStore.convertCalls != 1 {
+		t.Fatalf("idempotent replay should bypass current engine state: result=%#v err=%v calls=%d", replayed, err, applicationStore.convertCalls)
+	}
+	applicationStore.conversionResult = nil
+	engine.HealthStatus = iapiserver.EngineHealthOnline
+	request.IdempotencyKey = "convert-2"
+	if _, err := service.ConvertComfyUIWorkflow(context.Background(), workflow.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	if applicationStore.convertCalls != 2 {
+		t.Fatalf("ready workflow should allow repeated conversion, calls=%d", applicationStore.convertCalls)
 	}
 }
 

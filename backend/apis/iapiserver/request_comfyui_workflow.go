@@ -10,8 +10,6 @@ import (
 
 type ComfyUIWorkflowListRequest struct {
 	imachinery.BasicQueryParam
-	// Converted 用于筛选是否已经转换为应用模板。
-	Converted *bool `form:"converted"`
 	// OwnerUserID 仅管理员代管查询可用，普通用户会由服务端覆盖为本人。
 	OwnerUserID string `form:"owner_user_id"`
 }
@@ -106,10 +104,11 @@ type ComfyUIWorkflowTestRunCreateRequest struct {
 	IdempotencyKey   string                               `json:"idempotency_key" binding:"required,max=256"`
 }
 type ComfyUIWorkflowConvertRequest struct {
-	Name                   string         `json:"name" binding:"required"`
-	Description            string         `json:"description"`
-	CapabilityDefinitionID string         `json:"capability_definition_id" binding:"required"`
-	WorkflowValidationID   string         `json:"workflow_validation_id" binding:"required"`
-	TemplateContract       map[string]any `json:"template_contract" binding:"required"`
-	IdempotencyKey         string         `json:"idempotency_key" binding:"required"`
+	Name                   string `json:"name" binding:"required"`
+	Description            string `json:"description"`
+	CapabilityDefinitionID string `json:"capability_definition_id" binding:"required"`
+	// EngineInstanceID 指定本次实时兼容性校验使用的 ComfyUI 实例，不会自动限制模板运行范围。
+	EngineInstanceID string         `json:"engine_instance_id" binding:"required"`
+	TemplateContract map[string]any `json:"template_contract" binding:"required"`
+	IdempotencyKey   string         `json:"idempotency_key" binding:"required"`
 }

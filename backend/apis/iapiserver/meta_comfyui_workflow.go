@@ -45,12 +45,6 @@ type ComfyUIWorkflow struct {
 	InputCandidates  []ComfyUIWorkflowInputCandidate  `json:"-" gorm:"-"`
 	OutputCandidates []ComfyUIWorkflowOutputCandidate `json:"-" gorm:"-"`
 	Dependencies     []ComfyUIWorkflowDependency      `json:"-" gorm:"-"`
-	// Converted* 字段原子固定一次性转换结果、幂等键、时间和操作者。
-	ConvertedApplicationTemplateID *string          `json:"converted_application_template_id" gorm:"column:converted_application_template_id;type:text"`
-	ConvertedTemplateVersionID     *string          `json:"converted_template_version_id" gorm:"column:converted_template_version_id;type:text"`
-	ConversionIdempotencyKey       *string          `json:"-" gorm:"column:conversion_idempotency_key;type:text"`
-	ConvertedAt                    *imachinery.Time `json:"converted_at" gorm:"column:converted_at;type:timestamptz"`
-	ConvertedByUserID              *string          `json:"-" gorm:"column:converted_by_user_id;type:text"`
 }
 
 func (ComfyUIWorkflow) TableName() string { return "aiapp_comfyui_workflows" }
@@ -79,29 +73,24 @@ func (w *ComfyUIWorkflow) marshal() error {
 	}
 	return marshalOptional(w.VisualWorkflow, &w.VisualWorkflowShadow)
 }
-func (w *ComfyUIWorkflow) Converted() bool { return w.ConvertedApplicationTemplateID != nil }
 
 // ComfyUIWorkflowSummary 是列表和资源变更接口返回的安全摘要。
 type ComfyUIWorkflowSummary struct {
-	ID                             string           `json:"id"`
-	Name                           string           `json:"name"`
-	Description                    string           `json:"description"`
-	OwnerUserID                    string           `json:"owner_user_id"`
-	SourceType                     string           `json:"source_type"`
-	APIConversionStatus            string           `json:"api_conversion_status"`
-	SourceChecksum                 string           `json:"source_checksum"`
-	APIWorkflowChecksum            *string          `json:"api_workflow_checksum"`
-	Converted                      bool             `json:"converted"`
-	ConvertedApplicationTemplateID *string          `json:"converted_application_template_id"`
-	ConvertedTemplateVersionID     *string          `json:"converted_template_version_id"`
-	ConvertedAt                    *imachinery.Time `json:"converted_at"`
-	CreatedAt                      imachinery.Time  `json:"created_at"`
-	UpdatedAt                      imachinery.Time  `json:"updated_at"`
-	ResourceVersion                int64            `json:"resource_version"`
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Description         string          `json:"description"`
+	OwnerUserID         string          `json:"owner_user_id"`
+	SourceType          string          `json:"source_type"`
+	APIConversionStatus string          `json:"api_conversion_status"`
+	SourceChecksum      string          `json:"source_checksum"`
+	APIWorkflowChecksum *string         `json:"api_workflow_checksum"`
+	CreatedAt           imachinery.Time `json:"created_at"`
+	UpdatedAt           imachinery.Time `json:"updated_at"`
+	ResourceVersion     int64           `json:"resource_version"`
 }
 
 func (w *ComfyUIWorkflow) Summary() *ComfyUIWorkflowSummary {
-	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, Converted: w.Converted(), ConvertedApplicationTemplateID: w.ConvertedApplicationTemplateID, ConvertedTemplateVersionID: w.ConvertedTemplateVersionID, ConvertedAt: w.ConvertedAt, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
+	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
 }
 
 type ComfyUIWorkflowDetail struct {

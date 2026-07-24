@@ -56,6 +56,7 @@ type AssistantSummary struct {
 }
 
 // ProviderModelRefSummary 是 model-management 面向消费方的非敏感模型只读投影。
+// +k8s:deepcopy-gen=true
 type ProviderModelRefSummary struct {
 	ID           string `json:"id"`
 	DisplayName  string `json:"display_name"`
@@ -67,6 +68,7 @@ type ProviderModelRefSummary struct {
 }
 
 // AIChatAssistant 保存 ai-chat S2 助手配置，用户助手按 OwnerUserID 隔离，系统助手受保护。
+// +k8s:deepcopy-gen=true
 type AIChatAssistant struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 为空时表示系统助手；非空时仅该用户可见和管理。
@@ -133,6 +135,7 @@ func (a *AIChatAssistant) AfterFind(tx *gorm.DB) error {
 }
 
 // AIChatTopic 保存用户会话入口，负责串联助手、默认模型和消息历史。
+// +k8s:deepcopy-gen=true
 type AIChatTopic struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 标识话题所属用户，列表和详情均按该字段隔离。
@@ -183,6 +186,7 @@ func (t *AIChatTopic) BeforeUpdate(tx *gorm.DB) error {
 func (t *AIChatTopic) AfterUpdate(tx *gorm.DB) error { return nil }
 
 // AIChatMessage 保存话题内消息事实，生成相关快照随消息固化以便审计。
+// +k8s:deepcopy-gen=true
 type AIChatMessage struct {
 	imachinery.ObjectMeta
 	// TopicID 指向所属话题，消息列表按该字段和版本顺序读取。
@@ -268,7 +272,8 @@ func (m *AIChatMessage) AfterFind(tx *gorm.DB) error {
 	return unmarshalAIChatJSON(m.AttachmentIconsShadow, &m.AttachmentIcons)
 }
 
-// AIChatGeneration 记录一次模型生成过程，承载 stop/regenerate 等操作的运行状态。
+// AIChatGeneration 记录一次模型生成过程，承载 stop/regenerate 等操作的运行状态。	
+// +k8s:deepcopy-gen=true
 type AIChatGeneration struct {
 	imachinery.ObjectMeta
 	// TopicID 指向生成所属话题，同一话题同时只允许一个 queued/generating 运行。
@@ -312,6 +317,7 @@ func (g *AIChatGeneration) BeforeUpdate(tx *gorm.DB) error {
 func (g *AIChatGeneration) AfterUpdate(tx *gorm.DB) error { return nil }
 
 // AIChatQuickPhrase 保存用户快捷短语，支持全局和助手级作用域。
+// +k8s:deepcopy-gen=true
 type AIChatQuickPhrase struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 标识短语所属用户，系统不会跨用户共享用户短语。
@@ -362,6 +368,7 @@ func (p *AIChatQuickPhrase) BeforeUpdate(tx *gorm.DB) error {
 func (p *AIChatQuickPhrase) AfterUpdate(tx *gorm.DB) error { return nil }
 
 // AIChatMessageTranslation 保存消息或纯文本翻译结果，模型快照随结果固化。
+// +k8s:deepcopy-gen=true
 type AIChatMessageTranslation struct {
 	imachinery.ObjectMeta
 	// MessageID 指向被翻译的消息；纯文本翻译请求允许为空。

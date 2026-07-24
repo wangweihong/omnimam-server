@@ -18,6 +18,7 @@ const (
 )
 
 // AssetBlob 记录受 StorageBackend 管理的物理内容；普通素材 API 不返回物理定位字段，管理员详情单独投影。
+// +k8s:deepcopy-gen=true
 type AssetBlob struct {
 	imachinery.ObjectMeta
 	// StorageBackendID 指向承载该内容的全局存储后端，仅管理员物理检查接口可见。
@@ -36,6 +37,7 @@ type AssetBlob struct {
 
 // AssetBlobDetail 是仅管理员可见的 Blob 物理存储投影。
 // 它只返回 StorageBackend ID，不递归嵌入可能包含凭证的后端配置。
+// +k8s:deepcopy-gen=true
 type AssetBlobDetail struct {
 	// ID 是全局 Blob 标识。
 	ID string `json:"id"`
@@ -73,6 +75,7 @@ func (*AssetBlob) AfterUpdate(*gorm.DB) error       { return nil }
 func (b *AssetBlob) AfterFind(tx *gorm.DB) error    { return b.ObjectMeta.AfterFind(tx) }
 
 // AssetRepresentation 是同一 AssetVersion 的受控技术表现形式。
+// +k8s:deepcopy-gen=true
 type AssetRepresentation struct {
 	imachinery.ObjectMeta
 	AssetVersionID     string           `json:"asset_version_id" gorm:"column:asset_version_id;type:text;not null;uniqueIndex:idx_representation_identity,priority:1;index"`
@@ -122,6 +125,7 @@ func (r *AssetRepresentation) marshal() error {
 }
 
 // AssetUploadSession 保存普通或分片上传的可恢复会话与临时标签输入。
+// +k8s:deepcopy-gen=true
 type AssetUploadSession struct {
 	imachinery.ObjectMeta
 	OwnerUserID         string            `json:"-" gorm:"column:owner_user_id;type:text;not null;uniqueIndex:idx_upload_owner_key,priority:1;index"`
@@ -180,6 +184,7 @@ func (u *AssetUploadSession) marshal() error {
 }
 
 // AssetCollection 是用户范围逻辑分组，对外使用 Collection 术语。
+// +k8s:deepcopy-gen=true
 type AssetCollection struct {
 	imachinery.ObjectMeta
 	OwnerUserID        string `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
@@ -194,6 +199,7 @@ type AssetCollection struct {
 }
 
 // CollectionSummary 是 Collection 的一跳可读摘要，不包含父级和成员。
+// +k8s:deepcopy-gen=true
 type CollectionSummary struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`

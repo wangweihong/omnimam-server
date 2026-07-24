@@ -19,13 +19,6 @@ func (s *applicationPlatformStore) ListComfyUIWorkflows(ctx context.Context, req
 		if req.OwnerUserID != "" {
 			q = q.Where("owner_user_id = ?", req.OwnerUserID)
 		}
-		if req.Converted != nil {
-			if *req.Converted {
-				q = q.Where("converted_application_template_id IS NOT NULL")
-			} else {
-				q = q.Where("converted_application_template_id IS NULL")
-			}
-		}
 		return q
 	})
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
@@ -152,35 +145,47 @@ func (s *applicationPlatformStore) FailComfyUIWorkflowTestRunCreation(ctx contex
 	return s.GetComfyUIWorkflowTestRun(ctx, testRunID)
 }
 
-func (s *applicationPlatformStore) ConvertComfyUIWorkflow(ctx context.Context, workflowID, owner, actor, key string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
+func (s *applicationPlatformStore) GetComfyUIWorkflowConversion(ctx context.Context, workflowID, owner, key string) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
+	template := &iapiserver.ApplicationTemplate{}
+	if err := s.ds.db.WithContext(ctx).First(template, "owner_user_id = ? AND comfyui_conversion_idempotency_key = ?", owner, key).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	version := &iapiserver.ApplicationTemplateVersion{}
+	if err := s.ds.db.WithContext(ctx).First(version, "application_template_id = ? AND version = 1", template.ID).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if version.SourceComfyUIWorkflowID == nil || *version.SourceComfyUIWorkflowID != workflowID {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIConversionIdempotencyConflict, "conversion idempotency key is already used")
+	}
+	return &iapiserver.ComfyUIWorkflowConvertResult{WorkflowID: workflowID, ApplicationTemplate: template, ApplicationTemplateVersion: version, WorkflowContractRevision: *version.WorkflowContractRevision}, nil
+}
+
+func (s *applicationPlatformStore) ConvertComfyUIWorkflow(ctx context.Context, workflowID, owner, key string, template *iapiserver.ApplicationTemplate, version *iapiserver.ApplicationTemplateVersion) (*iapiserver.ComfyUIWorkflowConvertResult, error) {
 	result := &iapiserver.ComfyUIWorkflowConvertResult{}
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workflow iapiserver.ComfyUIWorkflow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&workflow, "id = ? AND owner_user_id = ?", workflowID, owner).Error; err != nil {
 			return err
 		}
-		if workflow.ConvertedApplicationTemplateID != nil {
-			if workflow.ConversionIdempotencyKey == nil || *workflow.ConversionIdempotencyKey != key {
-				return errors.NewStatus(code.ErrAIAppComfyUIWorkflowAlreadyConverted, "workflow was already converted")
-			}
-			if err := tx.First(template, "id = ?", *workflow.ConvertedApplicationTemplateID).Error; err != nil {
+		if workflow.APIConversionStatus != iapiserver.ComfyUIAPIConversionReady || workflow.APIWorkflowShadow == nil {
+			return errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
+		}
+		lookup := tx.First(template, "owner_user_id = ? AND comfyui_conversion_idempotency_key = ?", owner, key)
+		if lookup.Error == nil {
+			if err := tx.First(version, "application_template_id = ? AND version = 1", template.ID).Error; err != nil {
 				return err
 			}
-			if err := tx.First(version, "id = ?", *workflow.ConvertedTemplateVersionID).Error; err != nil {
-				return err
+			if version.SourceComfyUIWorkflowID == nil || *version.SourceComfyUIWorkflowID != workflowID {
+				return errors.NewStatus(code.ErrAIAppComfyUIConversionIdempotencyConflict, "conversion idempotency key is already used")
 			}
 			result = &iapiserver.ComfyUIWorkflowConvertResult{WorkflowID: workflowID, ApplicationTemplate: template, ApplicationTemplateVersion: version, WorkflowContractRevision: *version.WorkflowContractRevision}
 			return nil
 		}
-		var conflict int64
-		if err := tx.Model(&iapiserver.ComfyUIWorkflow{}).Where("owner_user_id = ? AND conversion_idempotency_key = ? AND id <> ?", owner, key, workflowID).Count(&conflict).Error; err != nil {
-			return err
-		}
-		if conflict > 0 {
-			return errors.NewStatus(code.ErrAIAppComfyUIConversionIdempotencyConflict, "conversion idempotency key is already used")
+		if !stderrors.Is(lookup.Error, gorm.ErrRecordNotFound) {
+			return lookup.Error
 		}
 		if err := tx.Create(template).Error; err != nil {
-			return err
+			return mapAIAppUniqueError(err, "idx_aiapp_templates_conversion_key", "conversion idempotency key is already used", code.ErrAIAppComfyUIConversionIdempotencyConflict)
 		}
 		version.ApplicationTemplateID = template.ID
 		version.Version = 1
@@ -190,12 +195,9 @@ func (s *applicationPlatformStore) ConvertComfyUIWorkflow(ctx context.Context, w
 		if err := tx.Create(version).Error; err != nil {
 			return err
 		}
-		now := imachinery.Now()
-		updates := map[string]any{"converted_application_template_id": template.ID, "converted_template_version_id": version.ID, "conversion_idempotency_key": key, "converted_at": now, "converted_by_user_id": actor, "updated_by_user_id": actor, "updated_at": now, "resource_version": gorm.Expr("resource_version + 1")}
-		if update := tx.Model(&workflow).Where("id = ? AND converted_application_template_id IS NULL", workflowID).Updates(updates); update.Error != nil {
-			return update.Error
-		} else if update.RowsAffected != 1 {
-			return errors.NewStatus(code.ErrAIAppComfyUIWorkflowAlreadyConverted, "workflow was already converted")
+		template.CurrentVersionID = &version.ID
+		if err := tx.Model(template).Update("current_version_id", version.ID).Error; err != nil {
+			return err
 		}
 		result = &iapiserver.ComfyUIWorkflowConvertResult{WorkflowID: workflowID, ApplicationTemplate: template, ApplicationTemplateVersion: version, WorkflowContractRevision: *version.WorkflowContractRevision}
 		return nil

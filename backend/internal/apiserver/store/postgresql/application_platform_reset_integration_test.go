@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestApplicationPlatformResetRemovesLinkedProjectionsOnce(t *testing.T) {
+func TestApplicationPlatformResetRecreatesOnlyApplicationPlatformOnce(t *testing.T) {
 	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("OMNIMAM_TEST_POSTGRES_DSN is not set")
@@ -55,14 +55,14 @@ func TestApplicationPlatformResetRemovesLinkedProjectionsOnce(t *testing.T) {
 		table string
 		want  int64
 	}{
-		{table: "atomic_tasks", want: 1},
-		{table: "task_attempts", want: 1},
-		{table: "dag_task_groups", want: 1},
-		{table: "artifacts", want: 1},
-		{table: "artifact_asset_registrations", want: 1},
-		{table: "sse_user_events", want: 1},
-		{table: "runtime_projection_events", want: 1},
-		{table: "watermill_test_topic", want: 1},
+		{table: "atomic_tasks", want: 3},
+		{table: "task_attempts", want: 2},
+		{table: "dag_task_groups", want: 2},
+		{table: "artifacts", want: 2},
+		{table: "artifact_asset_registrations", want: 2},
+		{table: "sse_user_events", want: 2},
+		{table: "runtime_projection_events", want: 2},
+		{table: "watermill_test_topic", want: 2},
 		{table: "user_assets", want: 1},
 		{table: "blobs", want: 1},
 	} {
@@ -78,7 +78,7 @@ func TestApplicationPlatformResetRemovesLinkedProjectionsOnce(t *testing.T) {
 
 const applicationPlatformResetFixtureSQL = `
 CREATE TABLE aiapp_engine_instances (id TEXT PRIMARY KEY);
-CREATE TABLE aiapp_comfyui_workflows (id TEXT PRIMARY KEY, source_engine_instance_id TEXT NOT NULL);
+CREATE TABLE aiapp_comfyui_workflows (id TEXT PRIMARY KEY, converted_application_template_id TEXT);
 CREATE TABLE aiapp_comfyui_workflow_validations (id TEXT PRIMARY KEY);
 CREATE TABLE aiapp_comfyui_workflow_test_runs (id TEXT PRIMARY KEY, dag_task_group_id TEXT);
 CREATE TABLE aiapp_application_templates (id TEXT PRIMARY KEY);
@@ -117,7 +117,7 @@ CREATE TABLE user_assets (id TEXT PRIMARY KEY);
 CREATE TABLE blobs (id TEXT PRIMARY KEY);
 
 INSERT INTO aiapp_engine_instances VALUES ('engine-linked');
-INSERT INTO aiapp_comfyui_workflows VALUES ('workflow-linked', 'engine-linked');
+INSERT INTO aiapp_comfyui_workflows VALUES ('workflow-linked', 'template-linked');
 INSERT INTO aiapp_comfyui_workflow_validations VALUES ('validation-linked');
 INSERT INTO aiapp_comfyui_workflow_test_runs VALUES ('test-run-linked', 'dag-linked');
 INSERT INTO aiapp_application_templates VALUES ('template-linked');

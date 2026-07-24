@@ -250,89 +250,14 @@ WHERE child.owner_type = 'DAG_TASK_GROUP'
 
 const applicationPlatformLegacySchemaSQL = `
 DO $$
-DECLARE
-  outbox_table TEXT;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('omnimam:application-platform-schema-reset'));
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = current_schema()
       AND table_name = 'aiapp_comfyui_workflows'
-      AND column_name = 'source_engine_instance_id'
+      AND column_name = 'converted_application_template_id'
   ) THEN
-    CREATE TEMP TABLE reset_aiapp_resource_ids ON COMMIT DROP AS
-      SELECT id FROM aiapp_engine_instances
-      UNION SELECT id FROM aiapp_comfyui_workflows
-      UNION SELECT id FROM aiapp_comfyui_workflow_validations
-      UNION SELECT id FROM aiapp_comfyui_workflow_test_runs
-      UNION SELECT id FROM aiapp_application_templates
-      UNION SELECT id FROM aiapp_application_template_versions
-      UNION SELECT id FROM aiapp_applications
-      UNION SELECT id FROM aiapp_application_versions
-      UNION SELECT id FROM aiapp_application_runs
-      UNION SELECT id FROM aiapp_artifacts;
-    CREATE TEMP TABLE reset_application_runs ON COMMIT DROP AS
-      SELECT id FROM aiapp_application_runs;
-    CREATE TEMP TABLE reset_test_dags ON COMMIT DROP AS
-      SELECT dag_task_group_id AS id
-      FROM aiapp_comfyui_workflow_test_runs
-      WHERE dag_task_group_id IS NOT NULL AND dag_task_group_id <> '';
-    CREATE TEMP TABLE reset_atomic_tasks ON COMMIT DROP AS
-      SELECT id, runtime_task_id, runtime_execution_id
-      FROM atomic_tasks
-      WHERE application_run_id IN (SELECT id FROM reset_application_runs)
-         OR (owner_type = 'DAG_TASK_GROUP' AND owner_id IN (SELECT id FROM reset_test_dags));
-    CREATE TEMP TABLE reset_task_attempts ON COMMIT DROP AS
-      SELECT id FROM task_attempts WHERE atomic_task_id IN (SELECT id FROM reset_atomic_tasks);
-    CREATE TEMP TABLE reset_artifacts ON COMMIT DROP AS
-      SELECT id FROM artifacts
-      WHERE application_run_id IN (SELECT id FROM reset_application_runs)
-         OR atomic_task_id IN (SELECT id FROM reset_atomic_tasks);
-
-    DELETE FROM sse_user_events
-    WHERE application_run_id IN (SELECT id FROM reset_application_runs)
-       OR dag_task_group_id IN (SELECT id FROM reset_test_dags)
-       OR atomic_task_id IN (SELECT id FROM reset_atomic_tasks)
-       OR task_attempt_id IN (SELECT id FROM reset_task_attempts)
-       OR artifact_id IN (SELECT id FROM reset_artifacts)
-       OR aggregate_id IN (SELECT id FROM reset_aiapp_resource_ids);
-    DELETE FROM artifact_asset_registrations
-    WHERE application_run_id IN (SELECT id FROM reset_application_runs)
-       OR artifact_id IN (SELECT id FROM reset_artifacts);
-    DELETE FROM artifacts WHERE id IN (SELECT id FROM reset_artifacts);
-    DELETE FROM runtime_projection_events
-    WHERE runtime_task_id IN (SELECT runtime_task_id FROM reset_atomic_tasks WHERE runtime_task_id <> '')
-       OR runtime_execution_id IN (SELECT runtime_execution_id FROM reset_atomic_tasks WHERE runtime_execution_id <> '')
-       OR runtime_execution_id IN (
-         SELECT runtime_execution_id FROM dag_task_groups
-         WHERE id IN (SELECT id FROM reset_test_dags) AND runtime_execution_id <> ''
-       );
-
-    FOR outbox_table IN
-      SELECT DISTINCT table_name
-      FROM information_schema.columns
-      WHERE table_schema = current_schema()
-        AND table_name LIKE 'watermill_%'
-        AND column_name = 'payload'
-    LOOP
-      EXECUTE format(
-        $query$
-        DELETE FROM %I
-        WHERE "payload"->>'application_run_id' IN (SELECT id FROM reset_application_runs)
-           OR "payload"->>'dag_task_group_id' IN (SELECT id FROM reset_test_dags)
-           OR "payload"->>'atomic_task_id' IN (SELECT id FROM reset_atomic_tasks)
-           OR "payload"->>'task_attempt_id' IN (SELECT id FROM reset_task_attempts)
-           OR "payload"->>'artifact_id' IN (SELECT id FROM reset_artifacts)
-           OR "payload"->>'aggregate_id' IN (SELECT id FROM reset_aiapp_resource_ids)
-        $query$,
-        outbox_table
-      );
-    END LOOP;
-
-    DELETE FROM task_attempts WHERE id IN (SELECT id FROM reset_task_attempts);
-    DELETE FROM atomic_tasks WHERE id IN (SELECT id FROM reset_atomic_tasks);
-    DELETE FROM dag_task_groups WHERE id IN (SELECT id FROM reset_test_dags);
-
     DROP TABLE IF EXISTS
       aiapp_application_artifact_refs,
       aiapp_artifacts,
@@ -348,13 +273,8 @@ BEGIN
       aiapp_comfyui_engine_object_info,
       aiapp_engine_instances
       CASCADE;
-  ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='aiapp_applications' AND column_name='template_id')
-     OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='aiapp_application_runs' AND column_name='run_mode') THEN
-    DROP TABLE IF EXISTS aiapp_input_mappings, aiapp_output_mappings, aiapp_app_templates,
-      aiapp_app_engines, aiapp_application_runs, aiapp_applications CASCADE;
   END IF;
 END $$;
-DROP TABLE IF EXISTS aiapp_input_mappings, aiapp_output_mappings, aiapp_app_templates, aiapp_app_engines CASCADE;
 `
 
 const applicationPlatformConstraintsSQL = `
@@ -365,12 +285,11 @@ CREATE INDEX IF NOT EXISTS idx_aiapp_binding_capability ON aiapp_engine_capabili
 CREATE INDEX IF NOT EXISTS idx_aiapp_comfyui_workflows_owner_created ON aiapp_comfyui_workflows(owner_user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_aiapp_comfyui_workflows_filters ON aiapp_comfyui_workflows(owner_user_id, source_type, api_conversion_status);
 CREATE INDEX IF NOT EXISTS idx_aiapp_comfyui_workflows_checksum ON aiapp_comfyui_workflows(owner_user_id, source_type, source_checksum);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_comfyui_workflows_conversion_key ON aiapp_comfyui_workflows(owner_user_id, conversion_idempotency_key) WHERE conversion_idempotency_key IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_comfyui_workflows_converted_template ON aiapp_comfyui_workflows(converted_application_template_id) WHERE converted_application_template_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_aiapp_comfyui_validations_workflow_created ON aiapp_comfyui_workflow_validations(workflow_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_aiapp_comfyui_validations_engine_status ON aiapp_comfyui_workflow_validations(engine_instance_id, status, validated_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_templates_owner_name ON aiapp_application_templates(owner_user_id, name);
 CREATE INDEX IF NOT EXISTS idx_aiapp_templates_capability ON aiapp_application_templates(capability_definition_id, capability_source_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_templates_conversion_key ON aiapp_application_templates(owner_user_id, comfyui_conversion_idempotency_key) WHERE comfyui_conversion_idempotency_key IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_template_versions_number ON aiapp_application_template_versions(application_template_id, version);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aiapp_applications_owner_name ON aiapp_applications(owner_user_id, name);
 CREATE INDEX IF NOT EXISTS idx_aiapp_applications_owner_visibility ON aiapp_applications(owner_user_id, visibility);
@@ -390,7 +309,6 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_object_info_engine') THEN ALTER TABLE aiapp_comfyui_engine_object_info ADD CONSTRAINT fk_aiapp_comfyui_object_info_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id) ON DELETE CASCADE; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_checksums') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_checksums CHECK (source_checksum ~ '^sha256:[0-9a-f]{64}$' AND (api_workflow_checksum IS NULL OR api_workflow_checksum ~ '^sha256:[0-9a-f]{64}$')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_source') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_source CHECK ((source_type='api_workflow' AND api_conversion_status='ready' AND api_workflow_json IS NOT NULL AND api_workflow_checksum IS NOT NULL) OR (source_type='visual_workflow' AND visual_workflow_json IS NOT NULL AND ((api_conversion_status='pending' AND api_workflow_json IS NULL AND api_workflow_checksum IS NULL) OR (api_conversion_status='ready' AND api_workflow_json IS NOT NULL AND api_workflow_checksum IS NOT NULL)))); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_conversion') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_conversion CHECK ((converted_application_template_id IS NULL AND converted_template_version_id IS NULL AND conversion_idempotency_key IS NULL AND converted_at IS NULL AND converted_by_user_id IS NULL) OR (converted_application_template_id IS NOT NULL AND converted_template_version_id IS NOT NULL AND conversion_idempotency_key IS NOT NULL AND converted_at IS NOT NULL AND converted_by_user_id IS NOT NULL)); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_validation_workflow') THEN ALTER TABLE aiapp_comfyui_workflow_validations ADD CONSTRAINT fk_aiapp_comfyui_validation_workflow FOREIGN KEY (workflow_id) REFERENCES aiapp_comfyui_workflows(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_validation_engine') THEN ALTER TABLE aiapp_comfyui_workflow_validations ADD CONSTRAINT fk_aiapp_comfyui_validation_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_validation_status') THEN ALTER TABLE aiapp_comfyui_workflow_validations ADD CONSTRAINT ck_aiapp_comfyui_validation_status CHECK (status IN ('compatible','incompatible','failed')); END IF;
@@ -402,10 +320,7 @@ DO $$ BEGIN
   ALTER TABLE aiapp_application_template_versions DROP CONSTRAINT IF EXISTS ck_aiapp_template_version_source;
   ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_source CHECK ((capability_source_type='provider_capability' AND provider_capability_id IS NOT NULL AND provider_capability_revision IS NOT NULL AND provider_operation_id IS NOT NULL AND workflow_contract_revision IS NULL AND comfyui_api_workflow_json IS NULL) OR (capability_source_type='comfyui_workflow' AND provider_capability_id IS NULL AND provider_capability_revision IS NULL AND provider_operation_id IS NULL AND workflow_contract_revision IS NOT NULL AND comfyui_api_workflow_json IS NOT NULL));
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_template_version_source_workflow') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT fk_aiapp_template_version_source_workflow FOREIGN KEY (source_comfyui_workflow_id) REFERENCES aiapp_comfyui_workflows(id); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_template_version_source_validation') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT fk_aiapp_template_version_source_validation FOREIGN KEY (source_workflow_validation_id) REFERENCES aiapp_comfyui_workflow_validations(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_template_current_version') THEN ALTER TABLE aiapp_application_templates ADD CONSTRAINT fk_aiapp_template_current_version FOREIGN KEY (current_version_id) REFERENCES aiapp_application_template_versions(id); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_workflow_converted_template') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT fk_aiapp_comfyui_workflow_converted_template FOREIGN KEY (converted_application_template_id) REFERENCES aiapp_application_templates(id); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_workflow_converted_version') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT fk_aiapp_comfyui_workflow_converted_version FOREIGN KEY (converted_template_version_id) REFERENCES aiapp_application_template_versions(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_application_visibility') THEN ALTER TABLE aiapp_applications ADD CONSTRAINT ck_aiapp_application_visibility CHECK (visibility IN ('private','global')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_application_version_application') THEN ALTER TABLE aiapp_application_versions ADD CONSTRAINT fk_aiapp_application_version_application FOREIGN KEY (application_id) REFERENCES aiapp_applications(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_application_version_template') THEN ALTER TABLE aiapp_application_versions ADD CONSTRAINT fk_aiapp_application_version_template FOREIGN KEY (application_template_version_id) REFERENCES aiapp_application_template_versions(id); END IF;
