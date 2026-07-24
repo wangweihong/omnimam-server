@@ -132,7 +132,7 @@ func (c *Controller) ListComfyUIWorkflows(ctx *gin.Context) {
 	})
 }
 func (c *Controller) ImportComfyUIWorkflow(ctx *gin.Context) {
-	req := &iapiserver.ComfyUIWorkflowImportRequest{Name: ctx.PostForm("name"), Description: ctx.PostForm("description"), SourceEngineInstanceID: ctx.PostForm("source_engine_instance_id")}
+	req := &iapiserver.ComfyUIWorkflowImportRequest{Name: ctx.PostForm("name"), Description: ctx.PostForm("description")}
 	if sourceHeader, sourceErr := ctx.FormFile("workflow_file"); sourceErr == nil {
 		req.WorkflowFile = sourceHeader
 		req.SourceWorkflow, req.SourceWorkflowRaw, sourceErr = decodeWorkflowFile(sourceHeader)
@@ -227,8 +227,8 @@ func (c *Controller) ConvertComfyUIWorkflow(ctx *gin.Context) {
 	})
 }
 func (c *Controller) ConvertComfyUIWorkflowToAPI(ctx *gin.Context) {
-	run(ctx, &iapiserver.ComfyUIWorkflowResourceVersionRequest{}, func(r *iapiserver.ComfyUIWorkflowResourceVersionRequest) (any, error) {
-		return c.service.ConvertComfyUIWorkflowToAPI(ctx, ctx.Param("workflow_id"), r.ResourceVersion)
+	run(ctx, &iapiserver.ComfyUIWorkflowAPIConversionRequest{}, func(r *iapiserver.ComfyUIWorkflowAPIConversionRequest) (any, error) {
+		return c.service.ConvertComfyUIWorkflowToAPI(ctx, ctx.Param("workflow_id"), r)
 	})
 }
 func (c *Controller) ListComfyUIWorkflowTestRuns(ctx *gin.Context) {

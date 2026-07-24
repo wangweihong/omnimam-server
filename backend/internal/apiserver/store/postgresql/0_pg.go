@@ -250,8 +250,105 @@ WHERE child.owner_type = 'DAG_TASK_GROUP'
 
 const applicationPlatformLegacySchemaSQL = `
 DO $$
+DECLARE
+  outbox_table TEXT;
 BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='aiapp_applications' AND column_name='template_id')
+  PERFORM pg_advisory_xact_lock(hashtext('omnimam:application-platform-schema-reset'));
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'aiapp_comfyui_workflows'
+      AND column_name = 'source_engine_instance_id'
+  ) THEN
+    CREATE TEMP TABLE reset_aiapp_resource_ids ON COMMIT DROP AS
+      SELECT id FROM aiapp_engine_instances
+      UNION SELECT id FROM aiapp_comfyui_workflows
+      UNION SELECT id FROM aiapp_comfyui_workflow_validations
+      UNION SELECT id FROM aiapp_comfyui_workflow_test_runs
+      UNION SELECT id FROM aiapp_application_templates
+      UNION SELECT id FROM aiapp_application_template_versions
+      UNION SELECT id FROM aiapp_applications
+      UNION SELECT id FROM aiapp_application_versions
+      UNION SELECT id FROM aiapp_application_runs
+      UNION SELECT id FROM aiapp_artifacts;
+    CREATE TEMP TABLE reset_application_runs ON COMMIT DROP AS
+      SELECT id FROM aiapp_application_runs;
+    CREATE TEMP TABLE reset_test_dags ON COMMIT DROP AS
+      SELECT dag_task_group_id AS id
+      FROM aiapp_comfyui_workflow_test_runs
+      WHERE dag_task_group_id IS NOT NULL AND dag_task_group_id <> '';
+    CREATE TEMP TABLE reset_atomic_tasks ON COMMIT DROP AS
+      SELECT id, runtime_task_id, runtime_execution_id
+      FROM atomic_tasks
+      WHERE application_run_id IN (SELECT id FROM reset_application_runs)
+         OR (owner_type = 'DAG_TASK_GROUP' AND owner_id IN (SELECT id FROM reset_test_dags));
+    CREATE TEMP TABLE reset_task_attempts ON COMMIT DROP AS
+      SELECT id FROM task_attempts WHERE atomic_task_id IN (SELECT id FROM reset_atomic_tasks);
+    CREATE TEMP TABLE reset_artifacts ON COMMIT DROP AS
+      SELECT id FROM artifacts
+      WHERE application_run_id IN (SELECT id FROM reset_application_runs)
+         OR atomic_task_id IN (SELECT id FROM reset_atomic_tasks);
+
+    DELETE FROM sse_user_events
+    WHERE application_run_id IN (SELECT id FROM reset_application_runs)
+       OR dag_task_group_id IN (SELECT id FROM reset_test_dags)
+       OR atomic_task_id IN (SELECT id FROM reset_atomic_tasks)
+       OR task_attempt_id IN (SELECT id FROM reset_task_attempts)
+       OR artifact_id IN (SELECT id FROM reset_artifacts)
+       OR aggregate_id IN (SELECT id FROM reset_aiapp_resource_ids);
+    DELETE FROM artifact_asset_registrations
+    WHERE application_run_id IN (SELECT id FROM reset_application_runs)
+       OR artifact_id IN (SELECT id FROM reset_artifacts);
+    DELETE FROM artifacts WHERE id IN (SELECT id FROM reset_artifacts);
+    DELETE FROM runtime_projection_events
+    WHERE runtime_task_id IN (SELECT runtime_task_id FROM reset_atomic_tasks WHERE runtime_task_id <> '')
+       OR runtime_execution_id IN (SELECT runtime_execution_id FROM reset_atomic_tasks WHERE runtime_execution_id <> '')
+       OR runtime_execution_id IN (
+         SELECT runtime_execution_id FROM dag_task_groups
+         WHERE id IN (SELECT id FROM reset_test_dags) AND runtime_execution_id <> ''
+       );
+
+    FOR outbox_table IN
+      SELECT DISTINCT table_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name LIKE 'watermill_%'
+        AND column_name = 'payload'
+    LOOP
+      EXECUTE format(
+        $query$
+        DELETE FROM %I
+        WHERE "payload"->>'application_run_id' IN (SELECT id FROM reset_application_runs)
+           OR "payload"->>'dag_task_group_id' IN (SELECT id FROM reset_test_dags)
+           OR "payload"->>'atomic_task_id' IN (SELECT id FROM reset_atomic_tasks)
+           OR "payload"->>'task_attempt_id' IN (SELECT id FROM reset_task_attempts)
+           OR "payload"->>'artifact_id' IN (SELECT id FROM reset_artifacts)
+           OR "payload"->>'aggregate_id' IN (SELECT id FROM reset_aiapp_resource_ids)
+        $query$,
+        outbox_table
+      );
+    END LOOP;
+
+    DELETE FROM task_attempts WHERE id IN (SELECT id FROM reset_task_attempts);
+    DELETE FROM atomic_tasks WHERE id IN (SELECT id FROM reset_atomic_tasks);
+    DELETE FROM dag_task_groups WHERE id IN (SELECT id FROM reset_test_dags);
+
+    DROP TABLE IF EXISTS
+      aiapp_application_artifact_refs,
+      aiapp_artifacts,
+      aiapp_application_runs,
+      aiapp_application_versions,
+      aiapp_applications,
+      aiapp_application_template_versions,
+      aiapp_application_templates,
+      aiapp_comfyui_workflow_test_runs,
+      aiapp_comfyui_workflow_validations,
+      aiapp_comfyui_workflows,
+      aiapp_engine_capability_bindings,
+      aiapp_comfyui_engine_object_info,
+      aiapp_engine_instances
+      CASCADE;
+  ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='aiapp_applications' AND column_name='template_id')
      OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='aiapp_application_runs' AND column_name='run_mode') THEN
     DROP TABLE IF EXISTS aiapp_input_mappings, aiapp_output_mappings, aiapp_app_templates,
       aiapp_app_engines, aiapp_application_runs, aiapp_applications CASCADE;
@@ -291,8 +388,6 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_engine_health') THEN ALTER TABLE aiapp_engine_instances ADD CONSTRAINT ck_aiapp_engine_health CHECK (health_status IN ('unknown','online','offline','degraded')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_engine_limits') THEN ALTER TABLE aiapp_engine_instances ADD CONSTRAINT ck_aiapp_engine_limits CHECK (max_concurrency > 0 AND request_timeout_seconds > 0 AND task_timeout_seconds > 0); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_object_info_engine') THEN ALTER TABLE aiapp_comfyui_engine_object_info ADD CONSTRAINT fk_aiapp_comfyui_object_info_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id) ON DELETE CASCADE; END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_binding_engine') THEN ALTER TABLE aiapp_engine_capability_bindings ADD CONSTRAINT fk_aiapp_binding_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_comfyui_workflow_source_engine') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT fk_aiapp_comfyui_workflow_source_engine FOREIGN KEY (source_engine_instance_id) REFERENCES aiapp_engine_instances(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_checksums') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_checksums CHECK (source_checksum ~ '^sha256:[0-9a-f]{64}$' AND (api_workflow_checksum IS NULL OR api_workflow_checksum ~ '^sha256:[0-9a-f]{64}$')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_source') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_source CHECK ((source_type='api_workflow' AND api_conversion_status='ready' AND api_workflow_json IS NOT NULL AND api_workflow_checksum IS NOT NULL) OR (source_type='visual_workflow' AND visual_workflow_json IS NOT NULL AND ((api_conversion_status='pending' AND api_workflow_json IS NULL AND api_workflow_checksum IS NULL) OR (api_conversion_status='ready' AND api_workflow_json IS NOT NULL AND api_workflow_checksum IS NOT NULL)))); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_comfyui_workflow_conversion') THEN ALTER TABLE aiapp_comfyui_workflows ADD CONSTRAINT ck_aiapp_comfyui_workflow_conversion CHECK ((converted_application_template_id IS NULL AND converted_template_version_id IS NULL AND conversion_idempotency_key IS NULL AND converted_at IS NULL AND converted_by_user_id IS NULL) OR (converted_application_template_id IS NOT NULL AND converted_template_version_id IS NOT NULL AND conversion_idempotency_key IS NOT NULL AND converted_at IS NOT NULL AND converted_by_user_id IS NOT NULL)); END IF;
@@ -327,6 +422,27 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_artifact_run') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT fk_aiapp_artifact_run FOREIGN KEY (application_run_id) REFERENCES aiapp_application_runs(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_artifact_media') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT ck_aiapp_artifact_media CHECK (media_type IN ('image','video','audio','text','pdf','other')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_artifact_registration') THEN ALTER TABLE aiapp_artifacts ADD CONSTRAINT ck_aiapp_artifact_registration CHECK ((registration_status='registered' AND asset_id IS NOT NULL) OR (registration_status IN ('pending','failed') AND asset_id IS NULL)); END IF;
+END $$;
+`
+
+const applicationPlatformBindingCascadeSQL = `
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='fk_aiapp_binding_engine'
+      AND conrelid='aiapp_engine_capability_bindings'::regclass
+      AND confdeltype <> 'c'
+  ) THEN
+    ALTER TABLE aiapp_engine_capability_bindings DROP CONSTRAINT fk_aiapp_binding_engine;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='fk_aiapp_binding_engine'
+      AND conrelid='aiapp_engine_capability_bindings'::regclass
+  ) THEN
+    ALTER TABLE aiapp_engine_capability_bindings ADD CONSTRAINT fk_aiapp_binding_engine
+      FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id) ON DELETE CASCADE;
+  END IF;
 END $$;
 `
 
@@ -421,7 +537,10 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 }
 
 func (ds *datastore) ensureApplicationPlatformScheme() error {
-	return ds.db.Exec(applicationPlatformConstraintsSQL).Error
+	if err := ds.db.Exec(applicationPlatformConstraintsSQL).Error; err != nil {
+		return err
+	}
+	return ds.db.Exec(applicationPlatformBindingCascadeSQL).Error
 }
 
 func (ds *datastore) prepareApplicationPlatformScheme() error {

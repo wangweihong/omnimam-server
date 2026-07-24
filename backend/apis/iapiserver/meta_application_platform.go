@@ -9,11 +9,17 @@ import (
 )
 
 const (
-	ProviderCapabilityAvailable   = "available"
-	ProviderCapabilityDisabled    = "disabled"
-	ProviderCapabilityUnavailable = "unavailable"
-	ProviderRegistryReady         = "ready"
-	ProviderRegistryDegraded      = "degraded"
+	ProviderCapabilityAvailable            = "available"
+	ProviderCapabilityDisabled             = "disabled"
+	ProviderCapabilityUnavailable          = "unavailable"
+	ProviderRegistryReady                  = "ready"
+	ProviderRegistryDegraded               = "degraded"
+	ProviderCapabilityKindCatalog          = "catalog"
+	ProviderCapabilityKindEngineBinding    = "engine_binding"
+	ProviderCapabilityOriginBuiltin        = "builtin"
+	ProviderCapabilityOriginDirectory      = "directory"
+	ProviderBindingPolicyManual            = "manual"
+	ProviderBindingPolicyRequiredImmutable = "required_immutable"
 
 	CapabilitySourceProviderCapability = "provider_capability"
 	CapabilitySourceComfyUIWorkflow    = "comfyui_workflow"
@@ -142,10 +148,16 @@ type ProviderCapabilityVariant struct {
 // AIAppProviderCapability 是从启动目录加载的只读能力清单，不持久化到数据库。
 // Go 名称带领域前缀，避免与 model-management 的同名资源混淆。
 type AIAppProviderCapability struct {
-	SchemaVersion           string                        `json:"schema_version" yaml:"schema_version"`
-	ID                      string                        `json:"id" yaml:"id"`
-	Name                    string                        `json:"name" yaml:"name"`
-	Description             string                        `json:"description,omitempty" yaml:"description,omitempty"`
+	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
+	ID            string `json:"id" yaml:"id"`
+	Name          string `json:"name" yaml:"name"`
+	Description   string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Kind 区分完整模型目录与仅用于标识引擎运行时身份的绑定能力。
+	Kind string `json:"kind" yaml:"kind"`
+	// Origin 由加载器派生，外部清单不能声明或覆盖 builtin 来源。
+	Origin string `json:"origin" yaml:"-"`
+	// BindingPolicy 决定绑定由管理员维护，还是由系统强制维护且不可变。
+	BindingPolicy           string                        `json:"binding_policy" yaml:"binding_policy"`
 	ApplicationEngineTypeID string                        `json:"application_engine_type_id" yaml:"application_engine_type_id"`
 	Revision                string                        `json:"revision" yaml:"revision"`
 	Enabled                 bool                          `json:"enabled" yaml:"enabled"`
@@ -336,6 +348,8 @@ type EngineCapabilityBinding struct {
 	Restrictions               map[string]any `json:"restrictions" gorm:"-"`
 	RestrictionsShadow         string         `json:"-" gorm:"column:restrictions_json;type:text;not null;default:'{}'"`
 	EffectiveStatus            string         `json:"effective_status" gorm:"-"`
+	// SystemManaged 表示绑定由 required_immutable 内置能力维护，不允许通过绑定 API 写入。
+	SystemManaged bool `json:"system_managed" gorm:"-"`
 }
 
 func (EngineCapabilityBinding) TableName() string { return "aiapp_engine_capability_bindings" }

@@ -55,7 +55,7 @@ type ApplicationPlatformSrv interface {
 	ValidateComfyUIWorkflow(context.Context, string, *iapiserver.ComfyUIWorkflowValidationCreateRequest) (*iapiserver.ComfyUIWorkflowValidation, error)
 	GetComfyUIWorkflowValidation(context.Context, string) (*iapiserver.ComfyUIWorkflowValidation, error)
 	ConvertComfyUIWorkflow(context.Context, string, *iapiserver.ComfyUIWorkflowConvertRequest) (*iapiserver.ComfyUIWorkflowConvertResult, error)
-	ConvertComfyUIWorkflowToAPI(context.Context, string, int64) (*iapiserver.ComfyUIWorkflowDetail, error)
+	ConvertComfyUIWorkflowToAPI(context.Context, string, *iapiserver.ComfyUIWorkflowAPIConversionRequest) (*iapiserver.ComfyUIWorkflowDetail, error)
 	ListComfyUIWorkflowTestRuns(context.Context, *iapiserver.ComfyUIWorkflowTestRunListRequest) (*iapiserver.ComfyUIWorkflowTestRunListResponse, error)
 	CreateComfyUIWorkflowTestRun(context.Context, string, *iapiserver.ComfyUIWorkflowTestRunCreateRequest) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	GetComfyUIWorkflowTestRun(context.Context, string) (*iapiserver.ComfyUIWorkflowTestRun, error)
@@ -126,16 +126,17 @@ type WorkflowAuditRecord struct {
 }
 
 type Dependencies struct {
-	Store         store.Factory
-	Runtime       *appregistry.RuntimeRegistry
-	Capabilities  *appregistry.ProviderCapabilityRegistry
-	Principals    PrincipalResolver
-	Adapters      map[string]EngineAdapter
-	Executors     map[string]OperationExecutor
-	Tasks         taskcenter.TaskCenterSrv
-	Assets        AssetRegistrar
-	Events        EventPublisher
-	WorkflowAudit WorkflowAuditor
+	Store          store.Factory
+	Runtime        *appregistry.RuntimeRegistry
+	Capabilities   *appregistry.ProviderCapabilityRegistry
+	Principals     PrincipalResolver
+	Adapters       map[string]EngineAdapter
+	Executors      map[string]OperationExecutor
+	Tasks          taskcenter.TaskCenterSrv
+	Assets         AssetRegistrar
+	Events         EventPublisher
+	WorkflowAudit  WorkflowAuditor
+	WorkflowParser ComfyWorkflowParser
 }
 
 type applicationPlatformService struct{ Dependencies }
@@ -161,6 +162,9 @@ func NewService(deps Dependencies) (*applicationPlatformService, error) {
 	}
 	if deps.WorkflowAudit == nil {
 		deps.WorkflowAudit = StructuredWorkflowAuditor{}
+	}
+	if deps.WorkflowParser == nil {
+		deps.WorkflowParser = comfy2GoWorkflowParser{}
 	}
 	return &applicationPlatformService{Dependencies: deps}, nil
 }
@@ -328,8 +332,50 @@ func (s *applicationPlatformService) CreateEngineInstance(ctx context.Context, r
 	}
 	item := &iapiserver.EngineInstance{ApplicationEngineTypeID: req.ApplicationEngineTypeID, BaseURL: req.BaseURL, AuthType: req.AuthType, AuthConfig: req.AuthConfig, Enabled: *req.Enabled, HealthStatus: iapiserver.EngineHealthUnknown, Region: req.Region, MaxConcurrency: req.MaxConcurrency, RequestTimeoutSeconds: defaultInt(req.RequestTimeoutSeconds, 60), TaskTimeoutSeconds: defaultInt(req.TaskTimeoutSeconds, 1800)}
 	item.Name, item.Description = req.Name, req.Description
-	ret, err := s.Store.ApplicationPlatforms().AddEngineInstance(ctx, item)
-	return ret, mapUnique(err, "idx_aiapp_engine_instances_name", code.ErrAIAppEngineAuthConfigInvalid, "engine instance name already exists")
+	bindings := s.requiredBindingsForEngineType(req.ApplicationEngineTypeID)
+	ret, err := s.Store.ApplicationPlatforms().AddEngineInstanceWithBindings(ctx, item, bindings)
+	if err == nil {
+		return ret, nil
+	}
+	if strings.Contains(err.Error(), "idx_aiapp_engine_instances_name") {
+		return nil, errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "engine instance name already exists")
+	}
+	if stderrors.Is(err, store.ErrRequiredEngineBindingFailed) {
+		return nil, errors.NewStatus(code.ErrAIAppRequiredEngineBindingFailed, "required engine capability binding could not be created")
+	}
+	return nil, err
+}
+
+// ReconcileRequiredEngineBindings 在进程开始服务前恢复全部系统必需的不可变绑定。
+func (s *applicationPlatformService) ReconcileRequiredEngineBindings(ctx context.Context) error {
+	for _, capability := range s.Capabilities.Capabilities() {
+		if capability.Kind != iapiserver.ProviderCapabilityKindEngineBinding || capability.Origin != iapiserver.ProviderCapabilityOriginBuiltin || capability.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || capability.Availability != iapiserver.ProviderCapabilityAvailable {
+			continue
+		}
+		if err := s.Store.ApplicationPlatforms().EnsureRequiredEngineBindings(ctx, capability.ApplicationEngineTypeID, capability.ID, capability.Revision, capability.Name, "System-managed required capability binding"); err != nil {
+			return fmt.Errorf("reconcile required engine binding %s: %w", capability.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *applicationPlatformService) requiredBindingsForEngineType(engineTypeID string) []*iapiserver.EngineCapabilityBinding {
+	capabilities := s.Capabilities.RequiredBindingsForEngineType(engineTypeID)
+	bindings := make([]*iapiserver.EngineCapabilityBinding, 0, len(capabilities))
+	for _, capability := range capabilities {
+		binding := &iapiserver.EngineCapabilityBinding{
+			ProviderCapabilityID:       capability.ID,
+			ProviderCapabilityRevision: capability.Revision,
+			Enabled:                    true,
+			Restrictions:               map[string]any{},
+			EffectiveStatus:            iapiserver.BindingEffectiveAvailable,
+			SystemManaged:              true,
+		}
+		binding.Name = capability.Name
+		binding.Description = "System-managed required capability binding"
+		bindings = append(bindings, binding)
+	}
+	return bindings
 }
 
 func (s *applicationPlatformService) GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error) {
@@ -516,6 +562,9 @@ func (s *applicationPlatformService) CreateEngineBinding(ctx context.Context, re
 	if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable {
 		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
 	}
+	if capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable {
+		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be created")
+	}
 	if capability.ApplicationEngineTypeID != engine.ApplicationEngineTypeID {
 		return nil, errors.NewStatus(code.ErrAIAppEngineBindingIncompatible, "engine type does not match capability")
 	}
@@ -535,6 +584,9 @@ func (s *applicationPlatformService) UpdateEngineBinding(ctx context.Context, re
 	item, err := s.Store.ApplicationPlatforms().GetEngineBinding(ctx, req.ID)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineBindingNotFound, "engine binding not found")
+	}
+	if s.isSystemManagedBinding(item) {
+		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be updated")
 	}
 	capability, ok := s.Capabilities.Get(item.ProviderCapabilityID)
 	if !ok {
@@ -562,8 +614,12 @@ func (s *applicationPlatformService) DeleteEngineBinding(ctx context.Context, id
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
-	if _, err := s.Store.ApplicationPlatforms().GetEngineBinding(ctx, id); err != nil {
+	item, err := s.Store.ApplicationPlatforms().GetEngineBinding(ctx, id)
+	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineBindingNotFound, "engine binding not found")
+	}
+	if s.isSystemManagedBinding(item) {
+		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be deleted")
 	}
 	if err := s.Store.ApplicationPlatforms().DeleteEngineBinding(ctx, id); err != nil {
 		return nil, err
@@ -1041,6 +1097,7 @@ func (s *applicationPlatformService) validateEngineAuth(typeID, authType string,
 
 func (s *applicationPlatformService) resolveBindingStatus(binding *iapiserver.EngineCapabilityBinding) {
 	capability, ok := s.Capabilities.Get(binding.ProviderCapabilityID)
+	binding.SystemManaged = ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
 	switch {
 	case !binding.Enabled:
 		binding.EffectiveStatus = iapiserver.BindingEffectiveDisabled
@@ -1051,6 +1108,14 @@ func (s *applicationPlatformService) resolveBindingStatus(binding *iapiserver.En
 	}
 }
 
+func (s *applicationPlatformService) isSystemManagedBinding(binding *iapiserver.EngineCapabilityBinding) bool {
+	if binding == nil {
+		return false
+	}
+	capability, ok := s.Capabilities.Get(binding.ProviderCapabilityID)
+	return ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
+}
+
 func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefinitionID, sourceType, providerID, operationID string, workflow, contract map[string]any) (*iapiserver.ApplicationTemplateVersion, error) {
 	version := &iapiserver.ApplicationTemplateVersion{CapabilitySourceType: sourceType, TemplateContract: contract, ComfyUIAPIWorkflow: workflow}
 	switch sourceType {
@@ -1058,6 +1123,9 @@ func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefini
 		capability, ok := s.Capabilities.Get(providerID)
 		if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable {
 			return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
+		}
+		if capability.Kind != iapiserver.ProviderCapabilityKindCatalog {
+			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "binding-only capability cannot be used as a template source")
 		}
 		operation, ok := findOperation(capability, operationID)
 		if !ok || operation.CapabilityDefinitionID != capabilityDefinitionID {
@@ -1092,7 +1160,7 @@ func (s *applicationPlatformService) validateTemplateVersion(ctx context.Context
 			return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "provider capability is missing")
 		}
 		capability, ok := s.Capabilities.Get(*version.ProviderCapabilityID)
-		if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable || version.ProviderCapabilityRevision == nil || capability.Revision != *version.ProviderCapabilityRevision {
+		if !ok || capability.Kind != iapiserver.ProviderCapabilityKindCatalog || capability.Availability != iapiserver.ProviderCapabilityAvailable || version.ProviderCapabilityRevision == nil || capability.Revision != *version.ProviderCapabilityRevision {
 			return errors.NewStatus(code.ErrAIAppTemplateVersionNotPublishable, "provider capability revision is unavailable")
 		}
 	case iapiserver.CapabilitySourceComfyUIWorkflow:

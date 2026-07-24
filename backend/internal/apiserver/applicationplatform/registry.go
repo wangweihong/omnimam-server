@@ -19,8 +19,10 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-//go:embed assets/runtime-registry.yaml assets/provider-capability.schema.yaml
+//go:embed assets/runtime-registry.yaml assets/provider-capability.schema.yaml assets/builtin-provider-capabilities/*.yaml
 var registryAssets embed.FS
+
+const builtinProviderCapabilityDirectory = "assets/builtin-provider-capabilities"
 
 type runtimeRegistryDocument struct {
 	SchemaVersion          string                                   `yaml:"schema_version"`
@@ -166,17 +168,43 @@ func LoadProviderCapabilityRegistry(directory string, runtime *RuntimeRegistry) 
 		ordered:      []*iapiserver.AIAppProviderCapability{},
 		results:      []*iapiserver.ProviderCapabilityLoadResult{},
 	}
+	schema, err := compileProviderCapabilitySchema()
+	if err != nil {
+		return nil, err
+	}
+	builtinEntries, err := fs.ReadDir(registryAssets, builtinProviderCapabilityDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded provider capabilities: %w", err)
+	}
+	for _, entry := range builtinEntries {
+		if entry.IsDir() || !isYAMLFile(entry.Name()) {
+			continue
+		}
+		assetPath := builtinProviderCapabilityDirectory + "/" + entry.Name()
+		raw, readErr := registryAssets.ReadFile(assetPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read embedded provider capability %s: %w", entry.Name(), readErr)
+		}
+		result := loadCapabilityBytes("embedded://provider-capabilities/"+entry.Name(), raw, iapiserver.ProviderCapabilityOriginBuiltin, schema, runtime)
+		if result.capability == nil || result.result.Result != "loaded" {
+			return nil, fmt.Errorf("invalid embedded provider capability %s: %s", entry.Name(), result.result.FailureDetail)
+		}
+		if _, exists := registry.capabilities[result.capability.ID]; exists {
+			return nil, fmt.Errorf("duplicate embedded provider capability %q", result.capability.ID)
+		}
+		registry.capabilities[result.capability.ID] = result.capability
+		registry.ordered = append(registry.ordered, result.capability)
+		registry.results = append(registry.results, result.result)
+	}
+
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		registry.status = iapiserver.ProviderRegistryDegraded
 		registry.results = append(registry.results, loadFailure(nil, directory,
 			"ERR_AIAPP_PROVIDER_CAPABILITY_DIRECTORY_UNREADABLE",
 			code.ErrAIAppProviderCapabilityDirectoryUnreadable, err.Error()))
+		sort.Slice(registry.ordered, func(i, j int) bool { return registry.ordered[i].ID < registry.ordered[j].ID })
 		return registry, nil
-	}
-	schema, err := compileProviderCapabilitySchema()
-	if err != nil {
-		return nil, err
 	}
 	loaded := make([]*capabilityEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -191,8 +219,20 @@ func LoadProviderCapabilityRegistry(directory string, runtime *RuntimeRegistry) 
 	}
 	duplicates := make(map[string][]int)
 	duplicateIDs := make(map[string]struct{})
+	reservedIndexes := make(map[int]struct{})
 	for i, entry := range loaded {
 		if entry.capability != nil && entry.capability.ID != "" {
+			if _, reserved := registry.capabilities[entry.capability.ID]; reserved {
+				reservedIndexes[i] = struct{}{}
+				entry.capability.Availability = iapiserver.ProviderCapabilityUnavailable
+				entry.capability.UnavailableCode = "ERR_AIAPP_PROVIDER_CAPABILITY_ID_RESERVED"
+				entry.capability.UnavailableSummary = "reserved builtin ProviderCapability id: " + entry.capability.ID
+				entry.result.Result = "failed"
+				entry.result.ErrorCode = entry.capability.UnavailableCode
+				entry.result.ErrorValue = code.ErrAIAppProviderCapabilityIDReserved
+				entry.result.FailureDetail = entry.capability.UnavailableSummary
+				continue
+			}
 			duplicates[entry.capability.ID] = append(duplicates[entry.capability.ID], i)
 		}
 	}
@@ -212,12 +252,15 @@ func LoadProviderCapabilityRegistry(directory string, runtime *RuntimeRegistry) 
 			entry.result.FailureDetail = entry.capability.UnavailableSummary
 		}
 	}
-	for _, entry := range loaded {
+	for index, entry := range loaded {
 		registry.results = append(registry.results, entry.result)
 		if entry.capability == nil || entry.capability.ID == "" {
 			continue
 		}
 		if _, duplicated := duplicateIDs[entry.capability.ID]; duplicated {
+			continue
+		}
+		if _, reserved := reservedIndexes[index]; reserved {
 			continue
 		}
 		registry.capabilities[entry.capability.ID] = entry.capability
@@ -250,15 +293,21 @@ func compileProviderCapabilitySchema() (*jsonschema.Schema, error) {
 }
 
 func loadCapabilityFile(path string, schema *jsonschema.Schema, runtime *RuntimeRegistry) *capabilityEntry {
-	loadedAt := imachinery.NewTime(time.Now())
-	result := &iapiserver.ProviderCapabilityLoadResult{SourceFile: path, Result: "failed", LoadedAt: loadedAt}
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		loadedAt := imachinery.NewTime(time.Now())
+		result := &iapiserver.ProviderCapabilityLoadResult{SourceFile: path, Result: "failed", LoadedAt: loadedAt}
 		result.ErrorCode = "ERR_AIAPP_PROVIDER_CAPABILITY_YAML_INVALID"
 		result.ErrorValue = code.ErrAIAppProviderCapabilityYAMLInvalid
 		result.FailureDetail = err.Error()
 		return &capabilityEntry{result: result}
 	}
+	return loadCapabilityBytes(path, raw, iapiserver.ProviderCapabilityOriginDirectory, schema, runtime)
+}
+
+func loadCapabilityBytes(source string, raw []byte, origin string, schema *jsonschema.Schema, runtime *RuntimeRegistry) *capabilityEntry {
+	loadedAt := imachinery.NewTime(time.Now())
+	result := &iapiserver.ProviderCapabilityLoadResult{SourceFile: source, Result: "failed", LoadedAt: loadedAt}
 	var document any
 	if err := yaml.Unmarshal(raw, &document); err != nil {
 		result.ErrorCode = "ERR_AIAPP_PROVIDER_CAPABILITY_YAML_INVALID"
@@ -274,6 +323,7 @@ func loadCapabilityFile(path string, schema *jsonschema.Schema, runtime *Runtime
 		return &capabilityEntry{result: result}
 	}
 	capability.LoadedAt = loadedAt
+	capability.Origin = origin
 	if capability.ID != "" {
 		id := capability.ID
 		result.ProviderCapabilityID = &id
@@ -284,7 +334,7 @@ func loadCapabilityFile(path string, schema *jsonschema.Schema, runtime *Runtime
 	if err := schema.Validate(document); err != nil {
 		return rejectedEntry(result, "ERR_AIAPP_PROVIDER_CAPABILITY_SCHEMA_INVALID", code.ErrAIAppProviderCapabilitySchemaInvalid, err.Error())
 	}
-	if failure := validateCapabilitySemantics(&capability, runtime); failure != nil {
+	if failure := validateCapabilitySemantics(&capability, runtime, origin); failure != nil {
 		return unavailableEntry(&capability, result, failure.name, failure.value, failure.detail)
 	}
 	if capability.Enabled {
@@ -303,13 +353,19 @@ type validationFailure struct {
 	detail string
 }
 
-func validateCapabilitySemantics(capability *iapiserver.AIAppProviderCapability, runtime *RuntimeRegistry) *validationFailure {
+func validateCapabilitySemantics(capability *iapiserver.AIAppProviderCapability, runtime *RuntimeRegistry, origin string) *validationFailure {
+	if origin == iapiserver.ProviderCapabilityOriginDirectory && capability.BindingPolicy != iapiserver.ProviderBindingPolicyManual {
+		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_SCHEMA_INVALID", code.ErrAIAppProviderCapabilitySchemaInvalid, "directory capabilities must use manual binding_policy"}
+	}
 	engineType, ok := runtime.EngineType(capability.ApplicationEngineTypeID)
 	if !ok {
 		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_ENGINE_TYPE_MISSING", code.ErrAIAppProviderCapabilityEngineTypeMissing, "application engine type is not registered"}
 	}
 	if runtime.adapters[engineType.EngineAdapterID].ID == "" {
 		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_ADAPTER_MISSING", code.ErrAIAppProviderCapabilityAdapterMissing, "engine adapter is not registered"}
+	}
+	if capability.Kind == iapiserver.ProviderCapabilityKindEngineBinding {
+		return nil
 	}
 	models := make(map[string]struct{}, len(capability.Models))
 	for _, model := range capability.Models {
@@ -390,6 +446,18 @@ func (r *ProviderCapabilityRegistry) Get(id string) (*iapiserver.AIAppProviderCa
 		return nil, false
 	}
 	return cloneCapability(item), true
+}
+
+// RequiredBindingsForEngineType 返回指定 EngineType 必须具备的内置不可变绑定。
+func (r *ProviderCapabilityRegistry) RequiredBindingsForEngineType(engineTypeID string) []*iapiserver.AIAppProviderCapability {
+	items := make([]*iapiserver.AIAppProviderCapability, 0)
+	for _, item := range r.ordered {
+		if item.ApplicationEngineTypeID != engineTypeID || item.Kind != iapiserver.ProviderCapabilityKindEngineBinding || item.Origin != iapiserver.ProviderCapabilityOriginBuiltin || item.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || item.Availability != iapiserver.ProviderCapabilityAvailable {
+			continue
+		}
+		items = append(items, cloneCapability(item))
+	}
+	return items
 }
 
 func (r *ProviderCapabilityRegistry) Results() []*iapiserver.ProviderCapabilityLoadResult {

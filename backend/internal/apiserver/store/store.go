@@ -2,11 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
+
+// ErrRequiredEngineBindingFailed 标识 EngineInstance 已写入但同事务内的系统必需绑定写入失败。
+var ErrRequiredEngineBindingFailed = errors.New("required engine binding failed")
 
 type IdentityProviderStore interface {
 	List(
@@ -616,6 +620,10 @@ type ApplicationPlatformStore interface {
 	ListRefreshableComfyUIEngineInstancesAfter(context.Context, string, int) ([]*iapiserver.EngineInstance, error)
 	GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error)
 	AddEngineInstance(ctx context.Context, data *iapiserver.EngineInstance) (*iapiserver.EngineInstance, error)
+	// AddEngineInstanceWithBindings 原子创建 EngineInstance 及其全部系统必需能力绑定。
+	AddEngineInstanceWithBindings(context.Context, *iapiserver.EngineInstance, []*iapiserver.EngineCapabilityBinding) (*iapiserver.EngineInstance, error)
+	// EnsureRequiredEngineBindings 为匹配 EngineType 的全部实例幂等修复系统必需的不可变绑定。
+	EnsureRequiredEngineBindings(context.Context, string, string, string, string, string) error
 	UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expectedVersion int64) (*iapiserver.EngineInstance, error)
 	UpdateEngineInstanceHealth(
 		ctx context.Context,

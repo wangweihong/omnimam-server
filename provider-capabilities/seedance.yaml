@@ -1,6 +1,8 @@
 schema_version: "1.0"
 id: seedance-byteplus
 name: ByteDance Seedance 2.0 on BytePlus ModelArk
+kind: catalog
+binding_policy: manual
 description: 字节 Seedance 2.0 系列经 BytePlus ModelArk 提供的只读视频生成能力清单。
 application_engine_type_id: byteplus_modelark
 revision: "2026-07-15.1"

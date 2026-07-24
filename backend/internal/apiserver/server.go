@@ -124,6 +124,9 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct application platform service")
 	}
+	if err := applicationPlatformService.ReconcileRequiredEngineBindings(context.Background()); err != nil {
+		return nil, errors.Wrap(err, "reconcile required application platform bindings")
+	}
 	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register engine health reconciler")
 	}

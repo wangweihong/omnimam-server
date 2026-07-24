@@ -118,6 +118,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if err := applicationService.ReconcileRequiredEngineBindings(ctx); err != nil {
+		return errors.Wrap(err, "reconcile required application platform bindings")
+	}
 	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationService)); err != nil {
 		return err
 	}

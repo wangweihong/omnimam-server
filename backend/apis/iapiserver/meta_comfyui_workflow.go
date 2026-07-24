@@ -27,14 +27,12 @@ type ComfyUIWorkflow struct {
 	// OwnerUserID 是唯一资源所有者，普通用户查询必须以此字段隔离。
 	OwnerUserID string `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index"`
 	// CreatedByUserID 和 UpdatedByUserID 记录实际操作者，支持管理员代管审计。
-	CreatedByUserID string `json:"-" gorm:"column:created_by_user_id;type:text;not null"`
-	UpdatedByUserID string `json:"-" gorm:"column:updated_by_user_id;type:text;not null"`
-	// SourceEngineInstanceID 固定导入时读取 object_info 的 ComfyUI 实例。
-	SourceEngineInstanceID string  `json:"source_engine_instance_id" gorm:"column:source_engine_instance_id;type:text;not null;index"`
-	SourceType             string  `json:"source_type" gorm:"column:source_type;type:text;not null;default:'api_workflow';index"`
-	APIConversionStatus    string  `json:"api_conversion_status" gorm:"column:api_conversion_status;type:text;not null;default:'ready';index"`
-	SourceChecksum         string  `json:"source_checksum" gorm:"column:source_checksum;type:text;not null;default:'';index"`
-	APIWorkflowChecksum    *string `json:"api_workflow_checksum" gorm:"column:api_workflow_checksum;type:text;index"`
+	CreatedByUserID     string  `json:"-" gorm:"column:created_by_user_id;type:text;not null"`
+	UpdatedByUserID     string  `json:"-" gorm:"column:updated_by_user_id;type:text;not null"`
+	SourceType          string  `json:"source_type" gorm:"column:source_type;type:text;not null;default:'api_workflow';index"`
+	APIConversionStatus string  `json:"api_conversion_status" gorm:"column:api_conversion_status;type:text;not null;default:'ready';index"`
+	SourceChecksum      string  `json:"source_checksum" gorm:"column:source_checksum;type:text;not null;default:'';index"`
+	APIWorkflowChecksum *string `json:"api_workflow_checksum" gorm:"column:api_workflow_checksum;type:text;index"`
 	// APIWorkflow 是执行事实；VisualWorkflow 只保存可选展示信息，二者导入后不可修改。
 	APIWorkflow          map[string]any `json:"-" gorm:"-"`
 	APIWorkflowShadow    *string        `json:"-" gorm:"column:api_workflow_json;type:text"`
@@ -89,7 +87,6 @@ type ComfyUIWorkflowSummary struct {
 	Name                           string           `json:"name"`
 	Description                    string           `json:"description"`
 	OwnerUserID                    string           `json:"owner_user_id"`
-	SourceEngineInstanceID         string           `json:"source_engine_instance_id"`
 	SourceType                     string           `json:"source_type"`
 	APIConversionStatus            string           `json:"api_conversion_status"`
 	SourceChecksum                 string           `json:"source_checksum"`
@@ -104,7 +101,7 @@ type ComfyUIWorkflowSummary struct {
 }
 
 func (w *ComfyUIWorkflow) Summary() *ComfyUIWorkflowSummary {
-	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceEngineInstanceID: w.SourceEngineInstanceID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, Converted: w.Converted(), ConvertedApplicationTemplateID: w.ConvertedApplicationTemplateID, ConvertedTemplateVersionID: w.ConvertedTemplateVersionID, ConvertedAt: w.ConvertedAt, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
+	return &ComfyUIWorkflowSummary{ID: w.ID, Name: w.Name, Description: w.Description, OwnerUserID: w.OwnerUserID, SourceType: w.SourceType, APIConversionStatus: w.APIConversionStatus, SourceChecksum: w.SourceChecksum, APIWorkflowChecksum: w.APIWorkflowChecksum, Converted: w.Converted(), ConvertedApplicationTemplateID: w.ConvertedApplicationTemplateID, ConvertedTemplateVersionID: w.ConvertedTemplateVersionID, ConvertedAt: w.ConvertedAt, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, ResourceVersion: w.ResourceVersion}
 }
 
 type ComfyUIWorkflowDetail struct {

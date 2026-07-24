@@ -46,20 +46,12 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	_, catalog, err := s.usableComfyUIObjectInfo(ctx, req.SourceEngineInstanceID)
-	if err != nil {
-		return nil, err
-	}
-	objectInfo := catalog.ObjectInfo
-	sourceType := req.SourceType
 	source := req.SourceWorkflow
 	sourceRaw := req.SourceWorkflowRaw
 	if source == nil {
-		sourceType, source, sourceRaw = iapiserver.ComfyUIWorkflowSourceAPI, req.APIWorkflow, req.APIWorkflowRaw
+		source, sourceRaw = req.APIWorkflow, req.APIWorkflowRaw
 	}
-	if sourceType == "" {
-		sourceType = detectComfyWorkflowSource(source)
-	}
+	sourceType := detectComfyWorkflowSource(source)
 	if sourceType == "" {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowSourceInvalid, "JSON is neither a ComfyUI visual workflow nor API workflow")
 	}
@@ -67,14 +59,8 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 	conversionStatus := iapiserver.ComfyUIAPIConversionReady
 	if sourceType == iapiserver.ComfyUIWorkflowSourceVisual {
 		visualWorkflow = source
-		apiWorkflow, err = (comfy2GoWorkflowParser{}).VisualToAPI(source, objectInfo)
-		if err != nil {
-			return nil, errors.NewStatus(code.ErrAIAppComfyUIAPIConversionBlocked, err.Error())
-		}
+		apiWorkflow = nil
 		conversionStatus = iapiserver.ComfyUIAPIConversionPending
-	}
-	if _, err := parseComfyUIWorkflow(apiWorkflow, visualWorkflow, objectInfo); err != nil {
-		return nil, err
 	}
 	sourceChecksum, err := canonicalJSONRawDigest(sourceRaw, source)
 	if err != nil {
@@ -85,13 +71,14 @@ func (s *applicationPlatformService) ImportComfyUIWorkflow(ctx context.Context, 
 		return nil, err
 	}
 	var apiChecksum *string
-	persistedAPI := apiWorkflow
-	if conversionStatus == iapiserver.ComfyUIAPIConversionPending {
-		persistedAPI = nil
-	} else if digest, digestErr := canonicalJSONDigest(apiWorkflow); digestErr == nil {
+	if conversionStatus == iapiserver.ComfyUIAPIConversionReady {
+		digest, digestErr := canonicalJSONDigest(apiWorkflow)
+		if digestErr != nil {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, digestErr.Error())
+		}
 		apiChecksum = &digest
 	}
-	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: p.UserID, CreatedByUserID: p.UserID, UpdatedByUserID: p.UserID, SourceEngineInstanceID: req.SourceEngineInstanceID, SourceType: sourceType, APIConversionStatus: conversionStatus, SourceChecksum: sourceChecksum, APIWorkflowChecksum: apiChecksum, APIWorkflow: persistedAPI, VisualWorkflow: visualWorkflow}
+	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: p.UserID, CreatedByUserID: p.UserID, UpdatedByUserID: p.UserID, SourceType: sourceType, APIConversionStatus: conversionStatus, SourceChecksum: sourceChecksum, APIWorkflowChecksum: apiChecksum, APIWorkflow: apiWorkflow, VisualWorkflow: visualWorkflow}
 	workflow.Name, workflow.Description = req.Name, req.Description
 	created, err := s.Store.ApplicationPlatforms().AddComfyUIWorkflow(ctx, workflow)
 	if err != nil {
@@ -108,7 +95,7 @@ func (s *applicationPlatformService) GetComfyUIWorkflow(ctx context.Context, id 
 	return workflow.Detail(), nil
 }
 
-func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Context, id string, version int64) (*iapiserver.ComfyUIWorkflowDetail, error) {
+func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Context, id string, req *iapiserver.ComfyUIWorkflowAPIConversionRequest) (*iapiserver.ComfyUIWorkflowDetail, error) {
 	workflow, principal, err := s.visibleComfyUIWorkflow(ctx, id, "convert_to_api")
 	if err != nil {
 		return nil, err
@@ -119,11 +106,15 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 	if workflow.SourceType != iapiserver.ComfyUIWorkflowSourceVisual || len(workflow.VisualWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "visual workflow source is unavailable")
 	}
-	_, catalog, err := s.usableComfyUIObjectInfo(ctx, workflow.SourceEngineInstanceID)
+	_, catalog, err := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 	if err != nil {
 		return nil, err
 	}
-	api, err := (comfy2GoWorkflowParser{}).VisualToAPI(workflow.VisualWorkflow, catalog.ObjectInfo)
+	parser := s.WorkflowParser
+	if parser == nil {
+		parser = comfy2GoWorkflowParser{}
+	}
+	api, err := parser.VisualToAPI(workflow.VisualWorkflow, catalog.ObjectInfo)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPIConversionBlocked, err.Error())
 	}
@@ -137,7 +128,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 	workflow.APIWorkflow, workflow.APIWorkflowChecksum = api, &digest
 	workflow.APIConversionStatus = iapiserver.ComfyUIAPIConversionReady
 	workflow.UpdatedByUserID = principal.UserID
-	updated, err := s.Store.ApplicationPlatforms().UpdateComfyUIWorkflow(ctx, workflow, version)
+	updated, err := s.Store.ApplicationPlatforms().UpdateComfyUIWorkflow(ctx, workflow, req.ResourceVersion)
 	if err != nil {
 		return nil, err
 	}

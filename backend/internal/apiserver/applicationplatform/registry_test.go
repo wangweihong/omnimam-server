@@ -12,6 +12,8 @@ import (
 const validCapabilityManifest = `schema_version: "1.0"
 id: test-provider
 name: Test Provider
+kind: catalog
+binding_policy: manual
 application_engine_type_id: deepseek_official
 revision: "1"
 enabled: true
@@ -61,8 +63,12 @@ func TestLoadProviderCapabilityRegistry(t *testing.T) {
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
-		if registry.Status() != iapiserver.ProviderRegistryReady || len(registry.Capabilities()) != 2 {
+		if registry.Status() != iapiserver.ProviderRegistryReady || len(registry.Capabilities()) != 3 {
 			t.Fatalf("unexpected registry state: status=%s capabilities=%d", registry.Status(), len(registry.Capabilities()))
+		}
+		builtin, ok := registry.Get("comfyui-workflow-runtime")
+		if !ok || builtin.Kind != iapiserver.ProviderCapabilityKindEngineBinding || builtin.Origin != iapiserver.ProviderCapabilityOriginBuiltin || builtin.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable {
+			t.Fatalf("unexpected builtin capability: %#v", builtin)
 		}
 		item, ok := registry.Get("disabled-provider")
 		if !ok || item.Availability != iapiserver.ProviderCapabilityDisabled {
@@ -79,11 +85,11 @@ func TestLoadProviderCapabilityRegistry(t *testing.T) {
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
-		if len(registry.Capabilities()) != 0 {
-			t.Fatalf("schema-invalid files must not be registered, got %d entries", len(registry.Capabilities()))
+		if len(registry.Capabilities()) != 1 {
+			t.Fatalf("schema-invalid files must not be registered, got %d entries including builtin", len(registry.Capabilities()))
 		}
-		if len(registry.Results()) != 2 {
-			t.Fatalf("expected two file diagnostics, got %d", len(registry.Results()))
+		if len(registry.Results()) != 3 {
+			t.Fatalf("expected builtin plus two file diagnostics, got %d", len(registry.Results()))
 		}
 	})
 
@@ -95,10 +101,13 @@ func TestLoadProviderCapabilityRegistry(t *testing.T) {
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
-		if _, ok := registry.Get("test-provider"); ok || len(registry.Capabilities()) != 0 {
+		if _, ok := registry.Get("test-provider"); ok || len(registry.Capabilities()) != 1 {
 			t.Fatal("duplicate capability id was registered")
 		}
 		for _, result := range registry.Results() {
+			if result.ProviderCapabilityID == nil || *result.ProviderCapabilityID != "test-provider" {
+				continue
+			}
 			if result.ErrorCode != "ERR_AIAPP_PROVIDER_CAPABILITY_ID_DUPLICATED" {
 				t.Fatalf("unexpected duplicate diagnostic: %#v", result)
 			}
@@ -110,7 +119,7 @@ func TestLoadProviderCapabilityRegistry(t *testing.T) {
 		if loadErr != nil {
 			t.Fatal(loadErr)
 		}
-		if registry.Status() != iapiserver.ProviderRegistryDegraded || len(registry.Results()) != 1 {
+		if registry.Status() != iapiserver.ProviderRegistryDegraded || len(registry.Capabilities()) != 1 || len(registry.Results()) != 2 {
 			t.Fatalf("unexpected degraded registry: %#v", registry)
 		}
 	})
@@ -126,8 +135,32 @@ func TestLoadProviderCapabilityRegistry(t *testing.T) {
 			t.Fatal(loadErr)
 		}
 		writeManifest(t, directory, "later.yaml", validCapabilityManifest)
-		if len(registry.Capabilities()) != 0 || len(registry.Results()) != 0 {
+		if len(registry.Capabilities()) != 1 || len(registry.Results()) != 1 {
 			t.Fatal("registry changed after startup snapshot")
+		}
+		items := registry.Capabilities()
+		items[0].Kind = "mutated"
+		stored, ok := registry.Get("comfyui-workflow-runtime")
+		if !ok || stored.Kind != iapiserver.ProviderCapabilityKindEngineBinding {
+			t.Fatal("registry snapshot was mutated through returned capability")
+		}
+	})
+
+	t.Run("external manifests cannot override builtin ids", func(t *testing.T) {
+		directory := t.TempDir()
+		reserved := strings.Replace(validCapabilityManifest, "id: test-provider", "id: comfyui-workflow-runtime", 1)
+		writeManifest(t, directory, "reserved.yaml", reserved)
+		registry, loadErr := LoadProviderCapabilityRegistry(directory, runtime)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		builtin, ok := registry.Get("comfyui-workflow-runtime")
+		if !ok || builtin.Origin != iapiserver.ProviderCapabilityOriginBuiltin {
+			t.Fatalf("builtin capability was replaced: %#v", builtin)
+		}
+		results := registry.Results()
+		if len(results) != 2 || results[1].ErrorCode != "ERR_AIAPP_PROVIDER_CAPABILITY_ID_RESERVED" {
+			t.Fatalf("reserved id diagnostic missing: %#v", results)
 		}
 	})
 }

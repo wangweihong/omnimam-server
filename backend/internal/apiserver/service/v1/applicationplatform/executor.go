@@ -123,7 +123,7 @@ func (e *ApplicationRunExecutor) validateCurrentProviderBinding(ctx context.Cont
 		return errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability snapshot is incomplete")
 	}
 	capability, ok := e.capabilities.Get(*run.ProviderCapabilityID)
-	if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable || capability.Revision != *run.ProviderCapabilityRevision || capability.ApplicationEngineTypeID != engine.ApplicationEngineTypeID {
+	if !ok || capability.Kind != iapiserver.ProviderCapabilityKindCatalog || capability.Availability != iapiserver.ProviderCapabilityAvailable || capability.Revision != *run.ProviderCapabilityRevision || capability.ApplicationEngineTypeID != engine.ApplicationEngineTypeID {
 		return errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability revision is no longer executable")
 	}
 	operation, ok := findOperation(capability, *run.ProviderOperationID)

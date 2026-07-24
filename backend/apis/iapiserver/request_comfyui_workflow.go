@@ -10,9 +10,8 @@ import (
 
 type ComfyUIWorkflowListRequest struct {
 	imachinery.BasicQueryParam
-	// Converted 和 SourceEngineInstanceID 用于转换状态及来源实例筛选。
-	Converted              *bool  `form:"converted"`
-	SourceEngineInstanceID string `form:"source_engine_instance_id"`
+	// Converted 用于筛选是否已经转换为应用模板。
+	Converted *bool `form:"converted"`
 	// OwnerUserID 仅管理员代管查询可用，普通用户会由服务端覆盖为本人。
 	OwnerUserID string `form:"owner_user_id"`
 }
@@ -23,14 +22,12 @@ type ComfyUIWorkflowDeriveRequest struct {
 	EngineInstanceID string `form:"engine_instance_id" binding:"required"`
 }
 
-// ComfyUIWorkflowImportRequest 是 multipart 导入请求；object_info 只从来源实例当前目录读取。
+// ComfyUIWorkflowImportRequest 是不依赖 EngineInstance 或 object_info 的 multipart 导入请求。
 type ComfyUIWorkflowImportRequest struct {
 	// Name 和 Description 是导入后唯一允许修改的业务元数据。
-	Name        string `form:"name" binding:"required,max=255"`
-	Description string `form:"description"`
-	// SourceEngineInstanceID 指定基础结构校验使用的当前目录所属实例。
-	SourceEngineInstanceID string                `form:"source_engine_instance_id" binding:"required"`
-	WorkflowFile           *multipart.FileHeader `form:"workflow_file"`
+	Name         string                `form:"name" binding:"required,max=255"`
+	Description  string                `form:"description"`
+	WorkflowFile *multipart.FileHeader `form:"workflow_file"`
 	// APIWorkflowFile 是必填执行文件；VisualWorkflowFile 仅提供展示位置和标题。
 	APIWorkflowFile    *multipart.FileHeader `form:"api_workflow_file"`
 	VisualWorkflowFile *multipart.FileHeader `form:"visual_workflow_file"`
@@ -40,15 +37,11 @@ type ComfyUIWorkflowImportRequest struct {
 	VisualWorkflow    map[string]any `json:"-"`
 	SourceWorkflow    map[string]any `json:"-"`
 	SourceWorkflowRaw []byte         `json:"-"`
-	SourceType        string         `json:"-"`
 }
 
 func (r *ComfyUIWorkflowImportRequest) Validate() error {
 	if r.Name == "" || utf8.RuneCountInString(r.Name) > 255 {
 		return errors.New("name is required and must not exceed 255 characters")
-	}
-	if r.SourceEngineInstanceID == "" {
-		return errors.New("source_engine_instance_id is required")
 	}
 	if r.WorkflowFile == nil && r.APIWorkflowFile == nil && r.SourceWorkflow == nil && r.APIWorkflow == nil {
 		return errors.New("workflow_file or api_workflow_file is required")
@@ -73,7 +66,11 @@ func (r *ComfyUIWorkflowUpdateRequest) Validate() error {
 	return nil
 }
 
-type ComfyUIWorkflowResourceVersionRequest struct {
+// ComfyUIWorkflowAPIConversionRequest 指定 Visual Workflow 转换使用的当前 ComfyUI 实例。
+type ComfyUIWorkflowAPIConversionRequest struct {
+	// EngineInstanceID 必须引用 enabled、online 且 object_info 未过期的 ComfyUI 实例。
+	EngineInstanceID string `json:"engine_instance_id" binding:"required"`
+	// ResourceVersion 对工作流状态变更执行乐观并发控制。
 	ResourceVersion int64 `json:"resource_version" binding:"required"`
 }
 type ComfyUIWorkflowValidationListRequest struct {

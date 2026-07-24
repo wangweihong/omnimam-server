@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: a6e36d07554459ec3ee3cf308563857212f624cb
-contract_version: spec-v1.7.6
-updated_at: 2026-07-23
+commit: 62a3eda58bc8f8cc34449be1eaa056cde3340200
+contract_version: spec-v1.7.8
+updated_at: 2026-07-24
 status: released
-note: Application Platform v1.3 adds workflow test output snapshots and restricts extractable candidates to ComfyUI output nodes.
+note: Application Platform v1.5 adds the builtin ComfyUI workflow runtime capability and required immutable engine bindings.

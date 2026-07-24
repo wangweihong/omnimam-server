@@ -97,6 +97,7 @@
 | ErrAIAppProviderCapabilityVariantInvalid | 130228 | 200 | ProviderCapability models, operations, variants, or parameter constraints are inconsistent. | ProviderCapability 的模型、Operation、Variant 或参数约束不一致。 |
 | ErrAIAppProviderCapabilityUnavailable | 130229 | 200 | The ProviderCapability is currently unavailable or disabled. | ProviderCapability 当前不可用或已禁用。 |
 | ErrAIAppProviderCapabilityNotFound | 130230 | 200 | The ProviderCapability does not exist. | ProviderCapability 不存在。 |
+| ErrAIAppProviderCapabilityIDReserved | 130231 | 200 | An external ProviderCapability manifest uses a reserved builtin ID and cannot override the builtin capability. | 外部 ProviderCapability 清单使用了系统内置保留 ID，不能覆盖内置能力。 |
 | ErrAIAppEngineInstanceNotFound | 130420 | 200 | The ApplicationEngineInstance does not exist. | ApplicationEngineInstance 不存在。 |
 | ErrAIAppEngineAuthConfigInvalid | 130421 | 200 | The EngineInstance authentication configuration does not satisfy its EngineType. | EngineInstance 的鉴权配置不符合 EngineType 要求。 |
 | ErrAIAppEngineBindingIncompatible | 130422 | 200 | The EngineCapabilityBinding is incompatible with its EngineType or ProviderCapability. | EngineCapabilityBinding 与 EngineType 或 ProviderCapability 不兼容。 |
@@ -104,6 +105,8 @@
 | ErrAIAppEngineUnavailable | 130424 | 200 | No enabled and healthy EngineInstance is currently available. | 当前没有可用且健康的 EngineInstance。 |
 | ErrAIAppEngineReferenceBlocked | 130425 | 200 | The EngineInstance has historical ApplicationRun references and cannot be deleted. | EngineInstance 存在历史 ApplicationRun 引用，禁止删除。 |
 | ErrAIAppEngineBindingNotFound | 130426 | 200 | The EngineCapabilityBinding does not exist. | EngineCapabilityBinding 不存在。 |
+| ErrAIAppSystemEngineBindingImmutable | 130427 | 200 | A system-managed EngineCapabilityBinding cannot be created, modified, disabled, or deleted. | 系统维护的 EngineCapabilityBinding 不允许创建、修改、禁用或删除。 |
+| ErrAIAppRequiredEngineBindingFailed | 130428 | 200 | The required system capability binding could not be written atomically while creating the EngineInstance; the instance was not created. | 创建 EngineInstance 时未能原子写入系统必需能力绑定，实例未创建。 |
 | ErrAIAppTemplateSourceInvalid | 130620 | 200 | The ApplicationTemplate union capability source is invalid. | ApplicationTemplate 的联合能力来源不合法。 |
 | ErrAIAppApplicationVersionImmutable | 130621 | 200 | A published ApplicationTemplateVersion or ApplicationVersion is immutable. | 已发布的 ApplicationTemplateVersion 或 ApplicationVersion 不可原地修改。 |
 | ErrAIAppRuntimeFormNoValidVariant | 130622 | 200 | No executable CapabilityVariant exists under the current constraints. | 当前约束下没有可执行的 CapabilityVariant。 |

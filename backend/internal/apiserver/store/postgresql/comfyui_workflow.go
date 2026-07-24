@@ -26,9 +26,6 @@ func (s *applicationPlatformStore) ListComfyUIWorkflows(ctx context.Context, req
 				q = q.Where("converted_application_template_id IS NULL")
 			}
 		}
-		if req.SourceEngineInstanceID != "" {
-			q = q.Where("source_engine_instance_id = ?", req.SourceEngineInstanceID)
-		}
 		return q
 	})
 	total, err := CountAndFindPage(query, req.PagingParams, &items)

@@ -415,6 +415,10 @@ const (
 	// @EN The ProviderCapability does not exist.
 	ErrAIAppProviderCapabilityNotFound int = 130230
 	// @HTTP 200
+	// @CN 外部 ProviderCapability 清单使用了系统内置保留 ID，不能覆盖内置能力。
+	// @EN An external ProviderCapability manifest uses a reserved builtin ID and cannot override the builtin capability.
+	ErrAIAppProviderCapabilityIDReserved int = 130231
+	// @HTTP 200
 	// @CN ApplicationEngineInstance 不存在。
 	// @EN The ApplicationEngineInstance does not exist.
 	ErrAIAppEngineInstanceNotFound int = 130420
@@ -442,6 +446,14 @@ const (
 	// @CN EngineCapabilityBinding 不存在。
 	// @EN The EngineCapabilityBinding does not exist.
 	ErrAIAppEngineBindingNotFound int = 130426
+	// @HTTP 200
+	// @CN 系统维护的 EngineCapabilityBinding 不允许创建、修改、禁用或删除。
+	// @EN A system-managed EngineCapabilityBinding cannot be created, modified, disabled, or deleted.
+	ErrAIAppSystemEngineBindingImmutable int = 130427
+	// @HTTP 200
+	// @CN 创建 EngineInstance 时未能原子写入系统必需能力绑定，实例未创建。
+	// @EN The required system capability binding could not be written atomically while creating the EngineInstance; the instance was not created.
+	ErrAIAppRequiredEngineBindingFailed int = 130428
 	// @HTTP 200
 	// @CN ApplicationTemplate 的联合能力来源不合法。
 	// @EN The ApplicationTemplate union capability source is invalid.

@@ -1,6 +1,8 @@
 schema_version: "1.0"
 id: deepseek-official
 name: DeepSeek Official API
+kind: catalog
+binding_policy: manual
 description: DeepSeek 官方稳定 OpenAI-compatible Chat Completions 能力清单。
 application_engine_type_id: deepseek_official
 revision: "2026-07-15.1"

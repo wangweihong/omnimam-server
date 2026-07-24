@@ -47,7 +47,7 @@ func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "provider capability source is incomplete")
 		}
 		capability, ok := s.Capabilities.Get(*templateVersion.ProviderCapabilityID)
-		if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable {
+		if !ok || capability.Kind != iapiserver.ProviderCapabilityKindCatalog || capability.Availability != iapiserver.ProviderCapabilityAvailable {
 			return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
 		}
 		form.SourceRevision = capability.Revision

@@ -12,6 +12,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -104,6 +105,62 @@ func (s *applicationPlatformStore) AddEngineInstance(ctx context.Context, data *
 	return data, nil
 }
 
+func (s *applicationPlatformStore) AddEngineInstanceWithBindings(ctx context.Context, data *iapiserver.EngineInstance, bindings []*iapiserver.EngineCapabilityBinding) (*iapiserver.EngineInstance, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(data).Error; err != nil {
+			return err
+		}
+		for _, binding := range bindings {
+			binding.EngineInstanceID = data.ID
+			if err := tx.Create(binding).Error; err != nil {
+				return fmt.Errorf("%w: %w", store.ErrRequiredEngineBindingFailed, err)
+			}
+		}
+		return nil
+	})
+	return data, errors.WithStack(err)
+}
+
+// EnsureRequiredEngineBindings 复用现有唯一边保证多个进程并发启动时收敛到同一系统绑定。
+func (s *applicationPlatformStore) EnsureRequiredEngineBindings(ctx context.Context, engineTypeID, capabilityID, revision, name, description string) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var engineIDs []string
+		if err := tx.Model(&iapiserver.EngineInstance{}).
+			Where("application_engine_type_id = ?", engineTypeID).
+			Order("id ASC").
+			Pluck("id", &engineIDs).Error; err != nil {
+			return err
+		}
+		for _, engineID := range engineIDs {
+			binding := &iapiserver.EngineCapabilityBinding{
+				EngineInstanceID:           engineID,
+				ProviderCapabilityID:       capabilityID,
+				ProviderCapabilityRevision: revision,
+				Enabled:                    true,
+				Restrictions:               map[string]any{},
+			}
+			binding.Name = name
+			binding.Description = description
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "engine_instance_id"}, {Name: "provider_capability_id"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"provider_capability_revision": clause.Column{Table: "excluded", Name: "provider_capability_revision"},
+					"enabled":                      clause.Column{Table: "excluded", Name: "enabled"},
+					"restrictions_json":            clause.Column{Table: "excluded", Name: "restrictions_json"},
+					"updated_at":                   gorm.Expr("CURRENT_TIMESTAMP"),
+					"resource_version":             gorm.Expr("aiapp_engine_capability_bindings.resource_version + 1"),
+				}),
+				Where: clause.Where{Exprs: []clause.Expression{gorm.Expr(
+					"aiapp_engine_capability_bindings.provider_capability_revision IS DISTINCT FROM EXCLUDED.provider_capability_revision OR aiapp_engine_capability_bindings.enabled IS DISTINCT FROM EXCLUDED.enabled OR aiapp_engine_capability_bindings.restrictions_json IS DISTINCT FROM EXCLUDED.restrictions_json",
+				)}},
+			}).Create(binding).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
 func (s *applicationPlatformStore) UpdateEngineInstance(ctx context.Context, data *iapiserver.EngineInstance, expected int64) (*iapiserver.EngineInstance, error) {
 	return data, optimisticUpdate(ctx, s.ds.db, data, data.ID, expected)
 }
@@ -178,14 +235,11 @@ func (s *applicationPlatformStore) CountRunsByEngineInstance(ctx context.Context
 	if err != nil {
 		return 0, errors.WithStack(err)
 	}
-	var workflowCount, validationCount int64
-	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflow{}).Where("source_engine_instance_id = ?", id).Count(&workflowCount).Error; err != nil {
-		return 0, errors.WithStack(err)
-	}
+	var validationCount int64
 	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.ComfyUIWorkflowValidation{}).Where("engine_instance_id = ?", id).Count(&validationCount).Error; err != nil {
 		return 0, errors.WithStack(err)
 	}
-	return count + workflowCount + validationCount, nil
+	return count + validationCount, nil
 }
 
 func (s *applicationPlatformStore) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) ([]*iapiserver.EngineCapabilityBinding, int64, error) {

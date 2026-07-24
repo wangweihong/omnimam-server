@@ -6,10 +6,13 @@ import (
 )
 
 func TestApplicationPlatformLegacyMigrationIsConditional(t *testing.T) {
-	for _, marker := range []string{"information_schema.columns", "column_name='template_id'", "column_name='run_mode'", "DROP TABLE IF EXISTS"} {
+	for _, marker := range []string{"pg_advisory_xact_lock", "information_schema.columns", "source_engine_instance_id", "reset_application_runs", "reset_test_dags", "reset_atomic_tasks", "reset_artifacts", "watermill_%", "aiapp_engine_instances", "column_name='template_id'", "column_name='run_mode'", "DROP TABLE IF EXISTS"} {
 		if !strings.Contains(applicationPlatformLegacySchemaSQL, marker) {
 			t.Fatalf("legacy migration missing %q", marker)
 		}
+	}
+	if strings.Contains(applicationPlatformConstraintsSQL, "fk_aiapp_comfyui_workflow_source_engine") || strings.Contains(applicationPlatformConstraintsSQL, "source_engine_instance_id") {
+		t.Fatal("application platform constraints still recreate the removed workflow source engine")
 	}
 }
 
@@ -39,6 +42,11 @@ func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 	for _, marker := range markers {
 		if !strings.Contains(applicationPlatformConstraintsSQL, marker) {
 			t.Fatalf("application platform constraints missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"confdeltype <> 'c'", "fk_aiapp_binding_engine", "ON DELETE CASCADE"} {
+		if !strings.Contains(applicationPlatformBindingCascadeSQL, marker) {
+			t.Fatalf("application platform binding cascade migration missing %q", marker)
 		}
 	}
 }
