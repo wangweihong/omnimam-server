@@ -455,6 +455,10 @@ const (
 	// @EN The required system capability binding could not be written atomically while creating the EngineInstance; the instance was not created.
 	ErrAIAppRequiredEngineBindingFailed int = 130428
 	// @HTTP 200
+	// @CN 已存在同名的 ApplicationEngineInstance。
+	// @EN An ApplicationEngineInstance with the same name already exists.
+	ErrAIAppEngineInstanceNameDuplicated int = 130429
+	// @HTTP 200
 	// @CN ApplicationTemplate 的联合能力来源不合法。
 	// @EN The ApplicationTemplate union capability source is invalid.
 	ErrAIAppTemplateSourceInvalid int = 130620

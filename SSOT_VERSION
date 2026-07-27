@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 62a3eda58bc8f8cc34449be1eaa056cde3340200
-contract_version: spec-v1.7.8
-updated_at: 2026-07-24
+commit: d29a4248b08a77e7f13f1546e377638cbed6ef98
+contract_version: spec-v1.7.10
+updated_at: 2026-07-27
 status: released
-note: Application Platform v1.5 adds the builtin ComfyUI workflow runtime capability and required immutable engine bindings.
+note: Application Platform defines a dedicated business error for duplicate EngineInstance names.

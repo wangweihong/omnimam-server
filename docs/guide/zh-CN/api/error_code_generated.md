@@ -107,6 +107,7 @@
 | ErrAIAppEngineBindingNotFound | 130426 | 200 | The EngineCapabilityBinding does not exist. | EngineCapabilityBinding 不存在。 |
 | ErrAIAppSystemEngineBindingImmutable | 130427 | 200 | A system-managed EngineCapabilityBinding cannot be created, modified, disabled, or deleted. | 系统维护的 EngineCapabilityBinding 不允许创建、修改、禁用或删除。 |
 | ErrAIAppRequiredEngineBindingFailed | 130428 | 200 | The required system capability binding could not be written atomically while creating the EngineInstance; the instance was not created. | 创建 EngineInstance 时未能原子写入系统必需能力绑定，实例未创建。 |
+| ErrAIAppEngineInstanceNameDuplicated | 130429 | 200 | An ApplicationEngineInstance with the same name already exists. | 已存在同名的 ApplicationEngineInstance。 |
 | ErrAIAppTemplateSourceInvalid | 130620 | 200 | The ApplicationTemplate union capability source is invalid. | ApplicationTemplate 的联合能力来源不合法。 |
 | ErrAIAppApplicationVersionImmutable | 130621 | 200 | A published ApplicationTemplateVersion or ApplicationVersion is immutable. | 已发布的 ApplicationTemplateVersion 或 ApplicationVersion 不可原地修改。 |
 | ErrAIAppRuntimeFormNoValidVariant | 130622 | 200 | No executable CapabilityVariant exists under the current constraints. | 当前约束下没有可执行的 CapabilityVariant。 |

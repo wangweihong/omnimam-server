@@ -89,6 +89,7 @@ func init() {
 	register(ErrAIAppEngineBindingNotFound, 200, map[string]string{"CN": "EngineCapabilityBinding 不存在。", "EN": "The EngineCapabilityBinding does not exist."})
 	register(ErrAIAppSystemEngineBindingImmutable, 200, map[string]string{"CN": "系统维护的 EngineCapabilityBinding 不允许创建、修改、禁用或删除。", "EN": "A system-managed EngineCapabilityBinding cannot be created, modified, disabled, or deleted."})
 	register(ErrAIAppRequiredEngineBindingFailed, 200, map[string]string{"CN": "创建 EngineInstance 时未能原子写入系统必需能力绑定，实例未创建。", "EN": "The required system capability binding could not be written atomically while creating the EngineInstance; the instance was not created."})
+	register(ErrAIAppEngineInstanceNameDuplicated, 200, map[string]string{"CN": "已存在同名的 ApplicationEngineInstance。", "EN": "An ApplicationEngineInstance with the same name already exists."})
 	register(ErrAIAppTemplateSourceInvalid, 200, map[string]string{"CN": "ApplicationTemplate 的联合能力来源不合法。", "EN": "The ApplicationTemplate union capability source is invalid."})
 	register(ErrAIAppApplicationVersionImmutable, 200, map[string]string{"CN": "已发布的 ApplicationTemplateVersion 或 ApplicationVersion 不可原地修改。", "EN": "A published ApplicationTemplateVersion or ApplicationVersion is immutable."})
 	register(ErrAIAppRuntimeFormNoValidVariant, 200, map[string]string{"CN": "当前约束下没有可执行的 CapabilityVariant。", "EN": "No executable CapabilityVariant exists under the current constraints."})

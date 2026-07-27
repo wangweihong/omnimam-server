@@ -39,6 +39,7 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppEngineBindingNotFound:                      {name: "ERR_AIAPP_ENGINE_BINDING_NOT_FOUND"},
 	code.ErrAIAppSystemEngineBindingImmutable:               {name: "ERR_AIAPP_SYSTEM_ENGINE_BINDING_IMMUTABLE"},
 	code.ErrAIAppRequiredEngineBindingFailed:                {name: "ERR_AIAPP_REQUIRED_ENGINE_BINDING_FAILED", retryable: true},
+	code.ErrAIAppEngineInstanceNameDuplicated:               {name: "ERR_AIAPP_ENGINE_INSTANCE_NAME_DUPLICATED"},
 	code.ErrAIAppTemplateSourceInvalid:                      {name: "ERR_AIAPP_TEMPLATE_SOURCE_INVALID"},
 	code.ErrAIAppApplicationVersionImmutable:                {name: "ERR_AIAPP_APPLICATION_VERSION_IMMUTABLE"},
 	code.ErrAIAppRuntimeFormNoValidVariant:                  {name: "ERR_AIAPP_RUNTIME_FORM_NO_VALID_VARIANT"},

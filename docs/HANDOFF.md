@@ -2,84 +2,105 @@
 
 ## Current project goal
 
-Ship the released Application Platform contracts through `spec-v1.7.8`: preserve the `spec-v1.7.7` ComfyUI import/conversion boundary, add the builtin `comfyui-workflow-runtime` ProviderCapability, and guarantee a required immutable system binding for every ComfyUI EngineInstance.
+Keep the server aligned with released `spec-v1.7.10`, including the ComfyUI workflow conversion boundary, frontend permissions, and correct EngineInstance duplicate-name errors.
 
 ## Completed in this session
 
-1. Preserved the released `spec-v1.7.7` workflow change: import is engine-independent, while Visual-to-API conversion explicitly requires a usable ComfyUI instance and current object_info.
-2. Updated and published `/home/wwhvw/codespace/omnimam-spec` as `spec-v1.7.8`; pushed release commit `62a3eda58bc8f8cc34449be1eaa056cde3340200` and tag `spec-v1.7.8`.
-3. Pinned the server `ssot` submodule and `SSOT_VERSION` to that released commit.
-4. Added `kind`, loader-derived read-only `origin`, and `binding_policy` to ProviderCapability. DeepSeek and Seedance use `catalog + directory + manual`.
-5. Embedded `comfyui-workflow-runtime` as `engine_binding + builtin + required_immutable`, revision `2026-07-24.1`. It has no models, operations, or variants and cannot be a Provider template source.
-6. Made builtin loading strict and first. External directory failures degrade only directory capabilities; reserved builtin IDs cannot be overridden; returned registry snapshots are defensive copies.
-7. Added transactional EngineInstance creation with required bindings. A ComfyUI binding failure rolls back the instance and maps to `ERR_AIAPP_REQUIRED_ENGINE_BINDING_FAILED`; non-ComfyUI creation receives no required binding.
-8. Added synchronous startup reconcile to API Server and TaskWorker. Conditional upsert repairs missing or drifted bindings without changing `resource_version` on a no-op and converges across replicas through the existing unique index.
-9. Added read-only derived `system_managed`. Manual create, update, disable, restriction changes, and delete of a required system binding return `ERR_AIAPP_SYSTEM_ENGINE_BINDING_IMMUTABLE`.
-10. Changed the binding-to-engine foreign key to `ON DELETE CASCADE`; migration constraint lookup is scoped by `conrelid` because PostgreSQL constraint names are not schema-global.
-11. Added error `130231 ERR_AIAPP_PROVIDER_CAPABILITY_ID_RESERVED`, `130427 ERR_AIAPP_SYSTEM_ENGINE_BINDING_IMMUTABLE`, and `130428 ERR_AIAPP_REQUIRED_ENGINE_BINDING_FAILED`, then regenerated Go and Markdown outputs with `make gen`.
-12. Added the capability registry architecture guide and regression coverage for registry loading, service behavior, startup reconcile, PostgreSQL rollback/upsert/cascade, and unchanged ComfyUI workflow paths.
+1. Published upstream `omnimam-spec` release `spec-v1.7.7` and pushed `master` plus the release tag.
+2. Pinned the server `ssot` submodule and `SSOT_VERSION` to release commit `7a78d017023538cb810a2299679b5cfb2fa3731e`.
+3. Removed `source_engine_instance_id` from workflow import, list filters, public workflow projections, persistence models, store queries, and engine deletion reference checks.
+4. Changed Visual Workflow import to persist only the source canvas with `api_conversion_status=pending`; import no longer reads object_info or calls comfy2go.
+5. Kept API Workflow import self-contained: server-side source detection and basic `class_type`/`inputs` structure validation produce a ready API snapshot and RFC 8785 checksum.
+6. Changed explicit Visual-to-API conversion to require `engine_instance_id` plus `resource_version`; conversion validates ComfyUI type, enabled/online state, and a non-stale current object_info before calling the injected parser.
+7. Added an injectable `ComfyWorkflowParser` dependency so import/conversion boundaries and parser failures are directly testable.
+8. Added a one-time destructive Application Platform reset keyed by the legacy workflow source column. It serializes multi-replica startup with an advisory lock, cleans linked Task Center, Artifact registration, SSE, runtime projection, and outbox records, then drops Application Platform tables for AutoMigrate to rebuild.
+9. Preserved unrelated Task Center records, user assets, and blobs. The reset is idempotent and does not run after the legacy column disappears.
+10. Retained the prior architecture decision that workflow test runs use their dedicated `comfyui.submit -> comfyui.poll -> comfyui.collect_preview` Task Center DAG rather than the application-run `OperationExecutor` path.
+11. Pinned the current worktree to released `spec-v1.7.9` commit `f4241befda82bccfe8de22846dc65ff1c00885c4`.
+12. Replaced obsolete default `canvas.read`, `canvas.write`, and `canvas.execute` keys with the released Workflow Canvas permissions for node definitions, canvases, and runs.
+13. Added the released `asset.artifact.delete` permission required by the Web artifact actions.
+14. Expanded `/api/v1/me` regression coverage across Asset Library, Application Platform, Workflow Canvas, Task Center, and SSE frontend permissions, including an assertion that obsolete Canvas keys are not returned.
+15. Published upstream `omnimam-spec` release `spec-v1.7.10` with `ERR_AIAPP_ENGINE_INSTANCE_NAME_DUPLICATED` (`130429`) and pushed `master` plus the release tag.
+16. Pinned the server to `spec-v1.7.10`, generated the error registry/documentation, and mapped EngineInstance create/update name uniqueness conflicts to the dedicated error instead of `ERR_AIAPP_ENGINE_AUTH_CONFIG_INVALID`.
 
-## Files changed
+## Files modified
 
-- Contract pin: `SSOT_VERSION`, `ssot` submodule.
-- API metadata: `backend/apis/iapiserver/meta_application_platform.go`, `meta_comfyui_workflow.go`, and `request_comfyui_workflow.go`.
-- Registry: `backend/internal/apiserver/applicationplatform/registry.go`, `registry_test.go`, schema and provider manifests, plus `assets/builtin-provider-capabilities/comfyui.yaml`.
-- Controller/bootstrap: Application Platform controller/response files and tests, `server.go`, and `taskworker.go`.
-- Service: Application Platform, ComfyUI workflow, executor, runtime form, and related tests including `system_binding_test.go`.
-- Store/migration: `store.go`, PostgreSQL Application Platform files/tests, `0_pg.go`, `application_platform_reset_integration_test.go`, and `application_platform_system_binding_integration_test.go`.
-- Generated errors: `backend/internal/pkg/code/base.go`, `code_generated.go`, and `docs/guide/zh-CN/api/error_code_generated.md`.
-- Deployment manifests: root and embedded DeepSeek/Seedance YAML files.
-- Documentation: `docs/guide/zh-CN/architecture/application-platform-capability-registry.md` and this handoff.
+- `SSOT_VERSION`
+- `ssot` submodule pointer
+- `backend/apis/iapiserver/meta_comfyui_workflow.go`
+- `backend/apis/iapiserver/request_comfyui_workflow.go`
+- `backend/internal/apiserver/controller/v1/applicationplatform/application_platform.go`
+- `backend/internal/apiserver/controller/v1/applicationplatform/response.go`
+- `backend/internal/apiserver/controller/v1/applicationplatform/response_test.go`
+- `backend/internal/apiserver/service/v1/applicationplatform/application_platform.go`
+- `backend/internal/apiserver/service/v1/applicationplatform/comfyui_workflow.go`
+- `backend/internal/apiserver/service/v1/applicationplatform/comfyui_workflow_test.go`
+- `backend/internal/apiserver/service/v1/platform/service.go`
+- `backend/internal/apiserver/service/v1/platform/service_test.go`
+- `backend/internal/apiserver/store/postgresql/0_pg.go`
+- `backend/internal/apiserver/store/postgresql/application_platform.go`
+- `backend/internal/apiserver/store/postgresql/application_platform_test.go`
+- `backend/internal/apiserver/store/postgresql/comfyui_workflow.go`
+- `backend/internal/pkg/code/base.go`
+- `backend/internal/pkg/code/code_generated.go`
+- `docs/HANDOFF.md`
+- `docs/guide/zh-CN/api/error_code_generated.md`
 
-No files were removed. Existing user changes in `/home/wwhvw/codespace/omnimam-spec/AGENTS.md` were preserved and not included in the release.
+Added: `backend/internal/apiserver/store/postgresql/application_platform_reset_integration_test.go`.
+
+No files were removed.
 
 ## Key architectural decisions
 
-- `kind`, `origin`, and `binding_policy` are orthogonal: purpose, load source, and binding ownership respectively.
-- `origin` is assigned by the loader. Directory YAML cannot claim builtin origin or replace a builtin ID.
-- Required system bindings are initialization and management facts, not ComfyUI model or parameter facts.
-- ComfyUI execution remains governed by API Workflow, workflow contract/manual mappings, the selected instance's current object_info, health, and template restrictions.
-- New ComfyUI EngineInstance and required binding are one database transaction. Existing instances converge through startup reconcile.
-- `system_managed` is derived from the current registry policy and is not persisted.
-- Workflow import remains independent of EngineInstance. A target instance is selected only for Visual-to-API conversion and later compatibility/runtime checks.
-- The breaking `spec-v1.7.7` removal of the legacy workflow source column still uses the one-time destructive Application Platform reset already present in this worktree.
+- Workflow import is a file-ingestion boundary, not an engine compatibility check. Engine/object_info facts begin at Visual conversion and remain required for derived nodes, compatibility validation, template publication, and execution.
+- The conversion EngineInstance is an operation input and is not persisted on `ComfyUIWorkflow`.
+- Existing Application Platform data is intentionally discarded during this breaking schema transition; no legacy data conversion or response compatibility field is provided.
+- Cross-domain cleanup is scoped by captured Application Platform, application-run, test-run DAG, task, attempt, and artifact IDs so unrelated domain data survives.
+- Task Center remains the execution-state source for workflow test runs.
+- `/api/v1/me` exposes released permission identifiers as the frontend capability source. Legacy `canvas.*` aliases are removed instead of being returned alongside `workflow.*` permissions.
+- `workflow.projection.internal` remains excluded because it is reserved for the Workflow Canvas service identity, not the interactive system administrator.
+- Duplicate EngineInstance names use the dedicated engine-module business error `ERR_AIAPP_ENGINE_INSTANCE_NAME_DUPLICATED`; the existing database unique index remains the concurrency-safe source of enforcement.
 
 ## API, schema, and configuration changes
 
-- Application Platform OpenAPI is `1.5.0` under `spec-v1.7.8`.
-- ProviderCapability now returns `kind`, read-only `origin`, and `binding_policy`.
-- EngineCapabilityBinding now returns read-only `system_managed`.
-- `aiapp_engine_capability_bindings.engine_instance_id` now references EngineInstance with `ON DELETE CASCADE`.
-- No endpoint, permission code, event type, dependency, or runtime configuration was added.
+- The server submodule and `SSOT_VERSION` target released `spec-v1.7.10` commit `d29a4248b08a77e7f13f1546e377638cbed6ef98`.
+- `ComfyUIWorkflowImportRequest`, workflow responses, and list filters no longer contain `source_engine_instance_id`.
+- `ComfyUIWorkflowAPIConversionRequest` requires `engine_instance_id` and `resource_version`.
+- `aiapp_comfyui_workflows.source_engine_instance_id` and its foreign key are removed after the destructive reset.
+- Added business error `ERR_AIAPP_ENGINE_INSTANCE_NAME_DUPLICATED` (`130429`, HTTP 200, non-retryable). No endpoint, schema, permission, event, dependency, or runtime configuration changed.
 
 ## Verification
 
-- Upstream `spec-v1.7.8` release and tag are pushed; the server submodule and `SSOT_VERSION` commit match.
-- Modified SSOT YAML parses successfully. Redocly validates the OpenAPI with no errors; embedded schema and all three manifests byte-match the released SSOT copies.
-- `make gen` passed.
-- Focused Application Platform unit tests passed.
-- PostgreSQL integration `TestPostgresRequiredEngineBindings` passed against the local PostgreSQL container, including rollback, drift repair, no-op revision stability, FK migration, and cascade delete.
-- `go test ./backend/...` passed.
-- Scoped `go test -race` passed for the registry, Application Platform service, and PostgreSQL store packages.
-- `go vet ./backend/...` and `git diff --check` passed.
+- Upstream OpenAPI YAML parsed successfully; `spec-v1.7.7` and its tag were pushed.
+- Focused import, conversion, controller, API metadata, route-contract, and PostgreSQL tests passed.
+- The destructive reset integration test passed against the local PostgreSQL 16 container, including repeat execution and preservation of unrelated records.
+- Scoped `go test -race` passed for Application Platform service and PostgreSQL store packages.
+- Scoped `go vet` passed.
+- `go test ./backend/internal/apiserver/service/v1/platform` passed.
+- `go test -race ./backend/internal/apiserver/service/v1/platform` passed.
+- `gofmt` and `git diff --check` passed.
+- `make gen` regenerated the error registry and error-code documentation.
+- Focused Application Platform service/controller tests and scoped `go vet` passed after the `spec-v1.7.10` mapping change.
+- A fresh `go test ./backend/...` run passed all permission-related packages but remains red in two unrelated localization assertions: `taskcenter.TestAssignSystemName` and `taskname.TestResolve` expect `生成 thumbnail 表现形式`, while the current catalog returns `生成 thumbnail视图`.
 
 ## Outstanding tasks
 
-1. Update the Web client for the `spec-v1.7.7` import/conversion request shape if it has not already been migrated.
-2. Deploy or restart API Server and TaskWorker so startup reconcile backfills existing ComfyUI instances.
-3. Run a real Visual Workflow import, explicit conversion, validation, test run, and formal run against a healthy ComfyUI instance.
-4. Commit the server work only when explicitly requested.
+1. Update the Web client to remove EngineInstance selection from import and require it in the Visual-to-API action.
+2. Deploy/restart the new API Server when destructive reset of the current Application Platform data is intended.
+3. Perform one real Visual Workflow import followed by explicit conversion against a healthy ComfyUI instance.
+4. Commit the server changes only when explicitly requested.
+5. Resolve the existing Task Center task-name localization mismatch, then rerun `go test ./backend/...`.
 
 ## Known issues and risks
 
-- Starting this server against a database that still has the legacy workflow source column triggers the intentional destructive Application Platform reset from `spec-v1.7.7`; linked execution projections are removed while unrelated Task Center data, user assets, and blobs are preserved.
-- Startup now fails when strict builtin registry loading or required-binding reconcile fails. This is intentional, because serving a ComfyUI instance without its system binding violates the released contract.
-- The Web client may still use the old ComfyUI import request until its separate migration is completed.
-- Redocly reports 74 non-blocking warnings in the existing Application Platform OpenAPI, mainly missing 4xx responses/descriptions and inherited required-property modeling; this release adds no OpenAPI validation errors.
+- Starting the new API Server against a database with the legacy source column permanently deletes Application Platform data and linked execution projections by design.
+- Registered user assets and blobs are preserved after their Application Platform provenance projections are removed.
+- The Web client remains on the old request shape until separately updated.
+- The full backend suite is currently red only because of the pre-existing thumbnail localization expectation mismatch described above; the platform permission package and its race run pass.
 
 ## Recommended next task
 
-Update the Web import/conversion flow to the released contract, then run the end-to-end ComfyUI acceptance sequence after deploying this server revision.
+Resolve the existing Task Center task-name localization mismatch, then rerun the full backend suite.
 
 Next Prompt:
 

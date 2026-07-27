@@ -338,7 +338,7 @@ func (s *applicationPlatformService) CreateEngineInstance(ctx context.Context, r
 		return ret, nil
 	}
 	if strings.Contains(err.Error(), "idx_aiapp_engine_instances_name") {
-		return nil, errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "engine instance name already exists")
+		return nil, errors.NewStatus(code.ErrAIAppEngineInstanceNameDuplicated, "engine instance name already exists")
 	}
 	if stderrors.Is(err, store.ErrRequiredEngineBindingFailed) {
 		return nil, errors.NewStatus(code.ErrAIAppRequiredEngineBindingFailed, "required engine capability binding could not be created")
@@ -399,7 +399,7 @@ func (s *applicationPlatformService) UpdateEngineInstance(ctx context.Context, r
 		return nil, err
 	}
 	ret, err := s.Store.ApplicationPlatforms().UpdateEngineInstance(ctx, item, req.ResourceVersion)
-	return ret, mapUnique(err, "idx_aiapp_engine_instances_name", code.ErrAIAppEngineAuthConfigInvalid, "engine instance name already exists")
+	return ret, mapUnique(err, "idx_aiapp_engine_instances_name", code.ErrAIAppEngineInstanceNameDuplicated, "engine instance name already exists")
 }
 
 func (s *applicationPlatformService) DeleteEngineInstance(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
