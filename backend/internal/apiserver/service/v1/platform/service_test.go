@@ -569,6 +569,7 @@ func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
 		"asset.collection.read",
 		"asset.collection.manage",
 		"asset.artifact.read",
+		"asset.artifact.delete",
 		"asset.artifact.register",
 		"asset.content.read",
 		"asset.representation.read",
@@ -580,9 +581,38 @@ func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
 		"task.schedule.manage",
 		"sse.stream.read",
 		"sse.history.read",
+		iapiserver.AIAppProviderCapabilityRead,
+		iapiserver.AIAppProviderCapabilityReadDiagnostics,
+		iapiserver.AIAppEngineInstanceRead,
+		iapiserver.AIAppEngineInstanceManage,
+		iapiserver.AIAppEngineBindingManage,
+		iapiserver.AIAppComfyUIWorkflowRead,
+		iapiserver.AIAppComfyUIWorkflowManage,
+		iapiserver.AIAppComfyUIWorkflowValidate,
+		iapiserver.AIAppComfyUIWorkflowConvert,
+		iapiserver.AIAppComfyUIWorkflowTest,
+		iapiserver.AIAppApplicationRead,
+		iapiserver.AIAppApplicationManage,
+		iapiserver.AIAppApplicationRun,
+		"workflow.node_definition.read",
+		"workflow.node_definition.manage",
+		"workflow.canvas.read",
+		"workflow.canvas.edit",
+		"workflow.canvas.publish",
+		"workflow.canvas.delete",
+		"workflow.run.create",
+		"workflow.run.read",
+		"workflow.run.cancel",
+		"workflow.run.retry",
 	} {
 		if !hasPermission(resp.Permissions, permission) {
 			t.Errorf("permissions missing %s", permission)
+		}
+	}
+
+	for _, legacyPermission := range []string{"canvas.read", "canvas.write", "canvas.execute"} {
+		if hasPermission(resp.Permissions, legacyPermission) {
+			t.Errorf("legacy permission %s should not be returned", legacyPermission)
 		}
 	}
 }
