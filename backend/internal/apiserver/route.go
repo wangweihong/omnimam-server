@@ -226,6 +226,7 @@ func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenter
 		schedules.DELETE("/:task_schedule_id", taskCenterController.DeleteTaskSchedule)
 		schedules.POST("/:task_schedule_id/pause", taskCenterController.PauseTaskSchedule)
 		schedules.POST("/:task_schedule_id/resume", taskCenterController.ResumeTaskSchedule)
+		schedules.POST("/:task_schedule_id/run", taskCenterController.RunTaskSchedule)
 		schedules.GET("/:task_schedule_id/executions", taskCenterController.ListScheduleExecutions)
 		schedules.GET("/:task_schedule_id/reconcile-state", taskCenterController.GetScheduleReconcileState)
 	}

@@ -59,6 +59,8 @@ type TaskCenterSrv interface {
 	DeleteTaskSchedule(context.Context, string) error
 	PauseTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
 	ResumeTaskSchedule(context.Context, string) (*iapiserver.TaskSchedule, error)
+	RunTaskSchedule(context.Context, string, *iapiserver.TaskScheduleRunRequest) (*iapiserver.TaskScheduleExecution, error)
+	RunManualScheduleExecution(context.Context, string, string) (map[string]any, error)
 	ListScheduleExecutions(context.Context, *iapiserver.ScheduleExecutionListRequest) (*iapiserver.ScheduleExecutionListResponse, error)
 	GetScheduleReconcileState(context.Context, string) (*iapiserver.ScheduleReconcileState, error)
 	EnsureSystemReconcileSchedule(context.Context, *iapiserver.TaskSchedule) (*iapiserver.TaskSchedule, error)
@@ -818,6 +820,207 @@ func (s *taskCenterService) ResumeTaskSchedule(ctx context.Context, id string) (
 	schedule.Status = iapiserver.TaskScheduleStatusActive
 	schedule.TargetSummary = scheduleTemplateSummary(schedule)
 	return s.store.UpdateTaskSchedule(ctx, schedule)
+}
+
+const (
+	ManualScheduleControllerDefinition = "task_center_manual_schedule_controller"
+	ManualScheduleControllerVersion    = 1
+	ManualScheduleControllerTask       = "task.schedule.manual"
+)
+
+func manualScheduleControllerDefinition() workflowruntime.Definition {
+	return workflowruntime.Definition{
+		Name:           ManualScheduleControllerDefinition,
+		Version:        ManualScheduleControllerVersion,
+		Description:    "Task Center fixed manual schedule controller",
+		TimeoutSeconds: 31536000,
+		Tasks: []workflowruntime.Task{{
+			Name: ManualScheduleControllerTask, ReferenceName: "manual_schedule", Type: "SIMPLE",
+			Input: map[string]any{"arguments": map[string]any{
+				"schedule_execution_id": "${workflow.input.schedule_execution_id}",
+			}},
+		}},
+	}
+}
+
+func (s *taskCenterService) RunTaskSchedule(
+	ctx context.Context,
+	id string,
+	req *iapiserver.TaskScheduleRunRequest,
+) (*iapiserver.TaskScheduleExecution, error) {
+	schedule, err := s.GetTaskSchedule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if schedule.Status != iapiserver.TaskScheduleStatusActive && schedule.Status != iapiserver.TaskScheduleStatusPaused {
+		return nil, errors.NewStatus(code.ErrTaskScheduleStateBlocked, "task schedule cannot be run")
+	}
+	actor := taskActor(ctx)
+	if schedule.ManagementMode == iapiserver.TaskScheduleManagementSystem && actor != "system-admin" {
+		return nil, errors.NewStatus(code.ErrTaskSystemScheduleOperationRestricted, "system schedule can only be run by an administrator")
+	}
+	now := time.Now().UTC()
+	record := &iapiserver.TaskScheduleExecution{
+		ScheduleID: schedule.ID, ExecutionMode: schedule.ExecutionMode,
+		TriggerSource: iapiserver.ScheduleExecutionTriggerManual,
+		TriggeredBy:   actor, IdempotencyKey: req.IdempotencyKey,
+		ScheduledAt: imachinery.NewTime(now), TriggeredAt: imachinery.NewTime(now),
+		TargetType: schedule.Target.Type, Status: iapiserver.ScheduleExecutionStatusTriggered,
+	}
+	record.ID, record.Name = uuid.NewString(), "Manual schedule execution"
+	record, acquired, err := s.store.AcquireScheduleExecution(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	needsStart := acquired || (record.TriggerSource == iapiserver.ScheduleExecutionTriggerManual &&
+		record.Status == iapiserver.ScheduleExecutionStatusTriggered && record.RuntimeExecutionID == "")
+	if needsStart {
+		if err := s.startManualScheduleExecution(ctx, record); err != nil {
+			record.Status, record.Reason = iapiserver.ScheduleExecutionStatusTriggerFailed, err.Error()
+			record.CompletedAt = imachinery.Now()
+			record, err = s.store.UpdateScheduleExecution(ctx, record)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	record.Schedule = taskScheduleSummary(schedule)
+	if err := s.attachExecutionTargets(ctx, schedule, []*iapiserver.TaskScheduleExecution{record}); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+func (s *taskCenterService) startManualScheduleExecution(ctx context.Context, record *iapiserver.TaskScheduleExecution) error {
+	binding, err := s.runtime.RegisterDefinition(ctx, manualScheduleControllerDefinition())
+	if err != nil {
+		return err
+	}
+	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{
+		DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion,
+		CorrelationID: record.ID, IdempotencyKey: record.ID,
+		Input: map[string]any{"schedule_execution_id": record.ID},
+	})
+	if err != nil {
+		return err
+	}
+	record.RuntimeExecutionID = execution.ID
+	_, err = s.store.UpdateScheduleExecution(ctx, record)
+	return err
+}
+
+func (s *taskCenterService) RunManualScheduleExecution(
+	ctx context.Context,
+	executionID string,
+	runtimeExecutionID string,
+) (map[string]any, error) {
+	record, err := s.store.GetScheduleExecution(ctx, executionID)
+	if err != nil {
+		return nil, err
+	}
+	if record.TriggerSource != iapiserver.ScheduleExecutionTriggerManual {
+		return nil, errors.NewStatus(code.ErrTaskScheduleInvalid, "schedule execution is not manual")
+	}
+	if isTerminalScheduleExecution(record.Status) {
+		return scheduleExecutionOutput(record), nil
+	}
+	if record.RuntimeExecutionID == "" {
+		record.RuntimeExecutionID = runtimeExecutionID
+		if record, err = s.store.UpdateScheduleExecution(ctx, record); err != nil {
+			return nil, err
+		}
+	}
+	schedule, err := s.store.GetTaskSchedule(ctx, record.ScheduleID)
+	if err != nil {
+		return nil, err
+	}
+	if record.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
+		return s.RunScheduleReconcile(ctx, schedule.ID, runtimeExecutionID, record.ScheduledAt.Time)
+	}
+	record.Status = iapiserver.ScheduleExecutionStatusRunning
+	if record, err = s.store.UpdateScheduleExecution(ctx, record); err != nil {
+		return nil, err
+	}
+	targetID, err := s.createScheduleTarget(ctx, schedule, record)
+	if err != nil {
+		record.Status, record.Reason = iapiserver.ScheduleExecutionStatusTriggerFailed, err.Error()
+		record.CompletedAt = imachinery.Now()
+		_, _ = s.store.UpdateScheduleExecution(context.WithoutCancel(ctx), record)
+		return nil, err
+	}
+	record.TargetID = targetID
+	if _, err = s.store.UpdateScheduleExecution(ctx, record); err != nil {
+		return nil, err
+	}
+	return scheduleExecutionOutput(record), nil
+}
+
+func isTerminalScheduleExecution(status string) bool {
+	return status == iapiserver.ScheduleExecutionStatusSuccess || status == iapiserver.ScheduleExecutionStatusFailed ||
+		status == iapiserver.ScheduleExecutionStatusCanceled || status == iapiserver.ScheduleExecutionStatusSkippedOverlap ||
+		status == iapiserver.ScheduleExecutionStatusTriggerFailed
+}
+
+func scheduleExecutionOutput(record *iapiserver.TaskScheduleExecution) map[string]any {
+	return map[string]any{
+		"schedule_execution_id": record.ID,
+		"target_id":             record.TargetID,
+		"status":                record.Status,
+	}
+}
+
+func (s *taskCenterService) createScheduleTarget(
+	ctx context.Context,
+	schedule *iapiserver.TaskSchedule,
+	execution *iapiserver.TaskScheduleExecution,
+) (string, error) {
+	raw, err := json.Marshal(schedule.Target.Template)
+	if err != nil {
+		return "", err
+	}
+	switch schedule.Target.Type {
+	case iapiserver.TaskScheduleTargetAtomic:
+		var req iapiserver.AtomicTaskCreateRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return "", err
+		}
+		req.ProjectID, req.Namespace, req.CreatedBy = schedule.ProjectID, schedule.Namespace, schedule.CreatedBy
+		req.OwnerType, req.OwnerID = iapiserver.TaskOwnerTypeSchedule, schedule.ID
+		req.IdempotencyScope, req.IdempotencyKey = "schedule-execution", execution.ID
+		created, err := s.CreateAtomicTask(ctx, &req)
+		if err != nil {
+			return "", err
+		}
+		return created.ID, nil
+	case iapiserver.TaskScheduleTargetGroup:
+		var req iapiserver.TaskGroupCreateRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return "", err
+		}
+		req.ProjectID, req.Namespace, req.CreatedBy = schedule.ProjectID, schedule.Namespace, schedule.CreatedBy
+		req.IdempotencyScope, req.IdempotencyKey = "schedule-execution", execution.ID
+		created, err := s.CreateTaskGroup(ctx, &req)
+		if err != nil {
+			return "", err
+		}
+		return created.ID, nil
+	case iapiserver.TaskScheduleTargetDAG:
+		var req iapiserver.DAGTaskGroupCreateRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return "", err
+		}
+		req.ProjectID, req.Namespace, req.CreatedBy = schedule.ProjectID, schedule.Namespace, schedule.CreatedBy
+		req.IdempotencyScope, req.IdempotencyKey = "schedule-execution", execution.ID
+		req.TriggerType, req.TriggerSourceID, req.TriggerSourceName = iapiserver.DAGTriggerSchedule, schedule.ID, schedule.Name
+		req.TriggeredAt = execution.TriggeredAt
+		created, err := s.CreateDAGTaskGroup(ctx, &req)
+		if err != nil {
+			return "", err
+		}
+		return created.ID, nil
+	default:
+		return "", fmt.Errorf("unsupported schedule target %s", schedule.Target.Type)
+	}
 }
 
 func (s *taskCenterService) validateFunctionRef(ref string) error {

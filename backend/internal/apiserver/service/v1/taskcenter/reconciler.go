@@ -221,6 +221,12 @@ func (r *Reconciler) reconcileScheduleExecutions(ctx context.Context) error {
 	}
 	var errs []error
 	for _, execution := range executions {
+		if execution.TriggerSource == iapiserver.ScheduleExecutionTriggerManual && execution.TargetID == "" {
+			if err := r.recoverManualScheduleController(ctx, execution); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
 		if execution.ExecutionMode == iapiserver.TaskScheduleModeReconcile {
 			if err := r.recoverReconcileExecution(ctx, execution); err != nil {
 				errs = append(errs, err)
@@ -242,6 +248,43 @@ func (r *Reconciler) reconcileScheduleExecutions(ctx context.Context) error {
 		}
 	}
 	return stderrors.Join(errs...)
+}
+
+func (r *Reconciler) recoverManualScheduleController(ctx context.Context, execution *iapiserver.TaskScheduleExecution) error {
+	if execution.RuntimeExecutionID != "" {
+		runtimeExecution, err := r.runtime.GetExecution(ctx, execution.RuntimeExecutionID)
+		if err == nil {
+			if runtimeExecution.Status == "RUNNING" || runtimeExecution.Status == "PAUSED" {
+				return nil
+			}
+			execution.Status = iapiserver.ScheduleExecutionStatusTriggerFailed
+			execution.Reason = "manual schedule controller terminated before creating its target"
+			if runtimeExecution.FailureReason != "" {
+				execution.Reason = runtimeExecution.FailureReason
+			}
+			execution.CompletedAt = imachinery.Now()
+			_, err = r.store.UpdateScheduleExecution(ctx, execution)
+			return err
+		}
+		if !stderrors.Is(err, workflowruntime.ErrExecutionNotFound) {
+			return err
+		}
+	}
+	binding, err := r.runtime.RegisterDefinition(ctx, manualScheduleControllerDefinition())
+	if err != nil {
+		return err
+	}
+	runtimeExecution, err := r.runtime.StartExecution(ctx, workflowruntime.StartRequest{
+		DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion,
+		CorrelationID: execution.ID, IdempotencyKey: execution.ID,
+		Input: map[string]any{"schedule_execution_id": execution.ID},
+	})
+	if err != nil {
+		return err
+	}
+	execution.RuntimeExecutionID = runtimeExecution.ID
+	_, err = r.store.UpdateScheduleExecution(ctx, execution)
+	return err
 }
 
 func (r *Reconciler) recoverReconcileExecution(ctx context.Context, execution *iapiserver.TaskScheduleExecution) error {

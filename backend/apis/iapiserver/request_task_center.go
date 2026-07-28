@@ -288,6 +288,10 @@ type TaskScheduleListResponse struct {
 	Items []*TaskSchedule `json:"items"`
 }
 
+type TaskScheduleRunRequest struct {
+	IdempotencyKey string `json:"idempotency_key" binding:"required,uuid,max=128"`
+}
+
 type ScheduleExecutionListResponse struct {
 	Total int64                    `json:"total"`
 	Items []*TaskScheduleExecution `json:"items"`

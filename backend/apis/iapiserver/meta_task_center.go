@@ -74,6 +74,8 @@ const (
 	ScheduleExecutionStatusCanceled       = "CANCELED"
 	ScheduleExecutionStatusSkippedOverlap = "SKIPPED_OVERLAP"
 	ScheduleExecutionStatusTriggerFailed  = "TRIGGER_FAILED"
+	ScheduleExecutionTriggerSchedule      = "SCHEDULE"
+	ScheduleExecutionTriggerManual        = "MANUAL"
 
 	TaskSchedulePolicySkip = "SKIP"
 )
@@ -402,6 +404,7 @@ type AtomicTaskSummary struct {
 	Progress    float64           `json:"progress"`
 	FunctionRef string            `json:"function_ref,omitempty"`
 }
+
 func (v *AtomicTaskSummary) ToAtomicTaskSummary() AtomicTaskRefSummary {
 	return AtomicTaskRefSummary{
 		ID:          v.ID,
@@ -412,6 +415,7 @@ func (v *AtomicTaskSummary) ToAtomicTaskSummary() AtomicTaskRefSummary {
 		FunctionRef: v.FunctionRef,
 	}
 }
+
 // DAGTaskGroupSummary 是跨领域读取 DAG 运行状态的一跳摘要，不包含节点、边或运行时标识。
 type DAGTaskGroupSummary struct {
 	ID       string            `json:"id"`
@@ -776,6 +780,9 @@ type TaskScheduleExecution struct {
 	ScheduleID             string               `json:"schedule_id" gorm:"column:schedule_id;type:varchar(64);not null;uniqueIndex:idx_schedule_execution_time,priority:1;index"`
 	Schedule               *TaskScheduleSummary `json:"schedule,omitempty" gorm:"-"`
 	ExecutionMode          string               `json:"execution_mode" gorm:"column:execution_mode;type:varchar(16);not null;default:'MATERIALIZED'"` // 固化本轮语义，避免计划后续变化改写历史。
+	TriggerSource          string               `json:"trigger_source" gorm:"column:trigger_source;type:varchar(16);not null;default:'SCHEDULE'"`
+	TriggeredBy            string               `json:"triggered_by" gorm:"column:triggered_by;type:varchar(64);not null;default:'task-center'"`
+	IdempotencyKey         string               `json:"idempotency_key,omitempty" gorm:"column:idempotency_key;type:varchar(128);index"`
 	ScheduledAt            imachinery.Time      `json:"scheduled_at" gorm:"column:scheduled_at;not null;uniqueIndex:idx_schedule_execution_time,priority:2"`
 	TriggeredAt            imachinery.Time      `json:"triggered_at,omitempty" gorm:"column:triggered_at"`
 	TargetType             string               `json:"target_type,omitempty" gorm:"column:target_type;type:varchar(32);not null"`

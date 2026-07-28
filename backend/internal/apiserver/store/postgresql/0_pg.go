@@ -22,6 +22,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_executions_active
 ON task_schedule_executions(schedule_id)
 WHERE status IN ('TRIGGERED', 'RUNNING')
 ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_execution_manual_key
+ON task_schedule_executions(schedule_id, idempotency_key)
+WHERE trigger_source = 'MANUAL';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_schedules_system_key
 ON task_schedules(system_key)
 WHERE system_key <> '';

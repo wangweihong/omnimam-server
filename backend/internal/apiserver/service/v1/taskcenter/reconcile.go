@@ -170,7 +170,7 @@ func (s *taskCenterService) RunScheduleReconcile(ctx context.Context, scheduleID
 	} else if skip {
 		return scheduleMisfireOutput(scheduledAt), nil
 	}
-	execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ExecutionMode: iapiserver.TaskScheduleModeReconcile, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), RuntimeExecutionID: runtimeExecutionID, Status: iapiserver.ScheduleExecutionStatusTriggered}
+	execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ExecutionMode: iapiserver.TaskScheduleModeReconcile, TriggerSource: iapiserver.ScheduleExecutionTriggerSchedule, TriggeredBy: schedule.CreatedBy, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), RuntimeExecutionID: runtimeExecutionID, Status: iapiserver.ScheduleExecutionStatusTriggered}
 	execution.ID, execution.Name = uuid.NewString(), "Reconcile execution"
 	record, acquired, err := s.store.AcquireScheduleExecution(ctx, execution)
 	if err != nil {

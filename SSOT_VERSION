@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: d29a4248b08a77e7f13f1546e377638cbed6ef98
-contract_version: spec-v1.7.10
-updated_at: 2026-07-27
+commit: 1039b76480f5cd54a1020e82d56bff05885af5b8
+contract_version: spec-v1.7.11
+updated_at: 2026-07-28
 status: released
-note: Application Platform defines a dedicated business error for duplicate EngineInstance names.
+note: Task Center supports idempotent manual runs for ACTIVE and PAUSED schedules.

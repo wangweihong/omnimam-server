@@ -201,6 +201,11 @@ func (c *Controller) PauseTaskSchedule(ctx *gin.Context) {
 func (c *Controller) ResumeTaskSchedule(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.ResumeTaskSchedule(ctx, ctx.Param("task_schedule_id")) })
 }
+func (c *Controller) RunTaskSchedule(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.TaskScheduleRunRequest{}, func(req *iapiserver.TaskScheduleRunRequest) (any, error) {
+		return c.service.RunTaskSchedule(ctx, ctx.Param("task_schedule_id"), req)
+	})
+}
 func (c *Controller) ListScheduleExecutions(ctx *gin.Context) {
 	req := &iapiserver.ScheduleExecutionListRequest{ScheduleID: ctx.Param("task_schedule_id")}
 	core.Run(ctx, req, func(value *iapiserver.ScheduleExecutionListRequest) (any, error) {

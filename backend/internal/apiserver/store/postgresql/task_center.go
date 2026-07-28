@@ -1226,6 +1226,19 @@ func (s *taskCenterStore) AcquireScheduleExecution(
 			return err
 		}
 		var existing iapiserver.TaskScheduleExecution
+		if data.TriggerSource == iapiserver.ScheduleExecutionTriggerManual && data.IdempotencyKey != "" {
+			err := tx.Where(
+				"schedule_id = ? AND trigger_source = ? AND idempotency_key = ?",
+				data.ScheduleID, data.TriggerSource, data.IdempotencyKey,
+			).First(&existing).Error
+			if err == nil {
+				result = &existing
+				return nil
+			}
+			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		}
 		err := tx.Where("schedule_id = ? AND scheduled_at = ?", data.ScheduleID, data.ScheduledAt.Time).First(&existing).Error
 		if err == nil {
 			result = &existing
@@ -1344,6 +1357,8 @@ func publishScheduleExecutionEvent(tx *gorm.DB, execution *iapiserver.TaskSchedu
 		"schedule_execution_id": execution.ID,
 		"scheduled_at":          execution.ScheduledAt,
 		"execution_mode":        execution.ExecutionMode,
+		"trigger_source":        execution.TriggerSource,
+		"triggered_by":          execution.TriggeredBy,
 		"status":                execution.Status,
 		"target_type":           execution.TargetType,
 		"target_id":             execution.TargetID,

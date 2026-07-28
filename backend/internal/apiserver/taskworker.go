@@ -222,6 +222,12 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
+	if err := runtime.RegisterHandler(taskcentersvc.ManualScheduleControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		executionID, _ := task.Arguments["schedule_execution_id"].(string)
+		return tasks.RunManualScheduleExecution(ctx, executionID, task.WorkflowID)
+	}); err != nil {
+		return err
+	}
 	if err := runtime.RegisterHandler("task.schedule.acquire", 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.started", workflowruntime.TaskLogLevelInfo, "Evaluating scheduled execution ownership."))
 		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
@@ -244,7 +250,7 @@ func RunTaskWorker(cfg *config.Config) error {
 				}, nil
 			}
 		}
-		execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ExecutionMode: iapiserver.TaskScheduleModeMaterialized, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), TargetType: schedule.Target.Type, RuntimeExecutionID: task.WorkflowID, Status: iapiserver.ScheduleExecutionStatusTriggered}
+		execution := &iapiserver.TaskScheduleExecution{ScheduleID: schedule.ID, ExecutionMode: iapiserver.TaskScheduleModeMaterialized, TriggerSource: iapiserver.ScheduleExecutionTriggerSchedule, TriggeredBy: schedule.CreatedBy, ScheduledAt: imachinery.NewTime(scheduledAt), TriggeredAt: imachinery.Now(), TargetType: schedule.Target.Type, RuntimeExecutionID: task.WorkflowID, Status: iapiserver.ScheduleExecutionStatusTriggered}
 		execution.ID = uuid.NewString()
 		execution.Name = "Schedule execution"
 		record, acquired, err := storeIns.TaskCenters().AcquireScheduleExecution(ctx, execution)
