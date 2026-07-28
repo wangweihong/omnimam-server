@@ -9,8 +9,12 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
-// ErrRequiredEngineBindingFailed 标识 EngineInstance 已写入但同事务内的系统必需绑定写入失败。
-var ErrRequiredEngineBindingFailed = errors.New("required engine binding failed")
+var (
+	// ErrRequiredEngineBindingFailed 标识 EngineInstance 已写入但同事务内的系统必需绑定写入失败。
+	ErrRequiredEngineBindingFailed = errors.New("required engine binding failed")
+	// ErrAssetDeleteBlocked 标识素材仍有强引用，永久删除事务不得产生任何副作用。
+	ErrAssetDeleteBlocked = errors.New("asset delete blocked")
+)
 
 type IdentityProviderStore interface {
 	List(
@@ -277,6 +281,10 @@ type AssetV1Store interface {
 	CreateCanonicalAsset(context.Context, string, *iapiserver.CreateCanonicalAssetRequest) (*iapiserver.AssetDetail, error)
 	UpdateUserAsset(context.Context, string, string, *iapiserver.UpdateUserAssetRequest) (*iapiserver.UserAsset, error)
 	SetUserAssetDeleted(context.Context, string, string, bool) (*iapiserver.UserAsset, error)
+	// ListDeletedUserAssetIDs 按稳定顺序返回当前 owner 回收站中的全部素材 ID。
+	ListDeletedUserAssetIDs(context.Context, string) ([]string, error)
+	// HardDeleteUserAsset 从任意素材状态执行强引用检查并永久删除，不要求先进入回收站。
+	HardDeleteUserAsset(context.Context, string, string) (*iapiserver.PermanentDeleteResult, []StoredAssetContent, error)
 	PermanentlyDeleteUserAsset(context.Context, string, string) (*iapiserver.PermanentDeleteResult, []StoredAssetContent, error)
 
 	CreateAssetUploads(context.Context, string, []iapiserver.AssetUploadItemRequest, int64) ([]iapiserver.AssetUploadInitResult, error)

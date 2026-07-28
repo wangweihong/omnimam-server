@@ -189,6 +189,8 @@ func init() {
 	register(ErrAssetStoragePermissionDenied, 200, map[string]string{"CN": "当前用户不是管理员，不能查看或管理 Blob 与 StorageBackend。", "EN": "The current user is not an administrator and cannot inspect or manage Blobs and StorageBackends."})
 	register(ErrAssetBlobNotFound, 200, map[string]string{"CN": "Blob 不存在。", "EN": "The Blob does not exist."})
 	register(ErrAssetStorageBackendNotFound, 200, map[string]string{"CN": "StorageBackend 不存在。", "EN": "The StorageBackend does not exist."})
+	register(ErrAssetBatchDeleteRequestInvalid, 200, map[string]string{"CN": "批量删除请求为空、超过上限或包含重复素材 ID。", "EN": "The batch asset delete request is empty, exceeds the limit, or contains duplicate asset IDs."})
+	register(ErrAssetDeleteFailed, 200, map[string]string{"CN": "素材删除的数据库提交、回收站查询或内容清理未完成。", "EN": "The asset deletion database commit, trash query, or content cleanup did not complete."})
 	register(ErrArtifactRegistrationInvalid, 200, map[string]string{"CN": "Artifact 创建或登记请求无效。", "EN": "The Artifact creation or registration request is invalid."})
 	register(ErrArtifactOwnerMismatch, 200, map[string]string{"CN": "Artifact owner 不匹配。", "EN": "The Artifact owner does not match."})
 	register(ErrArtifactContentUnavailable, 200, map[string]string{"CN": "Artifact 内容不可读取。", "EN": "The Artifact content is unavailable."})

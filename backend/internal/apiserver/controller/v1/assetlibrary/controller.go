@@ -36,14 +36,33 @@ func (c *Controller) UpdateAsset(ctx *gin.Context) {
 		return c.service.UpdateAsset(ctx, ctx.Param("asset_id"), req)
 	})
 }
+
+// DeleteAsset 默认软删除；hard_delete=true 时直接执行强引用检查和永久删除。
 func (c *Controller) DeleteAsset(ctx *gin.Context) {
-	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.DeleteAsset(ctx, ctx.Param("asset_id")) })
+	core.Run(ctx, &iapiserver.DeleteAssetRequest{}, func(req *iapiserver.DeleteAssetRequest) (any, error) {
+		if req.HardDelete {
+			return c.service.HardDeleteAsset(ctx, ctx.Param("asset_id"))
+		}
+		return c.service.DeleteAsset(ctx, ctx.Param("asset_id"))
+	})
 }
 func (c *Controller) RestoreAsset(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.RestoreAsset(ctx, ctx.Param("asset_id")) })
 }
 func (c *Controller) PermanentlyDeleteAsset(ctx *gin.Context) {
 	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.PermanentlyDeleteAsset(ctx, ctx.Param("asset_id")) })
+}
+
+// BatchDeleteAssets 按请求顺序逐项软删除或硬删除，单项失败不回滚其他成功项。
+func (c *Controller) BatchDeleteAssets(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.BatchDeleteAssetsRequest{}, func(req *iapiserver.BatchDeleteAssetsRequest) (any, error) {
+		return c.service.BatchDeleteAssets(ctx, req)
+	})
+}
+
+// EmptyTrash 逐项硬删除当前用户全部回收站素材，阻塞项保留在回收站。
+func (c *Controller) EmptyTrash(ctx *gin.Context) {
+	core.Run(ctx, nil, func(_ any) (any, error) { return c.service.EmptyTrash(ctx) })
 }
 func (c *Controller) BatchLabels(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.BatchLabelRequest{}, func(req *iapiserver.BatchLabelRequest) (any, error) { return c.service.BatchLabels(ctx, req) })

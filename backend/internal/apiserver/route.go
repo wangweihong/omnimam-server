@@ -341,7 +341,9 @@ func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory
 	{
 		assets.GET("", controller.ListAssets)
 		assets.POST("", controller.CreateAsset)
+		assets.POST("/batch-delete", controller.BatchDeleteAssets)
 		assets.POST("/batch-labels", controller.BatchLabels)
+		assets.POST("/trash/empty", controller.EmptyTrash)
 		assets.GET("/:asset_id", controller.GetAsset)
 		assets.PATCH("/:asset_id", controller.UpdateAsset)
 		assets.DELETE("/:asset_id", controller.DeleteAsset)

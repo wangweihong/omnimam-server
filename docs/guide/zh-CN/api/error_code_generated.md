@@ -207,6 +207,8 @@
 | ErrAssetStoragePermissionDenied | 150610 | 200 | The current user is not an administrator and cannot inspect or manage Blobs and StorageBackends. | 当前用户不是管理员，不能查看或管理 Blob 与 StorageBackend。 |
 | ErrAssetBlobNotFound | 150611 | 200 | The Blob does not exist. | Blob 不存在。 |
 | ErrAssetStorageBackendNotFound | 150612 | 200 | The StorageBackend does not exist. | StorageBackend 不存在。 |
+| ErrAssetBatchDeleteRequestInvalid | 150613 | 200 | The batch asset delete request is empty, exceeds the limit, or contains duplicate asset IDs. | 批量删除请求为空、超过上限或包含重复素材 ID。 |
+| ErrAssetDeleteFailed | 150614 | 200 | The asset deletion database commit, trash query, or content cleanup did not complete. | 素材删除的数据库提交、回收站查询或内容清理未完成。 |
 | ErrArtifactRegistrationInvalid | 150800 | 200 | The Artifact creation or registration request is invalid. | Artifact 创建或登记请求无效。 |
 | ErrArtifactOwnerMismatch | 150801 | 200 | The Artifact owner does not match. | Artifact owner 不匹配。 |
 | ErrArtifactContentUnavailable | 150802 | 200 | The Artifact content is unavailable. | Artifact 内容不可读取。 |

@@ -89,3 +89,17 @@ func TestDecodeParameterRejectsInvalidCollectionUpdate(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeParameterBindsDeleteAssetHardDelete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/api/v1/assets/asset-1?hard_delete=true", nil)
+	request := &DeleteAssetRequest{}
+
+	if err := core.DecodeParameter(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if !request.HardDelete {
+		t.Fatal("hard_delete query parameter was not bound")
+	}
+}

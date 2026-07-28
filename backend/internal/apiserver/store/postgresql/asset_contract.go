@@ -240,12 +240,38 @@ func (s *assetV1Store) SetUserAssetDeleted(ctx context.Context, owner, id string
 	return &asset, nil
 }
 
+// ListDeletedUserAssetIDs 返回当前用户回收站中的全部素材 ID，供清空操作按稳定顺序逐项处理。
+func (s *assetV1Store) ListDeletedUserAssetIDs(ctx context.Context, owner string) ([]string, error) {
+	ids := make([]string, 0)
+	err := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.UserAsset{}).
+		Where("owner_user_id = ? AND status = ?", owner, iapiserver.AssetStatusDeleted).
+		Order("created_at ASC").
+		Order("id ASC").
+		Pluck("id", &ids).Error
+	return ids, errors.WithStack(err)
+}
+
+// HardDeleteUserAsset 从任意素材状态直接执行永久删除，仍保留强引用和 Blob 共享检查。
+func (s *assetV1Store) HardDeleteUserAsset(ctx context.Context, owner, id string) (*iapiserver.PermanentDeleteResult, []store.StoredAssetContent, error) {
+	return s.permanentlyDeleteUserAsset(ctx, owner, id, false)
+}
+
+// PermanentlyDeleteUserAsset 只永久删除已进入回收站的素材，保持既有 permanent endpoint 语义。
 func (s *assetV1Store) PermanentlyDeleteUserAsset(ctx context.Context, owner, id string) (*iapiserver.PermanentDeleteResult, []store.StoredAssetContent, error) {
+	return s.permanentlyDeleteUserAsset(ctx, owner, id, true)
+}
+
+func (s *assetV1Store) permanentlyDeleteUserAsset(ctx context.Context, owner, id string, requireDeleted bool) (*iapiserver.PermanentDeleteResult, []store.StoredAssetContent, error) {
 	result := &iapiserver.PermanentDeleteResult{AssetID: id, DeletedBlobIDs: []string{}, RetainedBlobIDs: []string{}}
 	contents := make([]store.StoredAssetContent, 0)
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var asset iapiserver.UserAsset
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ? AND status = ?", id, owner, iapiserver.AssetStatusDeleted).First(&asset).Error; err != nil {
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", id, owner)
+		if requireDeleted {
+			query = query.Where("status = ?", iapiserver.AssetStatusDeleted)
+		}
+		if err := query.First(&asset).Error; err != nil {
 			return err
 		}
 		var blocking int64
@@ -260,7 +286,7 @@ func (s *assetV1Store) PermanentlyDeleteUserAsset(ctx context.Context, owner, id
 				return err
 			}
 			if blocking > 0 {
-				return errors.Errorf("asset has blocking references")
+				return store.ErrAssetDeleteBlocked
 			}
 		}
 		for _, check := range []struct {
@@ -282,7 +308,7 @@ func (s *assetV1Store) PermanentlyDeleteUserAsset(ctx context.Context, owner, id
 				return err
 			}
 			if blocking > 0 {
-				return errors.Errorf("asset has blocking references")
+				return store.ErrAssetDeleteBlocked
 			}
 		}
 		var versions []iapiserver.AssetVersion
@@ -313,7 +339,8 @@ func (s *assetV1Store) PermanentlyDeleteUserAsset(ctx context.Context, owner, id
 			if err := tx.Model(&iapiserver.AssetRepresentation{}).Where("blob_id = ?", representation.BlobID).Count(&refs).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&iapiserver.Artifact{}).Where("blob_id = ? AND deleted_at IS NULL", representation.BlobID).Count(&blocking).Error; err != nil {
+			// Artifact 软删除只隐藏投影并保留 Blob；共享检查不能把它当成已释放引用。
+			if err := tx.Model(&iapiserver.Artifact{}).Where("blob_id = ?", representation.BlobID).Count(&blocking).Error; err != nil {
 				return err
 			}
 			if refs+blocking > 0 {

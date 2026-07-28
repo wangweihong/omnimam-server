@@ -29,13 +29,16 @@ type ContentRead struct {
 	Filename  string
 }
 
-// Service 实现 spec-v1.7.4 asset-library 公共契约；普通资源强制用户隔离，物理存储检查强制管理员鉴权。
+// Service 实现 spec-v1.7.12 asset-library 公共契约；普通资源强制用户隔离，物理存储检查强制管理员鉴权。
 type Service interface {
 	ListAssets(context.Context, *iapiserver.UserAssetListRequest) (*iapiserver.UserAssetListResponse, error)
 	CreateAsset(context.Context, *iapiserver.CreateCanonicalAssetRequest) (*iapiserver.AssetDetail, error)
 	GetAsset(context.Context, string) (*iapiserver.AssetDetail, error)
 	UpdateAsset(context.Context, string, *iapiserver.UpdateUserAssetRequest) (*iapiserver.UserAsset, error)
 	DeleteAsset(context.Context, string) (*iapiserver.UserAsset, error)
+	HardDeleteAsset(context.Context, string) (*iapiserver.PermanentDeleteResult, error)
+	BatchDeleteAssets(context.Context, *iapiserver.BatchDeleteAssetsRequest) (*iapiserver.BatchDeleteAssetsResponse, error)
+	EmptyTrash(context.Context) (*iapiserver.BatchDeleteAssetsResponse, error)
 	RestoreAsset(context.Context, string) (*iapiserver.UserAsset, error)
 	PermanentlyDeleteAsset(context.Context, string) (*iapiserver.PermanentDeleteResult, error)
 	BatchLabels(context.Context, *iapiserver.BatchLabelRequest) (*iapiserver.BatchLabelResponse, error)
@@ -222,6 +225,45 @@ func (s *service) DeleteAsset(ctx context.Context, id string) (*iapiserver.UserA
 	result, err := s.store.SetUserAssetDeleted(ctx, owner, id, true)
 	return result, mapNotFound(err, code.ErrAssetNotFoundOrNotWritable)
 }
+
+// HardDeleteAsset 绕过回收站，从任意素材状态执行强引用检查和永久删除。
+func (s *service) HardDeleteAsset(ctx context.Context, id string) (*iapiserver.PermanentDeleteResult, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.permanentlyDeleteAsset(ctx, owner, id, true)
+}
+
+// BatchDeleteAssets 按请求顺序逐项提交；硬删除对整批生效，单项失败不回滚其他成功项。
+func (s *service) BatchDeleteAssets(ctx context.Context, req *iapiserver.BatchDeleteAssetsRequest) (*iapiserver.BatchDeleteAssetsResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateBatchDeleteAssets(req); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		ids = append(ids, item.ID)
+	}
+	return s.deleteAssets(ctx, owner, ids, req.HardDelete, req.HardDelete), nil
+}
+
+// EmptyTrash 仅枚举当前用户 deleted 素材，并在每项提交时再次要求 deleted 状态。
+func (s *service) EmptyTrash(ctx context.Context) (*iapiserver.BatchDeleteAssetsResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := s.store.ListDeletedUserAssetIDs(ctx, owner)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAssetDeleteFailed, "list deleted assets failed")
+	}
+	return s.deleteAssets(ctx, owner, ids, true, false), nil
+}
+
 func (s *service) RestoreAsset(ctx context.Context, id string) (*iapiserver.UserAsset, error) {
 	owner, err := currentUserID(ctx)
 	if err != nil {
@@ -238,19 +280,67 @@ func (s *service) PermanentlyDeleteAsset(ctx context.Context, id string) (*iapis
 	if err != nil {
 		return nil, err
 	}
-	result, contents, err := s.store.PermanentlyDeleteUserAsset(ctx, owner, id)
+	return s.permanentlyDeleteAsset(ctx, owner, id, false)
+}
+
+func (s *service) permanentlyDeleteAsset(ctx context.Context, owner, id string, direct bool) (*iapiserver.PermanentDeleteResult, error) {
+	var (
+		result   *iapiserver.PermanentDeleteResult
+		contents []store.StoredAssetContent
+		err      error
+	)
+	if direct {
+		result, contents, err = s.store.HardDeleteUserAsset(ctx, owner, id)
+	} else {
+		result, contents, err = s.store.PermanentlyDeleteUserAsset(ctx, owner, id)
+	}
 	if err != nil {
-		if strings.Contains(err.Error(), "blocking") {
+		if stderrors.Is(err, store.ErrAssetDeleteBlocked) {
 			return nil, errors.NewStatus(code.ErrAssetPermanentDeleteBlocked, "asset has blocking references")
 		}
-		return nil, mapNotFound(err, code.ErrAssetNotFoundOrNotWritable)
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.NewStatus(code.ErrAssetNotFoundOrNotWritable, "asset does not exist or is not writable")
+		}
+		return nil, errors.NewStatus(code.ErrAssetDeleteFailed, "asset deletion failed")
 	}
 	for _, content := range contents {
+		if s.storage == nil {
+			return result, errors.NewStatus(code.ErrAssetDeleteFailed, "asset content storage is unavailable")
+		}
 		if err := s.storage.Delete(ctx, content); err != nil {
-			return result, errors.NewStatus(code.ErrAssetContentUnavailable, "deleted asset content cleanup failed")
+			return result, errors.NewStatus(code.ErrAssetDeleteFailed, "deleted asset content cleanup failed")
 		}
 	}
 	return result, nil
+}
+
+func (s *service) deleteAssets(ctx context.Context, owner string, ids []string, hardDelete, direct bool) *iapiserver.BatchDeleteAssetsResponse {
+	response := &iapiserver.BatchDeleteAssetsResponse{
+		Total:   len(ids),
+		Results: make([]iapiserver.BatchDeleteAssetResult, 0, len(ids)),
+	}
+	for _, id := range ids {
+		item := iapiserver.BatchDeleteAssetResult{ID: id, HardDelete: hardDelete}
+		var itemErr error
+		if hardDelete {
+			item.PermanentDelete, itemErr = s.permanentlyDeleteAsset(ctx, owner, id, direct)
+		} else {
+			item.Asset, itemErr = s.store.SetUserAssetDeleted(ctx, owner, id, true)
+			itemErr = mapNotFound(itemErr, code.ErrAssetNotFoundOrNotWritable)
+			if itemErr != nil && errors.ToStatus(itemErr).Code == 1 {
+				itemErr = errors.NewStatus(code.ErrAssetDeleteFailed, "asset soft deletion failed")
+			}
+		}
+		item.Success = itemErr == nil
+		if item.Success {
+			response.Success++
+		} else {
+			response.Fail++
+			item.Error = batchDeleteError(itemErr)
+		}
+		response.Results = append(response.Results, item)
+	}
+	return response
 }
 
 func (s *service) BatchLabels(ctx context.Context, req *iapiserver.BatchLabelRequest) (*iapiserver.BatchLabelResponse, error) {
@@ -823,6 +913,50 @@ func validateLabelsAndTags(labels map[string]string, tags []string) error {
 	}
 	return nil
 }
+
+func validateBatchDeleteAssets(req *iapiserver.BatchDeleteAssetsRequest) error {
+	if req == nil || len(req.Items) < 1 || len(req.Items) > 200 {
+		return errors.NewStatus(code.ErrAssetBatchDeleteRequestInvalid, "batch delete items must contain between 1 and 200 assets")
+	}
+	ids := make(map[string]struct{}, len(req.Items))
+	for _, item := range req.Items {
+		if _, exists := ids[item.ID]; exists {
+			return errors.NewStatus(code.ErrAssetBatchDeleteRequestInvalid, "asset ids must be unique")
+		}
+		ids[item.ID] = struct{}{}
+	}
+	return nil
+}
+
+func batchDeleteError(err error) *iapiserver.BatchDeleteAssetError {
+	status := errors.ToStatus(err)
+	messages := status.Message
+	return &iapiserver.BatchDeleteAssetError{
+		Code:    batchDeleteErrorCode(status.Code),
+		Value:   status.Code,
+		Message: messages[errors.MessageLangENKey],
+		Messages: map[string]string{
+			"zh-CN": messages[errors.MessageLangCNKey],
+			"en-US": messages[errors.MessageLangENKey],
+		},
+		Detail:    status.Desc,
+		Retryable: status.Code == code.ErrAssetDeleteFailed,
+	}
+}
+
+func batchDeleteErrorCode(value int) string {
+	switch value {
+	case code.ErrAssetNotFoundOrNotWritable:
+		return "asset_not_found_or_not_writable"
+	case code.ErrAssetPermanentDeleteBlocked:
+		return "asset_permanent_delete_blocked"
+	case code.ErrAssetDeleteFailed:
+		return "asset_delete_failed"
+	default:
+		return "asset_delete_failed"
+	}
+}
+
 func validateBatchLabels(req *iapiserver.BatchLabelRequest) error {
 	if len(req.LabelsToUpsert) == 0 && len(req.TagsToAdd) == 0 && len(req.TagsToRemove) == 0 {
 		return errors.NewStatus(code.ErrAssetBatchLabelRequestInvalid, "at least one label change is required")

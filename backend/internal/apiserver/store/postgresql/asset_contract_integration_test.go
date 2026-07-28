@@ -59,6 +59,42 @@ func TestPostgresAssetContractLifecycle(t *testing.T) {
 		t.Fatalf("cross-user read error = %v", err)
 	}
 
+	directDelete, err := assetStore.CreateCanonicalAsset(ctx, "user-1", &iapiserver.CreateCanonicalAssetRequest{
+		DisplayName: "Direct delete", MediaType: "text", CanonicalContent: map[string]any{"text": "remove"}, ProfileVersion: "canonical-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := assetStore.HardDeleteUserAsset(ctx, "user-2", directDelete.Asset.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("cross-user hard delete error = %v", err)
+	}
+	if result, _, err := assetStore.HardDeleteUserAsset(ctx, "user-1", directDelete.Asset.ID); err != nil || !result.Deleted {
+		t.Fatalf("direct hard delete result=%#v error=%v", result, err)
+	}
+
+	trashAsset, err := assetStore.CreateCanonicalAsset(ctx, "user-1", &iapiserver.CreateCanonicalAssetRequest{
+		DisplayName: "Trash", MediaType: "text", CanonicalContent: map[string]any{"text": "trash"}, ProfileVersion: "canonical-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assetStore.SetUserAssetDeleted(ctx, "user-1", trashAsset.Asset.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	otherTrashAsset, err := assetStore.CreateCanonicalAsset(ctx, "user-2", &iapiserver.CreateCanonicalAssetRequest{
+		DisplayName: "Other trash", MediaType: "text", CanonicalContent: map[string]any{"text": "other"}, ProfileVersion: "canonical-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assetStore.SetUserAssetDeleted(ctx, "user-2", otherTrashAsset.Asset.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	deletedIDs, err := assetStore.ListDeletedUserAssetIDs(ctx, "user-1")
+	if err != nil || len(deletedIDs) != 1 || deletedIDs[0] != trashAsset.Asset.ID {
+		t.Fatalf("deleted ids=%#v error=%v", deletedIDs, err)
+	}
+
 	collection, err := assetStore.CreateCollection(ctx, "user-1", &iapiserver.CreateCollectionRequest{Name: "Project"})
 	if err != nil {
 		t.Fatal(err)

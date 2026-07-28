@@ -875,6 +875,14 @@ const (
 	// @EN The StorageBackend does not exist.
 	ErrAssetStorageBackendNotFound int = 150612
 	// @HTTP 200
+	// @CN 批量删除请求为空、超过上限或包含重复素材 ID。
+	// @EN The batch asset delete request is empty, exceeds the limit, or contains duplicate asset IDs.
+	ErrAssetBatchDeleteRequestInvalid int = 150613
+	// @HTTP 200
+	// @CN 素材删除的数据库提交、回收站查询或内容清理未完成。
+	// @EN The asset deletion database commit, trash query, or content cleanup did not complete.
+	ErrAssetDeleteFailed int = 150614
+	// @HTTP 200
 	// @CN Artifact 创建或登记请求无效。
 	// @EN The Artifact creation or registration request is invalid.
 	ErrArtifactRegistrationInvalid int = 150800

@@ -42,7 +42,7 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 	expected := []string{
 		"GET /api/v1/blobs/:blob_id", "GET /api/v1/storage-backends", "POST /api/v1/storage-backends", "GET /api/v1/storage-backends/:backend_id", "PATCH /api/v1/storage-backends/:backend_id",
 		"GET /api/v1/assets", "POST /api/v1/assets", "GET /api/v1/assets/:asset_id", "PATCH /api/v1/assets/:asset_id", "DELETE /api/v1/assets/:asset_id",
-		"POST /api/v1/assets/:asset_id/restore", "DELETE /api/v1/assets/:asset_id/permanent", "POST /api/v1/assets/batch-labels",
+		"POST /api/v1/assets/:asset_id/restore", "DELETE /api/v1/assets/:asset_id/permanent", "POST /api/v1/assets/batch-delete", "POST /api/v1/assets/trash/empty", "POST /api/v1/assets/batch-labels",
 		"POST /api/v1/asset-uploads", "POST /api/v1/asset-uploads/:upload_id/content", "POST /api/v1/asset-uploads/:upload_id/complete", "DELETE /api/v1/asset-uploads/:upload_id",
 		"GET /api/v1/collections", "POST /api/v1/collections", "GET /api/v1/collections/:collection_id", "PATCH /api/v1/collections/:collection_id", "DELETE /api/v1/collections/:collection_id",
 		"POST /api/v1/collections/:collection_id/items", "PATCH /api/v1/collections/:collection_id/items/:item_id", "DELETE /api/v1/collections/:collection_id/items/:item_id",
@@ -53,8 +53,8 @@ func TestAssetLibraryRoutesCoverReleasedOpenAPI(t *testing.T) {
 		"GET /api/v1/asset-representations/:representation_id", "GET /api/v1/asset-representations/:representation_id/content", "GET /api/v1/asset-representations/:representation_id/access-url",
 		"GET /api/v1/assets/:asset_id/relations", "GET /api/v1/assets/:asset_id/lineage", "GET /api/v1/assets/:asset_id/references", "GET /api/v1/assets/:asset_id/usages",
 	}
-	if len(expected) != 51 {
-		t.Fatalf("test fixture has %d operations, want 51", len(expected))
+	if len(expected) != 53 {
+		t.Fatalf("test fixture has %d operations, want 53", len(expected))
 	}
 	for _, route := range expected {
 		if _, ok := actual[route]; !ok {

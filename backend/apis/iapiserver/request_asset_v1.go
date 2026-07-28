@@ -5,6 +5,8 @@ import (
 	"mime/multipart"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
@@ -36,8 +38,70 @@ type ArtifactRegistrationResponse struct {
 	AssetVersion       *AssetVersion `json:"asset_version,omitempty"`
 }
 type BatchAssetItem struct {
+	// ID 指定当前用户范围内要处理的素材；批量请求中不得重复。
 	ID string `json:"id" binding:"required"`
 }
+
+// DeleteAssetRequest 控制单素材删除模式；asset.delete 权限下默认软删除，显式 hard_delete 才直接永久删除。
+type DeleteAssetRequest struct {
+	// HardDelete 为 true 时绕过回收站并执行强引用检查；不返回原始内容、metadata 或缩略图。
+	HardDelete bool `form:"hard_delete"`
+}
+
+// Decode 从 DELETE query 读取删除模式，避免改变其他 DELETE endpoint 的参数绑定方式。
+func (r *DeleteAssetRequest) Decode(c *gin.Context) error {
+	return c.ShouldBindQuery(r)
+}
+
+// BatchDeleteAssetsRequest 批量删除当前用户素材；整批统一使用软删除或硬删除模式。
+type BatchDeleteAssetsRequest struct {
+	// Items 包含 1 至 200 个唯一素材 ID；每项独立提交并按请求顺序返回。
+	Items []BatchAssetItem `json:"items" binding:"required,min=1,max=200,dive"`
+	// HardDelete 为 true 时整批绕过回收站并逐项执行永久删除检查。
+	HardDelete bool `json:"hard_delete"`
+}
+
+type BatchDeleteAssetError struct {
+	// Code 是 SSOT 定义的稳定业务错误名，供客户端按错误类别处理单项失败。
+	Code string `json:"code"`
+	// Value 是业务错误的稳定数值编码。
+	Value int `json:"value"`
+	// Message 是面向当前默认语言的错误消息。
+	Message string `json:"message"`
+	// Messages 同时提供简体中文和英文错误消息。
+	Messages map[string]string `json:"messages"`
+	// Detail 提供本次失败的非敏感上下文，不泄露其他用户素材是否存在。
+	Detail string `json:"detail"`
+	// Retryable 指示客户端稍后重试是否可能成功。
+	Retryable bool `json:"retryable"`
+}
+
+type BatchDeleteAssetResult struct {
+	// ID 回显请求中的素材 ID，并保持原始请求顺序。
+	ID string `json:"id"`
+	// Success 表示该素材是否完成所选删除模式。
+	Success bool `json:"success"`
+	// HardDelete 表示该项是否按绕过回收站的永久删除模式处理。
+	HardDelete bool `json:"hard_delete"`
+	// Asset 仅在软删除成功时返回 deleted 状态素材。
+	Asset *UserAsset `json:"asset,omitempty"`
+	// PermanentDelete 仅在硬删除成功时返回 Blob 删除和保留结果。
+	PermanentDelete *PermanentDeleteResult `json:"permanent_delete,omitempty"`
+	// Error 仅在单项失败时返回对应业务错误。
+	Error *BatchDeleteAssetError `json:"error,omitempty"`
+}
+
+type BatchDeleteAssetsResponse struct {
+	// Total 是本次实际处理的素材总数；空回收站时为 0。
+	Total int `json:"total"`
+	// Success 是删除成功的素材数。
+	Success int `json:"success"`
+	// Fail 是删除失败并保留错误结果的素材数。
+	Fail int `json:"fail"`
+	// Results 按请求或回收站稳定枚举顺序返回逐项结果。
+	Results []BatchDeleteAssetResult `json:"results"`
+}
+
 type BatchLabelRequest struct {
 	Items          []BatchAssetItem  `json:"items" binding:"required,min=1,max=100,dive"`
 	LabelsToUpsert map[string]string `json:"labels_to_upsert"`

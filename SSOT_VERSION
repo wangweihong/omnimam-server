@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 1039b76480f5cd54a1020e82d56bff05885af5b8
-contract_version: spec-v1.7.11
+commit: e7daf0f80cb2d739201b6aef5054e4cc799c08f8
+contract_version: spec-v1.7.12
 updated_at: 2026-07-28
 status: released
-note: Task Center supports idempotent manual runs for ACTIVE and PAUSED schedules.
+note: Asset Library supports batch deletion, direct hard deletion, and trash emptying.
