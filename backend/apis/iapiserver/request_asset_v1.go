@@ -1,7 +1,9 @@
 package iapiserver
 
 import (
+	"errors"
 	"mime/multipart"
+	"strings"
 
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
@@ -236,12 +238,34 @@ type CreateCollectionRequest struct {
 }
 
 type UpdateCollectionRequest struct {
-	Name               *string `json:"name" binding:"omitempty,max=255"`
-	Description        *string `json:"description" binding:"omitempty,max=2000"`
+	// Name 修改 Collection 展示名称；提供时 trim 后必须非空且不超过 255 个字符。
+	Name *string `json:"name" binding:"omitempty,min=1,max=255"`
+	// Description 修改 Collection 描述；nil 表示保持原值。
+	Description *string `json:"description" binding:"omitempty,max=2000"`
+	// ParentCollectionID 修改父级 Collection；服务端校验同用户、无环且最大深度为 8。
 	ParentCollectionID *string `json:"parent_collection_id" binding:"omitempty,max=64"`
-	Color              *string `json:"color" binding:"omitempty,max=64"`
-	SortOrder          *int    `json:"sort_order"`
-	ResourceVersion    *int64  `json:"resource_version" binding:"omitempty,min=0"`
+	// Color 修改前端展示色；nil 表示保持原值。
+	Color *string `json:"color" binding:"omitempty,max=64"`
+	// SortOrder 修改同级 Collection 的手动排序值。
+	SortOrder *int `json:"sort_order"`
+	// ResourceVersion 可选地执行乐观并发校验；版本不匹配时拒绝更新。
+	ResourceVersion *int64 `json:"resource_version" binding:"omitempty,min=0"`
+}
+
+// Validate 保证 Collection 更新符合 OpenAPI 的至少一个字段约束，并拒绝 trim 后的空名称。
+func (r *UpdateCollectionRequest) Validate() error {
+	if r.Name == nil &&
+		r.Description == nil &&
+		r.ParentCollectionID == nil &&
+		r.Color == nil &&
+		r.SortOrder == nil &&
+		r.ResourceVersion == nil {
+		return errors.New("at least one collection field is required")
+	}
+	if r.Name != nil && strings.TrimSpace(*r.Name) == "" {
+		return errors.New("collection name must not be empty")
+	}
+	return nil
 }
 
 type AddCollectionItem struct {
