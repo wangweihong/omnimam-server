@@ -15,6 +15,7 @@ Implement released `spec-v1.7.11` TaskSchedule manual runs across API, persisten
 7. Added service tests for duplicate requests, paused-state preservation, fixed controller identity, and persisted runtime-start failure.
 8. Built and deployed `omnimam/apiserver:manualrun-20260728-amd64` and `omnimam/taskworker:manualrun-20260728-amd64` to the local Compose services.
 9. Live-verified RECONCILE success, duplicate-key identity, overlap skip, PAUSED execution without future-schedule mutation, and MATERIALIZED target creation with target summary.
+10. Committed the implementation as `1004d4e` (`feat(task-center): run schedules on demand`).
 
 ## Files added or modified
 
@@ -63,8 +64,6 @@ Implement released `spec-v1.7.11` TaskSchedule manual runs across API, persisten
 
 ## Remaining work
 
-- Commit the server implementation.
-- Keep the deployed local API Server and TaskWorker aligned with the final commit if further code changes are made.
 - Add PostgreSQL concurrency integration coverage if a dedicated CI database is introduced for this path.
 
 ## Known issues and risks
