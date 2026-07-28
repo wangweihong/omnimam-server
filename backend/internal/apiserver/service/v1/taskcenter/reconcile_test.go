@@ -193,6 +193,37 @@ func TestProjectionKeepsCanceledResultWhenTerminalLogWriteFails(t *testing.T) {
 	}
 }
 
+func TestProjectionNotifiesTerminalObserverAfterPersistence(t *testing.T) {
+	storeStub := &projectionStoreStub{}
+	notified := false
+	reconciler := &Reconciler{
+		store:   storeStub,
+		runtime: workflowruntime.UnavailableRuntime{},
+		terminalObservers: []func(context.Context, *iapiserver.AtomicTask) error{func(_ context.Context, task *iapiserver.AtomicTask) error {
+			if !storeStub.applied {
+				t.Fatal("observer ran before task projection was persisted")
+			}
+			notified = task.Status == iapiserver.AtomicTaskStatusSuccess
+			return nil
+		}},
+	}
+	task := &iapiserver.AtomicTask{Status: iapiserver.AtomicTaskStatusRunning}
+	task.ID = "atomic-1"
+	now := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+	execution := workflowruntime.Execution{ID: "execution-1", Tasks: []workflowruntime.ExecutionTask{{
+		ID: "runtime-task-1", Status: "COMPLETED", Input: map[string]any{"atomic_task_id": task.ID},
+		Output: map[string]any{"outputs": []any{map[string]any{"output_key": "image"}}}, StartedAt: now, CompletedAt: now.Add(time.Second),
+	}}}
+
+	applied, err := reconciler.project(context.Background(), task, execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied || !notified {
+		t.Fatalf("applied=%t notified=%t task=%#v", applied, notified, task)
+	}
+}
+
 func TestReconcileOwnerRepairsAggregateWhenRuntimeProjectionIsUnchanged(t *testing.T) {
 	dag := &iapiserver.DAGTaskGroup{RuntimeExecutionID: "execution-1"}
 	dag.ID = "dag-1"

@@ -18,16 +18,17 @@ import (
 
 // Reconciler periodically repairs Task Center projections from non-terminal runtime executions.
 type Reconciler struct {
-	store    store.TaskCenterStore
-	runtime  workflowruntime.WorkflowRuntime
-	interval time.Duration
+	store             store.TaskCenterStore
+	runtime           workflowruntime.WorkflowRuntime
+	interval          time.Duration
+	terminalObservers []func(context.Context, *iapiserver.AtomicTask) error
 }
 
-func NewReconciler(factory store.Factory, runtime workflowruntime.WorkflowRuntime, interval time.Duration) *Reconciler {
+func NewReconciler(factory store.Factory, runtime workflowruntime.WorkflowRuntime, interval time.Duration, terminalObservers ...func(context.Context, *iapiserver.AtomicTask) error) *Reconciler {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &Reconciler{store: factory.TaskCenters(), runtime: runtime, interval: interval}
+	return &Reconciler{store: factory.TaskCenters(), runtime: runtime, interval: interval, terminalObservers: terminalObservers}
 }
 func (r *Reconciler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.interval)
@@ -417,7 +418,16 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 	}
 	event := &iapiserver.RuntimeProjectionEvent{RuntimeEventID: fmt.Sprintf("%s:%s:%s:%d", execution.ID, task.ID, latest.Status, task.CurrentAttempt), RuntimeExecutionID: execution.ID, RuntimeTaskID: task.RuntimeTaskID, EventType: iapiserver.TaskCenterEventProjectionReconciled, Payload: payload, OccurredAt: imachinery.Now(), ProjectionStatus: iapiserver.RuntimeProjectionStatusPending}
 	event.ID = uuid.NewString()
-	return r.store.ApplyRuntimeProjection(ctx, task, attempts, event)
+	applied, err := r.store.ApplyRuntimeProjection(ctx, task, attempts, event)
+	if err != nil || !applied || !iapiserver.IsAtomicTaskTerminal(task.Status) {
+		return applied, err
+	}
+	for _, observer := range r.terminalObservers {
+		if observerErr := observer(ctx, task); observerErr != nil {
+			return applied, observerErr
+		}
+	}
+	return applied, nil
 }
 
 func taskExecutorSnapshot(functionRef string) (string, string) {

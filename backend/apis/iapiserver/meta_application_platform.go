@@ -728,6 +728,10 @@ type ApplicationVersionListResponse struct {
 	Total int64                 `json:"total"`
 	Items []*ApplicationVersion `json:"items"`
 }
+type ApplicationRunListResponse struct {
+	Total int64             `json:"total"`
+	Items []*ApplicationRun `json:"items"`
+}
 type DeleteResult struct {
 	ID      string `json:"id"`
 	Deleted bool   `json:"deleted"`

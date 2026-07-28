@@ -245,6 +245,27 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 	return nil
 }
 
+// ReconcileTerminalProjections repairs existing runs and retries idempotent artifact projection after transient failures.
+func (e *ApplicationRunExecutor) ReconcileTerminalProjections(ctx context.Context, limit int) error {
+	runs, err := e.store.ApplicationPlatforms().ListApplicationRunProjectionCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.AtomicTaskID == nil || *run.AtomicTaskID == "" {
+			continue
+		}
+		task, taskErr := e.store.TaskCenters().GetAtomicTask(ctx, *run.AtomicTaskID)
+		if taskErr != nil || !iapiserver.IsAtomicTaskTerminal(task.Status) {
+			continue
+		}
+		if err := e.Completed(ctx, task); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *ApplicationRunExecutor) acquire(ctx context.Context, engineID string, maximum int) (func(), error) {
 	if maximum <= 0 {
 		maximum = 1

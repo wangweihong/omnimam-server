@@ -16,11 +16,13 @@ import (
 type executorFactory struct {
 	store.Factory
 	applications store.ApplicationPlatformStore
+	tasks        store.TaskCenterStore
 }
 
 func (f *executorFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return f.applications
 }
+func (f *executorFactory) TaskCenters() store.TaskCenterStore { return f.tasks }
 
 type executorApplicationStore struct {
 	store.ApplicationPlatformStore
@@ -28,6 +30,19 @@ type executorApplicationStore struct {
 	engine    *iapiserver.EngineInstance
 	projected *iapiserver.ApplicationRun
 	artifact  *iapiserver.ApplicationArtifact
+}
+
+func (s *executorApplicationStore) ListApplicationRunProjectionCandidates(context.Context, int) ([]*iapiserver.ApplicationRun, error) {
+	return []*iapiserver.ApplicationRun{s.run}, nil
+}
+
+type executorTaskStore struct {
+	store.TaskCenterStore
+	task *iapiserver.AtomicTask
+}
+
+func (s *executorTaskStore) GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error) {
+	return s.task, nil
 }
 
 func (s *executorApplicationStore) GetApplicationRun(context.Context, string) (*iapiserver.ApplicationRun, error) {
@@ -172,5 +187,26 @@ func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
 	}
 	if len(events.events) != 2 || events.events[0].Type != "application_run_projection_changed" || events.events[1].Type != "application_artifact_registration_changed" {
 		t.Fatalf("unexpected events: %#v", events.events)
+	}
+}
+
+func TestApplicationRunExecutorRepairsExistingTerminalProjection(t *testing.T) {
+	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := "task-1"
+	applicationStore := &executorApplicationStore{run: &iapiserver.ApplicationRun{OwnerUserID: "user-1", AtomicTaskID: &taskID}}
+	task := &iapiserver.AtomicTask{ApplicationRunID: "run-1", Status: iapiserver.AtomicTaskStatusSuccess, Output: map[string]any{"values": map[string]any{"text": "done"}}}
+	task.ID, task.ResourceVersion = taskID, 4
+	executor, err := NewApplicationRunExecutor(&executorFactory{applications: applicationStore, tasks: &executorTaskStore{task: task}}, runtimeRegistry, nil, nil, nil, &fakeAssetRegistrar{}, NoopEventPublisher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.ReconcileTerminalProjections(context.Background(), 200); err != nil {
+		t.Fatal(err)
+	}
+	if applicationStore.projected == nil || applicationStore.projected.TaskResourceVersion != 4 {
+		t.Fatalf("existing terminal run was not repaired: %#v", applicationStore.projected)
 	}
 }

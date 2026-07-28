@@ -155,6 +155,10 @@ type ApplicationRunCreateRequest struct {
 	Inputs               map[string]any `json:"inputs"`
 	IdempotencyKey       string         `json:"idempotency_key" binding:"required"`
 }
+type ApplicationRunListRequest struct {
+	imachinery.BasicQueryParam
+	ApplicationID string `json:"-"`
+}
 
 var applicationSemanticVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 

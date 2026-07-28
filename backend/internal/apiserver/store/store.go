@@ -703,6 +703,8 @@ type ApplicationPlatformStore interface {
 	AddApplicationVersion(ctx context.Context, data *iapiserver.ApplicationVersion) (*iapiserver.ApplicationVersion, error)
 	PublishApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
+	ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) ([]*iapiserver.ApplicationRun, int64, error)
+	ListApplicationRunProjectionCandidates(context.Context, int) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)

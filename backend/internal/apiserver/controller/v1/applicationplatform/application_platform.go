@@ -386,6 +386,12 @@ func (c *Controller) CreateApplicationRun(ctx *gin.Context) {
 		return c.service.CreateApplicationRun(ctx, ctx.Param("application_id"), r)
 	})
 }
+func (c *Controller) ListApplicationRuns(ctx *gin.Context) {
+	req := &iapiserver.ApplicationRunListRequest{ApplicationID: ctx.Param("application_id")}
+	run(ctx, req, func(r *iapiserver.ApplicationRunListRequest) (any, error) {
+		return c.service.ListApplicationRuns(ctx, r)
+	})
+}
 func (c *Controller) GetApplicationRun(ctx *gin.Context) {
 	run(ctx, nil, func(any) (any, error) { return c.service.GetApplicationRun(ctx, ctx.Param("application_run_id")) })
 }

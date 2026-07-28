@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: e7daf0f80cb2d739201b6aef5054e4cc799c08f8
-contract_version: spec-v1.7.12
+commit: 52fae755aaaefefec09f4cad33e429e998bf1edc
+contract_version: spec-v1.7.13
 updated_at: 2026-07-28
 status: released
-note: Asset Library supports batch deletion, direct hard deletion, and trash emptying.
+note: Application Platform adds durable ApplicationRun history and terminal AtomicTask projection; Asset Library deletion remains from spec-v1.7.12.

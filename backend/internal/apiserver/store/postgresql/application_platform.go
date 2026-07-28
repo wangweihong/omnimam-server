@@ -491,6 +491,42 @@ func (s *applicationPlatformStore) GetApplicationRun(ctx context.Context, id str
 	return &item, nil
 }
 
+func (s *applicationPlatformStore) ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) ([]*iapiserver.ApplicationRun, int64, error) {
+	var items []*iapiserver.ApplicationRun
+	query := appQuery(ctx, s.ds.db.Model(&iapiserver.ApplicationRun{}), req.BasicQueryParam, func(q *gorm.DB) *gorm.DB {
+		return q.Where("application_id = ?", req.ApplicationID)
+	})
+	total, err := CountAndFindPage(query, req.PagingParams, &items)
+	if err != nil || len(items) == 0 {
+		return items, total, err
+	}
+	runIDs := make([]string, 0, len(items))
+	byID := make(map[string]*iapiserver.ApplicationRun, len(items))
+	for _, item := range items {
+		runIDs = append(runIDs, item.ID)
+		byID[item.ID] = item
+	}
+	var artifacts []*iapiserver.ApplicationArtifact
+	if err := s.ds.db.WithContext(ctx).Where("application_run_id IN ?", runIDs).Order("sequence ASC, created_at ASC").Find(&artifacts).Error; err != nil {
+		return nil, 0, errors.WithStack(err)
+	}
+	for _, artifact := range artifacts {
+		byID[artifact.ApplicationRunID].Artifacts = append(byID[artifact.ApplicationRunID].Artifacts, artifact)
+	}
+	return items, total, nil
+}
+
+func (s *applicationPlatformStore) ListApplicationRunProjectionCandidates(ctx context.Context, limit int) ([]*iapiserver.ApplicationRun, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	var items []*iapiserver.ApplicationRun
+	err := s.ds.db.WithContext(ctx).
+		Where("atomic_task_id IS NOT NULL AND atomic_task_id <> ''").
+		Order("updated_at DESC").Limit(limit).Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
 func (s *applicationPlatformStore) GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error) {
 	if len(ids) == 0 {
 		return []*iapiserver.ApplicationRun{}, nil

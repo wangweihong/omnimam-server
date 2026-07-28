@@ -325,9 +325,27 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := ensureRepresentationBackfillSchedule(ctx, tasks); err != nil {
 		return err
 	}
-	reconciler := taskcentersvc.NewReconciler(storeIns, runtime, cfg.WorkflowRuntimeOptions.ReconcileInterval)
+	reconciler := taskcentersvc.NewReconciler(storeIns, runtime, cfg.WorkflowRuntimeOptions.ReconcileInterval, applicationExecutor.Completed)
 	errCh := make(chan error, 1)
 	go func() { errCh <- reconciler.Run(ctx) }()
+	go func() {
+		repairInterval := cfg.WorkflowRuntimeOptions.ReconcileInterval
+		if repairInterval <= 0 {
+			repairInterval = 15 * time.Second
+		}
+		ticker := time.NewTicker(repairInterval)
+		defer ticker.Stop()
+		for {
+			if repairErr := applicationExecutor.ReconcileTerminalProjections(ctx, 200); repairErr != nil {
+				log.Errorf("application run terminal projection reconciliation failed: %v", repairErr)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		_ = runtime.Close()

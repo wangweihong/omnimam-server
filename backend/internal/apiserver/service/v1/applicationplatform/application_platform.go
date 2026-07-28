@@ -84,6 +84,7 @@ type ApplicationPlatformSrv interface {
 	PublishApplicationVersion(context.Context, string) (*iapiserver.ApplicationVersion, error)
 	ResolveRuntimeForm(context.Context, string, *iapiserver.RuntimeFormResolveRequest) (*iapiserver.RuntimeFormSchema, error)
 	CreateApplicationRun(context.Context, string, *iapiserver.ApplicationRunCreateRequest) (*iapiserver.ApplicationRun, error)
+	ListApplicationRuns(context.Context, *iapiserver.ApplicationRunListRequest) (*iapiserver.ApplicationRunListResponse, error)
 	GetApplicationRun(context.Context, string) (*iapiserver.ApplicationRun, error)
 }
 
@@ -1014,6 +1015,20 @@ func (s *applicationPlatformService) GetApplicationRun(ctx context.Context, id s
 	}
 	s.attachApplicationRunRelations(ctx, run)
 	return run, nil
+}
+
+func (s *applicationPlatformService) ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) (*iapiserver.ApplicationRunListResponse, error) {
+	if _, err := s.GetApplication(ctx, req.ApplicationID); err != nil {
+		return nil, err
+	}
+	items, total, err := s.Store.ApplicationPlatforms().ListApplicationRuns(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		s.attachApplicationRunRelations(ctx, item)
+	}
+	return &iapiserver.ApplicationRunListResponse{Total: total, Items: items}, nil
 }
 
 // attachApplicationRunRelations 优先读取运行快照，并以固定上限回查旧数据缺失的同域摘要。

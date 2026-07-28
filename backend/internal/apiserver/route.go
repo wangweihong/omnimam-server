@@ -173,6 +173,7 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		applications.GET("/:application_id/versions", controller.ListApplicationVersions)
 		applications.POST("/:application_id/versions", controller.CreateApplicationVersion)
 		applications.POST("/:application_id/runtime-form", controller.ResolveRuntimeForm)
+		applications.GET("/:application_id/runs", controller.ListApplicationRuns)
 		applications.POST("/:application_id/runs", controller.CreateApplicationRun)
 	}
 	rg.GET("/application-versions/:application_version_id", controller.GetApplicationVersion)
