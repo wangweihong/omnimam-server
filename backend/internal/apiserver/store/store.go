@@ -704,7 +704,6 @@ type ApplicationPlatformStore interface {
 	PublishApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
 	ListApplicationRuns(ctx context.Context, req *iapiserver.ApplicationRunListRequest) ([]*iapiserver.ApplicationRun, int64, error)
-	ListApplicationRunProjectionCandidates(context.Context, int) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
@@ -716,8 +715,16 @@ type ApplicationPlatformStore interface {
 		status, failure string,
 		outputs []map[string]any,
 	) (*iapiserver.ApplicationRun, error)
+	// ListApplicationArtifactRefsByRun 读取 ApplicationRun 的新 Artifact 引用投影。
+	ListApplicationArtifactRefsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifactRef, error)
+	// ProjectApplicationArtifactRef 仅接受更高 Artifact resource version，并按运行输出键幂等投影。
+	ProjectApplicationArtifactRef(ctx context.Context, data *iapiserver.ApplicationArtifactRef) (*iapiserver.ApplicationArtifactRef, bool, error)
+	// ListArtifactsByRun 仅供切换期间读取旧 aiapp_artifacts 回填目标。
+	// Deprecated: 新运行不得写入旧投影。
 	ListArtifactsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifact, error)
+	// Deprecated: 新运行不得写入旧 aiapp_artifacts。
 	UpsertArtifact(ctx context.Context, data *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error)
+	// Deprecated: 新运行不得更新旧 aiapp_artifacts。
 	UpdateArtifactRegistration(
 		ctx context.Context,
 		id, status, assetID, errorCode, failureDetail string,

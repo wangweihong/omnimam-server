@@ -3,11 +3,15 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ThreeDotsLabs/watermill/message"
+
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
 type recordingRepresentationTaskCreator struct {
@@ -18,6 +22,30 @@ type recordingRepresentationTaskCreator struct {
 func (f *recordingRepresentationTaskCreator) CreateDAGTaskGroup(_ context.Context, request *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error) {
 	f.request = request
 	return &iapiserver.DAGTaskGroup{}, f.err
+}
+
+type terminalProjectionTaskStore struct {
+	store.TaskCenterStore
+	task  *iapiserver.AtomicTask
+	err   error
+	calls int
+}
+
+func (s *terminalProjectionTaskStore) GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error) {
+	s.calls++
+	return s.task, s.err
+}
+
+type recordingTerminalProjector struct {
+	task  *iapiserver.AtomicTask
+	err   error
+	calls int
+}
+
+func (p *recordingTerminalProjector) Completed(_ context.Context, task *iapiserver.AtomicTask) error {
+	p.calls++
+	p.task = task
+	return p.err
 }
 
 func TestHealthCron(t *testing.T) {
@@ -116,4 +144,120 @@ func TestRepresentationOrchestratorConsumerGroupIsStable(t *testing.T) {
 	if representationOrchestratorConsumerGroup != "task-center-representation-orchestrator" {
 		t.Fatalf("consumer group = %q", representationOrchestratorConsumerGroup)
 	}
+}
+
+func TestApplicationRunTerminalProjectionConsumerGroupIsStable(t *testing.T) {
+	if applicationRunTerminalProjectionConsumerGroup != "application-platform-terminal-projection" {
+		t.Fatalf("consumer group = %q", applicationRunTerminalProjectionConsumerGroup)
+	}
+}
+
+func TestHandleApplicationRunTerminalProjection(t *testing.T) {
+	terminalTask := &iapiserver.AtomicTask{
+		ApplicationRunID: "run-1",
+		Status:           iapiserver.AtomicTaskStatusSuccess,
+	}
+	terminalTask.ID = "task-1"
+
+	tests := []struct {
+		name               string
+		payload            string
+		task               *iapiserver.AtomicTask
+		wantStoreCalls     int
+		wantProjectorCalls int
+		wantError          bool
+	}{
+		{
+			name:               "terminal application run projects current task",
+			payload:            `{"atomic_task_id":"task-1","application_run_id":"run-1","to_status":"SUCCESS"}`,
+			task:               terminalTask,
+			wantStoreCalls:     1,
+			wantProjectorCalls: 1,
+		},
+		{
+			name:    "non-terminal event is acknowledged without lookup",
+			payload: `{"atomic_task_id":"task-1","application_run_id":"run-1","to_status":"RUNNING"}`,
+		},
+		{
+			name:    "unrelated terminal task is acknowledged without lookup",
+			payload: `{"atomic_task_id":"task-1","application_run_id":null,"to_status":"SUCCESS"}`,
+		},
+		{
+			name:      "incomplete event is retried",
+			payload:   `{"application_run_id":"run-1","to_status":"SUCCESS"}`,
+			wantError: true,
+		},
+		{
+			name:           "missing current task is retried",
+			payload:        `{"atomic_task_id":"task-1","application_run_id":"run-1","to_status":"SUCCESS"}`,
+			wantStoreCalls: 1,
+			wantError:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tasks := &terminalProjectionTaskStore{task: tt.task}
+			projector := &recordingTerminalProjector{}
+			err := handleApplicationRunTerminalProjection(
+				context.Background(),
+				tasks,
+				projector,
+				[]byte(tt.payload),
+			)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("handleApplicationRunTerminalProjection() error = %v, wantError %t", err, tt.wantError)
+			}
+			if tasks.calls != tt.wantStoreCalls {
+				t.Fatalf("task store calls = %d, want %d", tasks.calls, tt.wantStoreCalls)
+			}
+			if projector.calls != tt.wantProjectorCalls {
+				t.Fatalf("projector calls = %d, want %d", projector.calls, tt.wantProjectorCalls)
+			}
+		})
+	}
+}
+
+func TestConsumeApplicationRunTerminalProjectionAcknowledgement(t *testing.T) {
+	task := &iapiserver.AtomicTask{
+		ApplicationRunID: "run-1",
+		Status:           iapiserver.AtomicTaskStatusSuccess,
+	}
+	task.ID = "task-1"
+	payload := []byte(`{"atomic_task_id":"task-1","application_run_id":"run-1","to_status":"SUCCESS"}`)
+
+	t.Run("ack after projection", func(t *testing.T) {
+		msg := message.NewMessage("message-1", payload)
+		messages := make(chan *message.Message, 1)
+		messages <- msg
+		close(messages)
+		consumeApplicationRunTerminalProjections(
+			context.Background(),
+			messages,
+			&terminalProjectionTaskStore{task: task},
+			&recordingTerminalProjector{},
+		)
+		select {
+		case <-msg.Acked():
+		default:
+			t.Fatal("terminal projection message was not acknowledged")
+		}
+	})
+
+	t.Run("nack after projection failure", func(t *testing.T) {
+		msg := message.NewMessage("message-2", payload)
+		messages := make(chan *message.Message, 1)
+		messages <- msg
+		close(messages)
+		consumeApplicationRunTerminalProjections(
+			context.Background(),
+			messages,
+			&terminalProjectionTaskStore{task: task},
+			&recordingTerminalProjector{err: stderrors.New("temporary failure")},
+		)
+		select {
+		case <-msg.Nacked():
+		default:
+			t.Fatal("failed terminal projection message was not negatively acknowledged")
+		}
+	})
 }

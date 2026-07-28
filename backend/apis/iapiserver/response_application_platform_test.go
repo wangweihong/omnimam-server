@@ -7,11 +7,13 @@ import (
 
 func TestApplicationRunTransformProjectsArtifactReferenceContract(t *testing.T) {
 	assetID := "asset-1"
-	run := &ApplicationRun{Artifacts: []*ApplicationArtifact{{
-		ApplicationRunID: "run-1", OutputKey: "image", MediaType: "image",
-		RegistrationStatus: ArtifactRegistrationRegistered, AssetID: &assetID,
+	versionID := "version-1"
+	run := &ApplicationRun{Artifacts: []*ApplicationArtifactRef{{
+		ApplicationRunID: "run-1", ArtifactID: "artifact-1", OutputKey: "image", MediaType: "image",
+		ArtifactProcessingStatus: ArtifactProcessingReady, ArtifactRegistrationStatus: ArtifactRegistrationRegistered,
+		AssetID: &assetID, AssetVersionID: &versionID, ArtifactResourceVersion: 3,
 	}}}
-	run.Artifacts[0].ID = "artifact-1"
+	run.Artifacts[0].ID = "ref-1"
 	run.Artifacts[0].ResourceVersion = 3
 
 	response, ok := run.Transform().(*ApplicationRunResponse)
@@ -19,10 +21,10 @@ func TestApplicationRunTransformProjectsArtifactReferenceContract(t *testing.T) 
 		t.Fatalf("unexpected transformed response: %#v", response)
 	}
 	artifact := response.Artifacts[0]
-	if artifact.ArtifactID != "artifact-1" || artifact.Sequence != 0 || artifact.ArtifactProcessingStatus != ArtifactProcessingReady {
+	if artifact.ID != "ref-1" || artifact.ArtifactID != "artifact-1" || artifact.Sequence != 0 || artifact.ArtifactProcessingStatus != ArtifactProcessingReady {
 		t.Fatalf("unexpected artifact projection: %#v", artifact)
 	}
-	if artifact.AssetID == nil || *artifact.AssetID != assetID || artifact.AssetVersionID == nil || *artifact.AssetVersionID != assetID {
+	if artifact.AssetID == nil || *artifact.AssetID != assetID || artifact.AssetVersionID == nil || *artifact.AssetVersionID != versionID {
 		t.Fatalf("asset navigation projection is incomplete: %#v", artifact)
 	}
 	if artifact.ArtifactResourceVersion != 3 || artifact.ResourceVersion != 3 {
@@ -31,8 +33,8 @@ func TestApplicationRunTransformProjectsArtifactReferenceContract(t *testing.T) 
 }
 
 func TestApplicationRunResponseJSONUsesPublicArtifactProjection(t *testing.T) {
-	run := &ApplicationRun{Artifacts: []*ApplicationArtifact{{ApplicationRunID: "run-1", OutputKey: "image", MediaType: "image"}}}
-	run.Artifacts[0].ID = "artifact-1"
+	run := &ApplicationRun{Artifacts: []*ApplicationArtifactRef{{ApplicationRunID: "run-1", ArtifactID: "artifact-1", OutputKey: "image", MediaType: "image"}}}
+	run.Artifacts[0].ID = "ref-1"
 	data, err := json.Marshal(run.Transform())
 	if err != nil {
 		t.Fatalf("marshal response: %v", err)

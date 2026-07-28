@@ -28,6 +28,7 @@ const (
 	OutboxTopicAssetVersionProcessingChanged       = "asset_version_processing_changed"
 	OutboxTopicArtifactContentCompleted            = "artifact_content_completed"
 	OutboxTopicAssetVersionRepresentationRequested = "asset_version_representation_requested"
+	OutboxTopicApplicationRunArtifactRefChanged    = "application_run_artifact_ref_changed"
 	OutboxTopicCanvasVersionPublished              = "canvas_version_published"
 	OutboxTopicCanvasRunCreated                    = "canvas_run_created"
 	OutboxTopicCanvasRunTaskGroupBound             = "canvas_run_task_group_bound"
@@ -47,6 +48,7 @@ func (ds *datastore) ensureOutboxScheme() error {
 		OutboxTopicTaskAttemptStatusChanged, OutboxTopicTaskGroupStatusChanged, OutboxTopicArtifactCreated,
 		OutboxTopicArtifactProcessingChanged, OutboxTopicArtifactRegistrationChanged, OutboxTopicAssetVersionProcessingChanged,
 		OutboxTopicArtifactContentCompleted, OutboxTopicAssetVersionRepresentationRequested,
+		OutboxTopicApplicationRunArtifactRefChanged,
 		OutboxTopicCanvasVersionPublished, OutboxTopicCanvasRunCreated, OutboxTopicCanvasRunTaskGroupBound,
 		OutboxTopicCanvasRunStatusChanged, OutboxTopicCanvasNodeRunStatusChanged, OutboxTopicCanvasNodeOutputAvailable,
 		OutboxTopicCanvasRunCancelRequested, OutboxTopicCanvasRunRetryCreated,

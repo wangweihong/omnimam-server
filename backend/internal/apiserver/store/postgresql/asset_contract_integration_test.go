@@ -115,6 +115,21 @@ func TestPostgresAssetContractLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstBlobID := created.BlobID
+	duplicateArtifact := &iapiserver.Artifact{OwnerUserID: "user-1", ProducerType: "atomic_task", ProducerID: "task-2",
+		ProducerIdempotencyKey: "task-2:images:0", OutputKey: "images", ArtifactType: "image", MediaType: "image",
+		SavePolicy: iapiserver.ArtifactSaveManual, ProcessingProfileVersion: "default-v1", Metadata: map[string]any{}}
+	duplicate, inserted, err := assetStore.CreateArtifact(ctx, duplicateArtifact)
+	if err != nil || !inserted {
+		t.Fatalf("CreateArtifact duplicate content fixture inserted=%t error=%v", inserted, err)
+	}
+	duplicate, err = assetStore.StoreArtifactContent(ctx, "user-1", duplicate.ID, store.StoredAssetContent{StorageBackendID: "local-main", ObjectKey: "blobs/aa/aabb", SHA256: "aabb", SizeBytes: 10, MIMEType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.BlobID != firstBlobID {
+		t.Fatalf("duplicate content blob = %q, want reused %q", duplicate.BlobID, firstBlobID)
+	}
 	created, err = assetStore.UpdateArtifactProcessing(ctx, created.ID, "user-1", created.ResourceVersion, store.ArtifactProcessingMutation{ChangeType: "ready", ProcessingStatus: iapiserver.ArtifactProcessingReady})
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 # TaskWorker 与 API Server 协作流程
 
-本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.3`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
+本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.13`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
 
 ## 1. 架构定位
 
@@ -59,7 +59,7 @@ flowchart LR
 3. 加载 application runtime registry 和 provider capability registry。
 4. 构造 application、thumbnail、Engine 健康和 ComfyUI object-info executor。
 5. 按受控 `functionRef` 向 Conductor 注册 AtomicTask handler 及并发度。
-6. 订阅 `asset_uploaded`、`artifact_content_completed`、`asset_version_representation_requested`，以及 Task Center 和 asset-library Artifact/AssetVersion 变化 outbox。
+6. 订阅 `asset_uploaded`、`artifact_content_completed`、`asset_version_representation_requested`、`atomic_task_status_changed`，以及 asset-library Artifact/AssetVersion 变化 outbox。
 7. 启动 SSE projector，按来源事件键幂等写入当前用户短期事件投影。
 8. 幂等确保 Engine 健康检查与 ComfyUI object-info 刷新 SYSTEM RECONCILE Schedule。
 9. 启动 reconciler，周期对账非终态 execution。
@@ -246,6 +246,14 @@ sequenceDiagram
 
 `POST /api/v1/artifacts/batch-summaries` 每批接受 1..200 个 `{id}` 并保持请求顺序。Asset Library 只按认证 owner 一次批量读取 Artifact 和同域登记素材摘要；不存在、已删除或不可见目标统一返回 `artifact=null`。Task Center 通过消费方 `ArtifactSummaryReader` 分批调用该能力，为输出引用附加一跳状态，不读取素材私表、不返回 Blob/metadata/内容 URL，也不缓存为第二事实源。
 
+ApplicationRun 成功后，Task Center 必须先提交 AtomicTask 终态，再调用 Application Platform 的终态观察器。观察器按 `application_run_id + output_key + sequence` 幂等请求 Asset Library 创建 Artifact，通过受控下载把 Provider 输出写入共享 `ContentStorage`，并按应用保存策略登记 Asset。Artifact 身份、Blob、处理状态、登记状态和对应 outbox 始终由 Asset Library 持有；Application Platform 只保存 `aiapp_application_artifact_refs` 引用投影，并按 Artifact `resource_version` 拒绝重复或乱序更新。
+
+终态观察器同时由固定消费者组 `application-platform-terminal-projection` 持久消费 `atomic_task_status_changed`。消费者读取 Task Center 中的当前 AtomicTask 完整事实，只对带 `application_run_id` 的终态调用幂等 `Completed`；成功后 Ack，短暂失败则 Nack。Watermill PostgreSQL offset 从零开始并在 Ack 后推进，因此新消费者组可回放既有终态事件，TaskWorker 重启后从已确认 offset 继续，不再依赖“最近 200 条 ApplicationRun”扫描窗口。
+
+Asset Library 的 `artifact_created`、`artifact_processing_changed` 和 `artifact_registration_changed` 由 TaskWorker 中固定消费者组 `application-platform-artifact-projection` 投影回 ApplicationRun。首次同步交付和异步 outbox 重放可以同时发生，数据库版本门禁保证最终结果单调且幂等。每次有效引用变化再写 `application_run_artifact_ref_changed`，但 Artifact 处理或登记失败不得反向改写已终态 AtomicTask。
+
+ApplicationRun 创建 AtomicTask 时显式使用所选 EngineInstance 的 `task_timeout_seconds` 作为整体工作流超时，避免空 Task Center timeout policy 被运行时解释成过短执行窗口。ApplicationExecutor 内部仍使用相同 EngineInstance 限制约束实际 Provider 执行。
+
 ## 7. 状态投影与故障恢复
 
 当前实现由 `taskworker` 内的 reconciler 周期执行以下操作：
@@ -266,6 +274,7 @@ sequenceDiagram
 | OmniMAM PostgreSQL 重启 | API 和 Worker 等待数据库恢复；业务资源与 outbox 由数据库持久化，不依赖进程内队列 |
 | outbox 消费中断 | 未 Ack 的消息由 Watermill PostgreSQL subscriber 重新投递；AtomicTask 幂等键防止重复创建 |
 | 投影遗漏或短暂失败 | reconciler 再次查询 Conductor，并幂等修复非终态 AtomicTask 和 TaskAttempt 投影 |
+| ApplicationRun 终态观察失败 | AtomicTask 终态保持不变；固定消费者组不推进 PostgreSQL offset 并 Nack 重投同一事件，幂等重做终态投影和 Artifact 交付；Asset Library outbox 再重放 Artifact 引用状态 |
 | SSE projector 中断 | Task Center/asset-library outbox 保留未确认事件；恢复后按来源事件键补写 UserEvent，不影响任务或素材事实 |
 | API Server 或 SSE 连接重启 | UserEvent 保存在 PostgreSQL；客户端以 `Last-Event-ID` 重放，过期或跨用户游标要求完整重同步 |
 

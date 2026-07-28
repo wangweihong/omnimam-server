@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	SSESourceDomainTaskCenter     = "task-center"
-	SSESourceDomainAssetLibrary   = "asset-library"
-	SSESourceDomainWorkflowCanvas = "workflow-canvas"
+	SSESourceDomainTaskCenter          = "task-center"
+	SSESourceDomainAssetLibrary        = "asset-library"
+	SSESourceDomainApplicationPlatform = "application-platform"
+	SSESourceDomainWorkflowCanvas      = "workflow-canvas"
 
 	UserEventAtomicTaskCreated         = "atomic_task.created"
 	UserEventAtomicTaskBlocked         = "atomic_task.blocked"

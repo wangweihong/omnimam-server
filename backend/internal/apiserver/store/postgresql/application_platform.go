@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"strings"
 
@@ -483,7 +484,7 @@ func (s *applicationPlatformStore) GetApplicationRun(ctx context.Context, id str
 	if err := s.ds.db.WithContext(ctx).First(&item, "id = ?", id).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
-	artifacts, err := s.ListArtifactsByRun(ctx, id)
+	artifacts, err := s.ListApplicationArtifactRefsByRun(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -503,29 +504,18 @@ func (s *applicationPlatformStore) ListApplicationRuns(ctx context.Context, req 
 	runIDs := make([]string, 0, len(items))
 	byID := make(map[string]*iapiserver.ApplicationRun, len(items))
 	for _, item := range items {
-		item.Artifacts = make([]*iapiserver.ApplicationArtifact, 0)
+		item.Artifacts = make([]*iapiserver.ApplicationArtifactRef, 0)
 		runIDs = append(runIDs, item.ID)
 		byID[item.ID] = item
 	}
-	var artifacts []*iapiserver.ApplicationArtifact
-	if err := s.ds.db.WithContext(ctx).Where("application_run_id IN ?", runIDs).Order("created_at ASC, id ASC").Find(&artifacts).Error; err != nil {
+	var artifacts []*iapiserver.ApplicationArtifactRef
+	if err := s.ds.db.WithContext(ctx).Where("application_run_id IN ?", runIDs).Order("output_key ASC, sequence ASC, id ASC").Find(&artifacts).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	for _, artifact := range artifacts {
 		byID[artifact.ApplicationRunID].Artifacts = append(byID[artifact.ApplicationRunID].Artifacts, artifact)
 	}
 	return items, total, nil
-}
-
-func (s *applicationPlatformStore) ListApplicationRunProjectionCandidates(ctx context.Context, limit int) ([]*iapiserver.ApplicationRun, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-	var items []*iapiserver.ApplicationRun
-	err := s.ds.db.WithContext(ctx).
-		Where("atomic_task_id IS NOT NULL AND atomic_task_id <> ''").
-		Order("updated_at DESC").Limit(limit).Find(&items).Error
-	return items, errors.WithStack(err)
 }
 
 func (s *applicationPlatformStore) GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error) {
@@ -590,6 +580,101 @@ func (s *applicationPlatformStore) ListArtifactsByRun(ctx context.Context, runID
 	var items []*iapiserver.ApplicationArtifact
 	err := s.ds.db.WithContext(ctx).Where("application_run_id = ?", runID).Order("output_key ASC").Find(&items).Error
 	return items, errors.WithStack(err)
+}
+
+func (s *applicationPlatformStore) ListApplicationArtifactRefsByRun(ctx context.Context, runID string) ([]*iapiserver.ApplicationArtifactRef, error) {
+	var items []*iapiserver.ApplicationArtifactRef
+	err := s.ds.db.WithContext(ctx).
+		Where("application_run_id = ?", runID).
+		Order("output_key ASC, sequence ASC, id ASC").
+		Find(&items).Error
+	return items, errors.WithStack(err)
+}
+
+// ProjectApplicationArtifactRef 将 Asset Library 事实按 artifact_resource_version 单调投影。
+func (s *applicationPlatformStore) ProjectApplicationArtifactRef(ctx context.Context, data *iapiserver.ApplicationArtifactRef) (*iapiserver.ApplicationArtifactRef, bool, error) {
+	if data == nil || data.ApplicationRunID == "" || data.ArtifactID == "" || data.OutputKey == "" || data.Sequence < 0 {
+		return nil, false, errors.Errorf("application artifact reference identity is invalid")
+	}
+	var projected *iapiserver.ApplicationArtifactRef
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		atomicTaskID, err := applicationRunAtomicTaskID(tx, data.ApplicationRunID)
+		if err != nil {
+			return err
+		}
+		var current iapiserver.ApplicationArtifactRef
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("artifact_id = ? OR (application_run_id = ? AND output_key = ? AND sequence = ?)",
+				data.ArtifactID, data.ApplicationRunID, data.OutputKey, data.Sequence).
+			First(&current).Error
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			data.Name = data.OutputKey
+			if err := tx.Create(data).Error; err != nil {
+				return err
+			}
+			if err := publishApplicationArtifactRefChanged(tx, data, atomicTaskID); err != nil {
+				return err
+			}
+			projected, applied = data, true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.ArtifactID != data.ArtifactID || current.ApplicationRunID != data.ApplicationRunID ||
+			current.OutputKey != data.OutputKey || current.Sequence != data.Sequence {
+			return errors.Errorf("application artifact reference conflicts with existing output mapping")
+		}
+		if current.ArtifactResourceVersion >= data.ArtifactResourceVersion {
+			projected = &current
+			return nil
+		}
+		current.MediaType = data.MediaType
+		current.ArtifactProcessingStatus = data.ArtifactProcessingStatus
+		current.ArtifactRegistrationStatus = data.ArtifactRegistrationStatus
+		current.AssetID = data.AssetID
+		current.AssetVersionID = data.AssetVersionID
+		current.ArtifactResourceVersion = data.ArtifactResourceVersion
+		current.LastErrorCode = data.LastErrorCode
+		if err := tx.Save(&current).Error; err != nil {
+			return err
+		}
+		if err := publishApplicationArtifactRefChanged(tx, &current, atomicTaskID); err != nil {
+			return err
+		}
+		projected, applied = &current, true
+		return nil
+	})
+	return projected, applied, errors.WithStack(err)
+}
+
+func applicationRunAtomicTaskID(tx *gorm.DB, runID string) (string, error) {
+	var run iapiserver.ApplicationRun
+	if err := tx.Select("atomic_task_id").First(&run, "id = ?", runID).Error; err != nil {
+		return "", err
+	}
+	if run.AtomicTaskID == nil || *run.AtomicTaskID == "" {
+		return "", errors.Errorf("application run artifact reference requires a bound atomic task")
+	}
+	return *run.AtomicTaskID, nil
+}
+
+func publishApplicationArtifactRefChanged(tx *gorm.DB, ref *iapiserver.ApplicationArtifactRef, atomicTaskID string) error {
+	sourceID := fmt.Sprintf("%s:%s:%d", ref.ApplicationRunID, ref.ArtifactID, ref.ArtifactResourceVersion)
+	return publishOutbox(tx, OutboxTopicApplicationRunArtifactRefChanged, sourceID, applicationArtifactRefChangedPayload(ref, atomicTaskID, sourceID))
+}
+
+func applicationArtifactRefChangedPayload(ref *iapiserver.ApplicationArtifactRef, atomicTaskID, sourceID string) map[string]any {
+	return map[string]any{
+		"source_event_id": sourceID, "source_domain": iapiserver.SSESourceDomainApplicationPlatform,
+		"artifact_id": ref.ArtifactID, "application_run_id": ref.ApplicationRunID, "atomic_task_id": atomicTaskID,
+		"output_key": ref.OutputKey, "sequence": ref.Sequence, "media_type": ref.MediaType,
+		"artifact_processing_status":   ref.ArtifactProcessingStatus,
+		"artifact_registration_status": ref.ArtifactRegistrationStatus,
+		"asset_id":                     ref.AssetID, "asset_version_id": ref.AssetVersionID,
+		"artifact_resource_version": ref.ArtifactResourceVersion, "occurred_at": ref.UpdatedAt,
+	}
 }
 
 func (s *applicationPlatformStore) UpsertArtifact(ctx context.Context, data *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error) {

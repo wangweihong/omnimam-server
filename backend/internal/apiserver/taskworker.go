@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/log"
@@ -27,10 +29,17 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 )
 
-const representationOrchestratorConsumerGroup = "task-center-representation-orchestrator"
+const (
+	representationOrchestratorConsumerGroup       = "task-center-representation-orchestrator"
+	applicationRunTerminalProjectionConsumerGroup = "application-platform-terminal-projection"
+)
 
 type representationTaskCreator interface {
 	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+}
+
+type applicationRunTerminalProjector interface {
+	Completed(context.Context, *iapiserver.AtomicTask) error
 }
 
 type representationRequestedEvent struct {
@@ -92,8 +101,11 @@ func RunTaskWorker(cfg *config.Config) error {
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
 	events := appsvc.NoopEventPublisher{}
-	assetRegistrar := &workerAssetRegistrar{service: platformsvc.NewService(storeIns)}
-	applicationExecutor, err := appsvc.NewApplicationRunExecutor(storeIns, runtimeRegistry, capabilities, adapters, executors, assetRegistrar, events)
+	artifactLifecycle := &workerArtifactLifecycle{
+		store: storeIns.AssetsV1(), storage: assetlibrarysvc.NewLocalContentStorage(storeIns),
+		policy: assetlibrarysvc.DefaultRepresentationPolicy{},
+	}
+	applicationExecutor, err := appsvc.NewApplicationRunExecutor(storeIns, runtimeRegistry, capabilities, adapters, executors, artifactLifecycle, events)
 	if err != nil {
 		return err
 	}
@@ -114,7 +126,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	representationGenerateExecutor := assetlibrarysvc.NewRepresentationGenerateExecutor(storeIns, assetStorage, thumbnailGenerators)
 	representationFinalizeExecutor := assetlibrarysvc.NewRepresentationFinalizeExecutor(storeIns)
 	representationPolicy := assetlibrarysvc.DefaultRepresentationPolicy{}
-	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: assetRegistrar, Events: events})
+	applicationService, err := appsvc.NewService(appsvc.Dependencies{Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilities, Adapters: adapters, Executors: executors, Tasks: tasks, Assets: artifactLifecycle, Events: events})
 	if err != nil {
 		return err
 	}
@@ -279,7 +291,10 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := startAssetLibraryTaskConsumers(ctx, tasks); err != nil {
+	if err := startAssetLibraryTaskConsumers(ctx, tasks, appsvc.NewApplicationArtifactProjector(storeIns.ApplicationPlatforms())); err != nil {
+		return err
+	}
+	if err := startApplicationRunTerminalProjectionConsumer(ctx, storeIns.TaskCenters(), applicationExecutor); err != nil {
 		return err
 	}
 	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, "task-center-thumbnail")
@@ -328,24 +343,6 @@ func RunTaskWorker(cfg *config.Config) error {
 	reconciler := taskcentersvc.NewReconciler(storeIns, runtime, cfg.WorkflowRuntimeOptions.ReconcileInterval, applicationExecutor.Completed)
 	errCh := make(chan error, 1)
 	go func() { errCh <- reconciler.Run(ctx) }()
-	go func() {
-		repairInterval := cfg.WorkflowRuntimeOptions.ReconcileInterval
-		if repairInterval <= 0 {
-			repairInterval = 15 * time.Second
-		}
-		ticker := time.NewTicker(repairInterval)
-		defer ticker.Stop()
-		for {
-			if repairErr := applicationExecutor.ReconcileTerminalProjections(ctx, 200); repairErr != nil {
-				log.Errorf("application run terminal projection reconciliation failed: %v", repairErr)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
 	select {
 	case <-ctx.Done():
 		_ = runtime.Close()
@@ -356,7 +353,104 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 }
 
-func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
+// startApplicationRunTerminalProjectionConsumer 使用 Task Center outbox 的持久 offset 重试 ApplicationRun 终态投影。
+func startApplicationRunTerminalProjectionConsumer(
+	ctx context.Context,
+	tasks store.TaskCenterStore,
+	projector applicationRunTerminalProjector,
+) error {
+	messages, err := postgresql.SubscribeOutbox(
+		ctx,
+		postgresql.OutboxTopicAtomicTaskStatusChanged,
+		applicationRunTerminalProjectionConsumerGroup,
+	)
+	if err != nil {
+		return err
+	}
+	go consumeApplicationRunTerminalProjections(ctx, messages, tasks, projector)
+	return nil
+}
+
+func consumeApplicationRunTerminalProjections(
+	ctx context.Context,
+	messages <-chan *message.Message,
+	tasks store.TaskCenterStore,
+	projector applicationRunTerminalProjector,
+) {
+	for msg := range messages {
+		if err := handleApplicationRunTerminalProjection(ctx, tasks, projector, msg.Payload); err != nil {
+			log.Errorf(
+				"application run terminal projection failed: consumer_group=%s message_id=%s error=%v",
+				applicationRunTerminalProjectionConsumerGroup,
+				msg.UUID,
+				err,
+			)
+			msg.Nack()
+		} else {
+			msg.Ack()
+		}
+	}
+}
+
+func handleApplicationRunTerminalProjection(
+	ctx context.Context,
+	tasks store.TaskCenterStore,
+	projector applicationRunTerminalProjector,
+	payload []byte,
+) error {
+	var event struct {
+		AtomicTaskID     string `json:"atomic_task_id"`
+		ApplicationRunID string `json:"application_run_id"`
+		Status           string `json:"status"`
+		ToStatus         string `json:"to_status"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return errors.Wrap(err, "decode atomic task status event")
+	}
+	if event.AtomicTaskID == "" {
+		return errors.Errorf("atomic task status event is incomplete")
+	}
+	status := event.ToStatus
+	if status == "" {
+		status = event.Status
+	}
+	if event.ApplicationRunID == "" || !iapiserver.IsAtomicTaskTerminal(status) {
+		return nil
+	}
+	task, err := tasks.GetAtomicTask(ctx, event.AtomicTaskID)
+	if err != nil {
+		return errors.Wrap(err, "load terminal application run atomic task")
+	}
+	if task == nil {
+		return errors.Errorf("terminal application run atomic task is missing")
+	}
+	if task.ApplicationRunID == "" || !iapiserver.IsAtomicTaskTerminal(task.Status) {
+		return nil
+	}
+	return errors.Wrap(projector.Completed(ctx, task), "project terminal application run")
+}
+
+func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, projector *appsvc.ApplicationArtifactProjector) error {
+	for _, topic := range []string{
+		postgresql.OutboxTopicArtifactCreated,
+		postgresql.OutboxTopicArtifactProcessingChanged,
+		postgresql.OutboxTopicArtifactRegistrationChanged,
+	} {
+		messages, err := postgresql.SubscribeOutbox(ctx, topic, "application-platform-artifact-projection")
+		if err != nil {
+			return err
+		}
+		go func(topic string, messages <-chan *message.Message) {
+			for msg := range messages {
+				if err := projector.Project(ctx, msg.Payload); err != nil {
+					log.Errorf("application artifact projection failed: topic=%s message_id=%s error=%v", topic, msg.UUID, err)
+					msg.Nack()
+				} else {
+					msg.Ack()
+				}
+			}
+		}(topic, messages)
+	}
 	artifactMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicArtifactContentCompleted, "task-center-artifact-process")
 	if err != nil {
 		return err
@@ -447,14 +541,76 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 	}, nil
 }
 
-type workerAssetRegistrar struct{ service platformsvc.PlatformSrv }
+type workerArtifactLifecycle struct {
+	store   store.AssetV1Store
+	storage assetlibrarysvc.ContentStorage
+	policy  assetlibrarysvc.RepresentationPolicy
+}
 
-func (r *workerAssetRegistrar) Register(ctx context.Context, artifact *iapiserver.ApplicationArtifact) (string, error) {
-	response, err := r.service.RegisterArtifact(ctx, &iapiserver.ArtifactRegistrationRequest{ArtifactID: artifact.ID, ApplicationRunID: artifact.ApplicationRunID, OwnerUserID: artifact.OwnerUserID, OutputName: artifact.OutputKey, MediaType: artifact.MediaType, ContentRef: artifact.ContentRef, SizeBytes: 0})
+func (l *workerArtifactLifecycle) Prepare(ctx context.Context, artifact *iapiserver.Artifact) (*iapiserver.Artifact, bool, error) {
+	return l.store.CreateArtifact(ctx, artifact)
+}
+
+func (l *workerArtifactLifecycle) StoreContent(ctx context.Context, artifact *iapiserver.Artifact, mimeType string, reader io.Reader) (*iapiserver.Artifact, error) {
+	content, err := l.storage.WriteArtifact(ctx, artifact.ID, mimeType, reader)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return response.Asset.ID, nil
+	current, err := l.store.StoreArtifactContent(ctx, artifact.OwnerUserID, artifact.ID, content)
+	if err != nil {
+		return nil, err
+	}
+	current, err = l.store.CompleteArtifact(ctx, artifact.OwnerUserID, artifact.ID, &iapiserver.CompleteArtifactRequest{
+		SHA256: content.SHA256, SizeBytes: content.SizeBytes, MIMEType: content.MIMEType,
+		ProcessingProfileVersion: artifact.ProcessingProfileVersion, Metadata: map[string]any{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	readyAt := imachinery.Now()
+	return l.store.UpdateArtifactProcessing(ctx, current.ID, current.OwnerUserID, current.ResourceVersion, store.ArtifactProcessingMutation{
+		ChangeType: "ready", ProcessingStatus: iapiserver.ArtifactProcessingReady, ReadyAt: &readyAt,
+	})
+}
+
+func (l *workerArtifactLifecycle) Register(ctx context.Context, artifact *iapiserver.Artifact, existingAssetID string) (*iapiserver.Artifact, error) {
+	request := &iapiserver.RegisterArtifactRequest{Mode: "create_asset", Name: artifact.OutputKey, ProfileVersion: artifact.ProcessingProfileVersion}
+	if existingAssetID != "" {
+		request.Mode, request.AssetID = "append_version", existingAssetID
+	}
+	plan := l.policy.Plan(artifact.MediaType, artifact.ProcessingProfileVersion)
+	if _, err := l.store.RegisterArtifactLifecycleWithPlan(ctx, artifact.OwnerUserID, artifact.ID, request, plan); err != nil {
+		return nil, err
+	}
+	return l.store.GetArtifact(ctx, artifact.OwnerUserID, artifact.ID)
+}
+
+func (l *workerArtifactLifecycle) FailProcessing(ctx context.Context, artifact *iapiserver.Artifact, errorCode, detail string) (*iapiserver.Artifact, error) {
+	current, err := l.store.GetArtifact(ctx, artifact.OwnerUserID, artifact.ID)
+	if err != nil {
+		return nil, err
+	}
+	if current.ProcessingStatus == iapiserver.ArtifactProcessingReady {
+		return current, nil
+	}
+	return l.store.UpdateArtifactProcessing(ctx, current.ID, current.OwnerUserID, current.ResourceVersion, store.ArtifactProcessingMutation{
+		ChangeType: "failed", ProcessingStatus: iapiserver.ArtifactProcessingFailed,
+		ProcessingErrorCode: errorCode, ProcessingErrorDetail: detail, Retryable: true,
+	})
+}
+
+func (l *workerArtifactLifecycle) FailRegistration(ctx context.Context, artifact *iapiserver.Artifact, errorCode, detail string) (*iapiserver.Artifact, error) {
+	current, err := l.store.GetArtifact(ctx, artifact.OwnerUserID, artifact.ID)
+	if err != nil {
+		return nil, err
+	}
+	if current.RegistrationStatus == iapiserver.ArtifactRegistrationRegistered {
+		return current, nil
+	}
+	return l.store.UpdateArtifactRegistration(ctx, current.ID, current.OwnerUserID, current.ResourceVersion, store.ArtifactRegistrationMutation{
+		RegistrationStatus:    iapiserver.ArtifactRegistrationFailed,
+		RegistrationErrorCode: errorCode, RegistrationErrorDetail: detail, Retryable: true,
+	})
 }
 
 func createScheduleTarget(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, schedule *iapiserver.TaskSchedule, triggeredAt imachinery.Time) (string, error) {

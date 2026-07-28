@@ -51,23 +51,12 @@ func (r *ApplicationRun) Transform() any {
 		if artifact == nil {
 			continue
 		}
-		processingStatus := ArtifactProcessingCreated
-		switch artifact.RegistrationStatus {
-		case ArtifactRegistrationRegistered:
-			processingStatus = ArtifactProcessingReady
-		case ArtifactRegistrationFailed:
-			processingStatus = ArtifactProcessingFailed
-		}
-		var lastErrorCode *string
-		if artifact.RegistrationErrorCode != "" {
-			lastErrorCode = &artifact.RegistrationErrorCode
-		}
 		response.Artifacts = append(response.Artifacts, &ApplicationArtifactRefResponse{
-			ID: artifact.ID, ApplicationRunID: artifact.ApplicationRunID, ArtifactID: artifact.ID,
-			OutputKey: artifact.OutputKey, Sequence: 0, MediaType: artifact.MediaType,
-			ArtifactProcessingStatus: processingStatus, ArtifactRegistrationStatus: artifact.RegistrationStatus,
-			AssetID: artifact.AssetID, AssetVersionID: artifact.AssetID,
-			ArtifactResourceVersion: artifact.ResourceVersion, LastErrorCode: lastErrorCode,
+			ID: artifact.ID, ApplicationRunID: artifact.ApplicationRunID, ArtifactID: artifact.ArtifactID,
+			OutputKey: artifact.OutputKey, Sequence: artifact.Sequence, MediaType: artifact.MediaType,
+			ArtifactProcessingStatus: artifact.ArtifactProcessingStatus, ArtifactRegistrationStatus: artifact.ArtifactRegistrationStatus,
+			AssetID: artifact.AssetID, AssetVersionID: artifact.AssetVersionID,
+			ArtifactResourceVersion: artifact.ArtifactResourceVersion, LastErrorCode: artifact.LastErrorCode,
 			CreatedAt: artifact.CreatedAt, UpdatedAt: artifact.UpdatedAt, ResourceVersion: artifact.ResourceVersion,
 		})
 	}

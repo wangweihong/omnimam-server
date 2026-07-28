@@ -99,7 +99,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	}
 	adapters := appsvc.NewEngineAdapters()
 	executors := appsvc.NewOperationExecutors()
-	assets := appsvc.NoopAssetRegistrar{}
+	assets := appsvc.NoopArtifactLifecycle{}
 	events := appsvc.NoopEventPublisher{}
 	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
 	if cfg.WorkflowRuntimeOptions != nil && cfg.WorkflowRuntimeOptions.Enabled {
@@ -250,6 +250,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.Application{},
 		&iapiserver.ApplicationVersion{},
 		&iapiserver.ApplicationRun{},
+		&iapiserver.ApplicationArtifactRef{},
 		&iapiserver.ApplicationArtifact{},
 
 		// ai chat

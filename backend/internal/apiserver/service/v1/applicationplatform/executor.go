@@ -3,11 +3,18 @@ package applicationplatform
 import (
 	"context"
 	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/httpcli"
 	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -24,7 +31,7 @@ type ApplicationRunExecutor struct {
 	capabilities *appregistry.ProviderCapabilityRegistry
 	adapters     map[string]EngineAdapter
 	executors    map[string]OperationExecutor
-	assets       AssetRegistrar
+	assets       ArtifactLifecycle
 	events       EventPublisher
 	limitsMu     sync.Mutex
 	activity     map[string]*engineActivity
@@ -35,12 +42,12 @@ type engineActivity struct {
 	changed chan struct{}
 }
 
-func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRegistry, capabilities *appregistry.ProviderCapabilityRegistry, adapters map[string]EngineAdapter, executors map[string]OperationExecutor, assets AssetRegistrar, events EventPublisher) (*ApplicationRunExecutor, error) {
+func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRegistry, capabilities *appregistry.ProviderCapabilityRegistry, adapters map[string]EngineAdapter, executors map[string]OperationExecutor, assets ArtifactLifecycle, events EventPublisher) (*ApplicationRunExecutor, error) {
 	if str == nil || runtime == nil {
 		return nil, fmt.Errorf("application run executor store and runtime registry are required")
 	}
 	if assets == nil {
-		assets = NoopAssetRegistrar{}
+		assets = NoopArtifactLifecycle{}
 	}
 	if events == nil {
 		events = NoopEventPublisher{}
@@ -179,7 +186,7 @@ func restrictionAllows(restrictions map[string]any, key, selected string) bool {
 	return contains(allowed, selected)
 }
 
-// Completed applies only a newer AtomicTask resource version, then creates and registers output Artifacts idempotently.
+// Completed applies only a newer AtomicTask resource version, then delivers output bytes to Asset Library and projects Artifact references.
 func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver.AtomicTask) error {
 	if task == nil || task.ApplicationRunID == "" {
 		return nil
@@ -208,61 +215,145 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 	if task.Status != iapiserver.AtomicTaskStatusSuccess {
 		return nil
 	}
-	for _, item := range taskArtifacts(task.Output) {
-		artifact := &iapiserver.ApplicationArtifact{
-			OwnerUserID:        projected.OwnerUserID,
-			ApplicationRunID:   projected.ID,
-			OutputKey:          firstString(item, "output_key"),
-			MediaType:          firstString(item, "media_type"),
-			ContentRef:         firstString(item, "content_ref"),
-			RegistrationStatus: iapiserver.ArtifactRegistrationPending,
+	items := taskArtifacts(task.Output)
+	if len(items) == 0 {
+		return nil
+	}
+	engine, err := e.store.ApplicationPlatforms().GetEngineInstance(ctx, projected.EngineInstanceID)
+	if err != nil {
+		return err
+	}
+	legacy, err := e.store.ApplicationPlatforms().ListArtifactsByRun(ctx, projected.ID)
+	if err != nil {
+		return err
+	}
+	legacyAssets := make(map[string]string, len(legacy))
+	for _, item := range legacy {
+		if item != nil && item.AssetID != nil {
+			legacyAssets[item.OutputKey] = *item.AssetID
 		}
-		if artifact.OutputKey == "" || artifact.ContentRef == "" || artifact.MediaType == "" {
+	}
+	sequences := map[string]int{}
+	for _, item := range items {
+		outputKey := firstString(item, "output_key")
+		contentRef := firstString(item, "content_ref")
+		mediaType := firstString(item, "media_type")
+		sequence := artifactSequence(item, sequences[outputKey])
+		if sequence >= sequences[outputKey] {
+			sequences[outputKey] = sequence + 1
+		}
+		if outputKey == "" || contentRef == "" || mediaType == "" {
 			continue
 		}
-		created, upsertErr := e.store.ApplicationPlatforms().UpsertArtifact(ctx, artifact)
-		if upsertErr != nil {
-			return upsertErr
+		artifact := &iapiserver.Artifact{
+			OwnerUserID: projected.OwnerUserID, ProducerType: "application_run", ProducerID: projected.ID,
+			ProducerIdempotencyKey: projected.ID + ":" + outputKey + ":" + strconv.Itoa(sequence),
+			AtomicTaskID:           task.ID, ApplicationRunID: projected.ID, OutputKey: outputKey, Sequence: sequence,
+			ArtifactType: mediaType, MediaType: mediaType, SavePolicy: iapiserver.ArtifactSaveAutomatic,
+			ProcessingProfileVersion: "default-v1", Metadata: map[string]any{},
 		}
-		if created.RegistrationStatus != iapiserver.ArtifactRegistrationPending {
+		current, _, prepareErr := e.assets.Prepare(ctx, artifact)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if err := e.projectArtifact(ctx, current); err != nil {
+			return err
+		}
+		if current.ProcessingStatus != iapiserver.ArtifactProcessingReady {
+			reader, mimeType, openErr := e.openArtifactContent(ctx, engine, contentRef, mediaType)
+			if openErr != nil {
+				failed, failErr := e.assets.FailProcessing(ctx, current, artifactProcessingErrorCode(openErr), openErr.Error())
+				if failErr != nil {
+					return failErr
+				}
+				if err := e.projectArtifact(ctx, failed); err != nil {
+					return err
+				}
+				continue
+			}
+			stored, storeErr := e.assets.StoreContent(ctx, current, mimeType, reader)
+			closeErr := reader.Close()
+			if storeErr == nil {
+				storeErr = closeErr
+			}
+			if storeErr != nil {
+				failed, failErr := e.assets.FailProcessing(ctx, current, "artifact_content_unavailable", storeErr.Error())
+				if failErr != nil {
+					return failErr
+				}
+				if err := e.projectArtifact(ctx, failed); err != nil {
+					return err
+				}
+				continue
+			}
+			current = stored
+			if err := e.projectArtifact(ctx, current); err != nil {
+				return err
+			}
+		}
+		if current.RegistrationStatus == iapiserver.ArtifactRegistrationRegistered {
 			continue
 		}
-		assetID, registerErr := e.assets.Register(ctx, created)
-		status, errorCode, detail := iapiserver.ArtifactRegistrationRegistered, "", ""
+		registered, registerErr := e.assets.Register(ctx, current, legacyAssets[outputKey])
 		if registerErr != nil {
-			status, errorCode, detail = iapiserver.ArtifactRegistrationFailed, "ERR_AIAPP_ARTIFACT_REGISTRATION_FAILED", registerErr.Error()
+			failed, failErr := e.assets.FailRegistration(ctx, current, "artifact_registration_invalid", registerErr.Error())
+			if failErr != nil {
+				return failErr
+			}
+			if err := e.projectArtifact(ctx, failed); err != nil {
+				return err
+			}
+			continue
 		}
-		updated, updateErr := e.store.ApplicationPlatforms().UpdateArtifactRegistration(ctx, created.ID, status, assetID, errorCode, detail, created.ResourceVersion)
-		if updateErr != nil {
-			return updateErr
+		if err := e.projectArtifact(ctx, registered); err != nil {
+			return err
 		}
-		e.publish(ctx, "application_artifact_registration_changed", updated.ID+":"+status+":"+fmt.Sprint(updated.ResourceVersion), map[string]any{
-			"artifact_id": updated.ID, "application_run_id": updated.ApplicationRunID, "output_key": updated.OutputKey,
-			"registration_status": updated.RegistrationStatus, "asset_id": updated.AssetID,
-			"registration_error_code": updated.RegistrationErrorCode, "resource_version": updated.ResourceVersion,
-		})
 	}
 	return nil
 }
 
-// ReconcileTerminalProjections repairs existing runs and retries idempotent artifact projection after transient failures.
-func (e *ApplicationRunExecutor) ReconcileTerminalProjections(ctx context.Context, limit int) error {
-	runs, err := e.store.ApplicationPlatforms().ListApplicationRunProjectionCandidates(ctx, limit)
-	if err != nil {
+func artifactProcessingErrorCode(err error) string {
+	switch errors.ToStatus(err).Code {
+	case code.ErrArtifactSourceForbidden:
+		return "artifact_source_forbidden"
+	case code.ErrArtifactMediaInvalid:
+		return "artifact_media_invalid"
+	default:
+		return "artifact_content_unavailable"
+	}
+}
+
+func (e *ApplicationRunExecutor) projectArtifact(ctx context.Context, artifact *iapiserver.Artifact) error {
+	if artifact == nil || artifact.ApplicationRunID == "" {
+		return nil
+	}
+	var assetID, assetVersionID, lastErrorCode *string
+	if artifact.AssetID != "" {
+		value := artifact.AssetID
+		assetID = &value
+	}
+	if artifact.AssetVersionID != "" {
+		value := artifact.AssetVersionID
+		assetVersionID = &value
+	}
+	errorCode := artifact.ProcessingErrorCode
+	if errorCode == "" {
+		errorCode = artifact.RegistrationErrorCode
+	}
+	if errorCode != "" {
+		lastErrorCode = &errorCode
+	}
+	ref := &iapiserver.ApplicationArtifactRef{
+		ApplicationRunID: artifact.ApplicationRunID, ArtifactID: artifact.ID, OutputKey: artifact.OutputKey,
+		Sequence: artifact.Sequence, MediaType: artifact.MediaType, ArtifactProcessingStatus: artifact.ProcessingStatus,
+		ArtifactRegistrationStatus: artifact.RegistrationStatus, AssetID: assetID, AssetVersionID: assetVersionID,
+		ArtifactResourceVersion: artifact.ResourceVersion, LastErrorCode: lastErrorCode,
+	}
+	projected, applied, err := e.store.ApplicationPlatforms().ProjectApplicationArtifactRef(ctx, ref)
+	if err != nil || !applied {
 		return err
 	}
-	for _, run := range runs {
-		if run.AtomicTaskID == nil || *run.AtomicTaskID == "" {
-			continue
-		}
-		task, taskErr := e.store.TaskCenters().GetAtomicTask(ctx, *run.AtomicTaskID)
-		if taskErr != nil || !iapiserver.IsAtomicTaskTerminal(task.Status) {
-			continue
-		}
-		if err := e.Completed(ctx, task); err != nil {
-			return err
-		}
-	}
+	_ = projected
 	return nil
 }
 
@@ -319,6 +410,139 @@ func (e *ApplicationRunExecutor) publish(ctx context.Context, eventType, key str
 	if err := e.events.Publish(context.WithoutCancel(ctx), &iapiserver.ApplicationPlatformEvent{Type: eventType, IdempotencyKey: key, Payload: payload, OccurredAt: occurredAt}); err != nil {
 		log.Errorf("application platform event publish failed: type=%s key=%s error=%v", eventType, key, err)
 	}
+}
+
+const maximumArtifactContentBytes = int64(10 << 30)
+
+func (e *ApplicationRunExecutor) openArtifactContent(ctx context.Context, engine *iapiserver.EngineInstance, rawURL, mediaType string) (io.ReadCloser, string, error) {
+	target, err := url.Parse(rawURL)
+	if err != nil || target.Host == "" || target.User != nil || (target.Scheme != "http" && target.Scheme != "https") {
+		return nil, "", errors.NewStatus(code.ErrArtifactSourceForbidden, "artifact source URL is invalid")
+	}
+	engineURL, engineErr := url.Parse(engine.BaseURL)
+	trustedHost := ""
+	trustedOrigin := engineErr == nil && engineURL.Host != "" &&
+		strings.EqualFold(target.Scheme, engineURL.Scheme) && strings.EqualFold(target.Host, engineURL.Host)
+	if trustedOrigin {
+		trustedHost = strings.ToLower(target.Hostname())
+	} else if target.Scheme != "https" {
+		return nil, "", errors.NewStatus(code.ErrArtifactSourceForbidden, "external artifact source must use HTTPS")
+	}
+	transport := artifactDownloadTransport(trustedHost)
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(target.String()).WithMethod(http.MethodGet).AddHeaderParam("Accept", "*/*")
+	if trustedOrigin {
+		if err := applyProviderAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
+			return nil, "", err
+		}
+	}
+	response, err := builder.Build().InvokeWithContext(ctx, httpcli.TimeoutCallOption(5*time.Minute), httpcli.CallOptionTransport(transport))
+	if err != nil {
+		return nil, "", errors.NewStatus(code.ErrArtifactContentUnavailable, "artifact content download failed")
+	}
+	if response.Response == nil || response.Response.Body == nil {
+		return nil, "", errors.NewStatus(code.ErrArtifactContentUnavailable, "artifact content response is empty")
+	}
+	if response.GetStatusCode() < http.StatusOK || response.GetStatusCode() >= http.StatusMultipleChoices {
+		_ = response.Response.Body.Close()
+		return nil, "", errors.NewStatus(code.ErrArtifactContentUnavailable, "artifact content download was rejected")
+	}
+	if response.Response.ContentLength > maximumArtifactContentBytes {
+		_ = response.Response.Body.Close()
+		return nil, "", errors.NewStatus(code.ErrArtifactMediaInvalid, "artifact content exceeds the supported size")
+	}
+	contentType, _, _ := mime.ParseMediaType(response.GetHeader("Content-Type"))
+	if contentType == "" {
+		contentType = defaultArtifactMIMEType(mediaType)
+	}
+	return &boundedArtifactReadCloser{
+		Reader: io.LimitReader(response.Response.Body, maximumArtifactContentBytes+1),
+		body:   response.Response.Body,
+		limit:  maximumArtifactContentBytes,
+	}, contentType, nil
+}
+
+func artifactDownloadTransport(trustedHost string) *http.Transport {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			if strings.EqualFold(host, trustedHost) {
+				return dialer.DialContext(ctx, network, address)
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil || len(ips) == 0 {
+				return nil, errors.NewStatus(code.ErrArtifactSourceForbidden, "artifact source host could not be resolved")
+			}
+			for _, ip := range ips {
+				if forbiddenArtifactIP(ip) {
+					return nil, errors.NewStatus(code.ErrArtifactSourceForbidden, "artifact source resolves to a private address")
+				}
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
+}
+
+func forbiddenArtifactIP(ip net.IP) bool {
+	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast()
+}
+
+type boundedArtifactReadCloser struct {
+	io.Reader
+	body  io.Closer
+	read  int64
+	limit int64
+}
+
+func (r *boundedArtifactReadCloser) Read(buffer []byte) (int, error) {
+	n, err := r.Reader.Read(buffer)
+	r.read += int64(n)
+	if r.read > r.limit {
+		return n, errors.NewStatus(code.ErrArtifactMediaInvalid, "artifact content exceeds the supported size")
+	}
+	return n, err
+}
+
+func (r *boundedArtifactReadCloser) Close() error { return r.body.Close() }
+
+func defaultArtifactMIMEType(mediaType string) string {
+	switch mediaType {
+	case "image":
+		return "image/png"
+	case "video":
+		return "video/mp4"
+	case "audio":
+		return "audio/mpeg"
+	case "text", "prompt", "prompt_template":
+		return "text/plain"
+	case "pdf":
+		return "application/pdf"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func artifactSequence(item map[string]any, fallback int) int {
+	for _, key := range []string{"sequence", "index"} {
+		switch value := item[key].(type) {
+		case int:
+			if value >= 0 {
+				return value
+			}
+		case float64:
+			if value >= 0 && value == float64(int(value)) {
+				return int(value)
+			}
+		}
+	}
+	return fallback
 }
 
 func dereference(value *string) string {

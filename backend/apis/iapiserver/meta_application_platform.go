@@ -571,35 +571,35 @@ func (v *ApplicationVersion) marshal() error {
 // +k8s:deepcopy-gen=true
 type ApplicationRun struct {
 	imachinery.ObjectMeta
-	OwnerUserID                    string                 `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
-	ApplicationID                  string                 `json:"application_id" gorm:"column:application_id;type:text;not null;index"`
-	ApplicationVersionID           string                 `json:"application_version_id" gorm:"column:application_version_id;type:text;not null;index"`
-	ApplicationTemplateVersionID   string                 `json:"application_template_version_id" gorm:"column:application_template_version_id;type:text;not null;index"`
-	AtomicTaskID                   *string                `json:"atomic_task_id" gorm:"column:atomic_task_id;type:text;uniqueIndex"`
-	EngineInstanceID               string                 `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
-	CapabilitySourceType           string                 `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
-	SourceRevision                 string                 `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
-	ProviderCapabilityID           *string                `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text;index"`
-	ProviderCapabilityRevision     *string                `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
-	ProviderOperationID            *string                `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
-	WorkflowContractRevision       *string                `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
-	CapabilitySourceSnapshot       map[string]any         `json:"-" gorm:"-"`
-	CapabilitySourceSnapshotShadow string                 `json:"-" gorm:"column:capability_source_snapshot_json;type:text;not null"`
-	InputSnapshot                  map[string]any         `json:"input_snapshot" gorm:"-"`
-	InputSnapshotShadow            string                 `json:"-" gorm:"column:input_snapshot_json;type:text;not null"`
-	ExecutionSnapshot              map[string]any         `json:"execution_snapshot" gorm:"-"`
-	ExecutionSnapshotShadow        string                 `json:"-" gorm:"column:execution_snapshot_json;type:text;not null"`
-	OutputMappingSnapshot          map[string]any         `json:"output_mapping_snapshot" gorm:"-"`
-	OutputMappingSnapshotShadow    string                 `json:"-" gorm:"column:output_mapping_snapshot_json;type:text;not null"`
-	TaskCreationStatus             string                 `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
-	TaskCreationFailure            string                 `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text;default:''"`
-	TaskStatusProjection           *string                `json:"task_status_projection" gorm:"column:task_status_projection;type:text"`
-	TaskResourceVersion            int64                  `json:"task_resource_version" gorm:"column:task_resource_version;not null;default:0"`
-	OutputValues                   []map[string]any       `json:"output_values" gorm:"-"`
-	OutputValuesShadow             string                 `json:"-" gorm:"column:output_values_json;type:text;not null;default:'[]'"`
-	FailureSummary                 string                 `json:"failure_summary" gorm:"column:failure_summary;type:text;default:''"`
-	IdempotencyKey                 string                 `json:"-" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:idx_aiapp_runs_owner_idempotency,priority:2"`
-	Artifacts                      []*ApplicationArtifact `json:"artifacts" gorm:"-"`
+	OwnerUserID                    string                    `json:"-" gorm:"column:owner_user_id;type:text;not null;index"`
+	ApplicationID                  string                    `json:"application_id" gorm:"column:application_id;type:text;not null;index"`
+	ApplicationVersionID           string                    `json:"application_version_id" gorm:"column:application_version_id;type:text;not null;index"`
+	ApplicationTemplateVersionID   string                    `json:"application_template_version_id" gorm:"column:application_template_version_id;type:text;not null;index"`
+	AtomicTaskID                   *string                   `json:"atomic_task_id" gorm:"column:atomic_task_id;type:text;uniqueIndex"`
+	EngineInstanceID               string                    `json:"engine_instance_id" gorm:"column:engine_instance_id;type:text;not null;index"`
+	CapabilitySourceType           string                    `json:"capability_source_type" gorm:"column:capability_source_type;type:text;not null"`
+	SourceRevision                 string                    `json:"source_revision" gorm:"column:source_revision;type:text;not null"`
+	ProviderCapabilityID           *string                   `json:"provider_capability_id" gorm:"column:provider_capability_id;type:text;index"`
+	ProviderCapabilityRevision     *string                   `json:"provider_capability_revision" gorm:"column:provider_capability_revision;type:text"`
+	ProviderOperationID            *string                   `json:"provider_operation_id" gorm:"column:provider_operation_id;type:text"`
+	WorkflowContractRevision       *string                   `json:"workflow_contract_revision" gorm:"column:workflow_contract_revision;type:text"`
+	CapabilitySourceSnapshot       map[string]any            `json:"-" gorm:"-"`
+	CapabilitySourceSnapshotShadow string                    `json:"-" gorm:"column:capability_source_snapshot_json;type:text;not null"`
+	InputSnapshot                  map[string]any            `json:"input_snapshot" gorm:"-"`
+	InputSnapshotShadow            string                    `json:"-" gorm:"column:input_snapshot_json;type:text;not null"`
+	ExecutionSnapshot              map[string]any            `json:"execution_snapshot" gorm:"-"`
+	ExecutionSnapshotShadow        string                    `json:"-" gorm:"column:execution_snapshot_json;type:text;not null"`
+	OutputMappingSnapshot          map[string]any            `json:"output_mapping_snapshot" gorm:"-"`
+	OutputMappingSnapshotShadow    string                    `json:"-" gorm:"column:output_mapping_snapshot_json;type:text;not null"`
+	TaskCreationStatus             string                    `json:"task_creation_status" gorm:"column:task_creation_status;type:text;not null;default:'pending'"`
+	TaskCreationFailure            string                    `json:"task_creation_failure" gorm:"column:task_creation_failure;type:text;default:''"`
+	TaskStatusProjection           *string                   `json:"task_status_projection" gorm:"column:task_status_projection;type:text"`
+	TaskResourceVersion            int64                     `json:"task_resource_version" gorm:"column:task_resource_version;not null;default:0"`
+	OutputValues                   []map[string]any          `json:"output_values" gorm:"-"`
+	OutputValuesShadow             string                    `json:"-" gorm:"column:output_values_json;type:text;not null;default:'[]'"`
+	FailureSummary                 string                    `json:"failure_summary" gorm:"column:failure_summary;type:text;default:''"`
+	IdempotencyKey                 string                    `json:"-" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:idx_aiapp_runs_owner_idempotency,priority:2"`
+	Artifacts                      []*ApplicationArtifactRef `json:"artifacts" gorm:"-"`
 	// Application 是权限裁剪后的应用摘要；关联缺失时为空但保留 ApplicationID。
 	Application *ApplicationSummary `json:"application,omitempty" gorm:"-"`
 	// ApplicationVersion 是运行固定的应用版本摘要。
@@ -650,7 +650,8 @@ func (r *ApplicationRun) marshal() error {
 	return nil
 }
 
-// ApplicationArtifact 是应用运行的工件。
+// ApplicationArtifact 是切换到 Asset Library Artifact 前的旧应用运行制品投影。
+// Deprecated: 新写入必须使用 ApplicationArtifactRef；该模型仅用于历史数据回填。
 // +k8s:deepcopy-gen=true
 type ApplicationArtifact struct {
 	imachinery.ObjectMeta
@@ -670,6 +671,44 @@ func (a *ApplicationArtifact) BeforeCreate(tx *gorm.DB) error { return a.ObjectM
 func (*ApplicationArtifact) AfterCreate(*gorm.DB) error       { return nil }
 func (a *ApplicationArtifact) BeforeUpdate(tx *gorm.DB) error { return a.ObjectMeta.BeforeUpdate(tx) }
 func (*ApplicationArtifact) AfterUpdate(*gorm.DB) error       { return nil }
+
+// ApplicationArtifactRef 是 ApplicationRun 到 Asset Library Artifact 的可重建只读引用投影。
+// +k8s:deepcopy-gen=true
+type ApplicationArtifactRef struct {
+	imachinery.ObjectMeta
+	// ApplicationRunID 标识拥有该输出声明的应用运行。
+	ApplicationRunID string `json:"application_run_id" gorm:"column:application_run_id;type:text;not null;uniqueIndex:idx_aiapp_artifact_refs_run_output,priority:1;index"`
+	// ArtifactID 指向 Asset Library 持有的 Artifact 事实。
+	ArtifactID string `json:"artifact_id" gorm:"column:artifact_id;type:text;not null;uniqueIndex:idx_aiapp_artifact_refs_artifact"`
+	// OutputKey 是运行输出端口的稳定名称。
+	OutputKey string `json:"output_key" gorm:"column:output_key;type:text;not null;uniqueIndex:idx_aiapp_artifact_refs_run_output,priority:2"`
+	// Sequence 区分同一输出端口的多个制品。
+	Sequence int `json:"sequence" gorm:"column:sequence;not null;default:0;uniqueIndex:idx_aiapp_artifact_refs_run_output,priority:3"`
+	// MediaType 是列表展示所需的受控媒体分类。
+	MediaType string `json:"media_type" gorm:"column:media_type;type:text;not null"`
+	// ArtifactProcessingStatus 是 Asset Library 处理状态的只读投影。
+	ArtifactProcessingStatus string `json:"artifact_processing_status" gorm:"column:artifact_processing_status;type:text;not null;index"`
+	// ArtifactRegistrationStatus 是 Asset Library 登记状态的只读投影。
+	ArtifactRegistrationStatus string `json:"artifact_registration_status" gorm:"column:artifact_registration_status;type:text;not null;index"`
+	// AssetID 在登记成功后提供素材导航目标。
+	AssetID *string `json:"asset_id,omitempty" gorm:"column:asset_id;type:text"`
+	// AssetVersionID 在登记成功后提供不可变版本导航目标。
+	AssetVersionID *string `json:"asset_version_id,omitempty" gorm:"column:asset_version_id;type:text"`
+	// ArtifactResourceVersion 用于丢弃重复或乱序的 Asset Library 事件。
+	ArtifactResourceVersion int64 `json:"artifact_resource_version" gorm:"column:artifact_resource_version;not null;default:0"`
+	// LastErrorCode 是处理或登记失败的稳定业务错误码。
+	LastErrorCode *string `json:"last_error_code,omitempty" gorm:"column:last_error_code;type:text"`
+}
+
+func (ApplicationArtifactRef) TableName() string { return "aiapp_application_artifact_refs" }
+func (r *ApplicationArtifactRef) BeforeCreate(tx *gorm.DB) error {
+	return r.ObjectMeta.BeforeCreate(tx)
+}
+func (*ApplicationArtifactRef) AfterCreate(*gorm.DB) error { return nil }
+func (r *ApplicationArtifactRef) BeforeUpdate(tx *gorm.DB) error {
+	return r.ObjectMeta.BeforeUpdate(tx)
+}
+func (*ApplicationArtifactRef) AfterUpdate(*gorm.DB) error { return nil }
 
 type RuntimeFormSchema struct {
 	ApplicationVersionID        string                 `json:"application_version_id"`

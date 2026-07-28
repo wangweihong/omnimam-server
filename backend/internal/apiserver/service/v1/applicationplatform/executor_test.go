@@ -2,6 +2,9 @@ package applicationplatform
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,11 +32,8 @@ type executorApplicationStore struct {
 	run       *iapiserver.ApplicationRun
 	engine    *iapiserver.EngineInstance
 	projected *iapiserver.ApplicationRun
-	artifact  *iapiserver.ApplicationArtifact
-}
-
-func (s *executorApplicationStore) ListApplicationRunProjectionCandidates(context.Context, int) ([]*iapiserver.ApplicationRun, error) {
-	return []*iapiserver.ApplicationRun{s.run}, nil
+	artifact  *iapiserver.Artifact
+	ref       *iapiserver.ApplicationArtifactRef
 }
 
 type executorTaskStore struct {
@@ -59,22 +59,18 @@ func (s *executorApplicationStore) ProjectApplicationRun(_ context.Context, _ st
 	s.projected = &projected
 	return &projected, nil
 }
-func (s *executorApplicationStore) UpsertArtifact(_ context.Context, artifact *iapiserver.ApplicationArtifact) (*iapiserver.ApplicationArtifact, error) {
-	copyArtifact := *artifact
-	copyArtifact.ID = "artifact-1"
-	copyArtifact.ResourceVersion = 1
-	s.artifact = &copyArtifact
-	return &copyArtifact, nil
+func (s *executorApplicationStore) ListArtifactsByRun(context.Context, string) ([]*iapiserver.ApplicationArtifact, error) {
+	return []*iapiserver.ApplicationArtifact{}, nil
 }
-func (s *executorApplicationStore) UpdateArtifactRegistration(_ context.Context, id, status, assetID, errorCode, detail string, version int64) (*iapiserver.ApplicationArtifact, error) {
-	updated := *s.artifact
-	updated.ID, updated.RegistrationStatus, updated.RegistrationErrorCode, updated.RegistrationFailureDetail = id, status, errorCode, detail
-	updated.ResourceVersion = version + 1
-	if assetID != "" {
-		updated.AssetID = &assetID
+func (s *executorApplicationStore) ProjectApplicationArtifactRef(_ context.Context, ref *iapiserver.ApplicationArtifactRef) (*iapiserver.ApplicationArtifactRef, bool, error) {
+	if s.ref != nil && s.ref.ArtifactResourceVersion >= ref.ArtifactResourceVersion {
+		return s.ref, false, nil
 	}
-	s.artifact = &updated
-	return &updated, nil
+	copyRef := *ref
+	copyRef.ID = "ref-1"
+	copyRef.ResourceVersion = ref.ArtifactResourceVersion
+	s.ref = &copyRef
+	return &copyRef, true, nil
 }
 
 type fakeEngineAdapter struct{ id string }
@@ -104,11 +100,39 @@ func (e *fakeOperationExecutor) Execute(context.Context, *iapiserver.EngineInsta
 	return map[string]any{"values": map[string]any{"text": "ok"}}, nil
 }
 
-type fakeAssetRegistrar struct{ calls atomic.Int32 }
+type fakeArtifactLifecycle struct{ calls atomic.Int32 }
 
-func (r *fakeAssetRegistrar) Register(context.Context, *iapiserver.ApplicationArtifact) (string, error) {
+func (r *fakeArtifactLifecycle) Prepare(_ context.Context, artifact *iapiserver.Artifact) (*iapiserver.Artifact, bool, error) {
+	copyArtifact := *artifact
+	copyArtifact.ID, copyArtifact.ProcessingStatus, copyArtifact.RegistrationStatus, copyArtifact.ResourceVersion =
+		"artifact-1", iapiserver.ArtifactProcessingCreated, iapiserver.ArtifactRegistrationPending, 1
+	return &copyArtifact, true, nil
+}
+func (r *fakeArtifactLifecycle) StoreContent(_ context.Context, artifact *iapiserver.Artifact, _ string, _ io.Reader) (*iapiserver.Artifact, error) {
+	copyArtifact := *artifact
+	copyArtifact.ProcessingStatus, copyArtifact.ResourceVersion = iapiserver.ArtifactProcessingReady, artifact.ResourceVersion+1
+	return &copyArtifact, nil
+}
+func (r *fakeArtifactLifecycle) Register(_ context.Context, artifact *iapiserver.Artifact, _ string) (*iapiserver.Artifact, error) {
 	r.calls.Add(1)
-	return "asset-1", nil
+	copyArtifact := *artifact
+	copyArtifact.RegistrationStatus, copyArtifact.AssetID, copyArtifact.AssetVersionID, copyArtifact.ResourceVersion =
+		iapiserver.ArtifactRegistrationRegistered, "asset-1", "version-1", artifact.ResourceVersion+1
+	return &copyArtifact, nil
+}
+func (r *fakeArtifactLifecycle) FailProcessing(_ context.Context, artifact *iapiserver.Artifact, code, detail string) (*iapiserver.Artifact, error) {
+	copyArtifact := *artifact
+	copyArtifact.ProcessingStatus, copyArtifact.ProcessingErrorCode, copyArtifact.ProcessingErrorDetail =
+		iapiserver.ArtifactProcessingFailed, code, detail
+	copyArtifact.ResourceVersion++
+	return &copyArtifact, nil
+}
+func (r *fakeArtifactLifecycle) FailRegistration(_ context.Context, artifact *iapiserver.Artifact, code, detail string) (*iapiserver.Artifact, error) {
+	copyArtifact := *artifact
+	copyArtifact.RegistrationStatus, copyArtifact.RegistrationErrorCode, copyArtifact.RegistrationErrorDetail =
+		iapiserver.ArtifactRegistrationFailed, code, detail
+	copyArtifact.ResourceVersion++
+	return &copyArtifact, nil
 }
 
 type recordingEventPublisher struct {
@@ -162,8 +186,17 @@ func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applicationStore := &executorApplicationStore{run: &iapiserver.ApplicationRun{OwnerUserID: "user-1"}}
-	assets := &fakeAssetRegistrar{}
+	contentServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "video/mp4")
+		_, _ = response.Write([]byte("video"))
+	}))
+	defer contentServer.Close()
+	applicationStore := &executorApplicationStore{
+		run:    &iapiserver.ApplicationRun{OwnerUserID: "user-1", EngineInstanceID: "engine-1"},
+		engine: &iapiserver.EngineInstance{BaseURL: contentServer.URL, ApplicationEngineTypeID: "comfyui"},
+	}
+	applicationStore.run.ID = "run-1"
+	assets := &fakeArtifactLifecycle{}
 	events := &recordingEventPublisher{}
 	executor, err := NewApplicationRunExecutor(&executorFactory{applications: applicationStore}, runtimeRegistry, nil, nil, nil, assets, events)
 	if err != nil {
@@ -171,7 +204,7 @@ func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
 	}
 	task := &iapiserver.AtomicTask{
 		ApplicationRunID: "run-1", Status: iapiserver.AtomicTaskStatusSuccess, Progress: 1,
-		Output: map[string]any{"values": map[string]any{"video_url": "https://example.com/video.mp4"}, "artifacts": []any{map[string]any{"output_key": "video", "media_type": "video", "content_ref": "https://example.com/video.mp4"}}},
+		Output: map[string]any{"values": map[string]any{"video_url": contentServer.URL + "/video.mp4"}, "artifacts": []any{map[string]any{"output_key": "video", "media_type": "video", "content_ref": contentServer.URL + "/video.mp4"}}},
 	}
 	task.ID = "task-1"
 	task.ResourceVersion = 3
@@ -182,31 +215,10 @@ func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
 	if applicationStore.projected == nil || applicationStore.projected.TaskResourceVersion != 3 {
 		t.Fatalf("task projection was not applied: %#v", applicationStore.projected)
 	}
-	if applicationStore.artifact == nil || applicationStore.artifact.RegistrationStatus != iapiserver.ArtifactRegistrationRegistered || assets.calls.Load() != 1 {
-		t.Fatalf("artifact was not registered: %#v calls=%d", applicationStore.artifact, assets.calls.Load())
+	if applicationStore.ref == nil || applicationStore.ref.ArtifactRegistrationStatus != iapiserver.ArtifactRegistrationRegistered || assets.calls.Load() != 1 {
+		t.Fatalf("artifact was not registered: %#v calls=%d", applicationStore.ref, assets.calls.Load())
 	}
-	if len(events.events) != 2 || events.events[0].Type != "application_run_projection_changed" || events.events[1].Type != "application_artifact_registration_changed" {
+	if len(events.events) != 1 || events.events[0].Type != "application_run_projection_changed" {
 		t.Fatalf("unexpected events: %#v", events.events)
-	}
-}
-
-func TestApplicationRunExecutorRepairsExistingTerminalProjection(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskID := "task-1"
-	applicationStore := &executorApplicationStore{run: &iapiserver.ApplicationRun{OwnerUserID: "user-1", AtomicTaskID: &taskID}}
-	task := &iapiserver.AtomicTask{ApplicationRunID: "run-1", Status: iapiserver.AtomicTaskStatusSuccess, Output: map[string]any{"values": map[string]any{"text": "done"}}}
-	task.ID, task.ResourceVersion = taskID, 4
-	executor, err := NewApplicationRunExecutor(&executorFactory{applications: applicationStore, tasks: &executorTaskStore{task: task}}, runtimeRegistry, nil, nil, nil, &fakeAssetRegistrar{}, NoopEventPublisher{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := executor.ReconcileTerminalProjections(context.Background(), 200); err != nil {
-		t.Fatal(err)
-	}
-	if applicationStore.projected == nil || applicationStore.projected.TaskResourceVersion != 4 {
-		t.Fatalf("existing terminal run was not repaired: %#v", applicationStore.projected)
 	}
 }

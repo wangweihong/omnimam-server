@@ -135,9 +135,8 @@ func (s *assetV1Store) completeAssetUpload(ctx context.Context, owner, id string
 				return errors.Errorf("upload parts do not match session")
 			}
 		}
-		blob := &iapiserver.AssetBlob{StorageBackendID: content.StorageBackendID, ObjectKey: content.ObjectKey, SHA256: strings.ToLower(content.SHA256), SizeBytes: content.SizeBytes, MIMEType: content.MIMEType, Status: "available"}
-		blob.ID, blob.Name = uuid.NewString(), upload.FileName
-		if err := tx.Create(blob).Error; err != nil {
+		blob, err := findOrCreateAvailableBlob(tx, content, upload.FileName)
+		if err != nil {
 			return err
 		}
 		asset, err := s.lockOrCreateUploadAsset(tx, owner, &upload)

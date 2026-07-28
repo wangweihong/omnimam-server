@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
@@ -110,8 +111,15 @@ type OperationExecutor interface {
 	ID() string
 	Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error)
 }
-type AssetRegistrar interface {
-	Register(context.Context, *iapiserver.ApplicationArtifact) (string, error)
+
+// ArtifactLifecycle 是 ApplicationExecutor 消费的 Asset Library 写入边界。
+// Application Platform 只交付受控字节流，不传递 Provider URL、凭证或原始响应。
+type ArtifactLifecycle interface {
+	Prepare(context.Context, *iapiserver.Artifact) (*iapiserver.Artifact, bool, error)
+	StoreContent(context.Context, *iapiserver.Artifact, string, io.Reader) (*iapiserver.Artifact, error)
+	Register(context.Context, *iapiserver.Artifact, string) (*iapiserver.Artifact, error)
+	FailProcessing(context.Context, *iapiserver.Artifact, string, string) (*iapiserver.Artifact, error)
+	FailRegistration(context.Context, *iapiserver.Artifact, string, string) (*iapiserver.Artifact, error)
 }
 type EventPublisher interface {
 	Publish(context.Context, *iapiserver.ApplicationPlatformEvent) error
@@ -136,7 +144,7 @@ type Dependencies struct {
 	Adapters       map[string]EngineAdapter
 	Executors      map[string]OperationExecutor
 	Tasks          taskcenter.TaskCenterSrv
-	Assets         AssetRegistrar
+	Assets         ArtifactLifecycle
 	Events         EventPublisher
 	WorkflowAudit  WorkflowAuditor
 	WorkflowParser ComfyWorkflowParser
@@ -161,7 +169,7 @@ func NewService(deps Dependencies) (*applicationPlatformService, error) {
 		deps.Events = NoopEventPublisher{}
 	}
 	if deps.Assets == nil {
-		deps.Assets = NoopAssetRegistrar{}
+		deps.Assets = NoopArtifactLifecycle{}
 	}
 	if deps.WorkflowAudit == nil {
 		deps.WorkflowAudit = StructuredWorkflowAuditor{}
@@ -178,10 +186,22 @@ func (NoopEventPublisher) Publish(context.Context, *iapiserver.ApplicationPlatfo
 	return nil
 }
 
-type NoopAssetRegistrar struct{}
+type NoopArtifactLifecycle struct{}
 
-func (NoopAssetRegistrar) Register(context.Context, *iapiserver.ApplicationArtifact) (string, error) {
-	return "", errors.New("asset registrar is not configured")
+func (NoopArtifactLifecycle) Prepare(context.Context, *iapiserver.Artifact) (*iapiserver.Artifact, bool, error) {
+	return nil, false, errors.New("artifact lifecycle is not configured")
+}
+func (NoopArtifactLifecycle) StoreContent(context.Context, *iapiserver.Artifact, string, io.Reader) (*iapiserver.Artifact, error) {
+	return nil, errors.New("artifact lifecycle is not configured")
+}
+func (NoopArtifactLifecycle) Register(context.Context, *iapiserver.Artifact, string) (*iapiserver.Artifact, error) {
+	return nil, errors.New("artifact lifecycle is not configured")
+}
+func (NoopArtifactLifecycle) FailProcessing(context.Context, *iapiserver.Artifact, string, string) (*iapiserver.Artifact, error) {
+	return nil, errors.New("artifact lifecycle is not configured")
+}
+func (NoopArtifactLifecycle) FailRegistration(context.Context, *iapiserver.Artifact, string, string) (*iapiserver.Artifact, error) {
+	return nil, errors.New("artifact lifecycle is not configured")
 }
 
 // StructuredWorkflowAuditor emits the mandatory managed-access audit fields for identity log ingestion.
@@ -975,17 +995,23 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 	if err != nil {
 		return s.failTaskBinding(ctx, run, err)
 	}
+	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, run.EngineInstanceID)
+	if err != nil {
+		return s.failTaskBinding(ctx, run, err)
+	}
 	operation := ""
 	if templateVersion.ProviderOperationID != nil {
 		operation = *templateVersion.ProviderOperationID
 	}
+	taskTimeoutSeconds := applicationRunTaskTimeoutSeconds(engine)
 	task, err := s.Tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
 		Key: applicationRunTaskDefinitionID, Name: "Application Platform Run", Description: "Execute an immutable ApplicationRun snapshot",
 		FunctionRef: applicationRunTaskFunctionRef, Arguments: map[string]any{"application_run_id": run.ID, "operation": operation, "execution_snapshot": run.ExecutionSnapshot},
 		RequiredCapabilities: "application-platform", ApplicationRunID: run.ID,
 		IdempotencyScope: "application-run", IdempotencyKey: run.IdempotencyKey,
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
-		SystemName: iapiserver.SystemNameSpec{Key: taskname.ApplicationRun},
+		TimeoutPolicy: iapiserver.TimeoutPolicy{OverallTimeoutSeconds: taskTimeoutSeconds},
+		SystemName:    iapiserver.SystemNameSpec{Key: taskname.ApplicationRun},
 	})
 	if err != nil {
 		return s.failTaskBinding(ctx, run, err)
@@ -1004,6 +1030,14 @@ func (s *applicationPlatformService) failTaskBinding(ctx context.Context, run *i
 	}
 	return failed, errors.NewStatus(code.ErrAIAppAtomicTaskCreateFailed, cause.Error())
 }
+
+func applicationRunTaskTimeoutSeconds(engine *iapiserver.EngineInstance) int {
+	if engine != nil && engine.TaskTimeoutSeconds > 0 {
+		return engine.TaskTimeoutSeconds
+	}
+	return 30 * 60
+}
+
 func (s *applicationPlatformService) GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error) {
 	p, err := s.principal(ctx, false)
 	if err != nil {
@@ -1217,7 +1251,7 @@ func (s *applicationPlatformService) publish(ctx context.Context, eventType, key
 }
 
 func newApplicationRun(owner string, app *iapiserver.Application, version *iapiserver.ApplicationVersion, template *iapiserver.ApplicationTemplateVersion, engine *iapiserver.EngineInstance, resolved, original *iapiserver.ApplicationRunCreateRequest, form *iapiserver.RuntimeFormSchema) *iapiserver.ApplicationRun {
-	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engine.ID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow, "application": applicationSummary(app), "application_version": applicationVersionSummary(version), "application_template_version": applicationTemplateVersionSummary(template), "engine_instance": engineInstanceRefSummary(engine)}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engine.ID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifact{}}
+	run := &iapiserver.ApplicationRun{OwnerUserID: owner, ApplicationID: app.ID, ApplicationVersionID: version.ID, ApplicationTemplateVersionID: template.ID, EngineInstanceID: engine.ID, CapabilitySourceType: template.CapabilitySourceType, SourceRevision: template.SourceRevision, ProviderCapabilityID: template.ProviderCapabilityID, ProviderCapabilityRevision: template.ProviderCapabilityRevision, ProviderOperationID: template.ProviderOperationID, WorkflowContractRevision: template.WorkflowContractRevision, CapabilitySourceSnapshot: map[string]any{"source_revision": template.SourceRevision, "template_contract": template.TemplateContract, "comfyui_api_workflow": template.ComfyUIAPIWorkflow, "application": applicationSummary(app), "application_version": applicationVersionSummary(version), "application_template_version": applicationTemplateVersionSummary(template), "engine_instance": engineInstanceRefSummary(engine)}, InputSnapshot: resolved.Inputs, ExecutionSnapshot: map[string]any{"inputs": resolved.Inputs, "application_version_id": version.ID, "template_version_id": template.ID, "engine_instance_id": engine.ID, "capability_definition_id": app.CapabilityDefinitionID, "idempotency_inputs": original.Inputs, "idempotency_engine_instance_id": original.EngineInstanceID}, OutputMappingSnapshot: version.OutputSchema, TaskCreationStatus: iapiserver.TaskCreationPending, OutputValues: []map[string]any{}, IdempotencyKey: original.IdempotencyKey, Artifacts: []*iapiserver.ApplicationArtifactRef{}}
 	run.Name = app.Name + " run"
 	if form.ProviderCapabilityID != nil {
 		run.CapabilitySourceSnapshot["provider_capability_id"] = *form.ProviderCapabilityID

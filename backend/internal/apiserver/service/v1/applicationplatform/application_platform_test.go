@@ -214,6 +214,15 @@ func TestSameApplicationRunRequestRejectsIdempotencyConflict(t *testing.T) {
 	}
 }
 
+func TestApplicationRunTaskTimeoutUsesEngineLimit(t *testing.T) {
+	if got := applicationRunTaskTimeoutSeconds(&iapiserver.EngineInstance{TaskTimeoutSeconds: 3600}); got != 3600 {
+		t.Fatalf("task timeout = %d, want engine limit 3600", got)
+	}
+	if got := applicationRunTaskTimeoutSeconds(&iapiserver.EngineInstance{}); got != 1800 {
+		t.Fatalf("legacy task timeout = %d, want fallback 1800", got)
+	}
+}
+
 func TestNewApplicationRunSnapshotsRelatedResourceSummaries(t *testing.T) {
 	operationID := "generate"
 	run := newApplicationRun(

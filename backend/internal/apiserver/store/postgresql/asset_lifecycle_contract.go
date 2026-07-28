@@ -137,17 +137,29 @@ func (s *assetV1Store) StoreArtifactContent(ctx context.Context, owner, id strin
 			if !strings.EqualFold(blob.SHA256, content.SHA256) || blob.SizeBytes != content.SizeBytes {
 				return errors.Errorf("artifact content conflicts with existing blob")
 			}
+			if artifact.ProcessingStatus == iapiserver.ArtifactProcessingFailed {
+				artifact.ProcessingStatus = iapiserver.ArtifactProcessingTransferring
+				artifact.ProcessingErrorCode, artifact.ProcessingErrorDetail = "", ""
+				if err := tx.Save(&artifact).Error; err != nil {
+					return err
+				}
+				return publishArtifactProcessingChanged(tx, &artifact, store.ArtifactProcessingMutation{
+					ChangeType: "transferring", ProcessingStatus: iapiserver.ArtifactProcessingTransferring,
+				})
+			}
 			return nil
 		}
-		if artifact.ProcessingStatus != iapiserver.ArtifactProcessingCreated && artifact.ProcessingStatus != iapiserver.ArtifactProcessingTransferring {
+		if artifact.ProcessingStatus != iapiserver.ArtifactProcessingCreated &&
+			artifact.ProcessingStatus != iapiserver.ArtifactProcessingTransferring &&
+			artifact.ProcessingStatus != iapiserver.ArtifactProcessingFailed {
 			return errors.Errorf("artifact state does not allow content upload")
 		}
-		blob := &iapiserver.AssetBlob{StorageBackendID: content.StorageBackendID, ObjectKey: content.ObjectKey, SHA256: strings.ToLower(content.SHA256), SizeBytes: content.SizeBytes, MIMEType: content.MIMEType, Status: "available"}
-		blob.ID, blob.Name = uuid.NewString(), artifact.OutputKey
-		if err := tx.Create(blob).Error; err != nil {
+		blob, err := findOrCreateAvailableBlob(tx, content, artifact.OutputKey)
+		if err != nil {
 			return err
 		}
 		artifact.BlobID, artifact.ProcessingStatus = blob.ID, iapiserver.ArtifactProcessingTransferring
+		artifact.ProcessingErrorCode, artifact.ProcessingErrorDetail = "", ""
 		if err := tx.Save(&artifact).Error; err != nil {
 			return err
 		}
@@ -678,27 +690,45 @@ func (s *assetV1Store) CreateRepresentationBlob(ctx context.Context, content sto
 	if content.StorageBackendID == "" || content.ObjectKey == "" || content.SHA256 == "" || content.MIMEType == "" || content.SizeBytes < 0 {
 		return "", errors.Errorf("generated representation content reference is invalid")
 	}
-	var blob iapiserver.AssetBlob
+	var blob *iapiserver.AssetBlob
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("storage_backend_id = ? AND object_key = ?", content.StorageBackendID, content.ObjectKey).First(&blob).Error
-		if err == nil {
-			if !strings.EqualFold(blob.SHA256, content.SHA256) || blob.SizeBytes != content.SizeBytes || blob.MIMEType != content.MIMEType {
-				return errors.Errorf("generated representation blob conflicts with existing content")
-			}
-			return nil
-		}
-		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		blob = iapiserver.AssetBlob{StorageBackendID: content.StorageBackendID, ObjectKey: content.ObjectKey,
-			SHA256: strings.ToLower(content.SHA256), SizeBytes: content.SizeBytes, MIMEType: content.MIMEType, Status: "available"}
-		blob.ID, blob.Name = uuid.NewString(), "representation:"+content.SHA256
-		return tx.Create(&blob).Error
+		var err error
+		blob, err = findOrCreateAvailableBlob(tx, content, "representation:"+content.SHA256)
+		return err
 	})
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
 	return blob.ID, nil
+}
+
+// findOrCreateAvailableBlob 复用内容寻址对象，避免多个 Artifact、上传或 Representation
+// 为同一 storage backend/object key 创建竞争的 Blob 事实。
+func findOrCreateAvailableBlob(tx *gorm.DB, content store.StoredAssetContent, name string) (*iapiserver.AssetBlob, error) {
+	candidate := &iapiserver.AssetBlob{
+		StorageBackendID: content.StorageBackendID,
+		ObjectKey:        content.ObjectKey,
+		SHA256:           strings.ToLower(content.SHA256),
+		SizeBytes:        content.SizeBytes,
+		MIMEType:         content.MIMEType,
+		Status:           "available",
+	}
+	candidate.ID, candidate.Name = uuid.NewString(), name
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "storage_backend_id"}, {Name: "object_key"}},
+		DoNothing: true,
+	}).Create(candidate).Error; err != nil {
+		return nil, err
+	}
+	var blob iapiserver.AssetBlob
+	if err := tx.Where("storage_backend_id = ? AND object_key = ?", content.StorageBackendID, content.ObjectKey).First(&blob).Error; err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(blob.SHA256, content.SHA256) || blob.SizeBytes != content.SizeBytes ||
+		!strings.EqualFold(blob.MIMEType, content.MIMEType) || blob.Status != "available" {
+		return nil, errors.Errorf("stored blob conflicts with existing content")
+	}
+	return &blob, nil
 }
 
 func (s *assetV1Store) GetRepresentation(ctx context.Context, owner, id string) (*iapiserver.AssetRepresentation, *store.StoredAssetContent, error) {
