@@ -503,6 +503,7 @@ func (s *applicationPlatformStore) ListApplicationRuns(ctx context.Context, req 
 	runIDs := make([]string, 0, len(items))
 	byID := make(map[string]*iapiserver.ApplicationRun, len(items))
 	for _, item := range items {
+		item.Artifacts = make([]*iapiserver.ApplicationArtifact, 0)
 		runIDs = append(runIDs, item.ID)
 		byID[item.ID] = item
 	}

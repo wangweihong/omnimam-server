@@ -52,3 +52,21 @@ func TestApplicationRunResponseJSONUsesPublicArtifactProjection(t *testing.T) {
 		t.Fatalf("persistence artifact shape leaked: %#v", artifacts[0])
 	}
 }
+
+func TestApplicationRunListResponseTransformsEmptyArtifactsToArray(t *testing.T) {
+	data, err := json.Marshal((&ApplicationRunListResponse{Total: 1, Items: []*ApplicationRun{{}}}).Transform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Items []struct {
+			Artifacts []ApplicationArtifactRefResponse `json:"artifacts"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Artifacts == nil {
+		t.Fatalf("list artifacts must be a JSON array: %s", data)
+	}
+}

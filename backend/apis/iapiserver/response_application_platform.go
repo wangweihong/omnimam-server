@@ -28,6 +28,22 @@ type ApplicationRunResponse struct {
 	Artifacts []*ApplicationArtifactRefResponse `json:"artifacts"`
 }
 
+type ApplicationRunListResponseProjection struct {
+	Total int64                     `json:"total"`
+	Items []*ApplicationRunResponse `json:"items"`
+}
+
+func (r *ApplicationRunListResponse) Transform() any {
+	response := &ApplicationRunListResponseProjection{Total: r.Total, Items: make([]*ApplicationRunResponse, 0, len(r.Items))}
+	for _, run := range r.Items {
+		if run == nil {
+			continue
+		}
+		response.Items = append(response.Items, run.Transform().(*ApplicationRunResponse))
+	}
+	return response
+}
+
 // Transform 在公共 Controller 写响应前转换为已发布契约，内部 Worker 仍使用持久化模型。
 func (r *ApplicationRun) Transform() any {
 	response := &ApplicationRunResponse{ApplicationRun: r, Artifacts: make([]*ApplicationArtifactRefResponse, 0, len(r.Artifacts))}

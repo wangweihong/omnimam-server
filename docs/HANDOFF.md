@@ -14,6 +14,7 @@ Finish and verify the released `spec-v1.7.13` ApplicationRun history and termina
 6. Added a bounded periodic repair loop that backfills existing terminal runs and retries idempotent Artifact projection.
 7. Preserved the existing Asset Library batch/direct hard-delete and trash-empty implementation and tests.
 8. Fixed ApplicationRun list Artifact loading to sort by existing `created_at, id` columns; the initial implementation incorrectly referenced the absent `sequence` column and surfaced as a misleading input-validation error.
+9. Fixed blank Application detail rendering by ensuring artifact-free runs return `artifacts: []` and applying the public ApplicationArtifactRef DTO transform to every list item.
 
 ## Files modified
 
