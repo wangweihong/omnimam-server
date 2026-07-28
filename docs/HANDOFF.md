@@ -13,6 +13,7 @@ Finish and verify the released `spec-v1.7.13` ApplicationRun history and termina
 5. Added a regression test proving terminal observers run after persistence and updated the route contract count to 53.
 6. Added a bounded periodic repair loop that backfills existing terminal runs and retries idempotent Artifact projection.
 7. Preserved the existing Asset Library batch/direct hard-delete and trash-empty implementation and tests.
+8. Fixed ApplicationRun list Artifact loading to sort by existing `created_at, id` columns; the initial implementation incorrectly referenced the absent `sequence` column and surfaced as a misleading input-validation error.
 
 ## Files modified
 

@@ -507,7 +507,7 @@ func (s *applicationPlatformStore) ListApplicationRuns(ctx context.Context, req 
 		byID[item.ID] = item
 	}
 	var artifacts []*iapiserver.ApplicationArtifact
-	if err := s.ds.db.WithContext(ctx).Where("application_run_id IN ?", runIDs).Order("sequence ASC, created_at ASC").Find(&artifacts).Error; err != nil {
+	if err := s.ds.db.WithContext(ctx).Where("application_run_id IN ?", runIDs).Order("created_at ASC, id ASC").Find(&artifacts).Error; err != nil {
 		return nil, 0, errors.WithStack(err)
 	}
 	for _, artifact := range artifacts {
