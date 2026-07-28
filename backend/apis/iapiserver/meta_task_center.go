@@ -659,7 +659,7 @@ type HistoryRetention struct {
 	RuntimeRetentionSeconds int `json:"runtime_retention_seconds"`
 }
 
-// ReconcileSummary 是单轮巡检的低成本结果摘要，不包含逐项检测详情。
+// ReconcileSummary 是单轮巡检的低成本结果摘要；领域 summary 只能携带有界关联摘要，不能保存无界逐项详情。
 // +k8s:deepcopy-gen=true
 type ReconcileSummary struct {
 	Scanned            int            `json:"scanned"`

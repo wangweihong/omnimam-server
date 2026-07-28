@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/log"
@@ -25,6 +26,7 @@ import (
 const (
 	applicationRunTaskDefinitionID = "application-platform.application-run"
 	applicationRunTaskFunctionRef  = "application-platform.run"
+	engineHealthPersistenceTimeout = time.Second
 )
 
 // ApplicationPlatformSrv implements the public S2 Application Platform operations.
@@ -463,7 +465,14 @@ func (s *applicationPlatformService) checkEngineInstanceHealth(ctx context.Conte
 		payload := map[string]any{"engine_instance_id": id, "application_engine_type_id": item.ApplicationEngineTypeID, "health_status": item.HealthStatus, "checked_at": now, "failure_summary": item.UnhealthyReason}
 		event = &iapiserver.ApplicationPlatformEvent{Type: "engine_instance_health_changed", IdempotencyKey: id + ":" + now.String(), Payload: payload, OccurredAt: now}
 	}
-	_, err = s.Store.ApplicationPlatforms().UpdateEngineInstanceHealth(ctx, item, item.ResourceVersion, event)
+	persistCtx := ctx
+	persistCancel := func() {}
+	if stderrors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// 单项探测超时是需要落库的 offline 事实，不能继续复用已过期的探测 context。
+		persistCtx, persistCancel = context.WithTimeout(context.WithoutCancel(ctx), engineHealthPersistenceTimeout)
+	}
+	defer persistCancel()
+	_, err = s.Store.ApplicationPlatforms().UpdateEngineInstanceHealth(persistCtx, item, item.ResourceVersion, event)
 	if err != nil {
 		return nil, err
 	}

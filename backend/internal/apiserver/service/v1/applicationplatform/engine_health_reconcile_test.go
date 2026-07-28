@@ -2,6 +2,8 @@ package applicationplatform
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -59,8 +61,9 @@ func (s *healthReconcileService) CheckEngineInstanceHealthInternal(ctx context.C
 func TestEngineHealthReconcileHonorsConcurrencyAndStableCursor(t *testing.T) {
 	items := make([]*iapiserver.EngineInstance, 5)
 	for i := range items {
-		items[i] = &iapiserver.EngineInstance{Enabled: true, HealthStatus: iapiserver.EngineHealthUnknown}
+		items[i] = &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthUnknown}
 		items[i].ID = "engine-0" + string(rune('1'+i))
+		items[i].Name = "Engine " + items[i].ID
 	}
 	applicationStore := &healthReconcileStore{items: items}
 	service := &healthReconcileService{}
@@ -77,6 +80,13 @@ func TestEngineHealthReconcileHonorsConcurrencyAndStableCursor(t *testing.T) {
 	}
 	if cursor := result.NextCheckpoint["engine_instance_id"]; cursor != "engine-04" {
 		t.Fatalf("cursor = %v", cursor)
+	}
+	summary := decodeEngineHealthScheduleSummary(t, result)
+	if len(summary.EngineInstances) != 4 || summary.EngineInstances[0].ID != "engine-01" || summary.EngineInstances[0].Name != "Engine engine-01" || summary.EngineInstances[0].ApplicationEngineTypeID != "comfyui" || summary.EngineInstances[0].HealthStatus != iapiserver.EngineHealthOnline {
+		t.Fatalf("engine_instances = %#v", summary.EngineInstances)
+	}
+	if summary.EngineInstancesTotal != 4 || summary.EngineInstancesTruncated {
+		t.Fatalf("summary = %#v", summary)
 	}
 }
 
@@ -99,4 +109,63 @@ func TestEngineHealthReconcileDoesNotAdvanceIncompleteChunk(t *testing.T) {
 	if cursor := result.NextCheckpoint["engine_instance_id"]; cursor != "engine-02" {
 		t.Fatalf("cursor = %v, want engine-02", cursor)
 	}
+	summary := decodeEngineHealthScheduleSummary(t, result)
+	if len(summary.EngineInstances) == 0 || summary.EngineInstances[0].ID != "engine-03" || !summary.EngineInstances[0].Deferred {
+		t.Fatalf("engine_instances = %#v", summary.EngineInstances)
+	}
+}
+
+func TestEngineHealthReconcileBoundsAndPrioritizesDeferredInstances(t *testing.T) {
+	items := make([]*iapiserver.EngineInstance, 22)
+	for i := range items {
+		items[i] = &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}
+		items[i].ID = fmt.Sprintf("engine-%02d", i+1)
+		items[i].Name = "Engine " + items[i].ID
+	}
+	applicationStore := &healthReconcileStore{items: items}
+	service := &healthReconcileService{failID: "engine-22"}
+	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 22, MaxItemsPerRun: 22, PerItemTimeout: 20 * time.Millisecond})
+	if err == nil {
+		t.Fatal("expected incomplete chunk error")
+	}
+	summary := decodeEngineHealthScheduleSummary(t, result)
+	if len(summary.EngineInstances) != maxEngineHealthReconcileInstanceSummary || summary.EngineInstancesTotal != len(items) || !summary.EngineInstancesTruncated {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if summary.EngineInstances[0].ID != "engine-22" || !summary.EngineInstances[0].Deferred {
+		t.Fatalf("first engine instance = %#v", summary.EngineInstances[0])
+	}
+}
+
+type engineHealthScheduleSummaryJSON struct {
+	EngineInstances []struct {
+		ID                      string `json:"id"`
+		Name                    string `json:"name"`
+		ApplicationEngineTypeID string `json:"application_engine_type_id"`
+		HealthStatus            string `json:"health_status"`
+		Deferred                bool   `json:"deferred"`
+	} `json:"engine_instances"`
+	EngineInstancesTotal     int  `json:"engine_instances_total"`
+	EngineInstancesTruncated bool `json:"engine_instances_truncated"`
+}
+
+func decodeEngineHealthScheduleSummary(t *testing.T, result taskcenter.ReconcileResult) engineHealthScheduleSummaryJSON {
+	t.Helper()
+	schedule := &iapiserver.TaskSchedule{LastExecution: &iapiserver.TaskScheduleExecution{ReconcileSummary: iapiserver.ReconcileSummary{Scanned: result.Scanned, Findings: result.Findings, Deferred: result.Deferred, CycleCompleted: result.CycleCompleted, Summary: result.Summary}}}
+	payload, err := json.Marshal(schedule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		LastExecution struct {
+			ReconcileSummary struct {
+				Summary engineHealthScheduleSummaryJSON `json:"summary"`
+			} `json:"reconcile_summary"`
+		} `json:"last_execution"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.LastExecution.ReconcileSummary.Summary
 }

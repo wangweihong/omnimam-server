@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
@@ -14,11 +15,16 @@ import (
 
 type engineHealthStore struct {
 	executorApplicationStore
-	updated *iapiserver.EngineInstance
-	event   *iapiserver.ApplicationPlatformEvent
+	updated          *iapiserver.EngineInstance
+	event            *iapiserver.ApplicationPlatformEvent
+	updateContextErr error
 }
 
-func (s *engineHealthStore) UpdateEngineInstanceHealth(_ context.Context, data *iapiserver.EngineInstance, _ int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error) {
+func (s *engineHealthStore) UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, _ int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error) {
+	s.updateContextErr = ctx.Err()
+	if s.updateContextErr != nil {
+		return nil, s.updateContextErr
+	}
 	copyData := *data
 	s.updated, s.event = &copyData, event
 	return &copyData, nil
@@ -32,6 +38,14 @@ type engineHealthAdapter struct {
 func (engineHealthAdapter) ID() string { return "deepseek_official" }
 func (a engineHealthAdapter) Check(context.Context, *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
 	return a.result, a.err
+}
+
+type deadlineEngineHealthAdapter struct{}
+
+func (deadlineEngineHealthAdapter) ID() string { return "deepseek_official" }
+func (deadlineEngineHealthAdapter) Check(ctx context.Context, _ *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
+	<-ctx.Done()
+	return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "provider request timed out")
 }
 
 func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
@@ -111,5 +125,32 @@ func TestEngineHealthCancellationKeepsChunkRetryable(t *testing.T) {
 	}
 	if storage.updated != nil {
 		t.Fatalf("canceled detection updated engine: %#v", storage.updated)
+	}
+}
+
+func TestEngineHealthDeadlinePersistsOfflineWithFreshContext(t *testing.T) {
+	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthUnknown}
+	engine.ID = "engine-1"
+	storage := &engineHealthStore{executorApplicationStore: executorApplicationStore{engine: engine}}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: storage}, Runtime: runtimeRegistry, Adapters: map[string]EngineAdapter{"deepseek_official": deadlineEngineHealthAdapter{}}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	result, err := service.CheckEngineInstanceHealthInternal(ctx, engine.ID)
+	if err != nil {
+		t.Fatalf("deadline health check failed: %v", err)
+	}
+	if storage.updateContextErr != nil {
+		t.Fatalf("health fact used expired persistence context: %v", storage.updateContextErr)
+	}
+	if result.HealthStatus != iapiserver.EngineHealthOffline || result.FailureSummary != "provider request timed out" {
+		t.Fatalf("result = %#v", result)
+	}
+	if storage.updated == nil || storage.updated.HealthStatus != iapiserver.EngineHealthOffline || storage.updated.LastHealthCheckAt == nil {
+		t.Fatalf("updated = %#v", storage.updated)
 	}
 }
