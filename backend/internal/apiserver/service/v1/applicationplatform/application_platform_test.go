@@ -42,6 +42,43 @@ func TestValidateEngineAuthRejectsMismatchedUnion(t *testing.T) {
 	}
 }
 
+func TestSameCanvasApplicationRunProtectsImmutableSourceAndInputs(t *testing.T) {
+	request := &CanvasApplicationRunRequest{
+		CanvasRunID:     "canvas-run-1",
+		CanvasNodeRunID: "node-run-1",
+		ExecutionKey:    "node-a",
+		Inputs:          map[string]any{"prompt": "hello"},
+	}
+	run := &iapiserver.ApplicationRun{
+		ApplicationVersionID: "version-1",
+		InputSnapshot:        map[string]any{"prompt": "hello", "seed": float64(7)},
+		ExecutionSnapshot: map[string]any{
+			"origin_type":        "canvas",
+			"canvas_run_id":      "canvas-run-1",
+			"canvas_node_run_id": "node-run-1",
+			"execution_key":      "node-a",
+			"idempotency_inputs": map[string]any{"prompt": "hello"},
+		},
+	}
+	if !sameCanvasApplicationRun(
+		run,
+		request,
+		"version-1",
+		map[string]any{"prompt": "hello", "seed": float64(7)},
+	) {
+		t.Fatal("matching canvas application run was rejected")
+	}
+	request.Inputs = map[string]any{"prompt": "changed"}
+	if sameCanvasApplicationRun(
+		run,
+		request,
+		"version-1",
+		map[string]any{"prompt": "changed", "seed": float64(7)},
+	) {
+		t.Fatal("changed final input reused an immutable canvas application run")
+	}
+}
+
 func TestParseComfyUIWorkflowDerivesCandidatesAndRejectsBrokenReferences(t *testing.T) {
 	workflow := map[string]any{"1": map[string]any{"class_type": "LoadImage", "inputs": map[string]any{"image": "input.png"}}, "2": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": []any{"1", float64(0)}}}}
 	objectInfo := map[string]any{"LoadImage": map[string]any{"input": map[string]any{"required": map[string]any{"image": []any{"STRING", map[string]any{}}}}, "output": []any{"IMAGE"}, "output_name": []any{"IMAGE"}, "output_node": false}, "SaveImage": map[string]any{"input": map[string]any{"required": map[string]any{"images": []any{"IMAGE", map[string]any{}}}}, "output": []any{}, "output_node": true}}

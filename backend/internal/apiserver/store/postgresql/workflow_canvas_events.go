@@ -124,6 +124,65 @@ func publishCanvasNodeChanged(tx *gorm.DB, previousStatus string, node *iapiserv
 	return publishCanvasOutbox(tx, OutboxTopicCanvasNodeRunStatusChanged, sourceID, "canvas_node_run", node.ID, node.AggregateVersion, payload)
 }
 
+func publishCanvasNodeOutputAvailable(
+	tx *gorm.DB,
+	binding *iapiserver.CanvasNodeRunOutputBinding,
+	mediaType string,
+) error {
+	if err := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ?", binding.CanvasNodeRunID).
+		UpdateColumn("aggregate_version", gorm.Expr("aggregate_version + 1")).Error; err != nil {
+		return err
+	}
+	var node iapiserver.CanvasNodeRun
+	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&node).Error; err != nil {
+		return err
+	}
+	var run iapiserver.WorkflowCanvasRun
+	if err := tx.Select("created_by").Where("id = ?", node.CanvasRunID).First(&run).Error; err != nil {
+		return err
+	}
+	sourceID := fmt.Sprintf(
+		"%s:%s:%s:%s",
+		node.ID,
+		binding.PortKey,
+		binding.ShardKey,
+		derefString(binding.ArtifactID),
+	)
+	payload := map[string]any{
+		"source_domain":      iapiserver.SSESourceDomainWorkflowCanvas,
+		"source_event_id":    sourceID,
+		"created_by":         run.CreatedBy,
+		"canvas_run_id":      node.CanvasRunID,
+		"canvas_node_run_id": node.ID,
+		"node_id":            node.NodeID,
+		"execution_key":      node.ExecutionKey,
+		"port_key":           binding.PortKey,
+		"shard_key":          binding.ShardKey,
+		"shard_index":        binding.ShardIndex,
+		"atomic_task_id":     binding.AtomicTaskID,
+		"artifact_id":        binding.ArtifactID,
+		"artifact_summary": map[string]any{
+			"artifact_id":       binding.ArtifactID,
+			"media_type":        mediaType,
+			"processing_status": iapiserver.ArtifactProcessingReady,
+			"resource_version":  binding.ArtifactResourceVersion,
+		},
+		"structured_value_summary": nil,
+		"required":                 binding.Required,
+		"aggregate_version":        node.AggregateVersion,
+		"occurred_at":              imachinery.Now(),
+	}
+	return publishCanvasOutbox(
+		tx,
+		OutboxTopicCanvasNodeOutputAvailable,
+		sourceID,
+		"canvas_node_run",
+		node.ID,
+		node.AggregateVersion,
+		payload,
+	)
+}
+
 func publishCanvasOutbox(tx *gorm.DB, topic, sourceID, aggregateType, aggregateID string, aggregateVersion int64, payload map[string]any) error {
 	if err := publishOutbox(tx, topic, sourceID, payload); err != nil {
 		return err

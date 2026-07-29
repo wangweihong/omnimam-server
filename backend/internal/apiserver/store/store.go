@@ -196,6 +196,18 @@ type WorkflowCanvasStore interface {
 	ListCanvasNodeRuns(context.Context, *iapiserver.CanvasNodeRunListRequest) ([]*iapiserver.CanvasNodeRun, int64, error)
 	GetCanvasNodeRun(context.Context, string) (*iapiserver.CanvasNodeRun, error)
 	GetCanvasNodeRunDetail(context.Context, string) ([]*iapiserver.CanvasNodeRunTaskBinding, []*iapiserver.CanvasNodeRunOutputBinding, error)
+	ProjectCanvasApplicationArtifact(context.Context, *CanvasApplicationArtifactProjection) (bool, error)
+}
+
+// CanvasApplicationArtifactProjection 是 Application Artifact 事实到 Canvas 输出槽位的内部投影命令。
+type CanvasApplicationArtifactProjection struct {
+	AtomicTaskID             string
+	OutputKey                string
+	Sequence                 int
+	ArtifactID               string
+	MediaType                string
+	ArtifactProcessingStatus string
+	ArtifactResourceVersion  int64
 }
 
 type ProviderStore interface {
@@ -559,6 +571,7 @@ type TaskCenterStore interface {
 	// GetAtomicTasksByIDs 批量读取调度历史引用的 AtomicTask，不用于绕过 service 权限返回完整资源。
 	GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error)
 	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
+	BindApplicationRunToAtomicTask(context.Context, string, string, string, string, string, map[string]any) (*iapiserver.AtomicTask, error)
 	AddAtomicTaskIdempotent(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error)
 	UpdateAtomicTask(context.Context, *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error)
 	ListAttempts(ctx context.Context, req *iapiserver.TaskAttemptListRequest) ([]*iapiserver.TaskAttempt, int64, error)
@@ -696,10 +709,13 @@ type ApplicationPlatformStore interface {
 	PublishTemplateVersion(ctx context.Context, id string) (*iapiserver.ApplicationTemplateVersion, error)
 	ListApplications(ctx context.Context, req *iapiserver.ApplicationListRequest) ([]*iapiserver.Application, int64, error)
 	GetApplication(ctx context.Context, id string) (*iapiserver.Application, error)
+	GetApplicationsByIDs(ctx context.Context, ids []string) ([]*iapiserver.Application, error)
 	AddApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error)
 	UpdateApplication(ctx context.Context, data *iapiserver.Application, expectedVersion int64) (*iapiserver.Application, error)
 	ListApplicationVersions(ctx context.Context, req *iapiserver.ApplicationVersionListRequest) ([]*iapiserver.ApplicationVersion, int64, error)
+	ListPublishedApplicationVersions(ctx context.Context) ([]*iapiserver.ApplicationVersion, error)
 	GetApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
+	GetApplicationVersionsByIDs(ctx context.Context, ids []string) ([]*iapiserver.ApplicationVersion, error)
 	AddApplicationVersion(ctx context.Context, data *iapiserver.ApplicationVersion) (*iapiserver.ApplicationVersion, error)
 	PublishApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error)
 	GetApplicationRun(ctx context.Context, id string) (*iapiserver.ApplicationRun, error)
@@ -707,7 +723,7 @@ type ApplicationPlatformStore interface {
 	GetApplicationRunsByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ApplicationRun, error)
 	GetApplicationRunByIdempotency(ctx context.Context, ownerUserID, key string) (*iapiserver.ApplicationRun, error)
 	AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error)
-	BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
+	BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status, taskStatus string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error)
 	ProjectApplicationRun(
 		ctx context.Context,
 		id string,

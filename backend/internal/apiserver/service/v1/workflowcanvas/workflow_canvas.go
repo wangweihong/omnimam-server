@@ -19,6 +19,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	applicationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -52,13 +53,25 @@ type Service interface {
 }
 
 type service struct {
-	factory store.Factory
-	store   store.WorkflowCanvasStore
-	tasks   taskcentersvc.TaskCenterSrv
+	factory      store.Factory
+	store        store.WorkflowCanvasStore
+	tasks        taskcentersvc.TaskCenterSrv
+	applications canvasApplicationResolver
 }
 
-func New(factory store.Factory, tasks taskcentersvc.TaskCenterSrv) Service {
-	return &service{factory: factory, store: factory.WorkflowCanvases(), tasks: tasks}
+type canvasApplicationResolver interface {
+	ResolveCanvasApplicationVersions(
+		context.Context,
+		[]applicationsvc.CanvasApplicationVersionRequest,
+	) []applicationsvc.CanvasApplicationVersionResult
+}
+
+func New(factory store.Factory, tasks taskcentersvc.TaskCenterSrv, applications ...canvasApplicationResolver) Service {
+	var applicationResolver canvasApplicationResolver
+	if len(applications) > 0 {
+		applicationResolver = applications[0]
+	}
+	return &service{factory: factory, store: factory.WorkflowCanvases(), tasks: tasks, applications: applicationResolver}
 }
 
 // ListNodeDefinitions 返回当前默认 project/namespace 可用的受控节点定义目录。
@@ -70,8 +83,23 @@ func (s *service) ListNodeDefinitions(
 	if err != nil {
 		return nil, err
 	}
+	requests := make([]applicationsvc.CanvasApplicationVersionRequest, 0, len(items))
+	for _, item := range items {
+		if item.ApplicationVersionID != nil {
+			requests = append(requests, applicationsvc.CanvasApplicationVersionRequest{
+				Key:                  item.ID,
+				ApplicationVersionID: *item.ApplicationVersionID,
+			})
+		}
+	}
+	resolvedApplications := s.resolveCanvasApplicationVersions(ctx, requests)
 	result := make([]*iapiserver.WorkflowNodeDefinitionListItem, 0, len(items))
 	for _, item := range items {
+		if item.ApplicationVersionID != nil {
+			if !applicationDefinitionMatches(item, resolvedApplications[item.ID]) {
+				continue
+			}
+		}
 		result = append(
 			result,
 			&iapiserver.WorkflowNodeDefinitionListItem{
@@ -90,6 +118,22 @@ func (s *service) ListNodeDefinitions(
 		)
 	}
 	return &iapiserver.WorkflowNodeDefinitionListResponse{Total: total, Items: result}, nil
+}
+
+func (s *service) resolveCanvasApplicationVersions(
+	ctx context.Context,
+	requests []applicationsvc.CanvasApplicationVersionRequest,
+) map[string]*applicationsvc.CanvasApplicationVersion {
+	result := make(map[string]*applicationsvc.CanvasApplicationVersion, len(requests))
+	if len(requests) == 0 || s.applications == nil {
+		return result
+	}
+	for _, item := range s.applications.ResolveCanvasApplicationVersions(ctx, requests) {
+		if item.Err == nil && item.Resolved != nil {
+			result[item.Key] = item.Resolved
+		}
+	}
+	return result
 }
 
 // RegisterNodeDefinition 幂等注册不可变定义版本，只允许受控执行绑定。
@@ -556,8 +600,17 @@ func (s *service) createRun(
 	}
 	dagReq.Name = "Canvas run " + run.ID
 	dagReq.CanvasVersionID = version.ID
+	dagReq.CanvasRunID = run.ID
+	dagReq.Input = req.RuntimeInputs
 	dagReq.IdempotencyScope = "canvas-run"
 	dagReq.IdempotencyKey = req.IdempotencyKey
+	for index := range dagReq.Nodes {
+		executionKey := dagReq.Nodes[index].Key
+		nodeRunID := canvasNodeRunID(run.ID, executionKey)
+		dagReq.Nodes[index].Task.Arguments["canvas_run_id"] = run.ID
+		dagReq.Nodes[index].Task.Arguments["canvas_node_run_id"] = nodeRunID
+		dagReq.Nodes[index].Task.Arguments["execution_key"] = executionKey
+	}
 	group, err := s.tasks.CreateDAGTaskGroup(ctx, dagReq)
 	if err != nil {
 		return s.failRun(ctx, created, err)
@@ -612,7 +665,7 @@ func (s *service) createRun(
 			LastError:             map[string]any{},
 			AggregateVersion:      1,
 		}
-		nr.ID = uuid.NewString()
+		nr.ID = canvasNodeRunID(run.ID, id)
 		nr.Name = id
 		if task := byKey[id]; task != nil {
 			nr.Status = task.Status
@@ -964,6 +1017,26 @@ func (s *service) dagRequest(
 	projectID, namespace string,
 ) (*iapiserver.DAGTaskGroupCreateRequest, error) {
 	definitionByKey := definitionMap(definitions)
+	applicationRequests := make([]applicationsvc.CanvasApplicationVersionRequest, 0)
+	for _, node := range graph.Nodes {
+		definition := definitionByKey[node.NodeType+"@"+node.DefinitionVersion]
+		versionID := ""
+		if definition != nil && definition.ExecutionBinding.ApplicationVersionID != nil {
+			versionID = *definition.ExecutionBinding.ApplicationVersionID
+		} else if node.NodeType == iapiserver.CanvasNodeTypeApplication {
+			if node.Config != nil {
+				versionID, _ = node.Config["application_version_id"].(string)
+			}
+		}
+		if versionID != "" {
+			applicationRequests = append(applicationRequests, applicationsvc.CanvasApplicationVersionRequest{
+				Key:                  canvasNodeID(node),
+				ApplicationVersionID: versionID,
+				Inputs:               node.LiteralInputs,
+			})
+		}
+	}
+	resolvedApplications := s.resolveCanvasApplicationVersions(ctx, applicationRequests)
 	nodes := make([]iapiserver.DAGNode, 0, len(graph.Nodes))
 	for _, node := range graph.Nodes {
 		key := canvasNodeID(node)
@@ -975,7 +1048,14 @@ func (s *service) dagRequest(
 			continue
 		}
 		ref, _ := node.Config["function_ref"].(string)
-		args := map[string]any{"config": node.Config, "literal_inputs": node.LiteralInputs, "controller_state": node.ControllerState}
+		resolvedInputs := make(map[string]any, len(node.LiteralInputs))
+		for inputKey, value := range node.LiteralInputs {
+			resolvedInputs[inputKey] = value
+		}
+		args := map[string]any{
+			"config": node.Config, "literal_inputs": node.LiteralInputs,
+			"resolved_inputs": resolvedInputs, "controller_state": node.ControllerState,
+		}
 		if definition != nil && definition.ExecutionBinding.FunctionRef != nil {
 			ref = *definition.ExecutionBinding.FunctionRef
 		}
@@ -988,11 +1068,11 @@ func (s *service) dagRequest(
 			if versionID == "" {
 				return nil, errors.NewStatusF(code.ErrCanvasNodeReferenceInvalid, "node %s has no application_version_id", key)
 			}
-			version, versionErr := s.factory.ApplicationPlatforms().GetApplicationVersion(ctx, versionID)
-			if versionErr != nil || version.Status != iapiserver.VersionStatusPublished {
+			if !applicationDefinitionMatches(definition, resolvedApplications[key]) {
 				return nil, errors.NewStatusF(code.ErrCanvasNodeReferenceInvalid, "node %s references an unavailable ApplicationVersion", key)
 			}
 			ref = "application-platform.run"
+			args["application_version_id"] = versionID
 		}
 		if ref == "" {
 			return nil, errors.NewStatusF(code.ErrCanvasNodeReferenceInvalid, "node %s has no registered function_ref", key)
@@ -1308,13 +1388,13 @@ func (s *service) resolveDefinitions(
 	includeDeprecated bool,
 ) ([]*iapiserver.WorkflowNodeDefinition, error) {
 	result := make([]*iapiserver.WorkflowNodeDefinition, 0, len(graph.Nodes))
-	seen := map[string]struct{}{}
+	definitions := make(map[string]*iapiserver.WorkflowNodeDefinition, len(graph.Nodes))
 	for _, node := range graph.Nodes {
 		if node.DefinitionVersion == "" && node.NodeKey != "" {
 			continue
 		}
 		key := node.NodeType + "@" + node.DefinitionVersion
-		if _, ok := seen[key]; ok {
+		if definitions[key] != nil {
 			continue
 		}
 		definition, err := s.store.GetWorkflowNodeDefinition(
@@ -1327,6 +1407,35 @@ func (s *service) resolveDefinitions(
 		)
 		if err != nil {
 			return nil, errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "canvas node definition is unavailable")
+		}
+		definitions[key] = definition
+		result = append(result, definition)
+	}
+	applicationRequests := make([]applicationsvc.CanvasApplicationVersionRequest, 0)
+	for _, node := range graph.Nodes {
+		definition := definitions[node.NodeType+"@"+node.DefinitionVersion]
+		if definition != nil && definition.ApplicationVersionID != nil {
+			applicationRequests = append(applicationRequests, applicationsvc.CanvasApplicationVersionRequest{
+				Key:                  canvasNodeID(node),
+				ApplicationVersionID: *definition.ApplicationVersionID,
+				Inputs:               node.LiteralInputs,
+			})
+		}
+	}
+	resolvedApplications := s.resolveCanvasApplicationVersions(ctx, applicationRequests)
+	for _, node := range graph.Nodes {
+		if node.DefinitionVersion == "" && node.NodeKey != "" {
+			continue
+		}
+		key := node.NodeType + "@" + node.DefinitionVersion
+		definition := definitions[key]
+		if definition == nil {
+			return nil, errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "canvas node definition is unavailable")
+		}
+		if definition.ApplicationVersionID != nil {
+			if !applicationDefinitionMatches(definition, resolvedApplications[canvasNodeID(node)]) {
+				return nil, errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "application node definition is unavailable")
+			}
 		}
 		configSchema, err := compileJSONSchema(definition.ConfigSchema, "config-"+strings.ReplaceAll(key, "@", "-"))
 		if err != nil || configSchema.Validate(node.Config) != nil {
@@ -1341,8 +1450,6 @@ func (s *service) resolveDefinitions(
 				return nil, errors.NewStatus(code.ErrWorkflowControllerStateInvalid, "controller state does not match its definition")
 			}
 		}
-		seen[key] = struct{}{}
-		result = append(result, definition)
 	}
 	return result, nil
 }
@@ -1540,6 +1647,10 @@ func canvasNodeID(node iapiserver.WorkflowCanvasNode) string {
 		return node.NodeID
 	}
 	return node.NodeKey
+}
+
+func canvasNodeRunID(canvasRunID, executionKey string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(canvasRunID+":"+executionKey)).String()
 }
 func canvasEdgeSource(edge iapiserver.WorkflowCanvasEdge) string {
 	if edge.SourceNodeID != "" {

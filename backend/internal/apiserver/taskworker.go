@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
@@ -32,6 +34,8 @@ import (
 const (
 	representationOrchestratorConsumerGroup       = "task-center-representation-orchestrator"
 	applicationRunTerminalProjectionConsumerGroup = "application-platform-terminal-projection"
+	applicationCatalogConsumerGroup               = "workflow-canvas-application-catalog"
+	applicationArtifactProjectionConsumerGroup    = "workflow-canvas-application-artifact-projection"
 )
 
 type representationTaskCreator interface {
@@ -40,6 +44,14 @@ type representationTaskCreator interface {
 
 type applicationRunTerminalProjector interface {
 	Completed(context.Context, *iapiserver.AtomicTask) error
+}
+
+type reliablePayloadProjector interface {
+	Project(context.Context, []byte) error
+}
+
+type publishedCanvasApplicationLister interface {
+	ListPublishedCanvasApplicationVersions(context.Context) ([]*appsvc.CanvasApplicationVersion, error)
 }
 
 type representationRequestedEvent struct {
@@ -130,6 +142,10 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	applicationCatalogProjector := workflowcanvassvc.NewApplicationCatalogProjector(storeIns.WorkflowCanvases())
+	if err := reconcilePublishedApplicationCatalog(ctx, applicationService, applicationCatalogProjector); err != nil {
+		return errors.Wrap(err, "reconcile published application canvas catalog")
+	}
 	if err := applicationService.ReconcileRequiredEngineBindings(ctx); err != nil {
 		return errors.Wrap(err, "reconcile required application platform bindings")
 	}
@@ -182,6 +198,23 @@ func RunTaskWorker(cfg *config.Config) error {
 		atomicTask, err := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
 		if err != nil {
 			return nil, err
+		}
+		if atomicTask.CanvasRunID != "" {
+			run, ensureErr := applicationService.EnsureCanvasApplicationRun(ctx, &appsvc.CanvasApplicationRunRequest{
+				AtomicTaskID:         atomicTask.ID,
+				CanvasRunID:          atomicTask.CanvasRunID,
+				CanvasNodeRunID:      atomicTask.CanvasNodeRunID,
+				ExecutionKey:         atomicTask.ChildKey,
+				ApplicationVersionID: fmt.Sprint(task.Arguments["application_version_id"]),
+				OwnerUserID:          atomicTask.CreatedBy,
+				Inputs:               workerMap(task.Arguments["resolved_inputs"]),
+				Arguments:            task.Arguments,
+			})
+			if ensureErr != nil {
+				return nil, ensureErr
+			}
+			atomicTask.ApplicationRunID = run.ID
+			atomicTask.Arguments = task.Arguments
 		}
 		output, err := applicationExecutor.Execute(ctx, atomicTask)
 		if err == nil {
@@ -297,6 +330,13 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := startApplicationRunTerminalProjectionConsumer(ctx, storeIns.TaskCenters(), applicationExecutor); err != nil {
 		return err
 	}
+	if err := startCanvasApplicationConsumers(
+		ctx,
+		applicationCatalogProjector,
+		workflowcanvassvc.NewApplicationArtifactProjector(storeIns.WorkflowCanvases()),
+	); err != nil {
+		return err
+	}
 	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, "task-center-thumbnail")
 	if err != nil {
 		return err
@@ -350,6 +390,132 @@ func RunTaskWorker(cfg *config.Config) error {
 	case err := <-errCh:
 		_ = runtime.Close()
 		return err
+	}
+}
+
+func reconcilePublishedApplicationCatalog(
+	ctx context.Context,
+	applications publishedCanvasApplicationLister,
+	projector *workflowcanvassvc.ApplicationCatalogProjector,
+) error {
+	versions, err := applications.ListPublishedCanvasApplicationVersions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range versions {
+		if item == nil || item.Application == nil || item.Version == nil {
+			continue
+		}
+		err := projector.ProjectPublication(ctx, workflowcanvassvc.ApplicationVersionPublication{
+			ApplicationID:                item.Application.ID,
+			ApplicationVersionID:         item.Version.ID,
+			ApplicationTemplateVersionID: item.Version.ApplicationTemplateVersionID,
+			SemanticVersion:              item.Version.SemanticVersion,
+			ApplicationName:              item.Application.Name,
+			OwnerUserID:                  item.Application.OwnerUserID,
+			Visibility:                   item.Application.Visibility,
+			CanvasEnabled:                item.Application.CanvasEnabled,
+			RunEnabled:                   item.Application.RunEnabled,
+			InputSchema:                  item.Version.InputSchema,
+			OutputSchema:                 item.Version.OutputSchema,
+		})
+		var diagnostic *workflowcanvassvc.ApplicationCatalogDiagnosticError
+		if stderrors.As(err, &diagnostic) {
+			log.Warnf(
+				"application version omitted from canvas catalog: application_version_id=%s error=%v",
+				item.Version.ID,
+				err,
+			)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func startCanvasApplicationConsumers(
+	ctx context.Context,
+	catalog *workflowcanvassvc.ApplicationCatalogProjector,
+	artifacts reliablePayloadProjector,
+) error {
+	catalogMessages, err := postgresql.SubscribeOutbox(
+		ctx,
+		postgresql.OutboxTopicApplicationVersionPublished,
+		applicationCatalogConsumerGroup,
+	)
+	if err != nil {
+		return err
+	}
+	go consumeApplicationCatalog(ctx, catalogMessages, catalog)
+	artifactMessages, err := postgresql.SubscribeOutbox(
+		ctx,
+		postgresql.OutboxTopicApplicationRunArtifactRefChanged,
+		applicationArtifactProjectionConsumerGroup,
+	)
+	if err != nil {
+		return err
+	}
+	go consumeReliablePayloads(
+		ctx,
+		artifactMessages,
+		artifacts,
+		applicationArtifactProjectionConsumerGroup,
+	)
+	return nil
+}
+
+func consumeApplicationCatalog(
+	ctx context.Context,
+	messages <-chan *message.Message,
+	projector *workflowcanvassvc.ApplicationCatalogProjector,
+) {
+	for msg := range messages {
+		err := projector.Project(ctx, msg.Payload)
+		var diagnostic *workflowcanvassvc.ApplicationCatalogDiagnosticError
+		if stderrors.As(err, &diagnostic) {
+			log.Warnf(
+				"application version omitted from canvas catalog: consumer_group=%s message_id=%s error=%v",
+				applicationCatalogConsumerGroup,
+				msg.UUID,
+				err,
+			)
+			msg.Ack()
+			continue
+		}
+		if err != nil {
+			log.Errorf(
+				"application catalog projection failed: consumer_group=%s message_id=%s error=%v",
+				applicationCatalogConsumerGroup,
+				msg.UUID,
+				err,
+			)
+			msg.Nack()
+		} else {
+			msg.Ack()
+		}
+	}
+}
+
+func consumeReliablePayloads(
+	ctx context.Context,
+	messages <-chan *message.Message,
+	projector reliablePayloadProjector,
+	consumerGroup string,
+) {
+	for msg := range messages {
+		if err := projector.Project(ctx, msg.Payload); err != nil {
+			log.Errorf(
+				"reliable projection failed: consumer_group=%s message_id=%s error=%v",
+				consumerGroup,
+				msg.UUID,
+				err,
+			)
+			msg.Nack()
+		} else {
+			msg.Ack()
+		}
 	}
 }
 
@@ -721,6 +887,14 @@ func scheduleTime(value any) time.Time {
 		return time.UnixMilli(milliseconds).UTC()
 	}
 	return time.Now().UTC()
+}
+
+func workerMap(value any) map[string]any {
+	result, _ := value.(map[string]any)
+	if result == nil {
+		return map[string]any{}
+	}
+	return result
 }
 
 func healthCron(interval time.Duration) string {

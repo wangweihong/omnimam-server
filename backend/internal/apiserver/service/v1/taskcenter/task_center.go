@@ -27,6 +27,7 @@ import (
 type TaskCenterSrv interface {
 	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
 	CreateAtomicTask(context.Context, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
+	BindApplicationRun(context.Context, string, string, string, string, string, map[string]any) (*iapiserver.AtomicTask, error)
 	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
 	// GetAtomicTaskSummaries 批量返回当前主体可见的 AtomicTask 一跳摘要，供跨领域只读组合响应。
 	GetAtomicTaskSummaries(context.Context, []string) (map[string]*iapiserver.AtomicTaskSummary, error)
@@ -232,6 +233,23 @@ func (s *taskCenterService) CreateAtomicTask(ctx context.Context, req *iapiserve
 	createdTask.RuntimeRevision = binding.Revision
 	createdTask.Status = iapiserver.AtomicTaskStatusRunning
 	return s.store.UpdateAtomicTask(ctx, createdTask)
+}
+
+// BindApplicationRun 将 Canvas Worker 已解析的最终参数和 ApplicationRun 绑定到既有 DAG AtomicTask，不创建新任务。
+func (s *taskCenterService) BindApplicationRun(
+	ctx context.Context,
+	atomicTaskID, applicationRunID, canvasRunID, canvasNodeRunID, executionKey string,
+	arguments map[string]any,
+) (*iapiserver.AtomicTask, error) {
+	return s.store.BindApplicationRunToAtomicTask(
+		ctx,
+		atomicTaskID,
+		applicationRunID,
+		canvasRunID,
+		canvasNodeRunID,
+		executionKey,
+		arguments,
+	)
 }
 
 func (s *taskCenterService) CancelAtomicTask(ctx context.Context, id string, req *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error) {
@@ -510,6 +528,12 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	tasks, err := tasksFromDAG(req.Nodes, group.ID, req.ProjectID, req.Namespace, group.CreatedBy)
 	if err != nil {
 		return nil, err
+	}
+	for index, task := range tasks {
+		task.CanvasRunID = req.CanvasRunID
+		if value, ok := req.Nodes[index].Task.Arguments["canvas_node_run_id"].(string); ok {
+			task.CanvasNodeRunID = value
+		}
 	}
 	definition := dagDefinition(group, tasks, layers)
 	group.RuntimeDefinitionName = definition.Name
@@ -1196,6 +1220,7 @@ func dagDefinition(group *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTas
 	definition := workflowruntime.Definition{Name: "dag_" + shortID(group.ID), Version: 1, Description: group.Description, TimeoutSeconds: 86400, Output: group.OutputMapping}
 	nodesByKey := make(map[string]iapiserver.DAGNode, len(group.Nodes))
 	for _, node := range group.Nodes {
+		node.Task.Arguments = dagResolvedArguments(group, node, byKey)
 		nodesByKey[node.Key] = node
 	}
 	for layerIndex, layer := range layers {
@@ -1215,8 +1240,56 @@ func dagDefinition(group *iapiserver.DAGTaskGroup, tasks []*iapiserver.AtomicTas
 	}
 	return definition
 }
+
+func dagResolvedArguments(
+	group *iapiserver.DAGTaskGroup,
+	node iapiserver.DAGNode,
+	byKey map[string]*iapiserver.AtomicTask,
+) map[string]any {
+	arguments := make(map[string]any, len(node.Task.Arguments))
+	for key, value := range node.Task.Arguments {
+		arguments[key] = value
+	}
+	resolved, _ := arguments["resolved_inputs"].(map[string]any)
+	resolvedCopy := make(map[string]any, len(resolved)+len(node.InputMapping))
+	for key, value := range resolved {
+		resolvedCopy[key] = value
+	}
+	for key, value := range node.InputMapping {
+		resolvedCopy[key] = dagInputExpression(value, byKey)
+	}
+	for _, edge := range group.Edges {
+		if edge.ToNode != node.Key {
+			continue
+		}
+		for key, value := range edge.DataMapping {
+			resolvedCopy[key] = dagInputExpression(value, byKey)
+		}
+	}
+	arguments["resolved_inputs"] = resolvedCopy
+	return arguments
+}
+
+func dagInputExpression(value any, byKey map[string]*iapiserver.AtomicTask) any {
+	raw, ok := value.(string)
+	if !ok || raw == "" {
+		return value
+	}
+	if strings.HasPrefix(raw, "runtime.") {
+		return "${workflow.input.input." + strings.TrimPrefix(raw, "runtime.") + "}"
+	}
+	parts := strings.SplitN(raw, ".", 2)
+	if len(parts) != 2 || byKey[parts[0]] == nil {
+		return value
+	}
+	source := byKey[parts[0]]
+	reference := safeName(source.ChildKey + "_" + shortID(source.ID))
+	return "${" + reference + ".output.values." + parts[1] + "}"
+}
 func runtimeTasksForDAGNode(node iapiserver.DAGNode, task *iapiserver.AtomicTask) []workflowruntime.Task {
-	planner := simpleRuntimeTask(task)
+	runtimeTask := *task
+	runtimeTask.Arguments = node.Task.Arguments
+	planner := simpleRuntimeTask(&runtimeTask)
 	if !node.DynamicFork {
 		return []workflowruntime.Task{planner}
 	}

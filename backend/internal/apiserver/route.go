@@ -79,7 +79,7 @@ func installApis(
 			installPromptApis(v1, storeIns)
 			if taskCenter != nil {
 				installTaskCenterApis(v1, taskCenter)
-				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter))
+				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter, applicationPlatform))
 			}
 			installAIChatApis(v1, storeIns)
 			if applicationPlatform != nil {

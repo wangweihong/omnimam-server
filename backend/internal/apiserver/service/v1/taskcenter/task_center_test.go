@@ -54,6 +54,33 @@ type artifactSummaryReaderStub struct {
 	summaries map[string]*iapiserver.ArtifactReadableSummary
 }
 
+type applicationRunBindingStore struct {
+	store.TaskCenterStore
+	task            *iapiserver.AtomicTask
+	arguments       map[string]any
+	atomicTaskID    string
+	applicationRun  string
+	canvasRunID     string
+	canvasNodeRunID string
+	executionKey    string
+	calls           int
+}
+
+func (s *applicationRunBindingStore) BindApplicationRunToAtomicTask(
+	_ context.Context,
+	atomicTaskID, applicationRunID, canvasRunID, canvasNodeRunID, executionKey string,
+	arguments map[string]any,
+) (*iapiserver.AtomicTask, error) {
+	s.calls++
+	s.atomicTaskID = atomicTaskID
+	s.applicationRun = applicationRunID
+	s.canvasRunID = canvasRunID
+	s.canvasNodeRunID = canvasNodeRunID
+	s.executionKey = executionKey
+	s.arguments = arguments
+	return s.task, nil
+}
+
 func (s *observationStoreStub) GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error) {
 	return s.group, nil
 }
@@ -616,5 +643,73 @@ func TestDynamicDAGNodePassesPlannerOutputToFork(t *testing.T) {
 	}
 	if tasks[1].Input["dynamic_tasks"] != "${plan_plannertask.output.dynamic_tasks}" || tasks[1].Input["dynamic_inputs"] != "${plan_plannertask.output.dynamic_inputs}" {
 		t.Fatalf("dynamic fork input = %#v", tasks[1].Input)
+	}
+}
+
+func TestDAGDefinitionPassesConductorResolvedArgumentsToWorker(t *testing.T) {
+	group := &iapiserver.DAGTaskGroup{
+		Input: map[string]any{"prompt": "hello"},
+		Nodes: []iapiserver.DAGNode{
+			{
+				Key:  "source",
+				Task: iapiserver.AtomicTaskTemplate{Arguments: map[string]any{}},
+			},
+			{
+				Key: "application",
+				Task: iapiserver.AtomicTaskTemplate{Arguments: map[string]any{
+					"resolved_inputs": map[string]any{"seed": float64(7)},
+				}},
+				InputMapping: map[string]any{
+					"prompt": "runtime.prompt",
+					"image":  "source.image",
+				},
+			},
+		},
+	}
+	source := &iapiserver.AtomicTask{ChildKey: "source", FunctionRef: "source.run"}
+	source.ID = "task-source"
+	application := &iapiserver.AtomicTask{ChildKey: "application", FunctionRef: "application-platform.run"}
+	application.ID = "task-application"
+	definition := dagDefinition(
+		group,
+		[]*iapiserver.AtomicTask{source, application},
+		[][]string{{"source"}, {"application"}},
+	)
+	if len(definition.Tasks) != 2 {
+		t.Fatalf("runtime tasks = %#v", definition.Tasks)
+	}
+	arguments, _ := definition.Tasks[1].Input["arguments"].(map[string]any)
+	resolved, _ := arguments["resolved_inputs"].(map[string]any)
+	sourceReference := safeName(source.ChildKey + "_" + shortID(source.ID))
+	if resolved["prompt"] != "${workflow.input.input.prompt}" ||
+		resolved["image"] != "${"+sourceReference+".output.values.image}" ||
+		resolved["seed"] != float64(7) {
+		t.Fatalf("resolved arguments = %#v", resolved)
+	}
+}
+
+func TestBindApplicationRunUsesTransactionalStoreCommand(t *testing.T) {
+	task := &iapiserver.AtomicTask{ApplicationRunID: "run-1"}
+	task.ID = "task-1"
+	target := &applicationRunBindingStore{task: task}
+	service := &taskCenterService{store: target}
+	arguments := map[string]any{"resolved_inputs": map[string]any{"prompt": "hello"}}
+	got, err := service.BindApplicationRun(
+		t.Context(),
+		"task-1",
+		"run-1",
+		"canvas-run-1",
+		"node-run-1",
+		"node-a",
+		arguments,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != task || target.calls != 1 || target.atomicTaskID != "task-1" ||
+		target.applicationRun != "run-1" || target.canvasRunID != "canvas-run-1" ||
+		target.canvasNodeRunID != "node-run-1" ||
+		target.executionKey != "node-a" || target.arguments["resolved_inputs"] == nil {
+		t.Fatalf("binding command = %#v", target)
 	}
 }

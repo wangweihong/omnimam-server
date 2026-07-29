@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -67,6 +68,48 @@ func (s *taskCenterStore) GetAtomicTask(ctx context.Context, id string) (*iapise
 		return nil, mapNotFound(err, code.ErrAtomicTaskNotFound, "atomic task not found")
 	}
 	return &item, nil
+}
+
+// BindApplicationRunToAtomicTask 在同一事务内校验 Canvas 身份并固化 Worker 最终参数。
+func (s *taskCenterStore) BindApplicationRunToAtomicTask(
+	ctx context.Context,
+	atomicTaskID, applicationRunID, canvasRunID, canvasNodeRunID, executionKey string,
+	arguments map[string]any,
+) (*iapiserver.AtomicTask, error) {
+	if atomicTaskID == "" || applicationRunID == "" || canvasRunID == "" ||
+		canvasNodeRunID == "" || executionKey == "" || arguments == nil {
+		return nil, errors.NewStatus(code.ErrAtomicTaskStateBlocked, "canvas application binding identity is incomplete")
+	}
+	var result iapiserver.AtomicTask
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&result, "id = ?", atomicTaskID).Error; err != nil {
+			return err
+		}
+		if result.FunctionRef != "application-platform.run" || result.CanvasRunID != canvasRunID ||
+			result.CanvasNodeRunID != canvasNodeRunID || result.ChildKey != executionKey {
+			return errors.NewStatus(code.ErrAtomicTaskStateBlocked, "atomic task is not the requested canvas application execution")
+		}
+		if result.ApplicationRunID != "" && result.ApplicationRunID != applicationRunID {
+			return errors.NewStatus(code.ErrAtomicTaskIdempotencyConflict, "atomic task is already bound to another application run")
+		}
+		if result.ApplicationRunID == applicationRunID {
+			if reflect.DeepEqual(result.Arguments, arguments) {
+				return nil
+			}
+			return errors.NewStatus(code.ErrAtomicTaskIdempotencyConflict, "atomic task final arguments differ from the bound application run")
+		}
+		previous := result
+		result.ApplicationRunID = applicationRunID
+		result.Arguments = arguments
+		if err := tx.Save(&result).Error; err != nil {
+			return err
+		}
+		return projectAtomicTaskChanged(tx, &previous, &result)
+	})
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &result, nil
 }
 
 func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iapiserver.AtomicTask) (*iapiserver.AtomicTask, bool, error) {
@@ -802,15 +845,19 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 	if binding.TaskResourceVersion >= task.ResourceVersion {
 		return nil
 	}
-	var previousNode iapiserver.CanvasNodeRun
-	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&previousNode).Error; err != nil {
-		return err
-	}
 	if err := tx.Model(&binding).Updates(map[string]any{"task_resource_version": task.ResourceVersion, "updated_at": time.Now()}).Error; err != nil {
 		return err
 	}
+	return recalculateCanvasNode(tx, binding.CanvasNodeRunID)
+}
+
+func recalculateCanvasNode(tx *gorm.DB, nodeRunID string) error {
+	var previousNode iapiserver.CanvasNodeRun
+	if err := tx.Where("id = ?", nodeRunID).First(&previousNode).Error; err != nil {
+		return err
+	}
 	var nodeBindings []*iapiserver.CanvasNodeRunTaskBinding
-	if err := tx.Where("canvas_node_run_id = ?", binding.CanvasNodeRunID).Find(&nodeBindings).Error; err != nil {
+	if err := tx.Where("canvas_node_run_id = ?", nodeRunID).Find(&nodeBindings).Error; err != nil {
 		return err
 	}
 	taskIDs := make([]string, 0, len(nodeBindings))
@@ -822,17 +869,37 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 		return err
 	}
 	nodeStatus, nodeProgress, lastError, nodeTerminal := aggregateCanvasNodeTasks(boundTasks)
+	var readyRequiredOutputCount int64
+	if err := tx.Model(&iapiserver.CanvasNodeRunOutputBinding{}).
+		Where("canvas_node_run_id = ? AND required = TRUE AND availability_status = ?", nodeRunID, "READY").
+		Count(&readyRequiredOutputCount).Error; err != nil {
+		return err
+	}
+	nodeStatus, nodeTerminal, statusReason := gateCanvasNodeRequiredOutputs(
+		nodeStatus,
+		nodeTerminal,
+		int(readyRequiredOutputCount),
+		previousNode.RequiredOutputCount,
+	)
+	if previousNode.Status == nodeStatus && previousNode.Progress == nodeProgress &&
+		previousNode.ReadyRequiredOutputCount == int(readyRequiredOutputCount) {
+		return nil
+	}
 	values := map[string]any{
-		"status":            nodeStatus,
-		"progress":          nodeProgress,
-		"last_error_json":   mustJSON(lastError),
-		"aggregate_version": gorm.Expr("aggregate_version + 1"),
-		"updated_at":        time.Now(),
+		"status":                      nodeStatus,
+		"status_reason":               statusReason,
+		"progress":                    nodeProgress,
+		"ready_required_output_count": readyRequiredOutputCount,
+		"last_error_json":             mustJSON(lastError),
+		"aggregate_version":           gorm.Expr("aggregate_version + 1"),
+		"updated_at":                  time.Now(),
 	}
 	if nodeTerminal {
 		values["finished_at"] = time.Now()
+	} else {
+		values["finished_at"] = nil
 	}
-	result := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ?", binding.CanvasNodeRunID).Updates(values)
+	result := tx.Model(&iapiserver.CanvasNodeRun{}).Where("id = ?", nodeRunID).Updates(values)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -840,7 +907,7 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 		return nil
 	}
 	var currentNode iapiserver.CanvasNodeRun
-	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&currentNode).Error; err != nil {
+	if err := tx.Where("id = ?", nodeRunID).First(&currentNode).Error; err != nil {
 		return err
 	}
 	if err := publishCanvasNodeChanged(tx, previousNode.Status, &currentNode); err != nil {
@@ -849,8 +916,23 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 	if err := recalculateCanvasFlows(tx, currentNode.ID); err != nil {
 		return err
 	}
+	return recalculateCanvasRun(tx, currentNode.CanvasRunID)
+}
+
+func gateCanvasNodeRequiredOutputs(
+	status string,
+	terminal bool,
+	readyRequired, required int,
+) (string, bool, any) {
+	if status == iapiserver.AtomicTaskStatusSuccess && readyRequired < required {
+		return iapiserver.AtomicTaskStatusRunning, false, "waiting_for_required_outputs"
+	}
+	return status, terminal, nil
+}
+
+func recalculateCanvasRun(tx *gorm.DB, canvasRunID string) error {
 	var nodes []*iapiserver.CanvasNodeRun
-	if err := tx.Where("canvas_run_id = ?", task.CanvasRunID).Find(&nodes).Error; err != nil {
+	if err := tx.Where("canvas_run_id = ?", canvasRunID).Find(&nodes).Error; err != nil {
 		return err
 	}
 	summary := iapiserver.TaskSummary{Total: len(nodes)}
@@ -923,16 +1005,21 @@ func projectCanvasNode(tx *gorm.DB, task *iapiserver.AtomicTask) error {
 	}
 	if terminal {
 		runValues["finished_at"] = time.Now()
+	} else {
+		runValues["finished_at"] = nil
 	}
 	var previousRun iapiserver.WorkflowCanvasRun
-	if err := tx.Where("id = ?", task.CanvasRunID).First(&previousRun).Error; err != nil {
+	if err := tx.Where("id = ?", canvasRunID).First(&previousRun).Error; err != nil {
 		return err
 	}
-	if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ?", task.CanvasRunID).Updates(runValues).Error; err != nil {
+	if previousRun.Status == runStatus && previousRun.Progress == progress {
+		return nil
+	}
+	if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).Where("id = ?", canvasRunID).Updates(runValues).Error; err != nil {
 		return err
 	}
 	var currentRun iapiserver.WorkflowCanvasRun
-	if err := tx.Where("id = ?", task.CanvasRunID).First(&currentRun).Error; err != nil {
+	if err := tx.Where("id = ?", canvasRunID).First(&currentRun).Error; err != nil {
 		return err
 	}
 	return publishCanvasRunChanged(tx, previousRun.Status, &currentRun)

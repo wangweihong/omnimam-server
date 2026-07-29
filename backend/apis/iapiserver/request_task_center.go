@@ -153,6 +153,7 @@ type DAGTaskGroupCreateRequest struct {
 	Input             map[string]any  `json:"input"`
 	OutputMapping     map[string]any  `json:"output_mapping"`
 	CanvasVersionID   string          `json:"canvas_version_id" binding:"omitempty,max=64"`
+	CanvasRunID       string          `json:"-"`
 	ProjectID         string          `json:"project_id" binding:"required,max=128"`
 	Namespace         string          `json:"namespace" binding:"required,max=128"`
 	IdempotencyScope  string          `json:"idempotency_scope" binding:"omitempty,max=256"`

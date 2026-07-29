@@ -3,15 +3,18 @@ package postgresql
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"reflect"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -397,6 +400,26 @@ func (s *workflowCanvasStore) BindWorkflowCanvasRun(
 				return err
 			}
 		}
+		// DAG 可在 Canvas 投影绑定提交前开始执行；绑定完成时用 Task Center 当前事实修复该崩溃窗口。
+		boundNodeIDs := make(map[string]struct{}, len(taskBindings))
+		boundTaskIDs := make([]string, 0, len(taskBindings))
+		for _, binding := range taskBindings {
+			boundNodeIDs[binding.CanvasNodeRunID] = struct{}{}
+			boundTaskIDs = append(boundTaskIDs, binding.AtomicTaskID)
+		}
+		if len(boundTaskIDs) > 0 {
+			var lockedTasks []*iapiserver.AtomicTask
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("id IN ?", boundTaskIDs).
+				Find(&lockedTasks).Error; err != nil {
+				return err
+			}
+		}
+		for nodeID := range boundNodeIDs {
+			if err := recalculateCanvasNode(tx, nodeID); err != nil {
+				return err
+			}
+		}
 		var bound iapiserver.WorkflowCanvasRun
 		if err := tx.Where("id = ?", id).First(&bound).Error; err != nil {
 			return err
@@ -492,6 +515,90 @@ func (s *workflowCanvasStore) GetCanvasNodeRunDetail(
 		return nil, nil, errors.WithStack(err)
 	}
 	return tasks, outputs, nil
+}
+
+// ProjectCanvasApplicationArtifact 按 AtomicTask、输出键和序号单调更新 Canvas 输出事实。
+func (s *workflowCanvasStore) ProjectCanvasApplicationArtifact(
+	ctx context.Context,
+	projection *store.CanvasApplicationArtifactProjection,
+) (bool, error) {
+	if projection == nil || projection.AtomicTaskID == "" || projection.OutputKey == "" ||
+		projection.Sequence < 0 || projection.ArtifactID == "" || projection.ArtifactResourceVersion < 1 {
+		return false, errors.New("canvas application artifact projection is incomplete")
+	}
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var taskBinding iapiserver.CanvasNodeRunTaskBinding
+		if err := tx.Where("atomic_task_id = ?", projection.AtomicTaskID).First(&taskBinding).Error; err != nil {
+			return err
+		}
+		shardKey := "root"
+		if projection.Sequence > 0 {
+			shardKey = fmt.Sprintf("sequence:%d", projection.Sequence)
+		}
+		var binding iapiserver.CanvasNodeRunOutputBinding
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("canvas_node_run_id = ? AND port_key = ? AND shard_key = ?", taskBinding.CanvasNodeRunID, projection.OutputKey, shardKey).
+			First(&binding).Error
+		if stderrors.Is(err, gorm.ErrRecordNotFound) && projection.Sequence > 0 {
+			var root iapiserver.CanvasNodeRunOutputBinding
+			if err := tx.Where("canvas_node_run_id = ? AND port_key = ? AND shard_key = ?", taskBinding.CanvasNodeRunID, projection.OutputKey, "root").First(&root).Error; err != nil {
+				return err
+			}
+			index := projection.Sequence
+			binding = iapiserver.CanvasNodeRunOutputBinding{
+				CanvasNodeRunID:    root.CanvasNodeRunID,
+				PortKey:            root.PortKey,
+				Required:           false,
+				ShardKey:           shardKey,
+				ShardIndex:         &index,
+				ProducerKey:        fmt.Sprintf("%s:sequence:%d", root.ProducerKey, projection.Sequence),
+				AvailabilityStatus: "PENDING",
+			}
+			binding.ID = uuid.NewString()
+			binding.Name = fmt.Sprintf("%s[%d]", root.Name, projection.Sequence)
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&binding).Error; err != nil {
+				return err
+			}
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("canvas_node_run_id = ? AND port_key = ? AND shard_key = ?", taskBinding.CanvasNodeRunID, projection.OutputKey, shardKey).
+				First(&binding).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		if binding.ArtifactResourceVersion >= projection.ArtifactResourceVersion {
+			return nil
+		}
+		previousStatus := binding.AvailabilityStatus
+		previousArtifactID := binding.ArtifactID
+		availabilityStatus := "PENDING"
+		switch projection.ArtifactProcessingStatus {
+		case iapiserver.ArtifactProcessingReady:
+			availabilityStatus = "READY"
+		case iapiserver.ArtifactProcessingFailed:
+			availabilityStatus = "FAILED"
+		}
+		binding.AtomicTaskID = &projection.AtomicTaskID
+		binding.ArtifactID = &projection.ArtifactID
+		binding.AvailabilityStatus = availabilityStatus
+		binding.ArtifactResourceVersion = projection.ArtifactResourceVersion
+		binding.AggregateVersion++
+		if err := tx.Save(&binding).Error; err != nil {
+			return err
+		}
+		applied = true
+		newReadyArtifact := availabilityStatus == "READY" &&
+			(previousStatus != "READY" || previousArtifactID == nil || *previousArtifactID != projection.ArtifactID)
+		if newReadyArtifact {
+			if err := publishCanvasNodeOutputAvailable(tx, &binding, projection.MediaType); err != nil {
+				return err
+			}
+		}
+		return recalculateCanvasNode(tx, binding.CanvasNodeRunID)
+	})
+	return applied, errors.WithStack(err)
 }
 
 var _ storeWorkflowCanvasContract = (*workflowCanvasStore)(nil)

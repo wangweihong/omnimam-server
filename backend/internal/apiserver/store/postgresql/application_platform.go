@@ -418,6 +418,17 @@ func (s *applicationPlatformStore) GetApplication(ctx context.Context, id string
 	return &item, nil
 }
 
+func (s *applicationPlatformStore) GetApplicationsByIDs(ctx context.Context, ids []string) ([]*iapiserver.Application, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.Application{}, nil
+	}
+	var items []*iapiserver.Application
+	if err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *applicationPlatformStore) AddApplication(ctx context.Context, data *iapiserver.Application) (*iapiserver.Application, error) {
 	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
 		return nil, errors.WithStack(err)
@@ -442,12 +453,35 @@ func (s *applicationPlatformStore) ListApplicationVersions(ctx context.Context, 
 	return items, total, err
 }
 
+func (s *applicationPlatformStore) ListPublishedApplicationVersions(ctx context.Context) ([]*iapiserver.ApplicationVersion, error) {
+	var items []*iapiserver.ApplicationVersion
+	if err := s.ds.db.WithContext(ctx).Where("status = ?", iapiserver.VersionStatusPublished).
+		Order("created_at ASC, id ASC").Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
 func (s *applicationPlatformStore) GetApplicationVersion(ctx context.Context, id string) (*iapiserver.ApplicationVersion, error) {
 	var item iapiserver.ApplicationVersion
 	if err := s.ds.db.WithContext(ctx).First(&item, "id = ?", id).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return &item, nil
+}
+
+func (s *applicationPlatformStore) GetApplicationVersionsByIDs(
+	ctx context.Context,
+	ids []string,
+) ([]*iapiserver.ApplicationVersion, error) {
+	if len(ids) == 0 {
+		return []*iapiserver.ApplicationVersion{}, nil
+	}
+	var items []*iapiserver.ApplicationVersion
+	if err := s.ds.db.WithContext(ctx).Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
 }
 
 func (s *applicationPlatformStore) AddApplicationVersion(ctx context.Context, data *iapiserver.ApplicationVersion) (*iapiserver.ApplicationVersion, error) {
@@ -474,7 +508,25 @@ func (s *applicationPlatformStore) PublishApplicationVersion(ctx context.Context
 			return err
 		}
 		result.Status, result.PublishedAt, result.ResourceVersion = iapiserver.VersionStatusPublished, &now, result.ResourceVersion+1
-		return nil
+		var application iapiserver.Application
+		if err := tx.First(&application, "id = ?", result.ApplicationID).Error; err != nil {
+			return err
+		}
+		payload := map[string]any{
+			"application_id":                  application.ID,
+			"application_version_id":          result.ID,
+			"application_template_version_id": result.ApplicationTemplateVersionID,
+			"semantic_version":                result.SemanticVersion,
+			"application_name":                application.Name,
+			"owner_user_id":                   application.OwnerUserID,
+			"visibility":                      application.Visibility,
+			"canvas_enabled":                  application.CanvasEnabled,
+			"run_enabled":                     application.RunEnabled,
+			"input_schema":                    result.InputSchema,
+			"output_schema":                   result.OutputSchema,
+			"published_at":                    now,
+		}
+		return publishOutbox(tx, OutboxTopicApplicationVersionPublished, result.ID+":"+result.SemanticVersion, payload)
 	})
 	return &result, errors.WithStack(err)
 }
@@ -538,27 +590,76 @@ func (s *applicationPlatformStore) GetApplicationRunByIdempotency(ctx context.Co
 }
 
 func (s *applicationPlatformStore) AddApplicationRun(ctx context.Context, data *iapiserver.ApplicationRun) (*iapiserver.ApplicationRun, error) {
-	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(data).Error; err != nil {
+			return err
+		}
+		return publishOutbox(tx, OutboxTopicApplicationRunCreated, data.ID+":created", applicationRunCreatedPayload(data))
+	})
+	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return data, nil
 }
 
-func (s *applicationPlatformStore) BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error) {
-	values := map[string]any{"task_creation_status": status, "task_creation_failure": failure, "resource_version": gorm.Expr("resource_version + 1")}
-	if atomicTaskID != "" {
-		values["atomic_task_id"] = atomicTaskID
-		values["task_status_projection"] = iapiserver.AtomicTaskStatusReady
-		values["task_resource_version"] = taskVersion
-	}
-	result := s.ds.db.WithContext(ctx).Model(&iapiserver.ApplicationRun{}).Where("id = ?", id).Updates(values)
-	if result.Error != nil {
-		return nil, errors.WithStack(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return nil, gorm.ErrRecordNotFound
+func (s *applicationPlatformStore) BindApplicationRunTask(ctx context.Context, id, atomicTaskID, status, taskStatus string, taskVersion int64, failure string) (*iapiserver.ApplicationRun, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current iapiserver.ApplicationRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if current.AtomicTaskID != nil && *current.AtomicTaskID != "" && atomicTaskID != "" && *current.AtomicTaskID != atomicTaskID {
+			return errors.NewStatus(code.ErrAIAppApplicationRunCreateFailed, "application run is already bound to another atomic task")
+		}
+		values := map[string]any{"task_creation_status": status, "task_creation_failure": failure, "resource_version": gorm.Expr("resource_version + 1")}
+		newBinding := atomicTaskID != "" && (current.AtomicTaskID == nil || *current.AtomicTaskID == "")
+		if atomicTaskID != "" {
+			values["atomic_task_id"] = atomicTaskID
+			values["task_status_projection"] = taskStatus
+			values["task_resource_version"] = taskVersion
+		}
+		if err := tx.Model(&current).Updates(values).Error; err != nil {
+			return err
+		}
+		if !newBinding {
+			return nil
+		}
+		payload := map[string]any{
+			"application_run_id": current.ID, "atomic_task_id": atomicTaskID,
+			"task_creation_status": status, "task_resource_version": taskVersion,
+			"occurred_at": imachinery.Now(),
+		}
+		return publishOutbox(tx, OutboxTopicApplicationRunAtomicTaskBound, current.ID+":"+atomicTaskID, payload)
+	})
+	if err != nil {
+		return nil, errors.WithStack(err)
 	}
 	return s.GetApplicationRun(ctx, id)
+}
+
+func applicationRunCreatedPayload(run *iapiserver.ApplicationRun) map[string]any {
+	originType := snapshotString(run.ExecutionSnapshot, "origin_type")
+	if originType == "" {
+		originType = "api"
+	}
+	return map[string]any{
+		"application_run_id": run.ID, "application_id": run.ApplicationID,
+		"application_version_id":          run.ApplicationVersionID,
+		"application_template_version_id": run.ApplicationTemplateVersionID,
+		"engine_instance_id":              run.EngineInstanceID, "capability_source_type": run.CapabilitySourceType,
+		"source_revision": run.SourceRevision, "provider_capability_id": run.ProviderCapabilityID,
+		"provider_capability_revision": run.ProviderCapabilityRevision, "provider_operation_id": run.ProviderOperationID,
+		"workflow_contract_revision": run.WorkflowContractRevision, "execution_snapshot": run.ExecutionSnapshot,
+		"origin_type": originType, "canvas_run_id": snapshotString(run.ExecutionSnapshot, "canvas_run_id"),
+		"canvas_node_run_id":   snapshotString(run.ExecutionSnapshot, "canvas_node_run_id"),
+		"execution_key":        snapshotString(run.ExecutionSnapshot, "execution_key"),
+		"task_creation_status": run.TaskCreationStatus, "occurred_at": imachinery.Now(),
+	}
+}
+
+func snapshotString(snapshot map[string]any, key string) string {
+	value, _ := snapshot[key].(string)
+	return value
 }
 
 func (s *applicationPlatformStore) ProjectApplicationRun(ctx context.Context, id string, taskVersion int64, status, failure string, outputs []map[string]any) (*iapiserver.ApplicationRun, error) {

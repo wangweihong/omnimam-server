@@ -11,6 +11,8 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
@@ -40,6 +42,42 @@ type recordingTerminalProjector struct {
 	task  *iapiserver.AtomicTask
 	err   error
 	calls int
+}
+
+type recordingPayloadProjector struct {
+	payload []byte
+	err     error
+	calls   int
+}
+
+func (p *recordingPayloadProjector) Project(_ context.Context, payload []byte) error {
+	p.calls++
+	p.payload = payload
+	return p.err
+}
+
+type taskworkerApplicationCatalogStore struct {
+	store.WorkflowCanvasStore
+	calls int
+}
+
+func (s *taskworkerApplicationCatalogStore) AddWorkflowNodeDefinitionIdempotent(
+	context.Context,
+	*iapiserver.WorkflowNodeDefinition,
+) (*iapiserver.WorkflowNodeDefinition, bool, error) {
+	s.calls++
+	return nil, true, nil
+}
+
+type publishedCanvasApplicationListerStub struct {
+	items []*appsvc.CanvasApplicationVersion
+	err   error
+}
+
+func (s *publishedCanvasApplicationListerStub) ListPublishedCanvasApplicationVersions(
+	context.Context,
+) ([]*appsvc.CanvasApplicationVersion, error) {
+	return s.items, s.err
 }
 
 func (p *recordingTerminalProjector) Completed(_ context.Context, task *iapiserver.AtomicTask) error {
@@ -152,6 +190,15 @@ func TestApplicationRunTerminalProjectionConsumerGroupIsStable(t *testing.T) {
 	}
 }
 
+func TestCanvasApplicationConsumerGroupsAreStable(t *testing.T) {
+	if applicationCatalogConsumerGroup != "workflow-canvas-application-catalog" {
+		t.Fatalf("catalog consumer group = %q", applicationCatalogConsumerGroup)
+	}
+	if applicationArtifactProjectionConsumerGroup != "workflow-canvas-application-artifact-projection" {
+		t.Fatalf("artifact consumer group = %q", applicationArtifactProjectionConsumerGroup)
+	}
+}
+
 func TestHandleApplicationRunTerminalProjection(t *testing.T) {
 	terminalTask := &iapiserver.AtomicTask{
 		ApplicationRunID: "run-1",
@@ -260,4 +307,119 @@ func TestConsumeApplicationRunTerminalProjectionAcknowledgement(t *testing.T) {
 			t.Fatal("failed terminal projection message was not negatively acknowledged")
 		}
 	})
+}
+
+func TestConsumeReliablePayloadAcknowledgement(t *testing.T) {
+	payload := []byte(`{"artifact_id":"artifact-1"}`)
+	tests := []struct {
+		name    string
+		err     error
+		wantAck bool
+	}{
+		{name: "ack after projection", wantAck: true},
+		{name: "nack after projection failure", err: stderrors.New("temporary failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := message.NewMessage(tt.name, payload)
+			messages := make(chan *message.Message, 1)
+			messages <- msg
+			close(messages)
+			projector := &recordingPayloadProjector{err: tt.err}
+			consumeReliablePayloads(t.Context(), messages, projector, "test-consumer")
+			if projector.calls != 1 || string(projector.payload) != string(payload) {
+				t.Fatalf("projector = %#v", projector)
+			}
+			if tt.wantAck {
+				select {
+				case <-msg.Acked():
+				default:
+					t.Fatal("message was not acknowledged")
+				}
+			} else {
+				select {
+				case <-msg.Nacked():
+				default:
+					t.Fatal("message was not negatively acknowledged")
+				}
+			}
+		})
+	}
+}
+
+func TestConsumeApplicationCatalogAcknowledgesLossySchemaDiagnostic(t *testing.T) {
+	msg := message.NewMessage("catalog-diagnostic", []byte(`{
+		"application_id":"application-1",
+		"application_version_id":"version-1",
+		"application_template_version_id":"template-version-1",
+		"semantic_version":"1.0.0",
+		"application_name":"Application",
+		"owner_user_id":"user-1",
+		"visibility":"private",
+		"canvas_enabled":true,
+		"run_enabled":true,
+		"input_schema":{"type":"object","properties":{"choice":{"oneOf":[{"type":"string"},{"type":"number"}]}}},
+		"output_schema":{"type":"object","properties":{}}
+	}`))
+	messages := make(chan *message.Message, 1)
+	messages <- msg
+	close(messages)
+	target := &taskworkerApplicationCatalogStore{}
+	consumeApplicationCatalog(
+		t.Context(),
+		messages,
+		workflowcanvassvc.NewApplicationCatalogProjector(target),
+	)
+	if target.calls != 0 {
+		t.Fatalf("lossy schema reached catalog store: calls=%d", target.calls)
+	}
+	select {
+	case <-msg.Acked():
+	default:
+		t.Fatal("diagnostic event was not acknowledged")
+	}
+}
+
+func TestReconcilePublishedApplicationCatalogRepairsConvertibleVersions(t *testing.T) {
+	application := &iapiserver.Application{
+		OwnerUserID:   "user-1",
+		Visibility:    iapiserver.ApplicationVisibilityPrivate,
+		CanvasEnabled: true,
+		RunEnabled:    true,
+	}
+	application.ID = "application-1"
+	application.Name = "Application"
+	valid := &iapiserver.ApplicationVersion{
+		ApplicationID:                application.ID,
+		SemanticVersion:              "1.0.0",
+		ApplicationTemplateVersionID: "template-version-1",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"prompt": map[string]any{"type": "string"}},
+		},
+		OutputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+	valid.ID = "version-1"
+	invalid := *valid
+	invalid.ID = "version-2"
+	invalid.SemanticVersion = "2.0.0"
+	invalid.InputSchema = map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"choice": map[string]any{"oneOf": []any{map[string]any{"type": "string"}}}},
+	}
+	target := &taskworkerApplicationCatalogStore{}
+	err := reconcilePublishedApplicationCatalog(
+		t.Context(),
+		&publishedCanvasApplicationListerStub{items: []*appsvc.CanvasApplicationVersion{
+			{Application: application, Version: valid},
+			{Application: application, Version: &invalid},
+		}},
+		workflowcanvassvc.NewApplicationCatalogProjector(target),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.calls != 1 {
+		t.Fatalf("catalog repair calls = %d, want 1", target.calls)
+	}
 }

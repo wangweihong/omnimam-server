@@ -87,6 +87,43 @@ type ApplicationPlatformSrv interface {
 	CreateApplicationRun(context.Context, string, *iapiserver.ApplicationRunCreateRequest) (*iapiserver.ApplicationRun, error)
 	ListApplicationRuns(context.Context, *iapiserver.ApplicationRunListRequest) (*iapiserver.ApplicationRunListResponse, error)
 	GetApplicationRun(context.Context, string) (*iapiserver.ApplicationRun, error)
+	ResolveCanvasApplicationVersion(context.Context, string, map[string]any) (*CanvasApplicationVersion, error)
+	ResolveCanvasApplicationVersions(context.Context, []CanvasApplicationVersionRequest) []CanvasApplicationVersionResult
+	ListPublishedCanvasApplicationVersions(context.Context) ([]*CanvasApplicationVersion, error)
+	EnsureCanvasApplicationRun(context.Context, *CanvasApplicationRunRequest) (*iapiserver.ApplicationRun, error)
+}
+
+// CanvasApplicationVersion 是 Workflow Canvas 消费的权限裁剪内部契约。
+type CanvasApplicationVersion struct {
+	Application *iapiserver.Application
+	Version     *iapiserver.ApplicationVersion
+	RuntimeForm *iapiserver.RuntimeFormSchema
+}
+
+// CanvasApplicationVersionRequest 是 Canvas 批量实时复核中的单项请求。
+type CanvasApplicationVersionRequest struct {
+	Key                  string
+	ApplicationVersionID string
+	Inputs               map[string]any
+}
+
+// CanvasApplicationVersionResult 保留单项身份，使调用方可区分权限/运行能力失败。
+type CanvasApplicationVersionResult struct {
+	Key      string
+	Resolved *CanvasApplicationVersion
+	Err      error
+}
+
+// CanvasApplicationRunRequest 携带 DAG Worker 已解析的最终输入和既有 AtomicTask 身份。
+type CanvasApplicationRunRequest struct {
+	AtomicTaskID         string
+	CanvasRunID          string
+	CanvasNodeRunID      string
+	ExecutionKey         string
+	ApplicationVersionID string
+	OwnerUserID          string
+	Inputs               map[string]any
+	Arguments            map[string]any
 }
 
 type Principal struct {
@@ -856,9 +893,6 @@ func (s *applicationPlatformService) PublishApplicationVersion(ctx context.Conte
 		return nil, errors.NewStatus(code.ErrAIAppApplicationVersionNotPublishable, "referenced template version is not published")
 	}
 	ret, err := s.Store.ApplicationPlatforms().PublishApplicationVersion(ctx, id)
-	if err == nil {
-		s.publish(ctx, "application_version_published", ret.ID+":"+ret.SemanticVersion, map[string]any{"application_id": ret.ApplicationID, "application_version_id": ret.ID, "application_template_version_id": ret.ApplicationTemplateVersionID, "semantic_version": ret.SemanticVersion, "published_at": ret.PublishedAt})
-	}
 	return ret, err
 }
 
@@ -953,13 +987,267 @@ func (s *applicationPlatformService) CreateApplicationRun(ctx context.Context, a
 	if err != nil {
 		return nil, mapUnique(err, "idx_aiapp_runs_owner_idempotency", code.ErrAIAppApplicationRunCreateFailed, "application run idempotency conflict")
 	}
-	s.publish(ctx, "application_run_created", created.ID+":created", applicationRunEventPayload(created))
 	result, err := s.retryTaskBinding(ctx, created)
 	if err != nil {
 		return nil, err
 	}
 	s.attachApplicationRunRelations(ctx, result)
 	return result, nil
+}
+
+// ResolveCanvasApplicationVersion 返回当前主体可用于 Canvas 的版本、schema 与实时运行能力。
+func (s *applicationPlatformService) ResolveCanvasApplicationVersion(
+	ctx context.Context,
+	versionID string,
+	inputs map[string]any,
+) (*CanvasApplicationVersion, error) {
+	results := s.ResolveCanvasApplicationVersions(ctx, []CanvasApplicationVersionRequest{{
+		Key:                  versionID,
+		ApplicationVersionID: versionID,
+		Inputs:               inputs,
+	}})
+	if len(results) != 1 {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationVersionNotFound, "published application version not found")
+	}
+	return results[0].Resolved, results[0].Err
+}
+
+// ResolveCanvasApplicationVersions 批量执行权限、开关、schema 与 Engine/runtime 实时复核。
+func (s *applicationPlatformService) ResolveCanvasApplicationVersions(
+	ctx context.Context,
+	requests []CanvasApplicationVersionRequest,
+) []CanvasApplicationVersionResult {
+	results := make([]CanvasApplicationVersionResult, len(requests))
+	for index, request := range requests {
+		results[index].Key = request.Key
+	}
+	if len(requests) == 0 {
+		return results
+	}
+	principal, err := s.principal(ctx, false)
+	if err != nil {
+		for index := range results {
+			results[index].Err = err
+		}
+		return results
+	}
+	versionIDs := make([]string, 0, len(requests))
+	seenVersionIDs := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		if _, exists := seenVersionIDs[request.ApplicationVersionID]; !exists {
+			seenVersionIDs[request.ApplicationVersionID] = struct{}{}
+			versionIDs = append(versionIDs, request.ApplicationVersionID)
+		}
+	}
+	versions, err := s.Store.ApplicationPlatforms().GetApplicationVersionsByIDs(ctx, versionIDs)
+	if err != nil {
+		for index := range results {
+			results[index].Err = err
+		}
+		return results
+	}
+	versionByID := make(map[string]*iapiserver.ApplicationVersion, len(versions))
+	applicationIDs := make([]string, 0, len(versions))
+	seenApplicationIDs := make(map[string]struct{}, len(versions))
+	for _, version := range versions {
+		versionByID[version.ID] = version
+		if _, exists := seenApplicationIDs[version.ApplicationID]; !exists {
+			seenApplicationIDs[version.ApplicationID] = struct{}{}
+			applicationIDs = append(applicationIDs, version.ApplicationID)
+		}
+	}
+	applications, err := s.Store.ApplicationPlatforms().GetApplicationsByIDs(ctx, applicationIDs)
+	if err != nil {
+		for index := range results {
+			results[index].Err = err
+		}
+		return results
+	}
+	applicationByID := make(map[string]*iapiserver.Application, len(applications))
+	for _, application := range applications {
+		applicationByID[application.ID] = application
+	}
+	for index, request := range requests {
+		version := versionByID[request.ApplicationVersionID]
+		if version == nil || version.Status != iapiserver.VersionStatusPublished {
+			results[index].Err = errors.NewStatus(code.ErrAIAppApplicationVersionNotFound, "published application version not found")
+			continue
+		}
+		application := applicationByID[version.ApplicationID]
+		if application == nil || (!principal.Admin && application.OwnerUserID != principal.UserID &&
+			application.Visibility != iapiserver.ApplicationVisibilityGlobal) {
+			results[index].Err = errors.NewStatus(code.ErrAIAppApplicationNotFound, "application not found")
+			continue
+		}
+		if !application.CanvasEnabled || !application.RunEnabled {
+			results[index].Err = errors.NewStatus(code.ErrAIAppPermissionDenied, "application is unavailable to canvas")
+			continue
+		}
+		form, resolveErr := s.resolveRuntimeForm(ctx, application, version, &iapiserver.RuntimeFormResolveRequest{
+			ApplicationVersionID: version.ID,
+			CurrentValues:        request.Inputs,
+		})
+		if resolveErr != nil {
+			results[index].Err = resolveErr
+			continue
+		}
+		if len(form.CompatibleEngineInstanceIDs) == 0 {
+			results[index].Err = errors.NewStatus(code.ErrAIAppEngineUnavailable, "application has no executable engine runtime")
+			continue
+		}
+		results[index].Resolved = &CanvasApplicationVersion{
+			Application: application,
+			Version:     version,
+			RuntimeForm: form,
+		}
+	}
+	return results
+}
+
+// ListPublishedCanvasApplicationVersions 返回启动修复所需的已发布版本事实，不替代调用方实时权限校验。
+func (s *applicationPlatformService) ListPublishedCanvasApplicationVersions(ctx context.Context) ([]*CanvasApplicationVersion, error) {
+	versions, err := s.Store.ApplicationPlatforms().ListPublishedApplicationVersions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	applicationIDs := make([]string, 0, len(versions))
+	for _, version := range versions {
+		applicationIDs = append(applicationIDs, version.ApplicationID)
+	}
+	applications, err := s.Store.ApplicationPlatforms().GetApplicationsByIDs(ctx, applicationIDs)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*iapiserver.Application, len(applications))
+	for _, application := range applications {
+		byID[application.ID] = application
+	}
+	result := make([]*CanvasApplicationVersion, 0, len(versions))
+	for _, version := range versions {
+		if application := byID[version.ApplicationID]; application != nil {
+			result = append(result, &CanvasApplicationVersion{Application: application, Version: version})
+		}
+	}
+	return result, nil
+}
+
+// EnsureCanvasApplicationRun 在 Provider 调用前把最终 DAG 输入固化为 ApplicationRun，并绑定既有 AtomicTask。
+func (s *applicationPlatformService) EnsureCanvasApplicationRun(
+	ctx context.Context,
+	req *CanvasApplicationRunRequest,
+) (*iapiserver.ApplicationRun, error) {
+	if req == nil || req.AtomicTaskID == "" || req.CanvasRunID == "" || req.CanvasNodeRunID == "" ||
+		req.ExecutionKey == "" || req.ApplicationVersionID == "" || req.OwnerUserID == "" || req.Arguments == nil {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationRunCreateFailed, "canvas application run identity is incomplete")
+	}
+	version, err := s.Store.ApplicationPlatforms().GetApplicationVersion(ctx, req.ApplicationVersionID)
+	if err != nil || version.Status != iapiserver.VersionStatusPublished {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationVersionNotFound, "published application version not found")
+	}
+	app, err := s.Store.ApplicationPlatforms().GetApplication(ctx, version.ApplicationID)
+	if err != nil || (app.OwnerUserID != req.OwnerUserID && app.Visibility != iapiserver.ApplicationVisibilityGlobal) {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationNotFound, "application not found")
+	}
+	if !app.CanvasEnabled || !app.RunEnabled {
+		return nil, errors.NewStatus(code.ErrAIAppPermissionDenied, "application is unavailable to canvas")
+	}
+	form, err := s.resolveRuntimeForm(ctx, app, version, &iapiserver.RuntimeFormResolveRequest{
+		ApplicationVersionID: version.ID,
+		CurrentValues:        req.Inputs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(form.Violations) > 0 {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "canvas application input has unresolved violations")
+	}
+	if len(form.CompatibleEngineInstanceIDs) == 0 {
+		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "no compatible engine instance")
+	}
+	template, err := s.Store.ApplicationPlatforms().GetTemplateVersion(ctx, version.ApplicationTemplateVersionID)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppTemplateVersionNotFound, "application template version not found")
+	}
+	idempotencyKey := "canvas:" + req.CanvasRunID + ":" + req.ExecutionKey
+	resolved := &iapiserver.ApplicationRunCreateRequest{
+		ApplicationVersionID: version.ID,
+		Inputs:               resolvedRuntimeInputs(req.Inputs, form.Fields),
+		IdempotencyKey:       idempotencyKey,
+	}
+	original := &iapiserver.ApplicationRunCreateRequest{
+		ApplicationVersionID: version.ID,
+		Inputs:               req.Inputs,
+		IdempotencyKey:       idempotencyKey,
+	}
+	run, lookupErr := s.Store.ApplicationPlatforms().GetApplicationRunByIdempotency(ctx, req.OwnerUserID, idempotencyKey)
+	if lookupErr != nil {
+		if !stderrors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return nil, lookupErr
+		}
+		resolved.EngineInstanceID = form.CompatibleEngineInstanceIDs[0]
+		engine, engineErr := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, resolved.EngineInstanceID)
+		if engineErr != nil {
+			return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine instance is unavailable")
+		}
+		run = newApplicationRun(req.OwnerUserID, app, version, template, engine, resolved, original, form)
+		run.ExecutionSnapshot["origin_type"] = "canvas"
+		run.ExecutionSnapshot["canvas_run_id"] = req.CanvasRunID
+		run.ExecutionSnapshot["canvas_node_run_id"] = req.CanvasNodeRunID
+		run.ExecutionSnapshot["execution_key"] = req.ExecutionKey
+		run, err = s.Store.ApplicationPlatforms().AddApplicationRun(ctx, run)
+		if err != nil {
+			run, lookupErr = s.Store.ApplicationPlatforms().GetApplicationRunByIdempotency(ctx, req.OwnerUserID, idempotencyKey)
+			if lookupErr != nil {
+				return nil, mapUnique(err, "idx_aiapp_runs_owner_idempotency", code.ErrAIAppApplicationRunCreateFailed, "canvas application run idempotency conflict")
+			}
+		}
+	}
+	if !contains(form.CompatibleEngineInstanceIDs, run.EngineInstanceID) {
+		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "application run engine instance is no longer executable")
+	}
+	if !sameCanvasApplicationRun(run, req, version.ID, resolved.Inputs) {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationRunCreateFailed, "canvas application run idempotency conflict")
+	}
+	task, err := s.Tasks.BindApplicationRun(
+		ctx,
+		req.AtomicTaskID,
+		run.ID,
+		req.CanvasRunID,
+		req.CanvasNodeRunID,
+		req.ExecutionKey,
+		req.Arguments,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if run.AtomicTaskID != nil && *run.AtomicTaskID != task.ID {
+		return nil, errors.NewStatus(code.ErrAIAppApplicationRunCreateFailed, "application run is already bound to another atomic task")
+	}
+	if run.AtomicTaskID == nil || *run.AtomicTaskID == "" {
+		run, err = s.Store.ApplicationPlatforms().BindApplicationRunTask(
+			ctx, run.ID, task.ID, iapiserver.TaskCreationCreated, task.Status, task.ResourceVersion, "",
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return run, nil
+}
+
+func sameCanvasApplicationRun(
+	run *iapiserver.ApplicationRun,
+	req *CanvasApplicationRunRequest,
+	applicationVersionID string,
+	resolvedInputs map[string]any,
+) bool {
+	return run != nil && req != nil &&
+		run.ApplicationVersionID == applicationVersionID &&
+		firstString(run.ExecutionSnapshot, "origin_type") == "canvas" &&
+		firstString(run.ExecutionSnapshot, "canvas_run_id") == req.CanvasRunID &&
+		firstString(run.ExecutionSnapshot, "canvas_node_run_id") == req.CanvasNodeRunID &&
+		firstString(run.ExecutionSnapshot, "execution_key") == req.ExecutionKey &&
+		reflect.DeepEqual(run.InputSnapshot, resolvedInputs) &&
+		reflect.DeepEqual(run.ExecutionSnapshot["idempotency_inputs"], req.Inputs)
 }
 
 func sameApplicationRunRequest(existing *iapiserver.ApplicationRun, applicationID string, request *iapiserver.ApplicationRunCreateRequest) bool {
@@ -1016,15 +1304,14 @@ func (s *applicationPlatformService) retryTaskBinding(ctx context.Context, run *
 	if err != nil {
 		return s.failTaskBinding(ctx, run, err)
 	}
-	bound, err := s.Store.ApplicationPlatforms().BindApplicationRunTask(ctx, run.ID, task.ID, iapiserver.TaskCreationCreated, task.ResourceVersion, "")
+	bound, err := s.Store.ApplicationPlatforms().BindApplicationRunTask(ctx, run.ID, task.ID, iapiserver.TaskCreationCreated, task.Status, task.ResourceVersion, "")
 	if err != nil {
 		return nil, err
 	}
-	s.publish(ctx, "application_run_task_bound", run.ID+":"+task.ID, map[string]any{"application_run_id": run.ID, "atomic_task_id": task.ID, "task_creation_status": iapiserver.TaskCreationCreated, "task_resource_version": task.ResourceVersion})
 	return bound, nil
 }
 func (s *applicationPlatformService) failTaskBinding(ctx context.Context, run *iapiserver.ApplicationRun, cause error) (*iapiserver.ApplicationRun, error) {
-	failed, storeErr := s.Store.ApplicationPlatforms().BindApplicationRunTask(ctx, run.ID, "", iapiserver.TaskCreationFailed, 0, cause.Error())
+	failed, storeErr := s.Store.ApplicationPlatforms().BindApplicationRunTask(ctx, run.ID, "", iapiserver.TaskCreationFailed, "", 0, cause.Error())
 	if storeErr != nil {
 		return nil, storeErr
 	}
@@ -1242,7 +1529,7 @@ func (s *applicationPlatformService) validateTemplateVersion(ctx context.Context
 func (s *applicationPlatformService) publish(ctx context.Context, eventType, key string, payload map[string]any) {
 	occurredAt := imachinery.Now()
 	switch eventType {
-	case "application_run_created", "application_run_task_bound":
+	case "application_run_created", "application_run_atomic_task_bound":
 		payload["occurred_at"] = occurredAt
 	}
 	if err := s.Events.Publish(context.WithoutCancel(ctx), &iapiserver.ApplicationPlatformEvent{Type: eventType, IdempotencyKey: key, Payload: payload, OccurredAt: occurredAt}); err != nil {
@@ -1311,7 +1598,22 @@ func snapshotValue[T any](snapshot map[string]any, key string) *T {
 	return &result
 }
 func applicationRunEventPayload(run *iapiserver.ApplicationRun) map[string]any {
-	return map[string]any{"application_run_id": run.ID, "application_id": run.ApplicationID, "application_version_id": run.ApplicationVersionID, "application_template_version_id": run.ApplicationTemplateVersionID, "engine_instance_id": run.EngineInstanceID, "capability_source_type": run.CapabilitySourceType, "source_revision": run.SourceRevision, "provider_capability_id": run.ProviderCapabilityID, "provider_capability_revision": run.ProviderCapabilityRevision, "provider_operation_id": run.ProviderOperationID, "workflow_contract_revision": run.WorkflowContractRevision, "execution_snapshot": run.ExecutionSnapshot, "task_creation_status": run.TaskCreationStatus}
+	originType := firstString(run.ExecutionSnapshot, "origin_type")
+	if originType == "" {
+		originType = "api"
+	}
+	return map[string]any{
+		"application_run_id": run.ID, "application_id": run.ApplicationID, "application_version_id": run.ApplicationVersionID,
+		"application_template_version_id": run.ApplicationTemplateVersionID, "engine_instance_id": run.EngineInstanceID,
+		"capability_source_type": run.CapabilitySourceType, "source_revision": run.SourceRevision,
+		"provider_capability_id": run.ProviderCapabilityID, "provider_capability_revision": run.ProviderCapabilityRevision,
+		"provider_operation_id": run.ProviderOperationID, "workflow_contract_revision": run.WorkflowContractRevision,
+		"execution_snapshot": run.ExecutionSnapshot, "origin_type": originType,
+		"canvas_run_id":        firstString(run.ExecutionSnapshot, "canvas_run_id"),
+		"canvas_node_run_id":   firstString(run.ExecutionSnapshot, "canvas_node_run_id"),
+		"execution_key":        firstString(run.ExecutionSnapshot, "execution_key"),
+		"task_creation_status": run.TaskCreationStatus,
+	}
 }
 
 func resolvedRuntimeInputs(inputs map[string]any, fields []iapiserver.RuntimeFormField) map[string]any {
