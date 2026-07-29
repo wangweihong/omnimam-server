@@ -604,9 +604,18 @@ func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
 		"workflow.run.read",
 		"workflow.run.cancel",
 		"workflow.run.retry",
+		"notification.inbox.read",
+		"notification.inbox.manage",
+		"notification.preference.read",
+		"notification.preference.manage",
 	} {
 		if !hasPermission(resp.Permissions, permission) {
 			t.Errorf("permissions missing %s", permission)
+		}
+	}
+	for _, internalPermission := range []string{"notification.admin.receive", "notification.ingestion.internal"} {
+		if hasPermission(resp.Permissions, internalPermission) {
+			t.Errorf("internal notification permission %s should not be returned", internalPermission)
 		}
 	}
 

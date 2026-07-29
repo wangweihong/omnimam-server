@@ -40,6 +40,10 @@ const (
 	OutboxTopicCanvasNodeOutputAvailable           = "canvas_node_output_available"
 	OutboxTopicCanvasRunCancelRequested            = "canvas_run_cancel_requested"
 	OutboxTopicCanvasRunRetryCreated               = "canvas_run_retry_created"
+	OutboxTopicNotificationCreated                 = "notification_created"
+	OutboxTopicNotificationUpdated                 = "notification_updated"
+	OutboxTopicNotificationDeleted                 = "notification_deleted"
+	OutboxTopicNotificationUnreadCountChanged      = "notification_unread_count_changed"
 )
 
 var outboxSchema = &wmsql.DefaultPostgreSQLSchema{}
@@ -56,6 +60,8 @@ func (ds *datastore) ensureOutboxScheme() error {
 		OutboxTopicCanvasVersionPublished, OutboxTopicCanvasRunCreated, OutboxTopicCanvasRunTaskGroupBound,
 		OutboxTopicCanvasRunStatusChanged, OutboxTopicCanvasNodeRunStatusChanged, OutboxTopicCanvasNodeOutputAvailable,
 		OutboxTopicCanvasRunCancelRequested, OutboxTopicCanvasRunRetryCreated,
+		OutboxTopicNotificationCreated, OutboxTopicNotificationUpdated, OutboxTopicNotificationDeleted,
+		OutboxTopicNotificationUnreadCountChanged,
 	} {
 		queries, err := outboxSchema.SchemaInitializingQueries(wmsql.SchemaInitializingQueriesParams{Topic: topic})
 		if err != nil {

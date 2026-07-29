@@ -12,6 +12,7 @@ const (
 	MaxPageSize = 500
 )
 
+// +k8s:deepcopy-gen=true
 type PagingParams struct {
 	// PageNum 是从 0 开始的页码，负数会触发参数校验错误。
 	PageNum int `json:"page_num" form:"page_num"`

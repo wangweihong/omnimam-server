@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// +k8s:deepcopy-gen=true
 type BasicQueryParam struct {
 	// 公共参数
 	PagingParams

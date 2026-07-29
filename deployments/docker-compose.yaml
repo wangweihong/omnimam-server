@@ -239,6 +239,84 @@ services:
         done
         exec /opt/omnimam/bin/taskworker -c /tmp/taskworker.yaml
 
+  notificationworker:
+    image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/notificationworker:${OMNIMAM_IMAGE_TAG:-latest-amd64}
+    container_name: omnimam-notificationworker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # API Server 先完成 Notification Center schema 初始化；独立 Worker 不连接 Conductor。
+      apiserver:
+        condition: service_started
+    environment:
+      omnimam_LOG_DIR: /var/log/omnimam
+      APISERVER_RUNTIME_DEBUG_OUTPUT_DIR: /var/lib/omnimam/debug/notificationworker
+      # NotificationWorker 复用 API Server Options，但不监听 HTTP 或加载 Provider/Workflow runtime。
+      APISERVER_INSECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_INSECURE_BIND_PORT: 8080
+      APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_TLS_CERT_FILE: ""
+      APISERVER_SECURE_TLS_CERT_KEY: ""
+      APISERVER_DATABASE_TYPE: postgresql
+      APISERVER_DATABASE_NAME: ${OMNIMAM_POSTGRES_DB:-omnimam}
+      APISERVER_POSTGRES_HOST: postgres
+      APISERVER_POSTGRES_PORT: 5432
+      APISERVER_POSTGRES_USER: ${OMNIMAM_POSTGRES_USER:-omnimam}
+      APISERVER_POSTGRES_PASSWORD: ${OMNIMAM_POSTGRES_PASSWORD:-omnimam}
+      APISERVER_MYSQL_HOST: mysql
+      APISERVER_MYSQL_USER: omnimam
+      APISERVER_MYSQL_PASSWORD: omnimam
+      APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR: /var/lib/omnimam/upload-parts
+      APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS: ${OMNIMAM_UPLOAD_CHUNK_CLEANUP_HOURS:-24}
+      APISERVER_PROVIDER_CAPABILITY_DIRECTORY: /opt/omnimam/provider-capabilities
+      APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
+      APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
+      APISERVER_CONDUCTOR_BASE_URL: ""
+      APISERVER_CONDUCTOR_AUTH_KEY: ""
+      APISERVER_CONDUCTOR_AUTH_SECRET: ""
+    volumes:
+      - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        until /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080'; do
+          sleep 1
+        done
+        cp /etc/omnimam-template/apiserver.yaml /tmp/notificationworker.yaml
+        for name in \
+          omnimam_LOG_DIR \
+          APISERVER_RUNTIME_DEBUG_OUTPUT_DIR \
+          APISERVER_INSECURE_BIND_ADDRESS \
+          APISERVER_INSECURE_BIND_PORT \
+          APISERVER_SECURE_BIND_ADDRESS \
+          APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_TLS_CERT_FILE \
+          APISERVER_SECURE_TLS_CERT_KEY \
+          APISERVER_DATABASE_TYPE \
+          APISERVER_DATABASE_NAME \
+          APISERVER_POSTGRES_HOST \
+          APISERVER_POSTGRES_PORT \
+          APISERVER_POSTGRES_USER \
+          APISERVER_POSTGRES_PASSWORD \
+          APISERVER_MYSQL_HOST \
+          APISERVER_MYSQL_USER \
+          APISERVER_MYSQL_PASSWORD \
+          APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR \
+          APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS \
+          APISERVER_PROVIDER_CAPABILITY_DIRECTORY \
+          APISERVER_ENGINE_HEALTH_INTERVAL \
+          APISERVER_WORKFLOW_RUNTIME_ENABLED \
+          APISERVER_CONDUCTOR_BASE_URL \
+          APISERVER_CONDUCTOR_AUTH_KEY \
+          APISERVER_CONDUCTOR_AUTH_SECRET; do
+          value="$$(printenv "$$name" || true)"
+          escaped="$$(printf '%s' "$$value" | sed 's/[\/&]/\\&/g')"
+          sed -i "s/\$${$$name}/$$escaped/g" /tmp/notificationworker.yaml
+        done
+        exec /opt/omnimam/bin/notificationworker -c /tmp/notificationworker.yaml
+
 volumes:
   omnimam_postgres_data:
   omnimam_conductor_queue_data:

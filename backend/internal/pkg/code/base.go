@@ -44,6 +44,62 @@ const (
 	ErrOperationBatchExecute
 )
 
+// notification-center: spec-v1.8.0 business errors.
+const (
+	// @HTTP 200
+	// @CN 通知不存在或不属于当前用户。
+	// @EN The notification does not exist or is not visible to the current user.
+	ErrNotificationNotVisible int = 180200
+	// @HTTP 200
+	// @CN 当前通知状态不允许执行该收件箱操作。
+	// @EN The current notification state does not allow this inbox action.
+	ErrNotificationStateConflict int = 180201
+	// @HTTP 200
+	// @CN 批量通知请求必须包含 1 至 200 个唯一通知标识。
+	// @EN A batch notification request must contain 1 to 200 unique notification identifiers.
+	ErrNotificationBatchInvalid int = 180202
+	// @HTTP 200
+	// @CN 通知筛选、搜索或排序参数无效。
+	// @EN A notification filter, search, or sort parameter is invalid.
+	ErrNotificationQueryInvalid int = 180203
+	// @HTTP 200
+	// @CN 通知偏好包含重复范围、未知主题或不兼容的分类与主题。
+	// @EN Notification preferences contain a duplicate scope, unknown topic, or incompatible category and topic.
+	ErrNotificationPreferenceInvalid int = 180400
+	// @HTTP 200
+	// @CN 严重系统或安全通知不能关闭站内投递。
+	// @EN In-app delivery cannot be disabled for mandatory system or security notifications.
+	ErrNotificationMandatoryTopicDisabled int = 180401
+	// @HTTP 200
+	// @CN 当前阶段尚未启用所请求的通知渠道或摘要能力。
+	// @EN The requested notification channel or digest capability is not enabled in the current phase.
+	ErrNotificationChannelUnsupported int = 180402
+	// @HTTP 200
+	// @CN 源事件缺少稳定事件标识、聚合版本、接收者依据或通知规则必需字段。
+	// @EN The source event lacks a stable event identifier, aggregate version, recipient basis, or required rule fields.
+	ErrNotificationSourceEventInvalid int = 180600
+	// @HTTP 200
+	// @CN 源事件、事件版本或通知主题尚未启用。
+	// @EN The source event, event version, or notification topic is not enabled.
+	ErrNotificationSourceEventUnsupported int = 180601
+	// @HTTP 200
+	// @CN 无法从源事件或受控投影确定通知接收者。
+	// @EN A notification recipient cannot be resolved from the source event or controlled projection.
+	ErrNotificationRecipientUnresolved int = 180602
+	// @HTTP 200
+	// @CN 通知规则处理、去重、聚合或收件箱写入暂时失败。
+	// @EN Notification rule processing, deduplication, aggregation, or inbox persistence has temporarily failed.
+	ErrNotificationRuleProcessingFailed int = 180603
+	// @HTTP 200
+	// @CN 当前调用方无权读取或修改通知中心资源。
+	// @EN The caller cannot read or modify Notification Center resources.
+	ErrNotificationPermissionDenied int = 180800
+	// @HTTP 200
+	// @CN 当前主体不满足管理员通知接收范围。
+	// @EN The current subject is not eligible for the administrator notification scope.
+	ErrNotificationAdminScopeRequired int = 180801
+)
+
 // sse: spec-v1.5.0 business errors.
 const (
 	// @HTTP 200

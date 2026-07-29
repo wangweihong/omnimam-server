@@ -11,3 +11,5 @@ services:
     ports: !reset []
   taskworker:
     container_name: omnimam-reconcile-verify-taskworker
+  notificationworker:
+    container_name: omnimam-reconcile-verify-notificationworker

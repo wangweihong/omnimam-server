@@ -8,6 +8,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/notificationsanitize"
 )
 
 func projectAtomicTaskCreated(tx *gorm.DB, task *iapiserver.AtomicTask) error {
@@ -111,8 +112,16 @@ func atomicTaskPayload(previous, task *iapiserver.AtomicTask) map[string]any {
 		"root_task_id": task.RootTaskID, "application_run_id": nullableString(task.ApplicationRunID), "canvas_run_id": nullableString(task.CanvasRunID),
 		"from_status": nullableString(fromStatus), "to_status": task.Status, "status": task.Status, "progress": task.Progress,
 		"current_attempt": task.CurrentAttempt, "output_summary": summarizeTaskOutput(task.Output), "error_code": nullableString(task.LastError.Code),
-		"retryable": task.LastError.Retryable, "resource_version": task.ResourceVersion, "project_id": task.ProjectID,
+		"last_error": safeTaskNotificationError(task.LastError), "retryable": task.LastError.Retryable, "resource_version": task.ResourceVersion, "project_id": task.ProjectID,
 		"namespace": task.Namespace, "created_by": task.CreatedBy, "correlation_id": task.ID, "occurred_at": task.UpdatedAt,
+	}
+}
+
+func safeTaskNotificationError(value iapiserver.TaskError) map[string]any {
+	return map[string]any{
+		"code":      notificationsanitize.Text(value.Code, 128),
+		"message":   notificationsanitize.Text(value.Message, 500),
+		"retryable": value.Retryable,
 	}
 }
 

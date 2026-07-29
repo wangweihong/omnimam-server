@@ -29,6 +29,19 @@
 | ErrTokenInvalid | 100005 | 401 | Token invalid. | 令牌无效 |
 | ErrPageNotFound | 100006 | 404 | Page not found. | 请求路由不存在 |
 | ErrOperationBatchExecute | 100007 | 200 | Operation batch execute. | 批量执行操作 |
+| ErrNotificationNotVisible | 180200 | 200 | The notification does not exist or is not visible to the current user. | 通知不存在或不属于当前用户。 |
+| ErrNotificationStateConflict | 180201 | 200 | The current notification state does not allow this inbox action. | 当前通知状态不允许执行该收件箱操作。 |
+| ErrNotificationBatchInvalid | 180202 | 200 | A batch notification request must contain 1 to 200 unique notification identifiers. | 批量通知请求必须包含 1 至 200 个唯一通知标识。 |
+| ErrNotificationQueryInvalid | 180203 | 200 | A notification filter, search, or sort parameter is invalid. | 通知筛选、搜索或排序参数无效。 |
+| ErrNotificationPreferenceInvalid | 180400 | 200 | Notification preferences contain a duplicate scope, unknown topic, or incompatible category and topic. | 通知偏好包含重复范围、未知主题或不兼容的分类与主题。 |
+| ErrNotificationMandatoryTopicDisabled | 180401 | 200 | In-app delivery cannot be disabled for mandatory system or security notifications. | 严重系统或安全通知不能关闭站内投递。 |
+| ErrNotificationChannelUnsupported | 180402 | 200 | The requested notification channel or digest capability is not enabled in the current phase. | 当前阶段尚未启用所请求的通知渠道或摘要能力。 |
+| ErrNotificationSourceEventInvalid | 180600 | 200 | The source event lacks a stable event identifier, aggregate version, recipient basis, or required rule fields. | 源事件缺少稳定事件标识、聚合版本、接收者依据或通知规则必需字段。 |
+| ErrNotificationSourceEventUnsupported | 180601 | 200 | The source event, event version, or notification topic is not enabled. | 源事件、事件版本或通知主题尚未启用。 |
+| ErrNotificationRecipientUnresolved | 180602 | 200 | A notification recipient cannot be resolved from the source event or controlled projection. | 无法从源事件或受控投影确定通知接收者。 |
+| ErrNotificationRuleProcessingFailed | 180603 | 200 | Notification rule processing, deduplication, aggregation, or inbox persistence has temporarily failed. | 通知规则处理、去重、聚合或收件箱写入暂时失败。 |
+| ErrNotificationPermissionDenied | 180800 | 200 | The caller cannot read or modify Notification Center resources. | 当前调用方无权读取或修改通知中心资源。 |
+| ErrNotificationAdminScopeRequired | 180801 | 200 | The current subject is not eligible for the administrator notification scope. | 当前主体不满足管理员通知接收范围。 |
 | ErrSSEConnectionLimitReached | 170200 | 200 | The real-time connection limit for the current user or client instance has been reached. | 当前用户或客户实例的实时连接数已达上限。 |
 | ErrSSEStreamUnavailable | 170201 | 200 | The real-time event stream is temporarily unavailable; use fact-query fallback. | 实时事件流暂时不可用，请使用事实查询降级。 |
 | ErrSSECursorConflict | 170400 | 200 | Last-Event-ID and after_event_id identify different resume positions. | Last-Event-ID 与 after_event_id 指向不同的恢复位置。 |

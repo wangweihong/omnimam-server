@@ -13,6 +13,7 @@ const (
 	SSESourceDomainAssetLibrary        = "asset-library"
 	SSESourceDomainApplicationPlatform = "application-platform"
 	SSESourceDomainWorkflowCanvas      = "workflow-canvas"
+	SSESourceDomainNotificationCenter  = "notification-center"
 
 	UserEventAtomicTaskCreated         = "atomic_task.created"
 	UserEventAtomicTaskBlocked         = "atomic_task.blocked"
@@ -78,6 +79,11 @@ const (
 	UserEventCanvasNodeFailed          = "canvas.node.failed"
 	UserEventCanvasNodeSkipped         = "canvas.node.skipped"
 	UserEventCanvasNodeCancelled       = "canvas.node.cancelled"
+
+	UserEventNotificationCreated            = "notification.created"
+	UserEventNotificationUpdated            = "notification.updated"
+	UserEventNotificationDeleted            = "notification.deleted"
+	UserEventNotificationUnreadCountChanged = "notification.unread_count_changed"
 )
 
 // UserEvent 是面向单个登录用户的短期可重放事件投影，不是任务或素材事实源。
@@ -102,6 +108,7 @@ type UserEvent struct {
 	AssetVersionID        string          `json:"asset_version_id,omitempty"   gorm:"column:asset_version_id;type:text"`
 	CanvasRunID           string          `json:"canvas_run_id,omitempty"      gorm:"column:canvas_run_id;type:text"`
 	CanvasNodeRunID       string          `json:"canvas_node_run_id,omitempty" gorm:"column:canvas_node_run_id;type:text"`
+	NotificationID       string          `json:"notification_id,omitempty"     gorm:"column:notification_id;type:text"`
 	Payload               map[string]any  `json:"payload"                      gorm:"-"`
 	PayloadShadow         string          `json:"-"                            gorm:"column:payload_json;type:text;not null;default:'{}'"`
 	SourceDomain          string          `json:"-"                            gorm:"column:source_domain;type:text;not null;uniqueIndex:idx_sse_user_events_source,priority:2"`

@@ -9,6 +9,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
+	notificationctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/notification"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
@@ -19,6 +20,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	notificationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/notification"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
@@ -71,6 +73,7 @@ func installApis(
 		{
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
 			installSSEApis(v1, storeIns, sseOptions)
+			installNotificationApis(v1, storeIns)
 			installPlatformApis(v1, storeIns, nil)
 			installAssetLibraryContractApis(v1, storeIns)
 			installAuthApis(v1, storeIns)
@@ -89,6 +92,27 @@ func installApis(
 	}
 
 	return g
+}
+
+func installNotificationApis(rg *gin.RouterGroup, factory store.Factory) {
+	notificationFactory, ok := factory.(store.NotificationStoreFactory)
+	if !ok || notificationFactory.Notifications() == nil {
+		return
+	}
+	controller := notificationctrl.NewController(notificationsvc.New(notificationFactory.Notifications()))
+	notifications := rg.Group("/notifications")
+	{
+		notifications.GET("", controller.List)
+		notifications.GET("/unread-count", controller.UnreadCount)
+		notifications.POST("/read", controller.BatchRead)
+		notifications.POST("/read-all", controller.ReadAll)
+		notifications.POST("/:notification_id/read", controller.Read)
+		notifications.POST("/:notification_id/unread", controller.Unread)
+		notifications.POST("/:notification_id/archive", controller.Archive)
+		notifications.POST("/:notification_id/unarchive", controller.Unarchive)
+	}
+	rg.GET("/notification-preferences", controller.GetPreferences)
+	rg.PUT("/notification-preferences", controller.PutPreferences)
 }
 
 func installSSEApis(rg *gin.RouterGroup, storeIns store.Factory, config *options.SSEOptions) {

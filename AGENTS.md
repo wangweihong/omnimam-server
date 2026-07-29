@@ -99,73 +99,75 @@ backend/AGENTS.md
 私自新增 SSOT 未定义的事件类型
 绕过 backend/AGENTS.md 实现后端逻辑
 ```
-# Completion & Session Rules
+# Completion & Handoff Rules
 
 These rules are mandatory for every task.
 
-## Task Completion
+## 1. Handoff Is a Live Checkpoint
 
-Before declaring any task complete, ALWAYS perform the following steps:
+`docs/HANDOFF.md` is not only a final summary. It must be updated throughout the task so work can resume after context compression, interruption, or a new session.
 
-1. Update `docs/HANDOFF.md`.
-2. Record:
-   - Objective of the task.
-   - What was completed.
-   - Files added, modified, or removed.
-   - Important architectural or design decisions.
-   - API, schema, or configuration changes.
-   - Remaining work.
-   - Known issues or technical debt.
-   - Recommended next task.
-3. If any design decision changed, also update the corresponding project documentation.
-4. Do not mark the task as completed until the documentation has been updated.
+Update it:
 
----
+* At the start of every non-trivial task.
+* After each meaningful implementation milestone.
+* After important design, API, schema, configuration, or file changes.
+* When a blocker, failed approach, risk, or technical debt is discovered.
+* Before large or high-risk changes.
+* Whenever the context is becoming large or may be compressed.
+* Before declaring the task complete.
 
-## Session Ending
+Do not allow significant completed work to remain undocumented.
 
-If the conversation is ending, the context is becoming large, or the session may continue in a new chat:
+## 2. Required Content
 
-You MUST refresh `docs/HANDOFF.md` with the latest project state.
+Keep `docs/HANDOFF.md` concise and reflect the current project state.
 
-The handoff must contain:
+It must contain:
 
-- Current project goal.
-- Completed work in this session.
-- Files modified.
-- Key architectural decisions.
-- Outstanding tasks.
-- Known issues and risks.
-- Suggested next implementation step.
-- A **Next Prompt** section containing a ready-to-use prompt for the next Codex session.
+* Current goal and status.
+* Work completed in this session.
+* Current in-progress work.
+* Files added, modified, renamed, or removed.
+* Key architectural or design decisions.
+* API, schema, dependency, or configuration changes.
+* Verification performed and remaining checks.
+* Outstanding tasks.
+* Known issues and risks.
+* Exact recommended next step.
 
-The goal is that another Codex session can continue immediately by reading only `docs/HANDOFF.md`.
+For unfinished work, record the last successful action and the exact next file, command, or implementation step.
 
----
+Never describe unverified or partial work as completed.
 
-## Handoff Quality
+## 3. Task Completion
 
-`docs/HANDOFF.md` must be:
+Before declaring a task complete:
 
-- Accurate.
-- Concise.
-- Chronological.
-- Actionable.
-- Free of duplicated or obsolete information.
+1. Finish the implementation.
+2. Run relevant tests, builds, linting, or manual verification.
+3. Update affected project documentation.
+4. Refresh `docs/HANDOFF.md`.
+5. Confirm the handoff matches the actual repository state.
 
-It should describe the current project state rather than the entire project history.
+## 4. Handoff Maintenance
 
----
+Keep the handoff actionable and free of obsolete history:
 
-## Next Prompt
+* Remove outdated information.
+* Move finished items out of the in-progress section.
+* Preserve unresolved blockers and risks.
+* Use exact file paths, function names, commands, and API names.
+* Do not claim changes or verification that were not actually performed.
 
-Always end the handoff with:
+Always end `docs/HANDOFF.md` with:
 
 ```text
 Next Prompt:
 
 Read docs/HANDOFF.md, verify the current implementation, and continue with the next outstanding task. Do not repeat completed work.
 ```
+
 
 ## 引入新二进制限制
 未经用户许可，禁止自行在backend/cmd/ 目录下引入新的二进制文件。

@@ -434,6 +434,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureOutboxScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureNotificationCenterScheme(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -595,6 +598,17 @@ func (ds *datastore) TaskCenters() store.TaskCenterStore {
 }
 
 func (ds *datastore) UserEvents() store.UserEventStore { return newUserEventStore(ds) }
+
+func (ds *datastore) Notifications() store.NotificationStore { return newNotificationStore(ds) }
+func (ds *datastore) NotificationCandidates() store.NotificationCandidateStore {
+	return newNotificationStore(ds)
+}
+func (ds *datastore) NotificationOutbox() store.NotificationOutboxStore {
+	return newNotificationStore(ds)
+}
+func (ds *datastore) NotificationRetention() store.NotificationRetentionStore {
+	return newNotificationStore(ds)
+}
 
 func (ds *datastore) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return newApplicationPlatform(ds)

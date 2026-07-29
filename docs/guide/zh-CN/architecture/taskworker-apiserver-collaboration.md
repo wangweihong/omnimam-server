@@ -1,10 +1,10 @@
-# TaskWorker 与 API Server 协作流程
+# Worker 与 API Server 协作流程
 
-本文说明 OmniMAM 中 `apiserver`、`taskworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask 从创建到状态投影、DAG 可观测查询、执行日志和用户事件推送的完整流程。本文对齐已发布的 `spec-v1.7.13`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
+本文说明 OmniMAM 中 `apiserver`、`taskworker`、`notificationworker`、Conductor、SSE gateway 和 PostgreSQL 的职责边界，以及 AtomicTask、Notification 与用户事件推送的完整流程。本文对齐已发布的 `spec-v1.8.0`，不使用已废弃的 TaskRun、ExecutionLease 或自研 Dispatcher 协议。
 
 ## 1. 架构定位
 
-Task Center 是对外业务入口和业务状态投影事实源，Conductor 是内部执行与编排运行时。`apiserver` 和 `taskworker` 不直接通过进程内调用协作，而是分别连接 OmniMAM 业务 PostgreSQL 和 Conductor：
+Task Center 是对外业务入口和业务状态投影事实源，Conductor 是内部执行与编排运行时。Notification Center 是业务结果到用户收件箱的可靠投影。三个进程不通过进程内调用协作，而是通过 OmniMAM PostgreSQL、可靠 outbox 和 Conductor 组合：
 
 ```mermaid
 flowchart LR
@@ -16,10 +16,13 @@ flowchart LR
   Conductor --> Worker["taskworker"]
   Worker --> BusinessDB
   Worker --> Conductor
+  NotificationWorker["notificationworker"] --> BusinessDB
   AssetFacts["asset-library Artifact / AssetVersion"] --> BusinessDB
   BusinessDB --> Outbox["PostgreSQL outbox"]
   Outbox --> Worker
+  Outbox --> NotificationWorker
   Worker --> UserEvents["sse_user_events"]
+  NotificationWorker --> UserEvents
   API --> UserEvents
   API --> SSEClient["当前用户 SSE 客户端"]
 ```
@@ -31,7 +34,8 @@ flowchart LR
 | 组件 | 主要职责 | 不负责 |
 | --- | --- | --- |
 | `apiserver` | 提供 Task Center 和当前用户 SSE API；执行权限、租户、参数和 `functionRef` 校验；持久化 Task Center 事实；按认证用户读取短期 UserEvent 并流式发送 | 不注册 Worker handler，不从 Conductor 直接推送 SSE，不维护 Worker lease |
-| `taskworker` | 注册受控 Worker handler；运行 reconciler；消费素材 outbox、Task Center 与 asset-library 可靠事件；幂等投影 `sse_user_events` | 不提供外部业务 API，不把 SSE 故障反向写入任务或素材事实，不实现自研 DAG 状态机 |
+| `taskworker` | 注册受控 Worker handler；运行 reconciler；消费素材 outbox、Task Center 与 asset-library 可靠事件；幂等投影这些领域的 `sse_user_events` | 不处理 Notification Center 规则或 Notification Outbox，不提供外部业务 API，不实现自研 DAG 状态机 |
+| `notificationworker` | 消费已启用的通知 source event；规范化候选；执行规则、偏好、去重与聚合；运行通知 retention；将 Notification Outbox 投影为统一 UserEvent | 不连接 Conductor，不执行 AtomicTask，不读取跨域私表，不提供 HTTP/SSE 连接，不发送首期禁用的外部渠道 |
 | Conductor | 负责任务调度、Worker 分发、并发控制、自动重试、超时、DAG 状态机和内部运行历史 | 不拥有 Task Center 业务资源，不直接写 OmniMAM 业务表 |
 | OmniMAM PostgreSQL | 保存 Task Center 业务资源和状态投影、Application/Asset 等领域数据及 PostgreSQL outbox | 不保存 Conductor 的内部运行历史 |
 | Conductor 数据库 | 保存 Conductor workflow、task、schedule 和重试历史 | 不作为前端或其他业务领域的查询入口 |
@@ -78,6 +82,17 @@ flowchart LR
 Engine 健康和 ComfyUI object-info 刷新不注册逐实例 Worker handler。两者分别以 `application-platform.engine-health` 和 `application-platform.comfyui-object-info-refresh` 注册到 `ReconcileRegistry`，由固定 `task_center_reconcile_controller` 直接扫描并更新业务事实。object-info 计划默认每日 `03:00 UTC` 运行，只处理 enabled、online 的 ComfyUI 实例；成功原子替换一对一当前目录，失败保留最后一次成功内容。
 
 `taskworker` 收到 `SIGINT` 或 `SIGTERM` 后取消进程上下文，停止 outbox 消费和 reconciler，并关闭 Conductor Worker runner。
+
+### 3.3 NotificationWorker 启动
+
+`notificationworker` 复用同一业务 PostgreSQL 和 SSE UserEvent 保留配置，但不初始化 WorkflowRuntime、ProviderCapability、FFmpeg 或素材存储。它等待 API Server 完成 schema 初始化后按依赖顺序启动：
+
+1. Notification Outbox projector，保证收件箱变化可以投影为统一 UserEvent。
+2. Rule Worker，claim 已持久化候选并执行偏好、去重、聚合和收件箱物化。
+3. Source Worker，使用独立 consumer group 消费首期 `ACTIVE` 的 AtomicTask 与 CanvasRun source event。
+4. Retention Runner，有限批次清理到期 Notification、候选和已确认 outbox。
+
+收到 `SIGINT` 或 `SIGTERM` 后，进程停止 retention 和 source claim，再依次关闭 rule 与 projector。旧 `taskworker` 与新 `notificationworker` 不应长期混跑，否则相同 durable consumer group 会被分散到两个部署单元。
 
 ## 4. AtomicTask 主流程
 
@@ -177,6 +192,8 @@ sequenceDiagram
 `event_sequence` 只表示用户事件流恢复顺序，不替代各业务聚合的 `resource_version`。API Server 不缓存未发送事件：每批最多读取 200 条，单次写有 5 秒 deadline；慢客户端断开后使用持久事件重放。默认保留 24 小时，配置项只影响 UserEvent，不改变 AtomicTask、TaskAttempt 或 Group/DAG 历史。实例退出时先发送 `connection.server_draining`，再关闭连接。
 
 asset-library 由 `Artifact` 和 `AssetVersion` owner store 在事实事务内分别写入 `artifact_created`、`artifact_processing_changed`、`artifact_registration_changed` 和 `asset_version_processing_changed`。Projector 使用独立消费者组 `sse-asset-library-projector`，将 source 的 `progress/retryable/error_code` 归一化为公开 payload 的 `processing_progress`、`processing_retryable` 或 `registration_retryable`，并移除 owner、project、namespace 和 source routing 字段。正文、Provider 响应、内部错误详情和物理内容引用不进入 UserEvent。
+
+Notification Center 使用 `notificationworker` 内的通知专属 projector 消费 `notification_created`、`notification_updated`、`notification_deleted` 和 `notification_unread_count_changed`。它只持久化提示性 UserEvent；`apiserver` 仍是唯一 `/api/v1/events/stream` Gateway，完整通知事实继续通过 Notification REST API 读取。
 
 ## 6. 素材上传与缩略图 outbox 流程
 
@@ -305,6 +322,9 @@ ApplicationRun 创建 AtomicTask 时显式使用所选 EngineInstance 的 `task_
 - [Task Center 架构参考](../../../../ssot/02_architecture/domains/task-center.md)
 - [SSE 产品规格](../../../../ssot/00_product/domains/sse/product-spec.md)
 - [SSE 模块契约](../../../../ssot/01_contracts/domains/sse/module-contract.md)
+- [Notification Center 产品规格](../../../../ssot/00_product/domains/notification-center/product-spec.md)
+- [Notification Center 模块契约](../../../../ssot/01_contracts/domains/notification-center/module-contract.md)
+- [Notification Center 架构参考](../../../../ssot/02_architecture/domains/notification-center.md)
 - [Asset Library 产品规格](../../../../ssot/00_product/domains/asset-library/product-spec.md)
 - [Asset Library 模块契约](../../../../ssot/01_contracts/domains/asset-library/module-contract.md)
 - [后端实现规则](../../../../backend/AGENTS.md)
@@ -312,6 +332,9 @@ ApplicationRun 创建 AtomicTask 时显式使用所选 EngineInstance 的 `task_
 当前实现的关键入口：
 
 - [`taskworker` 启动与 handler 注册](../../../../backend/internal/apiserver/taskworker.go)
+- [`notificationworker` 独立启动与生命周期](../../../../backend/internal/apiserver/notificationworker_runner.go)
+- [Notification source/rule/retention workers](../../../../backend/internal/apiserver/notificationworker/worker.go)
+- [Notification Outbox projector](../../../../backend/internal/apiserver/service/v1/sse/notification_projector.go)
 - [Asset Library controller](../../../../backend/internal/apiserver/controller/v1/assetlibrary/controller.go)
 - [Asset Library service 与 LocalStorage adapter](../../../../backend/internal/apiserver/service/v1/assetlibrary/service.go)
 - [Task Center service 与运行时启动](../../../../backend/internal/apiserver/service/v1/taskcenter/task_center.go)

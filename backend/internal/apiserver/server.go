@@ -253,6 +253,16 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.ApplicationArtifactRef{},
 		&iapiserver.ApplicationArtifact{},
 
+		// notification center
+		&iapiserver.NotificationTopic{},
+		&iapiserver.NotificationEvent{},
+		&iapiserver.Notification{},
+		&iapiserver.NotificationEventLink{},
+		&iapiserver.NotificationRecipientCounter{},
+		&iapiserver.NotificationPreference{},
+		&iapiserver.NotificationDelivery{},
+		&iapiserver.NotificationOutbox{},
+
 		// ai chat
 		&iapiserver.AIChatAssistant{},
 		&iapiserver.AIChatTopic{},

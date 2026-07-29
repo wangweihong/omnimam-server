@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 17c2d2f48c565b91d01686cc0081fee8d9e96b15
-contract_version: spec-v1.7.14
+commit: 44e659294c3fc8fa948345cc42faf5fcc05b5aa8
+contract_version: spec-v1.8.0
 updated_at: 2026-07-29
 status: released
-note: Canvas Application execution reuses the DAG AtomicTask, binds an idempotent ApplicationRun after final input resolution, and projects Artifact references into Canvas outputs.
+note: Notification Center adds ACTIVE standalone AtomicTask and CanvasRun inbox projections, counters, preferences, a dedicated worker, and unified SSE events.

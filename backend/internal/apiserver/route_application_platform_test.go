@@ -32,6 +32,15 @@ type routeAuthenticationFactory struct {
 	userEvents store.UserEventStore
 }
 
+type routeNotificationFactory struct {
+	store.Factory
+	notifications store.NotificationStore
+}
+
+func (f routeNotificationFactory) Notifications() store.NotificationStore { return f.notifications }
+
+type routeNotificationStore struct{ store.NotificationStore }
+
 func (f routeAuthenticationFactory) Users() store.UserStore           { return f.users }
 func (f routeAuthenticationFactory) UserEvents() store.UserEventStore { return f.userEvents }
 
@@ -81,6 +90,13 @@ func TestSSERoutesMatchSSOTOpenAPI(t *testing.T) {
 	router := gin.New()
 	installSSEApis(router.Group("/api/v1"), routeAuthenticationFactory{userEvents: routeUserEventStore{}}, options.NewSSEOptions())
 	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "sse", "openapi.yaml"))
+}
+
+func TestNotificationRoutesMatchSSOTOpenAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	installNotificationApis(router.Group("/api/v1"), routeNotificationFactory{notifications: routeNotificationStore{}})
+	assertRoutesMatchOpenAPI(t, router, filepath.Join("..", "..", "..", "ssot", "01_contracts", "domains", "notification-center", "openapi.yaml"))
 }
 func TestWorkflowCanvasRoutesMatchSSOTOpenAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)

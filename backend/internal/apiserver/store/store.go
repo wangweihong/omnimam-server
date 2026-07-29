@@ -14,6 +14,10 @@ var (
 	ErrRequiredEngineBindingFailed = errors.New("required engine binding failed")
 	// ErrAssetDeleteBlocked 标识素材仍有强引用，永久删除事务不得产生任何副作用。
 	ErrAssetDeleteBlocked = errors.New("asset delete blocked")
+	// ErrNotificationNotVisible 统一隐藏通知不存在和接收者不匹配。
+	ErrNotificationNotVisible = errors.New("notification not visible")
+	// ErrNotificationStateConflict 表示收件箱状态机拒绝当前操作。
+	ErrNotificationStateConflict = errors.New("notification state conflict")
 )
 
 type IdentityProviderStore interface {
@@ -633,6 +637,74 @@ type UserEventStore interface {
 	CursorVisible(context.Context, string, int64) (bool, bool, error)
 	SyncState(context.Context, string, time.Time) (int64, int64, error)
 	PruneExpired(context.Context, time.Time) (int64, error)
+}
+
+// NotificationStore 组合通知收件箱 API 所需的小型持久化边界；worker 的候选 claim 边界另行扩展。
+type NotificationStore interface {
+	ListNotifications(context.Context, *iapiserver.NotificationListRequest) ([]*iapiserver.Notification, int64, error)
+	GetNotificationCounter(context.Context, string) (*iapiserver.NotificationRecipientCounter, error)
+	MutateNotificationInbox(context.Context, string, string, string) (*iapiserver.Notification, *iapiserver.NotificationRecipientCounter, error)
+	ReadAllNotifications(context.Context, string, string) (int64, *iapiserver.NotificationRecipientCounter, error)
+	ListNotificationTopics(context.Context, bool) ([]*iapiserver.NotificationTopic, error)
+	ListNotificationPreferences(context.Context, string) ([]*iapiserver.NotificationPreference, error)
+	ReplaceNotificationPreferences(context.Context, string, []*iapiserver.NotificationPreference) ([]*iapiserver.NotificationPreference, error)
+}
+
+// NotificationMaterialization 是规则 Worker 向持久化层提交的已校验通知草案。
+type NotificationMaterialization struct {
+	RecipientUserID   string
+	Title             string
+	Content           string
+	Severity          string
+	AttentionStatus   string
+	NavigationTarget  *iapiserver.NotificationNavigationTarget
+	ActionPath        *string
+	AggregateKey      string
+	AggregationWindow string
+	ExpiresAt         imachinery.Time
+}
+
+// NotificationCandidateStore 提供 Worker 候选落库、有限租约 claim、物化和失败重试。
+type NotificationCandidateStore interface {
+	AddNotificationCandidates(context.Context, []*iapiserver.NotificationEvent) error
+	ClaimNotificationCandidates(context.Context, time.Time, int, time.Duration) ([]*iapiserver.NotificationEvent, error)
+	FinishNotificationCandidate(context.Context, string, int, string, time.Time, string, string) error
+	MaterializeNotification(context.Context, *iapiserver.NotificationEvent, NotificationMaterialization) (*iapiserver.Notification, bool, error)
+}
+
+// NotificationOutboxStore 由统一 SSE projector 使用，只负责通知出站投影的确认与失败退避。
+type NotificationOutboxStore interface {
+	MarkNotificationOutboxPublished(context.Context, string, time.Time) error
+	MarkNotificationOutboxFailed(context.Context, string, time.Time, string, string) error
+}
+
+// NotificationRetentionResult 汇总一次受控保留清理，不包含任何源业务事实。
+type NotificationRetentionResult struct {
+	Notifications int64
+	Candidates    int64
+	Outbox        int64
+}
+
+// NotificationRetentionStore 负责通知、无引用候选和已投递出站记录的有限保留。
+type NotificationRetentionStore interface {
+	CleanupNotifications(context.Context, time.Time, int) (NotificationRetentionResult, error)
+}
+
+// NotificationStoreFactory 由支持 Notification Center 的 Factory 额外实现，避免其他消费方依赖具体数据库。
+type NotificationStoreFactory interface {
+	Notifications() NotificationStore
+}
+
+type NotificationCandidateStoreFactory interface {
+	NotificationCandidates() NotificationCandidateStore
+}
+
+type NotificationOutboxStoreFactory interface {
+	NotificationOutbox() NotificationOutboxStore
+}
+
+type NotificationRetentionStoreFactory interface {
+	NotificationRetention() NotificationRetentionStore
 }
 
 type ApplicationPlatformStore interface {

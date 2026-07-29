@@ -9,6 +9,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/notificationsanitize"
 )
 
 func publishCanvasVersion(tx *gorm.DB, version *iapiserver.CanvasVersion, canvas *iapiserver.WorkflowCanvas) error {
@@ -229,9 +230,26 @@ func canvasRunEventPayload(run *iapiserver.WorkflowCanvasRun) map[string]any {
 		"summary":                run.Summary,
 		"changed_flow_summaries": []any{},
 		"warnings":               run.Warnings,
+		"last_error":             safeCanvasNotificationError(run.LastError),
 		"aggregate_version":      run.AggregateVersion,
+		"project_id":             run.ProjectID,
+		"namespace":              run.Namespace,
 		"occurred_at":            imachinery.Now(),
 	}
+}
+
+func safeCanvasNotificationError(value map[string]any) map[string]any {
+	result := map[string]any{"code": "", "message": "", "retryable": false}
+	if code, ok := value["code"].(string); ok {
+		result["code"] = notificationsanitize.Text(code, 128)
+	}
+	if retryable, ok := value["retryable"].(bool); ok {
+		result["retryable"] = retryable
+	}
+	if message, ok := value["message"].(string); ok {
+		result["message"] = notificationsanitize.Text(message, 500)
+	}
+	return result
 }
 func derefString(value *string) string {
 	if value == nil {

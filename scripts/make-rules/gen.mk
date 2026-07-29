@@ -58,7 +58,7 @@ gen.clean:
 .PHONY: gen.deepcopy
 gen.deepcopy: tools.verify.deepcopy-gen
 	@echo "===========> Generating deepcopy code go source files to path:${ROOT_DIR}/apis/iapiserver"
-	@deepcopy-gen --input-dirs=./backend/apis/iapiserver --output-base=./
+	@deepcopy-gen --input-dirs=./backend/apis/iapiserver,./backend/apis/imachinery --output-base=./
 
 #@deepcopy-gen --input-dirs=./backend/apis/iapiserver --output-base=./ -v=5
 	
