@@ -28,11 +28,13 @@ func TestCanvasApplicationOutboxAndArtifactProjection(t *testing.T) {
 		&iapiserver.Application{},
 		&iapiserver.ApplicationVersion{},
 		&iapiserver.ApplicationRun{},
+		&iapiserver.ApplicationArtifactRef{},
 		&iapiserver.AtomicTask{},
 		&iapiserver.WorkflowCanvasRun{},
 		&iapiserver.CanvasNodeRun{},
 		&iapiserver.CanvasNodeRunTaskBinding{},
 		&iapiserver.CanvasNodeRunOutputBinding{},
+		&iapiserver.CanvasNodeRunFlowRef{},
 		&iapiserver.WorkflowCanvasOutbox{},
 	}
 	if err := db.AutoMigrate(models...); err != nil {

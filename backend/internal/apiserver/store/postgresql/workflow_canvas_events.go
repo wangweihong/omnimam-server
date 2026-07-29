@@ -116,11 +116,11 @@ func publishCanvasNodeChanged(tx *gorm.DB, previousStatus string, node *iapiserv
 		"aggregate_version":  node.AggregateVersion,
 		"occurred_at":        imachinery.Now(),
 	}
-	var run iapiserver.WorkflowCanvasRun
-	if err := tx.Select("created_by").Where("id = ?", node.CanvasRunID).First(&run).Error; err != nil {
+	createdBy, err := canvasRunCreatedBy(tx, node.CanvasRunID)
+	if err != nil {
 		return err
 	}
-	payload["created_by"] = run.CreatedBy
+	payload["created_by"] = createdBy
 	return publishCanvasOutbox(tx, OutboxTopicCanvasNodeRunStatusChanged, sourceID, "canvas_node_run", node.ID, node.AggregateVersion, payload)
 }
 
@@ -137,8 +137,8 @@ func publishCanvasNodeOutputAvailable(
 	if err := tx.Where("id = ?", binding.CanvasNodeRunID).First(&node).Error; err != nil {
 		return err
 	}
-	var run iapiserver.WorkflowCanvasRun
-	if err := tx.Select("created_by").Where("id = ?", node.CanvasRunID).First(&run).Error; err != nil {
+	createdBy, err := canvasRunCreatedBy(tx, node.CanvasRunID)
+	if err != nil {
 		return err
 	}
 	sourceID := fmt.Sprintf(
@@ -151,7 +151,7 @@ func publishCanvasNodeOutputAvailable(
 	payload := map[string]any{
 		"source_domain":      iapiserver.SSESourceDomainWorkflowCanvas,
 		"source_event_id":    sourceID,
-		"created_by":         run.CreatedBy,
+		"created_by":         createdBy,
 		"canvas_run_id":      node.CanvasRunID,
 		"canvas_node_run_id": node.ID,
 		"node_id":            node.NodeID,
@@ -181,6 +181,19 @@ func publishCanvasNodeOutputAvailable(
 		node.AggregateVersion,
 		payload,
 	)
+}
+
+func canvasRunCreatedBy(tx *gorm.DB, canvasRunID string) (string, error) {
+	var row struct {
+		CreatedBy string `gorm:"column:created_by"`
+	}
+	if err := tx.Model(&iapiserver.WorkflowCanvasRun{}).
+		Select("created_by").
+		Where("id = ?", canvasRunID).
+		Take(&row).Error; err != nil {
+		return "", err
+	}
+	return row.CreatedBy, nil
 }
 
 func publishCanvasOutbox(tx *gorm.DB, topic, sourceID, aggregateType, aggregateID string, aggregateVersion int64, payload map[string]any) error {

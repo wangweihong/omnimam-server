@@ -6,6 +6,7 @@ import (
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
@@ -22,11 +23,19 @@ type ApplicationArtifactRefChanged struct {
 
 // ApplicationArtifactProjector 将 ApplicationRun Artifact 引用单调投影到既有 Canvas 输出槽位。
 type ApplicationArtifactProjector struct {
-	store store.WorkflowCanvasStore
+	tasks  canvasApplicationTaskReader
+	canvas store.WorkflowCanvasStore
 }
 
-func NewApplicationArtifactProjector(target store.WorkflowCanvasStore) *ApplicationArtifactProjector {
-	return &ApplicationArtifactProjector{store: target}
+type canvasApplicationTaskReader interface {
+	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
+}
+
+func NewApplicationArtifactProjector(
+	tasks canvasApplicationTaskReader,
+	canvas store.WorkflowCanvasStore,
+) *ApplicationArtifactProjector {
+	return &ApplicationArtifactProjector{tasks: tasks, canvas: canvas}
 }
 
 // Project 校验事件身份，并由 Canvas store 在同一事务内更新输出绑定和可靠事件。
@@ -39,7 +48,14 @@ func (p *ApplicationArtifactProjector) Project(ctx context.Context, payload []by
 		event.ArtifactResourceVersion < 1 {
 		return errors.Errorf("application artifact reference event is incomplete")
 	}
-	_, err := p.store.ProjectCanvasApplicationArtifact(ctx, &store.CanvasApplicationArtifactProjection{
+	task, err := p.tasks.GetAtomicTask(ctx, event.AtomicTaskID)
+	if err != nil {
+		return errors.Wrap(err, "read application artifact atomic task")
+	}
+	if task.CanvasRunID == "" {
+		return nil
+	}
+	_, err = p.canvas.ProjectCanvasApplicationArtifact(ctx, &store.CanvasApplicationArtifactProjection{
 		AtomicTaskID:             event.AtomicTaskID,
 		OutputKey:                event.OutputKey,
 		Sequence:                 event.Sequence,

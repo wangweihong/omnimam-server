@@ -333,7 +333,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := startCanvasApplicationConsumers(
 		ctx,
 		applicationCatalogProjector,
-		workflowcanvassvc.NewApplicationArtifactProjector(storeIns.WorkflowCanvases()),
+		workflowcanvassvc.NewApplicationArtifactProjector(storeIns.TaskCenters(), storeIns.WorkflowCanvases()),
 	); err != nil {
 		return err
 	}
