@@ -23,7 +23,8 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/provider"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -435,7 +436,7 @@ func (e *ApplicationRunExecutor) openArtifactContent(ctx context.Context, engine
 	transport := artifactDownloadTransport(trustedHost)
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(target.String()).WithMethod(http.MethodGet).AddHeaderParam("Accept", "*/*")
 	if trustedOrigin {
-		if err := enginegateway.ApplyProviderAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
+		if err := provider.ApplyAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
 			return nil, "", err
 		}
 	}

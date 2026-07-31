@@ -11,7 +11,8 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"gorm.io/gorm"
@@ -21,7 +22,7 @@ type staticPrincipal struct{ principal Principal }
 
 func (r staticPrincipal) Resolve(context.Context) (Principal, error) { return r.principal, nil }
 
-func newTestEngineService(t *testing.T, factory store.Factory, principal Principal) enginegateway.Srv {
+func newTestEngineService(t *testing.T, factory store.Factory, principal Principal) Srv {
 	t.Helper()
 	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
@@ -31,14 +32,20 @@ func newTestEngineService(t *testing.T, factory store.Factory, principal Princip
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := enginegateway.NewService(enginegateway.Dependencies{
+	service, err := enginegateway.NewEngineService(enginegateway.EngineDependencies{
 		Store: factory, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
 		Principals: staticPrincipal{principal: principal},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service
+	objectInfoService, err := comfyuiadapter.NewObjectInfoService(factory, staticPrincipal{principal: principal}, func() (comfyuiadapter.ObjectInfoReader, error) {
+		return nil, stderrors.New("ComfyUI object_info reader is unavailable")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gatewayServices{EngineSrv: service, ObjectInfoSrv: objectInfoService}
 }
 
 type recordingWorkflowAuditor struct{ records []WorkflowAuditRecord }

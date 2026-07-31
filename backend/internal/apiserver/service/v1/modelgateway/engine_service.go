@@ -1,4 +1,4 @@
-package engine
+package modelgateway
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/helpers"
@@ -25,24 +24,14 @@ type Adapter interface {
 	Check(context.Context, *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error)
 }
 
-// ComfyUIObjectInfoReader 读取 ComfyUI 实例当前节点目录，不提交工作流。
-type ComfyUIObjectInfoReader interface {
-	ReadObjectInfo(context.Context, *iapiserver.EngineInstance) (map[string]any, error)
-}
-
-// ComfyUIVersionReader 读取 ComfyUI 实例版本元数据。
-type ComfyUIVersionReader interface {
-	ReadComfyUIVersion(context.Context, *iapiserver.EngineInstance) (string, error)
-}
-
 // OperationExecutor 将不可变 ApplicationRun 快照翻译为具体引擎协议调用。
 type OperationExecutor interface {
 	ID() string
 	Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error)
 }
 
-// Srv 提供 Model Gateway 引擎实例、能力绑定、健康状态与 ComfyUI 目录服务。
-type Srv interface {
+// EngineSrv 提供 Model Gateway 引擎实例、能力绑定、健康状态与组合的适配器服务。
+type EngineSrv interface {
 	ListApplicationEngineTypes(context.Context, *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error)
 	ListEngineInstances(context.Context, *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error)
 	CreateEngineInstance(context.Context, *iapiserver.EngineInstanceCreateRequest) (*iapiserver.EngineInstance, error)
@@ -51,63 +40,59 @@ type Srv interface {
 	DeleteEngineInstance(context.Context, string) (*iapiserver.DeleteResult, error)
 	CheckEngineInstanceHealth(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
 	CheckEngineInstanceHealthInternal(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
-	GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoResponse, error)
-	RefreshComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
-	RefreshComfyUIEngineObjectInfoInternal(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
 	ListEngineBindings(context.Context, *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error)
 	CreateEngineBinding(context.Context, *iapiserver.EngineCapabilityBindingCreateRequest) (*iapiserver.EngineCapabilityBinding, error)
 	UpdateEngineBinding(context.Context, *iapiserver.EngineCapabilityBindingUpdateRequest) (*iapiserver.EngineCapabilityBinding, error)
 	DeleteEngineBinding(context.Context, string) (*iapiserver.DeleteResult, error)
 	ReconcileRequiredEngineBindings(context.Context) error
 	ResolveBindingStatus(*iapiserver.EngineCapabilityBinding)
-	ResolveUsableComfyUIObjectInfo(context.Context, string) (*iapiserver.EngineInstance, *iapiserver.ComfyUIEngineObjectInfo, error)
 }
 
-// Dependencies 声明引擎服务所需的 store、注册表、身份与适配器边界。
-type Dependencies struct {
+// EngineDependencies 声明引擎服务所需的 store、注册表、身份与适配器边界。
+type EngineDependencies struct {
 	Store        store.Factory
 	Runtime      *appregistry.RuntimeRegistry
 	Capabilities *appregistry.ProviderCapabilityRegistry
-	Principals   modelgateway.PrincipalResolver
+	Principals   PrincipalResolver
 	Adapters     map[string]Adapter
 }
 
-// Service 实现 Model Gateway 的引擎管理与运行时诊断服务。
-type Service struct {
+// EngineService 实现 Model Gateway 的引擎管理与运行时诊断服务。
+type EngineService struct {
 	store        store.Factory
 	runtime      *appregistry.RuntimeRegistry
 	capabilities *appregistry.ProviderCapabilityRegistry
-	principals   modelgateway.PrincipalResolver
+	principals   PrincipalResolver
 	adapters     map[string]Adapter
 }
 
-// NewService 构造引擎服务；注册表与 adapter 均由 bootstrap 显式注入。
-func NewService(deps Dependencies) (*Service, error) {
+// NewEngineService 构造引擎服务；注册表与 adapter 均由 bootstrap 显式注入。
+func NewEngineService(deps EngineDependencies) (*EngineService, error) {
 	if deps.Store == nil || deps.Runtime == nil || deps.Capabilities == nil || deps.Principals == nil {
 		return nil, fmt.Errorf("model gateway engine store, registries, and principal resolver are required")
 	}
 	if deps.Adapters == nil {
 		deps.Adapters = map[string]Adapter{}
 	}
-	return &Service{
+	return &EngineService{
 		store: deps.Store, runtime: deps.Runtime, capabilities: deps.Capabilities,
 		principals: deps.Principals, adapters: deps.Adapters,
 	}, nil
 }
 
-func (s *Service) principal(ctx context.Context, admin bool) (modelgateway.Principal, error) {
+func (s *EngineService) principal(ctx context.Context, admin bool) (Principal, error) {
 	principal, err := s.principals.Resolve(ctx)
 	if err != nil {
-		return modelgateway.Principal{}, err
+		return Principal{}, err
 	}
 	if admin && !principal.Admin {
-		return modelgateway.Principal{}, errors.NewStatus(code.ErrAIAppPermissionDenied, "administrator permission is required")
+		return Principal{}, errors.NewStatus(code.ErrAIAppPermissionDenied, "administrator permission is required")
 	}
 	return principal, nil
 }
 
 // ListApplicationEngineTypes 返回 Runtime Registry 中不可写的引擎类型定义。
-func (s *Service) ListApplicationEngineTypes(ctx context.Context, req *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error) {
+func (s *EngineService) ListApplicationEngineTypes(ctx context.Context, req *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error) {
 	if _, err := s.principal(ctx, false); err != nil {
 		return nil, err
 	}
@@ -126,7 +111,7 @@ func (s *Service) ListApplicationEngineTypes(ctx context.Context, req *iapiserve
 }
 
 // ListEngineInstances 返回已脱敏的引擎实例摘要，不返回 AuthConfig。
-func (s *Service) ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error) {
+func (s *EngineService) ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error) {
 	if _, err := s.principal(ctx, false); err != nil {
 		return nil, err
 	}
@@ -142,7 +127,7 @@ func (s *Service) ListEngineInstances(ctx context.Context, req *iapiserver.Engin
 }
 
 // CreateEngineInstance 原子创建引擎实例及该类型全部系统必需的不可变能力绑定。
-func (s *Service) CreateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceCreateRequest) (*iapiserver.EngineInstance, error) {
+func (s *EngineService) CreateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceCreateRequest) (*iapiserver.EngineInstance, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -174,7 +159,7 @@ func (s *Service) CreateEngineInstance(ctx context.Context, req *iapiserver.Engi
 }
 
 // ReconcileRequiredEngineBindings 在进程开始服务前恢复全部系统必需的不可变绑定。
-func (s *Service) ReconcileRequiredEngineBindings(ctx context.Context) error {
+func (s *EngineService) ReconcileRequiredEngineBindings(ctx context.Context) error {
 	for _, capability := range s.capabilities.Capabilities() {
 		if capability.Kind != iapiserver.ProviderCapabilityKindEngineBinding ||
 			capability.Origin != iapiserver.ProviderCapabilityOriginBuiltin ||
@@ -192,7 +177,7 @@ func (s *Service) ReconcileRequiredEngineBindings(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) requiredBindingsForEngineType(engineTypeID string) []*iapiserver.EngineCapabilityBinding {
+func (s *EngineService) requiredBindingsForEngineType(engineTypeID string) []*iapiserver.EngineCapabilityBinding {
 	capabilities := s.capabilities.RequiredBindingsForEngineType(engineTypeID)
 	bindings := make([]*iapiserver.EngineCapabilityBinding, 0, len(capabilities))
 	for _, capability := range capabilities {
@@ -209,7 +194,7 @@ func (s *Service) requiredBindingsForEngineType(engineTypeID string) []*iapiserv
 }
 
 // GetEngineInstance 返回管理员可见的完整引擎实例配置。
-func (s *Service) GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error) {
+func (s *EngineService) GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -218,7 +203,7 @@ func (s *Service) GetEngineInstance(ctx context.Context, id string) (*iapiserver
 }
 
 // UpdateEngineInstance 按 resourceVersion 更新管理员维护的引擎连接与执行限制。
-func (s *Service) UpdateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceUpdateRequest) (*iapiserver.EngineInstance, error) {
+func (s *EngineService) UpdateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceUpdateRequest) (*iapiserver.EngineInstance, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -235,7 +220,7 @@ func (s *Service) UpdateEngineInstance(ctx context.Context, req *iapiserver.Engi
 }
 
 // DeleteEngineInstance 删除没有 ApplicationRun 引用的引擎实例。
-func (s *Service) DeleteEngineInstance(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
+func (s *EngineService) DeleteEngineInstance(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -252,7 +237,7 @@ func (s *Service) DeleteEngineInstance(ctx context.Context, id string) (*iapiser
 	return &iapiserver.DeleteResult{ID: id, Deleted: true}, nil
 }
 
-func (s *Service) validateAuth(typeID, authType string, config map[string]any) error {
+func (s *EngineService) validateAuth(typeID, authType string, config map[string]any) error {
 	engineType, ok := s.runtime.EngineType(typeID)
 	if !ok || !sets.NewGenericSet[string](engineType.AuthenticationTypes...).Has(authType) {
 		return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "unsupported engine authentication type")
@@ -292,4 +277,4 @@ func (s *Service) validateAuth(typeID, authType string, config map[string]any) e
 	return nil
 }
 
-var _ Srv = (*Service)(nil)
+var _ EngineSrv = (*EngineService)(nil)

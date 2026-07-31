@@ -1,4 +1,4 @@
-package engine
+package modelgateway
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 )
 
 // ListEngineBindings 返回引擎能力绑定及基于当前 ProviderCapability 目录解析的有效状态。
-func (s *Service) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error) {
+func (s *EngineService) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -26,7 +26,7 @@ func (s *Service) ListEngineBindings(ctx context.Context, req *iapiserver.Engine
 }
 
 // CreateEngineBinding 创建管理员可维护的引擎能力绑定并禁止扩大目录定义范围。
-func (s *Service) CreateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingCreateRequest) (*iapiserver.EngineCapabilityBinding, error) {
+func (s *EngineService) CreateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingCreateRequest) (*iapiserver.EngineCapabilityBinding, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) CreateEngineBinding(ctx context.Context, req *iapiserver.Engin
 }
 
 // UpdateEngineBinding 按 resourceVersion 更新非系统绑定及其限制集合。
-func (s *Service) UpdateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingUpdateRequest) (*iapiserver.EngineCapabilityBinding, error) {
+func (s *EngineService) UpdateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingUpdateRequest) (*iapiserver.EngineCapabilityBinding, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (s *Service) UpdateEngineBinding(ctx context.Context, req *iapiserver.Engin
 }
 
 // DeleteEngineBinding 删除非系统管理的能力绑定。
-func (s *Service) DeleteEngineBinding(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
+func (s *EngineService) DeleteEngineBinding(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (s *Service) DeleteEngineBinding(ctx context.Context, id string) (*iapiserv
 }
 
 // ResolveBindingStatus 按当前不可变目录修正绑定的系统管理标记与有效状态投影。
-func (s *Service) ResolveBindingStatus(binding *iapiserver.EngineCapabilityBinding) {
+func (s *EngineService) ResolveBindingStatus(binding *iapiserver.EngineCapabilityBinding) {
 	capability, ok := s.capabilities.Get(binding.ProviderCapabilityID)
 	binding.SystemManaged = ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
 	switch {
@@ -126,7 +126,7 @@ func (s *Service) ResolveBindingStatus(binding *iapiserver.EngineCapabilityBindi
 	}
 }
 
-func (s *Service) isSystemManagedBinding(binding *iapiserver.EngineCapabilityBinding) bool {
+func (s *EngineService) isSystemManagedBinding(binding *iapiserver.EngineCapabilityBinding) bool {
 	if binding == nil {
 		return false
 	}

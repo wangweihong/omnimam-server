@@ -1,4 +1,4 @@
-package engine
+package modelgateway
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -32,6 +31,12 @@ type systemBindingStore struct {
 	ensureErr     error
 	ensured       []requiredBindingCall
 	storedBinding *iapiserver.EngineCapabilityBinding
+}
+
+type engineTestPrincipal struct{ principal Principal }
+
+func (p engineTestPrincipal) Resolve(context.Context) (Principal, error) {
+	return p.principal, nil
 }
 
 type requiredBindingCall struct {
@@ -60,7 +65,7 @@ func (s *systemBindingStore) GetEngineInstance(context.Context, string) (*iapise
 	return &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui"}, nil
 }
 
-func newSystemBindingService(t *testing.T, storage *systemBindingStore) *Service {
+func newSystemBindingService(t *testing.T, storage *systemBindingStore) *EngineService {
 	t.Helper()
 	runtime, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
@@ -70,11 +75,11 @@ func newSystemBindingService(t *testing.T, storage *systemBindingStore) *Service
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(Dependencies{
+	service, err := NewEngineService(EngineDependencies{
 		Store:        &systemBindingFactory{applications: storage},
 		Runtime:      runtime,
 		Capabilities: capabilities,
-		Principals:   engineTestPrincipal{principal: modelgateway.Principal{UserID: "admin", Admin: true}},
+		Principals:   engineTestPrincipal{principal: Principal{UserID: "admin", Admin: true}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -5,8 +5,7 @@ import (
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"gorm.io/gorm"
@@ -96,7 +95,7 @@ func TestCollectTestOutputsFiltersSelectedNodes(t *testing.T) {
 		{NodeID: "save-b", OutputIndex: 1},
 	}
 
-	result := enginegateway.CollectTestOutputs(outputs, selections)
+	result := comfyuiadapter.CollectTestOutputs(outputs, selections)
 	if len(result) != 1 || result[0].NodeID != "save-b" {
 		t.Fatalf("collected outputs = %#v, want only save-b", result)
 	}
@@ -108,7 +107,7 @@ func TestCollectTestOutputsKeepsLegacyUnfilteredBehavior(t *testing.T) {
 		"text-b": map[string]any{"text": []any{"second"}},
 	}
 
-	result := enginegateway.CollectTestOutputs(outputs, nil)
+	result := comfyuiadapter.CollectTestOutputs(outputs, nil)
 	if len(result) != 2 {
 		t.Fatalf("legacy collected output count = %d, want 2", len(result))
 	}
@@ -159,28 +158,13 @@ func TestCreateComfyUIWorkflowTestRunBindingPreservesWorkerPromptID(t *testing.T
 		promptID := "prompt-from-worker"
 		storage.run.ExternalJobID = &promptID
 	}}
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityRegistry, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtimeRegistry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	engineService, err := enginegateway.NewService(enginegateway.Dependencies{
-		Store:        &executorFactory{applications: storage},
-		Runtime:      runtimeRegistry,
-		Capabilities: capabilityRegistry,
-		Principals:   staticPrincipal{principal: Principal{UserID: "user-1"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	factory := &executorFactory{applications: storage}
+	gatewayService := newTestEngineService(t, factory, Principal{UserID: "user-1"})
 	service := &applicationPlatformService{Dependencies: Dependencies{
-		Store:      &executorFactory{applications: storage},
+		Store:      factory,
 		Tasks:      tasks,
 		Principals: staticPrincipal{principal: Principal{UserID: "user-1"}},
-	}, Srv: engineService}
+	}, Srv: gatewayService}
 
 	run, err := service.CreateComfyUIWorkflowTestRun(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowTestRunCreateRequest{
 		EngineInstanceID: engine.ID,

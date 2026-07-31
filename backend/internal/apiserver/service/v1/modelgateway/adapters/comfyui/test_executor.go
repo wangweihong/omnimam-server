@@ -1,4 +1,4 @@
-package engine
+package comfyui
 
 import (
 	"context"
@@ -16,18 +16,19 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/provider"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-type ComfyUITestExecutor struct{ store store.Factory }
+type TestExecutor struct{ store store.Factory }
 
-// NewComfyUITestExecutor 构造执行 ComfyUI 测试运行 submit/poll/collect 步骤的 Worker executor。
-func NewComfyUITestExecutor(factory store.Factory) *ComfyUITestExecutor {
-	return &ComfyUITestExecutor{store: factory}
+// NewTestExecutor 构造执行 ComfyUI 测试运行 submit/poll/collect 步骤的 Worker executor。
+func NewTestExecutor(factory store.Factory) *TestExecutor {
+	return &TestExecutor{store: factory}
 }
 
-func (e *ComfyUITestExecutor) Submit(ctx context.Context, testRunID string) (map[string]any, error) {
+func (e *TestExecutor) Submit(ctx context.Context, testRunID string) (map[string]any, error) {
 	run, engine, err := e.load(ctx, testRunID)
 	if err != nil {
 		return nil, err
@@ -44,7 +45,7 @@ func (e *ComfyUITestExecutor) Submit(ctx context.Context, testRunID string) (map
 		}
 		inputs[parameter.InputName] = parameter.Value
 	}
-	result, err := InvokeProvider(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
+	result, err := provider.Invoke(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (e *ComfyUITestExecutor) Submit(ctx context.Context, testRunID string) (map
 	return map[string]any{"prompt_id": promptID, "external_job_id": promptID}, err
 }
 
-func (e *ComfyUITestExecutor) Poll(ctx context.Context, testRunID string) (map[string]any, error) {
+func (e *TestExecutor) Poll(ctx context.Context, testRunID string) (map[string]any, error) {
 	run, engine, err := e.load(ctx, testRunID)
 	if err != nil {
 		return nil, err
@@ -66,7 +67,7 @@ func (e *ComfyUITestExecutor) Poll(ctx context.Context, testRunID string) (map[s
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
 	promptID := *run.ExternalJobID
-	history, err := InvokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
+	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +83,7 @@ func (e *ComfyUITestExecutor) Poll(ctx context.Context, testRunID string) (map[s
 	return map[string]any{"prompt_id": promptID, "provider_state": "completed"}, nil
 }
 
-func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (map[string]any, error) {
+func (e *TestExecutor) Collect(ctx context.Context, testRunID string) (map[string]any, error) {
 	run, engine, err := e.load(ctx, testRunID)
 	if err != nil {
 		return nil, err
@@ -90,7 +91,7 @@ func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (ma
 	if run.ExternalJobID == nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
-	history, err := InvokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil)
+	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +101,7 @@ func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (ma
 	return map[string]any{"prompt_id": *run.ExternalJobID, "output_count": len(outputs)}, err
 }
 
-func (e *ComfyUITestExecutor) load(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, *iapiserver.EngineInstance, error) {
+func (e *TestExecutor) load(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, *iapiserver.EngineInstance, error) {
 	run, err := e.store.ApplicationPlatforms().GetComfyUIWorkflowTestRun(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -112,7 +113,7 @@ func (e *ComfyUITestExecutor) load(ctx context.Context, id string) (*iapiserver.
 	return run, engine, nil
 }
 func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, promptID string) *int {
-	queue, err := InvokeProvider(ctx, engine, http.MethodGet, "/queue", nil)
+	queue, err := provider.Invoke(ctx, engine, http.MethodGet, "/queue", nil)
 	if err != nil {
 		return nil
 	}

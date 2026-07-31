@@ -19,7 +19,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
@@ -34,7 +34,8 @@ const (
 // ApplicationPlatformSrv implements the public S2 Application Platform operations.
 type ApplicationPlatformSrv interface {
 	modelgateway.ProviderCapabilitySrv
-	engine.Srv
+	modelgateway.EngineSrv
+	comfyuiadapter.ObjectInfoSrv
 	ListComfyUIWorkflows(context.Context, *iapiserver.ComfyUIWorkflowListRequest) (*iapiserver.ComfyUIWorkflowListResponse, error)
 	ImportComfyUIWorkflow(context.Context, *iapiserver.ComfyUIWorkflowImportRequest) (*iapiserver.ComfyUIWorkflowImportResult, error)
 	GetComfyUIWorkflow(context.Context, string) (*iapiserver.ComfyUIWorkflowDetail, error)
@@ -114,6 +115,17 @@ type CanvasApplicationRunRequest struct {
 type Principal = modelgateway.Principal
 type PrincipalResolver = modelgateway.PrincipalResolver
 
+// Srv 组合 Model Gateway 通用引擎服务与 ComfyUI adapter 专属目录服务。
+type Srv interface {
+	modelgateway.EngineSrv
+	comfyuiadapter.ObjectInfoSrv
+}
+
+type gatewayServices struct {
+	modelgateway.EngineSrv
+	comfyuiadapter.ObjectInfoSrv
+}
+
 // ArtifactLifecycle 是 ApplicationExecutor 消费的 Asset Library 写入边界。
 // Application Platform 只交付受控字节流，不传递 Provider URL、凭证或原始响应。
 type ArtifactLifecycle interface {
@@ -143,7 +155,7 @@ type Dependencies struct {
 	Runtime        *appregistry.RuntimeRegistry
 	Capabilities   *appregistry.ProviderCapabilityRegistry
 	Principals     PrincipalResolver
-	Adapters       map[string]engine.Adapter
+	Adapters       map[string]modelgateway.Adapter
 	Tasks          taskcenter.TaskCenterSrv
 	Assets         ArtifactLifecycle
 	Events         EventPublisher
@@ -154,7 +166,7 @@ type Dependencies struct {
 type applicationPlatformService struct {
 	Dependencies
 	modelgateway.ProviderCapabilitySrv
-	engine.Srv
+	Srv
 }
 
 func NewService(deps Dependencies) (*applicationPlatformService, error) {
@@ -165,7 +177,7 @@ func NewService(deps Dependencies) (*applicationPlatformService, error) {
 		deps.Principals = modelgateway.NewStorePrincipalResolver(deps.Store)
 	}
 	if deps.Adapters == nil {
-		deps.Adapters = map[string]engine.Adapter{}
+		deps.Adapters = map[string]modelgateway.Adapter{}
 	}
 	if deps.Events == nil {
 		deps.Events = NoopEventPublisher{}
@@ -186,15 +198,30 @@ func NewService(deps Dependencies) (*applicationPlatformService, error) {
 	if err != nil {
 		return nil, err
 	}
-	engineService, err := engine.NewService(engine.Dependencies{
+	engineService, err := modelgateway.NewEngineService(modelgateway.EngineDependencies{
 		Store: deps.Store, Runtime: deps.Runtime, Capabilities: deps.Capabilities,
 		Principals: deps.Principals, Adapters: deps.Adapters,
 	})
 	if err != nil {
 		return nil, err
 	}
+	objectInfoService, err := comfyuiadapter.NewObjectInfoService(deps.Store, deps.Principals, func() (comfyuiadapter.ObjectInfoReader, error) {
+		typeDef, ok := deps.Runtime.EngineType("comfyui")
+		if !ok {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "ComfyUI engine type is not registered")
+		}
+		reader, ok := deps.Adapters[typeDef.EngineAdapterID].(comfyuiadapter.ObjectInfoReader)
+		if !ok {
+			return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info reader is unavailable")
+		}
+		return reader, nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return &applicationPlatformService{
-		Dependencies: deps, ProviderCapabilitySrv: providerCapabilityService, Srv: engineService,
+		Dependencies: deps, ProviderCapabilitySrv: providerCapabilityService,
+		Srv: gatewayServices{EngineSrv: engineService, ObjectInfoSrv: objectInfoService},
 	}, nil
 }
 
@@ -1151,7 +1178,7 @@ func validateComfyUIContract(workflow, objectInfo, contract map[string]any) erro
 			}
 		}
 	}
-	_, err := engine.ApplyComfyInputs(workflow, dummyInputs, contract)
+	_, err := comfyuiadapter.ApplyInputs(workflow, dummyInputs, contract)
 	return err
 }
 func findOperation(capability *iapiserver.AIAppProviderCapability, id string) (iapiserver.ProviderCapabilityOperation, bool) {

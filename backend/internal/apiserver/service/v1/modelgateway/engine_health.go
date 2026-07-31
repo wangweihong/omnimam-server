@@ -1,4 +1,4 @@
-package engine
+package modelgateway
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 const healthPersistenceTimeout = time.Second
 
 // CheckEngineInstanceHealth 执行管理员触发的单实例实时健康探测并持久化结果。
-func (s *Service) CheckEngineInstanceHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
+func (s *EngineService) CheckEngineInstanceHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
@@ -24,11 +24,11 @@ func (s *Service) CheckEngineInstanceHealth(ctx context.Context, id string) (*ia
 }
 
 // CheckEngineInstanceHealthInternal 为受信任的 TaskWorker 执行健康探测，不经过 HTTP 用户鉴权。
-func (s *Service) CheckEngineInstanceHealthInternal(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
+func (s *EngineService) CheckEngineInstanceHealthInternal(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
 	return s.checkHealth(ctx, id)
 }
 
-func (s *Service) checkHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
+func (s *EngineService) checkHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
 	item, err := s.store.ApplicationPlatforms().GetEngineInstance(ctx, id)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")

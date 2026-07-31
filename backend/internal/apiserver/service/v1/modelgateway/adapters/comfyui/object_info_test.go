@@ -1,4 +1,4 @@
-package engine
+package comfyui
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -65,17 +64,25 @@ func (p engineTestPrincipal) Resolve(context.Context) (modelgateway.Principal, e
 	return p.principal, nil
 }
 
-func newObjectInfoTestService(t *testing.T, storage *objectInfoStore, adapter Adapter, admin bool) *Service {
+func newObjectInfoTestService(t *testing.T, storage *objectInfoStore, adapter ObjectInfoReader, admin bool) (*ObjectInfoService, map[string]ObjectInfoReader) {
 	t.Helper()
-	runtime, err := appregistry.LoadRuntimeRegistry()
+	readers := map[string]ObjectInfoReader{}
+	if adapter != nil {
+		readers["comfyui"] = adapter
+	}
+	factory := &objectInfoTestFactory{applications: storage}
+	principals := engineTestPrincipal{principal: modelgateway.Principal{UserID: "user-1", Admin: admin}}
+	objectInfoService, err := NewObjectInfoService(factory, principals, func() (ObjectInfoReader, error) {
+		reader, ok := readers["comfyui"]
+		if !ok {
+			return nil, stderrors.New("ComfyUI object_info reader is unavailable")
+		}
+		return reader, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapters := map[string]Adapter{}
-	if adapter != nil {
-		adapters["comfyui"] = adapter
-	}
-	return &Service{store: &engineTestFactory{applications: storage}, runtime: runtime, adapters: adapters, principals: engineTestPrincipal{principal: modelgateway.Principal{UserID: "user-1", Admin: admin}}}
+	return objectInfoService, readers
 }
 
 func onlineComfyEngine() *iapiserver.EngineInstance {
@@ -91,7 +98,7 @@ func validObjectInfo() map[string]any {
 func TestRefreshComfyUIObjectInfoReplacesOnlyAfterSuccessfulValidation(t *testing.T) {
 	old := &iapiserver.ComfyUIEngineObjectInfo{EngineInstanceID: "engine-1", ObjectInfo: map[string]any{"Old": map[string]any{}}, RefreshedAt: imachinery.NewTime(time.Now().Add(-time.Hour))}
 	storage := &objectInfoStore{engine: onlineComfyEngine(), catalog: old}
-	service := newObjectInfoTestService(t, storage, objectInfoAdapter{objectInfo: validObjectInfo()}, true)
+	service, readers := newObjectInfoTestService(t, storage, objectInfoAdapter{objectInfo: validObjectInfo()}, true)
 
 	status, err := service.RefreshComfyUIEngineObjectInfo(context.Background(), "engine-1")
 	if err != nil {
@@ -101,7 +108,7 @@ func TestRefreshComfyUIObjectInfoReplacesOnlyAfterSuccessfulValidation(t *testin
 		t.Fatalf("unexpected refresh result: status=%#v catalog=%#v", status, storage.catalog)
 	}
 
-	service.adapters["comfyui"] = objectInfoAdapter{err: stderrors.New("offline")}
+	readers["comfyui"] = objectInfoAdapter{err: stderrors.New("offline")}
 	current := storage.catalog
 	_, err = service.RefreshComfyUIEngineObjectInfo(context.Background(), "engine-1")
 	if errors.ToStatus(err).Code != code.ErrAIAppComfyUIObjectInfoRefreshFailed {
@@ -116,7 +123,7 @@ func TestComfyUIObjectInfoEligibilityAndFreshness(t *testing.T) {
 	engine := onlineComfyEngine()
 	engine.Enabled = false
 	storage := &objectInfoStore{engine: engine}
-	service := newObjectInfoTestService(t, storage, objectInfoAdapter{objectInfo: validObjectInfo()}, true)
+	service, _ := newObjectInfoTestService(t, storage, objectInfoAdapter{objectInfo: validObjectInfo()}, true)
 	_, err := service.RefreshComfyUIEngineObjectInfo(context.Background(), engine.ID)
 	if errors.ToStatus(err).Code != code.ErrAIAppComfyUIObjectInfoRefreshNotAllowed {
 		t.Fatalf("unexpected refresh eligibility error: %v", err)
@@ -128,13 +135,13 @@ func TestComfyUIObjectInfoEligibilityAndFreshness(t *testing.T) {
 	if err != nil || !response.Stale {
 		t.Fatalf("stale catalog should remain readable: response=%#v err=%v", response, err)
 	}
-	if _, _, err := service.ResolveUsableComfyUIObjectInfo(context.Background(), engine.ID); errors.ToStatus(err).Code != code.ErrAIAppComfyUIObjectInfoUnavailable {
+	if _, _, err := service.ResolveUsableObjectInfo(context.Background(), engine.ID); errors.ToStatus(err).Code != code.ErrAIAppComfyUIObjectInfoUnavailable {
 		t.Fatalf("stale catalog was accepted for execution: %v", err)
 	}
 }
 
 func TestValidateCurrentObjectInfoRejectsPartialCatalog(t *testing.T) {
-	if err := validateCurrentObjectInfo(map[string]any{"KSampler": map[string]any{"input": map[string]any{}}}); err == nil {
+	if err := ValidateCurrentObjectInfo(map[string]any{"KSampler": map[string]any{"input": map[string]any{}}}); err == nil {
 		t.Fatal("partial object_info was accepted")
 	}
 }

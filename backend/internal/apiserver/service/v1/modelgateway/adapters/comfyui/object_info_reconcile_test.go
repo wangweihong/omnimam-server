@@ -1,4 +1,4 @@
-package engine
+package comfyui
 
 import (
 	"context"
@@ -15,6 +15,15 @@ import (
 type objectInfoReconcileStore struct {
 	store.ApplicationPlatformStore
 	items []*iapiserver.EngineInstance
+}
+
+type objectInfoTestFactory struct {
+	store.Factory
+	applications store.ApplicationPlatformStore
+}
+
+func (f *objectInfoTestFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
+	return f.applications
 }
 
 func (s *objectInfoReconcileStore) ListRefreshableComfyUIEngineInstancesAfter(_ context.Context, cursor string, limit int) ([]*iapiserver.EngineInstance, error) {
@@ -57,12 +66,12 @@ func (s *objectInfoReconcileService) RefreshComfyUIEngineObjectInfoInternal(_ co
 func TestComfyUIObjectInfoReconcileHonorsConcurrencyAndAdvancesPastFailures(t *testing.T) {
 	items := make([]*iapiserver.EngineInstance, 4)
 	for i := range items {
-		items[i] = onlineComfyEngine()
+		items[i] = &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}
 		items[i].ID = "engine-0" + string(rune('1'+i))
 	}
 	storage := &objectInfoReconcileStore{items: items}
 	service := &objectInfoReconcileService{failID: "engine-03"}
-	handler := NewComfyUIObjectInfoReconcileHandler(&engineTestFactory{applications: storage}, service)
+	handler := NewComfyUIObjectInfoReconcileHandler(&objectInfoTestFactory{applications: storage}, service)
 	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)

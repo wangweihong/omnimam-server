@@ -1,4 +1,4 @@
-package engine
+package adapters
 
 import (
 	"context"
@@ -16,10 +16,11 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-func TestDeepSeekAdapterExecute(t *testing.T) {
+func TestOpenAIAdapterExecute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" || r.Header.Get("Authorization") != "Bearer secret" {
 			t.Errorf("unexpected request: path=%s auth=%s", r.URL.Path, r.Header.Get("Authorization"))
@@ -56,7 +57,7 @@ func TestApplyComfyInputsUsesWorkflowCopy(t *testing.T) {
 		"prompt": map[string]any{"node_id": "6", "input_name": "text"},
 		"seed":   "6.inputs.seed",
 	}}
-	resolved, err := ApplyComfyInputs(workflow, map[string]any{"prompt": "new", "seed": 42}, contract)
+	resolved, err := comfyuiadapter.ApplyInputs(workflow, map[string]any{"prompt": "new", "seed": 42}, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestApplyComfyInputsUsesWorkflowCopy(t *testing.T) {
 func TestApplyComfyInputsSupportsImportedTemplateContract(t *testing.T) {
 	workflow := map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{"seed": float64(1)}}}
 	contract := map[string]any{"fixed_parameters": []any{}, "parameter_mappings": []any{map[string]any{"input_key": "seed", "conversion_type": "DIRECT", "targets": []any{map[string]any{"node_id": "1", "input_name": "seed"}}}}}
-	resolved, err := ApplyComfyInputs(workflow, map[string]any{"seed": float64(42)}, contract)
+	resolved, err := comfyuiadapter.ApplyInputs(workflow, map[string]any{"seed": float64(42)}, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestProviderErrorAndAKSKMapping(t *testing.T) {
 	t.Run("authentication rejection", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "unauthorized", http.StatusUnauthorized) }))
 		defer server.Close()
-		_, err := NewAdapters()["deepseek_official"].Check(context.Background(), testEngine(server.URL, "deepseek_official"))
+		_, err := NewEngineAdapters()["deepseek_official"].Check(context.Background(), testEngine(server.URL, "deepseek_official"))
 		if errors.ToStatus(err).Code != code.ErrAIAppEngineAuthConfigInvalid {
 			t.Fatalf("unexpected error mapping: %v", err)
 		}
@@ -189,7 +190,7 @@ func TestProviderErrorAndAKSKMapping(t *testing.T) {
 		engine := testEngine(server.URL, "byteplus_modelark")
 		engine.AuthType = "ak_sk"
 		engine.AuthConfig = map[string]any{"access_key": "access", "secret_key": "secret"}
-		if _, err := NewAdapters()["byteplus_modelark"].Check(context.Background(), engine); err != nil {
+		if _, err := NewEngineAdapters()["byteplus_modelark"].Check(context.Background(), engine); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -218,7 +219,7 @@ func TestProviderRequestTimeout(t *testing.T) {
 	engine.RequestTimeoutSeconds = 0
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
-	_, err := NewAdapters()["deepseek_official"].Check(ctx, engine)
+	_, err := NewEngineAdapters()["deepseek_official"].Check(ctx, engine)
 	if errors.ToStatus(err).Code != code.ErrAIAppEngineUnavailable {
 		t.Fatalf("unexpected timeout error: %v", err)
 	}

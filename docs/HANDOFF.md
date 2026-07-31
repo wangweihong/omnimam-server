@@ -2,26 +2,37 @@
 
 ## Current goal and status
 
-Move ProviderCapability and engine responsibilities from Application Platform
-into `service/v1/modelgateway` and its `engine` subpackage without changing
-external contracts or persistence behavior.
+Remove the stale Application Platform dependency on the old engine-style
+ComfyUI object-info resolver name.
 
-Status: complete and ready for Git commit.
+Status: complete; the old method name has been removed and affected tests pass.
 
 ## Work completed in this session
 
-- Added the `modelgateway` ProviderCapability service and the
-  `modelgateway/engine` service, adapters, health, binding, object-info,
-  reconciler, and test executor implementation.
-- Updated Application Platform composition, API server bootstrap, and task
-  worker wiring to inject the moved services.
-- Removed the obsolete Application Platform engine and adapter implementations.
-- Updated workflow execution, parsing, runtime-form, and test-run code to use
-  the new engine boundary.
-- Added reusable helpers under `backend/pkg/helpers` and extended vendored
-  `gotoolbox` map/type helpers and documentation used by the refactor.
-- Updated affected tests to construct the engine service explicitly; this fixed
-  nil dereferences caused by tests bypassing `NewService`.
+- Added `modelgateway/adapters/comfyui`, `openai`, and `modelark` packages.
+- Moved shared authenticated JSON transport into
+  `modelgateway/adapters/provider`.
+- Added `modelgateway/adapters` registry constructors and updated API Server and
+  Task Worker composition to use them.
+- Moved the ComfyUI workflow test executor and output collector into the
+  ComfyUI adapter package.
+- Updated Application Platform call sites and moved existing adapter tests to
+  the new package.
+- Removed the obsolete monolithic `modelgateway/engine/adapters.go`.
+- Replaced the DeepSeek-specific implementation package with configurable
+  `openai.Adapter` and `openai.Executor` types.
+- Moved ComfyUI object-info validation, refresh, resolution, reader interfaces,
+  service implementation, and reconcile handler into `adapters/comfyui`.
+- Moved generic engine instance, binding, health, and reconcile files into the
+  parent `modelgateway` package.
+- Renamed the flattened types to `EngineService`, `EngineSrv`,
+  `EngineDependencies`, and `NewEngineService` to coexist with the existing
+  ProviderCapability `Service` types.
+- Application Platform now explicitly composes `modelgateway.EngineSrv` with
+  `comfyui.ObjectInfoSrv`, avoiding a parent/subpackage import cycle.
+- Renamed the adapter-internal execution resolver to
+  `comfyui.ObjectInfoSrv.ResolveUsableObjectInfo`; Application Platform calls it
+  explicitly through the composed `Srv` boundary.
 
 ## Current in-progress work
 
@@ -29,21 +40,31 @@ None.
 
 ## Files added, modified, renamed, or removed
 
-- Added: `backend/internal/apiserver/service/v1/modelgateway/**`
-- Added: `backend/pkg/helpers/helper.go`
-- Modified: Application Platform service, workflows, runtime forms, executors,
-  tests, API server bootstrap, task worker, and vendored gotoolbox helpers.
-- Removed: superseded engine, adapter, health, object-info, and related test
-  files from `service/v1/applicationplatform`.
+- Added: `backend/internal/apiserver/service/v1/modelgateway/adapters/**`
+- Renamed: `modelgateway/adapters/deepseek` to
+  `modelgateway/adapters/openai`.
+- Moved: `modelgateway/engine/object_info.go` and
+  `object_info_reconcile.go` into `modelgateway/adapters/comfyui`.
+- Moved: all remaining `modelgateway/engine/*.go` files into `modelgateway/`
+  with `engine_*.go` filenames; removed the empty `engine` directory.
+- Modified: Application Platform provider-call sites and tests, API Server
+  bootstrap, and Task Worker composition.
+- Removed: `modelgateway/engine/adapters.go`, its relocated test file, and the
+  relocated ComfyUI test executor file.
 - Modified: `docs/HANDOFF.md`
 
 ## Key architectural and design decisions
 
-- `modelgateway` owns ProviderCapability behavior.
-- `modelgateway/engine` owns engine instances, capability bindings, health,
-  ComfyUI object-info, adapters, and operation executors.
-- Application Platform embeds the two consumer service interfaces to preserve
-  the existing controller-facing `ApplicationPlatformSrv` contract.
+- `modelgateway` owns ProviderCapability and generic engine service behavior.
+- Concrete protocols live under `modelgateway/adapters/<type>`; the root
+  adapter package only assembles registries.
+- `deepseek_official` uses the generic OpenAI-compatible adapter type; DeepSeek
+  remains only a released Runtime Registry ID, not an implementation type.
+- Shared authenticated transport lives under `modelgateway/adapters/provider`.
+- ComfyUI-only workflow mapping, metadata reads, artifacts, and test execution
+  remain inside `adapters/comfyui`.
+- Generic engine instance, binding, and health orchestration live directly in
+  `modelgateway`; concrete protocol behavior remains under `adapters/<type>`.
 - No API, schema, error-code, permission, event, dependency, or binary changes
   were introduced.
 
@@ -55,7 +76,7 @@ None.
 
 Passed:
 
-- `go test ./internal/apiserver/service/v1/modelgateway/... ./internal/apiserver/service/v1/applicationplatform/... ./internal/apiserver ./internal/taskworker`
+- `go test ./internal/apiserver/service/v1/modelgateway/... ./internal/apiserver/service/v1/applicationplatform/... ./internal/apiserver/controller/v1/applicationplatform ./internal/apiserver ./internal/taskworker`
 - `git diff --check`
 
 Full `go test ./...` passes all affected packages but still fails pre-existing
@@ -77,8 +98,8 @@ and `internal/apiserver/taskname`: actual `生成 thumbnail视图`, expected
 
 ## Exact recommended next step
 
-Review and fix the thumbnail task-name localization source or update its stale
-test expectation, then rerun `cd backend && go test ./...`.
+Review and commit the flattened Model Gateway and adapter boundary changes;
+handle the unrelated thumbnail localization mismatch separately.
 
 Next Prompt:
 

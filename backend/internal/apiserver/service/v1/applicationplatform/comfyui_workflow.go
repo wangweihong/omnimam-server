@@ -110,7 +110,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 	if workflow.SourceType != iapiserver.ComfyUIWorkflowSourceVisual || len(workflow.VisualWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "visual workflow source is unavailable")
 	}
-	_, catalog, err := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	_, catalog, err := s.Srv.ResolveUsableObjectInfo(ctx, req.EngineInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +194,7 @@ func (s *applicationPlatformService) deriveComfyUIWorkflow(ctx context.Context, 
 	if workflow.APIConversionStatus != iapiserver.ComfyUIAPIConversionReady || len(workflow.APIWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
 	}
-	_, catalog, err := s.ResolveUsableComfyUIObjectInfo(ctx, engineID)
+	_, catalog, err := s.Srv.ResolveUsableObjectInfo(ctx, engineID)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +230,7 @@ func (s *applicationPlatformService) ValidateComfyUIWorkflow(ctx context.Context
 	now := imachinery.Now()
 	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: id, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: req.EngineInstanceID, ValidatedAt: now, NodeSummary: map[string]any{}, DependencySummary: map[string]any{}, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
 	validation.Name = "Compatibility check for " + workflow.Name
-	_, catalog, catalogErr := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	_, catalog, catalogErr := s.Srv.ResolveUsableObjectInfo(ctx, req.EngineInstanceID)
 	if catalogErr != nil {
 		if errors.ToStatus(catalogErr).Code != code.ErrAIAppComfyUIObjectInfoUnavailable {
 			return nil, catalogErr
@@ -287,7 +287,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 	var result *iapiserver.ComfyUIWorkflowConvertResult
 	var revision string
 	err = s.Store.ApplicationPlatforms().WithEngineInstanceLock(ctx, req.EngineInstanceID, func() error {
-		_, catalog, lockErr := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+		_, catalog, lockErr := s.Srv.ResolveUsableObjectInfo(ctx, req.EngineInstanceID)
 		if lockErr != nil {
 			return lockErr
 		}

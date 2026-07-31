@@ -16,7 +16,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
-	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -98,7 +100,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "load application platform provider capabilities")
 	}
-	adapters := engine.NewAdapters()
+	adapters := modeladapters.NewEngineAdapters()
 	assets := appsvc.NoopArtifactLifecycle{}
 	events := appsvc.NoopEventPublisher{}
 	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
@@ -130,7 +132,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := reconcileRegistry.Register(engine.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register engine health reconciler")
 	}
-	if err := reconcileRegistry.Register(engine.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
+	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
 	}
 

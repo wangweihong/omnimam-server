@@ -22,7 +22,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
-	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
@@ -112,8 +114,8 @@ func RunTaskWorker(cfg *config.Config) error {
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
-	adapters := engine.NewAdapters()
-	executors := engine.NewOperationExecutors()
+	adapters := modeladapters.NewEngineAdapters()
+	executors := modeladapters.NewOperationExecutors()
 	events := appsvc.NoopEventPublisher{}
 	artifactLifecycle := &workerArtifactLifecycle{
 		store: storeIns.AssetsV1(), storage: assetlibrarysvc.NewLocalContentStorage(storeIns),
@@ -154,13 +156,13 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := reconcileRegistry.Register(engine.NewEngineHealthReconcileHandler(storeIns, applicationService)); err != nil {
 		return err
 	}
-	if err := reconcileRegistry.Register(engine.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationService)); err != nil {
+	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationService)); err != nil {
 		return err
 	}
 	if err := reconcileRegistry.Register(assetlibrarysvc.NewRepresentationBackfillHandler(storeIns, representationPolicy)); err != nil {
 		return err
 	}
-	comfyTestExecutor := engine.NewComfyUITestExecutor(storeIns)
+	comfyTestExecutor := comfyuiadapter.NewTestExecutor(storeIns)
 	if err := runtime.RegisterHandler("comfyui.submit", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		output, err := comfyTestExecutor.Submit(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
 		if err == nil {
@@ -861,7 +863,7 @@ func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCen
 }
 
 func ensureComfyUIObjectInfoSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.comfyui-object-info-refresh", Description: "Daily ComfyUI object_info refresh"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.ObjectInfoRefresh}, SystemKey: engine.ComfyUIObjectInfoReconcileRef, CronExpression: "0 0 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: engine.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.comfyui-object-info-refresh", Description: "Daily ComfyUI object_info refresh"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.ObjectInfoRefresh}, SystemKey: comfyuiadapter.ComfyUIObjectInfoReconcileRef, CronExpression: "0 0 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: comfyuiadapter.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 

@@ -13,7 +13,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
-	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
