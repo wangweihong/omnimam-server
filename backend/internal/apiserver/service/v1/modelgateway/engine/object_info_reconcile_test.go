@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -33,7 +33,6 @@ func (s *objectInfoReconcileStore) ListRefreshableComfyUIEngineInstancesAfter(_ 
 }
 
 type objectInfoReconcileService struct {
-	ApplicationPlatformSrv
 	active  atomic.Int32
 	maximum atomic.Int32
 	failID  string
@@ -63,7 +62,7 @@ func TestComfyUIObjectInfoReconcileHonorsConcurrencyAndAdvancesPastFailures(t *t
 	}
 	storage := &objectInfoReconcileStore{items: items}
 	service := &objectInfoReconcileService{failID: "engine-03"}
-	handler := NewComfyUIObjectInfoReconcileHandler(&executorFactory{applications: storage}, service)
+	handler := NewComfyUIObjectInfoReconcileHandler(&engineTestFactory{applications: storage}, service)
 	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)

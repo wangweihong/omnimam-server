@@ -6,6 +6,30 @@ import (
 	"strings"
 )
 
+// As returns value as T or the zero value of T when the dynamic type does not match.
+func As[T any](value any) T {
+	typed, _ := value.(T)
+	return typed
+}
+
+// SliceAs returns all elements assignable to T from []T or []any.
+func SliceAs[T any](value any) []T {
+	if typed, ok := value.([]T); ok {
+		return typed
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]T, 0, len(items))
+	for _, item := range items {
+		if typed, ok := item.(T); ok {
+			result = append(result, typed)
+		}
+	}
+	return result
+}
+
 func ConvertInterfaceToString(value any) string {
 	if value == nil {
 		return ""

@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -16,6 +16,9 @@ import (
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/httpcli"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -32,16 +35,16 @@ type protocolExecutor struct {
 	provider string
 }
 
-// NewEngineAdapters constructs the immutable adapter set injected into Application Platform.
-func NewEngineAdapters() map[string]EngineAdapter {
-	return map[string]EngineAdapter{
+// NewAdapters 构造由 Model Gateway bootstrap 注入的不可变引擎协议适配器集合。
+func NewAdapters() map[string]Adapter {
+	return map[string]Adapter{
 		"comfyui":           &protocolAdapter{id: "comfyui"},
 		"byteplus_modelark": &protocolAdapter{id: "byteplus_modelark"},
 		"deepseek_official": &protocolAdapter{id: "deepseek_official"},
 	}
 }
 
-// NewOperationExecutors constructs the immutable operation executor set referenced by Runtime Registry.
+// NewOperationExecutors 构造 Runtime Registry 引用的不可变 Provider 操作执行器集合。
 func NewOperationExecutors() map[string]OperationExecutor {
 	return map[string]OperationExecutor{
 		"comfyui_workflow":            &protocolExecutor{id: "comfyui_workflow", provider: "comfyui"},
@@ -59,7 +62,7 @@ func (a *protocolAdapter) ReadObjectInfo(ctx context.Context, engine *iapiserver
 	if a.id != "comfyui" {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine adapter is not ComfyUI")
 	}
-	result, err := invokeProvider(ctx, engine, http.MethodGet, "/object_info", nil)
+	result, err := InvokeProvider(ctx, engine, http.MethodGet, "/object_info", nil)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, err.Error())
 	}
@@ -74,14 +77,14 @@ func (a *protocolAdapter) ReadComfyUIVersion(ctx context.Context, engine *iapise
 	if a.id != "comfyui" {
 		return "", errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine adapter is not ComfyUI")
 	}
-	result, err := invokeProvider(ctx, engine, http.MethodGet, "/system_stats", nil)
+	result, err := InvokeProvider(ctx, engine, http.MethodGet, "/system_stats", nil)
 	if err != nil {
 		return "", err
 	}
-	if version := firstString(result, "comfyui_version", "version"); version != "" {
+	if version := maputil.FirstString(result, "comfyui_version", "version"); version != "" {
 		return version, nil
 	}
-	return firstString(mapValue(result["system"]), "comfyui_version", "version"), nil
+	return maputil.FirstString(typeutil.As[map[string]any](result["system"]), "comfyui_version", "version"), nil
 }
 
 // Check performs the provider-specific lightweight health request using EngineInstance credentials.
@@ -94,7 +97,7 @@ func (a *protocolAdapter) Check(ctx context.Context, engine *iapiserver.EngineIn
 	if requestPath == "" {
 		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine adapter is unavailable")
 	}
-	_, err := invokeProvider(ctx, engine, http.MethodGet, requestPath, nil)
+	_, err := InvokeProvider(ctx, engine, http.MethodGet, requestPath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +121,13 @@ func (e *protocolExecutor) Execute(ctx context.Context, engine *iapiserver.Engin
 }
 
 func executeDeepSeek(ctx context.Context, engine *iapiserver.EngineInstance, run *iapiserver.ApplicationRun) (map[string]any, error) {
-	payload := copyMap(run.InputSnapshot)
+	payload := maputil.Clone(run.InputSnapshot)
 	if _, ok := payload["model"]; !ok {
 		if model := providerModelID(run, payload); model != "" {
 			payload["model"] = model
 		}
 	}
-	response, err := invokeProvider(ctx, engine, http.MethodPost, "/chat/completions", payload)
+	response, err := InvokeProvider(ctx, engine, http.MethodPost, "/chat/completions", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -136,11 +139,11 @@ func executeComfyUI(ctx context.Context, engine *iapiserver.EngineInstance, run 
 	if len(workflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "ComfyUI API workflow is missing")
 	}
-	workflow, err := applyComfyInputs(workflow, run.InputSnapshot, mapValue(run.CapabilitySourceSnapshot["template_contract"]))
+	workflow, err := ApplyComfyInputs(workflow, run.InputSnapshot, typeutil.As[map[string]any](run.CapabilitySourceSnapshot["template_contract"]))
 	if err != nil {
 		return nil, err
 	}
-	submitted, err := invokeProvider(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
+	submitted, err := InvokeProvider(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
 	if err != nil {
 		return nil, err
 	}
@@ -153,10 +156,10 @@ func executeComfyUI(ctx context.Context, engine *iapiserver.EngineInstance, run 
 	for {
 		select {
 		case <-ctx.Done():
-			_, cancelErr := invokeProvider(context.WithoutCancel(ctx), engine, http.MethodPost, "/interrupt", map[string]any{})
+			_, cancelErr := InvokeProvider(context.WithoutCancel(ctx), engine, http.MethodPost, "/interrupt", map[string]any{})
 			return nil, stderrors.Join(ctx.Err(), cancelErr)
 		case <-ticker.C:
-			history, pollErr := invokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
+			history, pollErr := InvokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
 			if pollErr != nil {
 				return nil, pollErr
 			}
@@ -170,13 +173,13 @@ func executeComfyUI(ctx context.Context, engine *iapiserver.EngineInstance, run 
 				}
 			}
 			outputs, _ := entry["outputs"].(map[string]any)
-			return map[string]any{"values": outputs, "artifacts": comfyArtifacts(engine.BaseURL, outputs, mapValue(run.CapabilitySourceSnapshot["template_contract"]))}, nil
+			return map[string]any{"values": outputs, "artifacts": comfyArtifacts(engine.BaseURL, outputs, typeutil.As[map[string]any](run.CapabilitySourceSnapshot["template_contract"]))}, nil
 		}
 	}
 }
 
 func executeModelArk(ctx context.Context, engine *iapiserver.EngineInstance, run *iapiserver.ApplicationRun) (map[string]any, error) {
-	payload := copyMap(run.InputSnapshot)
+	payload := maputil.Clone(run.InputSnapshot)
 	if _, ok := payload["model"]; !ok {
 		payload["model"] = providerModelID(run, payload)
 	}
@@ -185,11 +188,11 @@ func executeModelArk(ctx context.Context, engine *iapiserver.EngineInstance, run
 		delete(payload, "prompt")
 	}
 	requestPath := "/api/v3/contents/generations/tasks"
-	submitted, err := invokeProvider(ctx, engine, http.MethodPost, requestPath, payload)
+	submitted, err := InvokeProvider(ctx, engine, http.MethodPost, requestPath, payload)
 	if err != nil {
 		return nil, err
 	}
-	taskID := firstString(submitted, "id", "task_id")
+	taskID := maputil.FirstString(submitted, "id", "task_id")
 	if taskID == "" {
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "ModelArk response does not contain task id")
 	}
@@ -198,14 +201,14 @@ func executeModelArk(ctx context.Context, engine *iapiserver.EngineInstance, run
 	for {
 		select {
 		case <-ctx.Done():
-			_, cancelErr := invokeProvider(context.WithoutCancel(ctx), engine, http.MethodDelete, requestPath+"/"+url.PathEscape(taskID), nil)
+			_, cancelErr := InvokeProvider(context.WithoutCancel(ctx), engine, http.MethodDelete, requestPath+"/"+url.PathEscape(taskID), nil)
 			return nil, stderrors.Join(ctx.Err(), cancelErr)
 		case <-ticker.C:
-			result, pollErr := invokeProvider(ctx, engine, http.MethodGet, requestPath+"/"+url.PathEscape(taskID), nil)
+			result, pollErr := InvokeProvider(ctx, engine, http.MethodGet, requestPath+"/"+url.PathEscape(taskID), nil)
 			if pollErr != nil {
 				return nil, pollErr
 			}
-			status := strings.ToLower(firstString(result, "status", "state"))
+			status := strings.ToLower(maputil.FirstString(result, "status", "state"))
 			switch status {
 			case "", "queued", "pending", "running", "processing":
 				continue
@@ -218,7 +221,8 @@ func executeModelArk(ctx context.Context, engine *iapiserver.EngineInstance, run
 	}
 }
 
-func invokeProvider(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, payload any) (map[string]any, error) {
+// InvokeProvider 执行带 EngineInstance 认证与超时约束的 JSON Provider 请求。
+func InvokeProvider(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, payload any) (map[string]any, error) {
 	if engine == nil || strings.TrimSpace(engine.BaseURL) == "" {
 		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine base URL is required")
 	}
@@ -233,7 +237,7 @@ func invokeProvider(ctx context.Context, engine *iapiserver.EngineInstance, meth
 		raw = encoded
 		builder.WithBody("json", raw).AddHeaderParam("Content-Type", "application/json")
 	}
-	if err := applyProviderAuthentication(builder, engine, method, requestPath, raw); err != nil {
+	if err := ApplyProviderAuthentication(builder, engine, method, requestPath, raw); err != nil {
 		return nil, err
 	}
 	timeout := time.Duration(engine.RequestTimeoutSeconds) * time.Second
@@ -268,7 +272,8 @@ func invokeProvider(ctx context.Context, engine *iapiserver.EngineInstance, meth
 	return decoded, nil
 }
 
-func applyProviderAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver.EngineInstance, method, requestPath string, body []byte) error {
+// ApplyProviderAuthentication 将 EngineInstance 的鉴权联合类型映射到 Provider 请求头或签名。
+func ApplyProviderAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver.EngineInstance, method, requestPath string, body []byte) error {
 	switch engine.AuthType {
 	case "none", "":
 		return nil
@@ -335,13 +340,13 @@ func applyModelArkSignature(builder *httpcli.HttpRequestBuilder, engine *iapiser
 }
 
 func providerModelID(run *iapiserver.ApplicationRun, inputs map[string]any) string {
-	selected := firstString(inputs, "model", "model_id")
+	selected := maputil.FirstString(inputs, "model", "model_id")
 	capability, _ := run.CapabilitySourceSnapshot["provider_capability"].(map[string]any)
 	models, _ := capability["models"].([]any)
 	for _, raw := range models {
 		model, _ := raw.(map[string]any)
-		if selected == "" || firstString(model, "id") == selected {
-			if providerID := firstString(model, "provider_model_id"); providerID != "" {
+		if selected == "" || maputil.FirstString(model, "id") == selected {
+			if providerID := maputil.FirstString(model, "provider_model_id"); providerID != "" {
 				return providerID
 			}
 		}
@@ -349,7 +354,8 @@ func providerModelID(run *iapiserver.ApplicationRun, inputs map[string]any) stri
 	return selected
 }
 
-func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any, error) {
+// ApplyComfyInputs 按模板契约将已解析运行输入映射到独立的 ComfyUI API workflow 副本。
+func ApplyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any, error) {
 	encoded, err := json.Marshal(workflow)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow snapshot could not be copied")
@@ -358,28 +364,28 @@ func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any
 	if err := json.Unmarshal(encoded, &resolved); err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow snapshot could not be copied")
 	}
-	mappings := mapValue(contract["request_mapping"])
+	mappings := typeutil.As[map[string]any](contract["request_mapping"])
 	if len(mappings) == 0 && contract["parameter_mappings"] != nil {
-		for _, raw := range anySlice(contract["fixed_parameters"]) {
-			fixed := mapValue(raw)
-			if err := setComfyInput(resolved, stringValue(fixed["node_id"]), stringValue(fixed["input_name"]), fixed["value"]); err != nil {
+		for _, raw := range sliceutil.ToInterfaceSlice(contract["fixed_parameters"]) {
+			fixed := typeutil.As[map[string]any](raw)
+			if err := setComfyInput(resolved, typeutil.As[string](fixed["node_id"]), typeutil.As[string](fixed["input_name"]), fixed["value"]); err != nil {
 				return nil, err
 			}
 		}
-		for _, raw := range anySlice(contract["parameter_mappings"]) {
-			mapping := mapValue(raw)
-			key := stringValue(mapping["input_key"])
+		for _, raw := range sliceutil.ToInterfaceSlice(contract["parameter_mappings"]) {
+			mapping := typeutil.As[map[string]any](raw)
+			key := typeutil.As[string](mapping["input_key"])
 			value, exists := inputs[key]
 			if !exists {
 				continue
 			}
-			value, err = convertComfyValue(value, stringValue(mapping["conversion_type"]), mapValue(mapping["config"]))
+			value, err = convertComfyValue(value, typeutil.As[string](mapping["conversion_type"]), typeutil.As[map[string]any](mapping["config"]))
 			if err != nil {
 				return nil, err
 			}
-			for _, targetRaw := range anySlice(mapping["targets"]) {
-				target := mapValue(targetRaw)
-				if err := setComfyInput(resolved, stringValue(target["node_id"]), stringValue(target["input_name"]), value); err != nil {
+			for _, targetRaw := range sliceutil.ToInterfaceSlice(mapping["targets"]) {
+				target := typeutil.As[map[string]any](targetRaw)
+				if err := setComfyInput(resolved, typeutil.As[string](target["node_id"]), typeutil.As[string](target["input_name"]), value); err != nil {
 					return nil, err
 				}
 			}
@@ -399,9 +405,9 @@ func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any
 				nodeID, inputName = parts[0], parts[2]
 			}
 		case map[string]any:
-			nodeID = firstString(mapping, "node_id", "target_node_id")
-			inputName = firstString(mapping, "input_name", "target_input")
-			if target := firstString(mapping, "target"); nodeID == "" && target != "" {
+			nodeID = maputil.FirstString(mapping, "node_id", "target_node_id")
+			inputName = maputil.FirstString(mapping, "input_name", "target_input")
+			if target := maputil.FirstString(mapping, "target"); nodeID == "" && target != "" {
 				parts := strings.Split(strings.TrimPrefix(target, "prompt."), ".")
 				if len(parts) == 3 && parts[1] == "inputs" {
 					nodeID, inputName = parts[0], parts[2]
@@ -411,11 +417,11 @@ func applyComfyInputs(workflow, inputs, contract map[string]any) (map[string]any
 		if nodeID == "" || inputName == "" {
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI request mapping is invalid for "+field)
 		}
-		node := mapValue(resolved[nodeID])
+		node := typeutil.As[map[string]any](resolved[nodeID])
 		if node == nil {
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI request mapping references missing node "+nodeID)
 		}
-		nodeInputs := mapValue(node["inputs"])
+		nodeInputs := typeutil.As[map[string]any](node["inputs"])
 		if nodeInputs == nil {
 			nodeInputs = map[string]any{}
 			node["inputs"] = nodeInputs
@@ -429,11 +435,11 @@ func setComfyInput(workflow map[string]any, nodeID, inputName string, value any)
 	if nodeID == "" || inputName == "" {
 		return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI mapping target is incomplete")
 	}
-	node := mapValue(workflow[nodeID])
+	node := typeutil.As[map[string]any](workflow[nodeID])
 	if node == nil {
 		return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI mapping references missing node "+nodeID)
 	}
-	inputs := mapValue(node["inputs"])
+	inputs := typeutil.As[map[string]any](node["inputs"])
 	if inputs == nil {
 		inputs = map[string]any{}
 		node["inputs"] = inputs
@@ -449,7 +455,7 @@ func convertComfyValue(value any, conversion string, config map[string]any) (any
 	case "FIXED_VALUE":
 		return config["value"], nil
 	case "ENUM_MAP", "ASPECT_RATIO_TO_SIZE":
-		if mapped, ok := mapValue(config["values"])[fmt.Sprint(value)]; ok {
+		if mapped, ok := typeutil.As[map[string]any](config["values"])[fmt.Sprint(value)]; ok {
 			return mapped, nil
 		}
 		return nil, errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "ComfyUI mapping has no value for input")
@@ -467,7 +473,7 @@ func convertComfyValue(value any, conversion string, config map[string]any) (any
 		offset, _ := config["offset"].(float64)
 		return number*scale + offset, nil
 	case "CONCAT":
-		parts := anySlice(config["parts"])
+		parts := sliceutil.ToInterfaceSlice(config["parts"])
 		var builder strings.Builder
 		for _, part := range parts {
 			if part == "$value" {
@@ -478,10 +484,10 @@ func convertComfyValue(value any, conversion string, config map[string]any) (any
 		}
 		return builder.String(), nil
 	case "TEMPLATE_STRING":
-		template := stringValue(config["template"])
+		template := typeutil.As[string](config["template"])
 		return strings.ReplaceAll(template, "{{value}}", fmt.Sprint(value)), nil
 	case "CONDITIONAL":
-		if cases := mapValue(config["cases"]); cases != nil {
+		if cases := typeutil.As[map[string]any](config["cases"]); cases != nil {
 			if mapped, ok := cases[fmt.Sprint(value)]; ok {
 				return mapped, nil
 			}
@@ -494,27 +500,27 @@ func convertComfyValue(value any, conversion string, config map[string]any) (any
 
 func comfyArtifacts(baseURL string, outputs, contract map[string]any) []map[string]any {
 	artifacts := []map[string]any{}
-	configured := anySlice(contract["outputs"])
+	configured := sliceutil.ToInterfaceSlice(contract["outputs"])
 	if len(configured) > 0 {
 		for _, raw := range configured {
-			definition := mapValue(raw)
-			nodeID := stringValue(definition["node_id"])
-			node := mapValue(outputs[nodeID])
-			mediaType := stringValue(definition["media_type"])
+			definition := typeutil.As[map[string]any](raw)
+			nodeID := typeutil.As[string](definition["node_id"])
+			node := typeutil.As[map[string]any](outputs[nodeID])
+			mediaType := typeutil.As[string](definition["media_type"])
 			keys := map[string]string{"image": "images", "video": "videos", "audio": "audio"}
-			items := anySlice(node[keys[mediaType]])
+			items := sliceutil.ToInterfaceSlice(node[keys[mediaType]])
 			for index, itemRaw := range items {
-				item := mapValue(itemRaw)
-				filename := firstString(item, "filename")
+				item := typeutil.As[map[string]any](itemRaw)
+				filename := maputil.FirstString(item, "filename")
 				if filename == "" {
 					continue
 				}
-				subfolder := firstString(item, "subfolder")
+				subfolder := maputil.FirstString(item, "subfolder")
 				ref := strings.TrimRight(baseURL, "/") + "/view?filename=" + url.QueryEscape(filename)
 				if subfolder != "" {
 					ref += "&subfolder=" + url.QueryEscape(subfolder)
 				}
-				artifacts = append(artifacts, map[string]any{"output_key": stringValue(definition["key"]), "media_type": mediaType, "content_ref": ref, "node_id": nodeID, "index": index})
+				artifacts = append(artifacts, map[string]any{"output_key": typeutil.As[string](definition["key"]), "media_type": mediaType, "content_ref": ref, "node_id": nodeID, "index": index})
 			}
 		}
 		return artifacts
@@ -525,15 +531,15 @@ func comfyArtifacts(baseURL string, outputs, contract map[string]any) []map[stri
 			items, _ := node[media.key].([]any)
 			for index, itemRaw := range items {
 				item, _ := itemRaw.(map[string]any)
-				filename := firstString(item, "filename")
+				filename := maputil.FirstString(item, "filename")
 				if filename == "" {
 					continue
 				}
 				query := url.Values{"filename": {filename}}
-				if subfolder := firstString(item, "subfolder"); subfolder != "" {
+				if subfolder := maputil.FirstString(item, "subfolder"); subfolder != "" {
 					query.Set("subfolder", subfolder)
 				}
-				if kind := firstString(item, "type"); kind != "" {
+				if kind := maputil.FirstString(item, "type"); kind != "" {
 					query.Set("type", kind)
 				}
 				artifacts = append(artifacts, map[string]any{"output_key": fmt.Sprintf("%s.%s.%d", nodeID, media.key, index), "media_type": media.mediaType, "content_ref": strings.TrimRight(baseURL, "/") + "/view?" + query.Encode()})
@@ -546,7 +552,7 @@ func comfyArtifacts(baseURL string, outputs, contract map[string]any) []map[stri
 func modelArkArtifacts(result map[string]any) []map[string]any {
 	artifacts := []map[string]any{}
 	for _, field := range []struct{ key, mediaType string }{{"video_url", "video"}, {"last_frame_url", "image"}, {"image_url", "image"}} {
-		if ref := firstString(result, field.key); ref != "" {
+		if ref := maputil.FirstString(result, field.key); ref != "" {
 			artifacts = append(artifacts, map[string]any{"output_key": field.key, "media_type": field.mediaType, "content_ref": ref})
 		}
 	}
@@ -554,23 +560,6 @@ func modelArkArtifacts(result map[string]any) []map[string]any {
 		artifacts = append(artifacts, modelArkArtifacts(content)...)
 	}
 	return artifacts
-}
-
-func firstString(values map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := values[key].(string); ok && value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func copyMap(source map[string]any) map[string]any {
-	target := make(map[string]any, len(source))
-	for key, value := range source {
-		target[key] = value
-	}
-	return target
 }
 
 func providerFailureSummary(body string) string {

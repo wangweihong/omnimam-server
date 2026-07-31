@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -35,11 +37,11 @@ func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app
 	var properties map[string]any
 	var required []string
 	if raw, ok := version.InputSchema["properties"].(map[string]any); ok {
-		properties = cloneMap(raw)
+		properties = deepcopy.AnyMapClone(raw)
 	} else {
 		properties = map[string]any{}
 	}
-	required = anyStrings(version.InputSchema["required"])
+	required = typeutil.SliceAs[string](version.InputSchema["required"])
 
 	switch templateVersion.CapabilitySourceType {
 	case iapiserver.CapabilitySourceProviderCapability:
@@ -70,18 +72,18 @@ func (s *applicationPlatformService) resolveRuntimeForm(ctx context.Context, app
 			return nil, errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI workflow revision is missing")
 		}
 		form.WorkflowContractRevision = stringPtr(*templateVersion.WorkflowContractRevision)
-		restrictions := mapValue(templateVersion.TemplateContract["engine_restrictions"])
+		restrictions := typeutil.As[map[string]any](templateVersion.TemplateContract["engine_restrictions"])
 		requireEnabled := true
 		if value, ok := restrictions["require_enabled"].(bool); ok {
 			requireEnabled = value
 		}
 		var enabledFilter *bool
 		if requireEnabled {
-			enabledFilter = boolPtr(true)
+			enabledFilter = typeutil.Bool(true)
 		}
-		allowedIDs := commaSet(stringValue(restrictions["allowed_engine_instance_ids"]))
-		allowedRegions := commaSet(stringValue(restrictions["allowed_regions"]))
-		requiredHealth := stringValue(restrictions["required_health_status"])
+		allowedIDs := commaSet(typeutil.As[string](restrictions["allowed_engine_instance_ids"]))
+		allowedRegions := commaSet(typeutil.As[string](restrictions["allowed_regions"]))
+		requiredHealth := typeutil.As[string](restrictions["required_health_status"])
 		if requiredHealth == "" {
 			requiredHealth = iapiserver.EngineHealthOnline
 		}
@@ -149,12 +151,12 @@ func engineMatchesComfyUITemplateRestrictions(engine *iapiserver.EngineInstance,
 	if engine == nil || engine.ApplicationEngineTypeID != "comfyui" || !engine.Enabled || engine.HealthStatus != iapiserver.EngineHealthOnline {
 		return false
 	}
-	restrictions := mapValue(contract["engine_restrictions"])
-	allowedIDs := commaSet(stringValue(restrictions["allowed_engine_instance_ids"]))
+	restrictions := typeutil.As[map[string]any](contract["engine_restrictions"])
+	allowedIDs := commaSet(typeutil.As[string](restrictions["allowed_engine_instance_ids"]))
 	if len(allowedIDs) > 0 && !allowedIDs[engine.ID] {
 		return false
 	}
-	allowedRegions := commaSet(stringValue(restrictions["allowed_regions"]))
+	allowedRegions := commaSet(typeutil.As[string](restrictions["allowed_regions"]))
 	return len(allowedRegions) == 0 || allowedRegions[engine.Region]
 }
 
@@ -172,7 +174,7 @@ func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Conte
 	}
 	candidates := make([]runtimeCandidate, 0, len(bindings))
 	for _, binding := range bindings {
-		s.resolveBindingStatus(binding)
+		s.ResolveBindingStatus(binding)
 		if binding.EffectiveStatus != iapiserver.BindingEffectiveAvailable || (selectedEngineID != "" && binding.EngineInstanceID != selectedEngineID) {
 			continue
 		}
@@ -194,7 +196,7 @@ func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Conte
 func selectRuntimeVariants(candidates []runtimeCandidate, values map[string]any) []iapiserver.ProviderCapabilityVariant {
 	seen := map[string]struct{}{}
 	result := []iapiserver.ProviderCapabilityVariant{}
-	model := stringValue(values["model"])
+	model := typeutil.As[string](values["model"])
 	for _, candidate := range candidates {
 		for _, variant := range candidate.variants {
 			if model != "" && variant.ModelID != model {
@@ -211,7 +213,7 @@ func selectRuntimeVariants(candidates []runtimeCandidate, values map[string]any)
 }
 
 func restrictVariants(variants []iapiserver.ProviderCapabilityVariant, restrictions map[string]any) []iapiserver.ProviderCapabilityVariant {
-	models, operations, variantIDs := stringSet(anyStrings(restrictions["model_ids"])), stringSet(anyStrings(restrictions["operation_ids"])), stringSet(anyStrings(restrictions["variant_ids"]))
+	models, operations, variantIDs := stringSet(typeutil.SliceAs[string](restrictions["model_ids"])), stringSet(typeutil.SliceAs[string](restrictions["operation_ids"])), stringSet(typeutil.SliceAs[string](restrictions["variant_ids"]))
 	result := make([]iapiserver.ProviderCapabilityVariant, 0, len(variants))
 	for _, variant := range variants {
 		if len(models) > 0 && !models[variant.ModelID] {
@@ -239,14 +241,14 @@ func mergeVariantProperties(properties map[string]any, required *[]string, varia
 			}
 			existing, _ := properties[name].(map[string]any)
 			if existing == nil {
-				existing = cloneMap(schema)
+				existing = deepcopy.AnyMapClone(schema)
 				properties[name] = existing
 			}
 			if values := anyValues(schema["enum"]); len(values) > 0 {
 				existing["enum"] = uniqueValues(append(anyValues(existing["enum"]), values...))
 			}
 		}
-		for _, name := range anyStrings(variant.InputSchema["required"]) {
+		for _, name := range typeutil.SliceAs[string](variant.InputSchema["required"]) {
 			if !contains(*required, name) {
 				*required = append(*required, name)
 			}
@@ -266,7 +268,7 @@ func buildRuntimeFields(properties map[string]any, required []string, policies, 
 	for _, name := range names {
 		schema, _ := properties[name].(map[string]any)
 		policy, _ := policies[name].(map[string]any)
-		field := iapiserver.RuntimeFormField{Name: name, Type: stringValue(schema["type"]), Required: contains(required, name), Value: current[name], Options: anyValues(schema["enum"]), Connectable: boolValue(schema["x-omnimam-connectable"]), Dynamic: false, DependsOn: anyStrings(policy["depends_on"]), OnInvalid: stringValue(policy["on_invalid"]), UI: mapValue(policy["ui"])}
+		field := iapiserver.RuntimeFormField{Name: name, Type: typeutil.As[string](schema["type"]), Required: contains(required, name), Value: current[name], Options: anyValues(schema["enum"]), Connectable: boolValue(schema["x-omnimam-connectable"]), Dynamic: false, DependsOn: typeutil.SliceAs[string](policy["depends_on"]), OnInvalid: typeutil.As[string](policy["on_invalid"]), UI: typeutil.As[map[string]any](policy["ui"])}
 		if field.Type == "" {
 			field.Type = "string"
 		}
@@ -277,7 +279,7 @@ func buildRuntimeFields(properties map[string]any, required []string, policies, 
 				field.OnInvalid = iapiserver.RuntimeInvalidReset
 			}
 		}
-		if exposure := stringValue(policy["exposure"]); exposure == "fixed" {
+		if exposure := typeutil.As[string](policy["exposure"]); exposure == "fixed" {
 			field.Value = policy["value"]
 			field.Options = []any{policy["value"]}
 		}
@@ -411,7 +413,7 @@ func clampValue(value any, schema map[string]any) any {
 	if max, ok := numberValue(schema["maximum"]); ok && number > max {
 		number = max
 	}
-	if stringValue(schema["type"]) == "integer" {
+	if typeutil.As[string](schema["type"]) == "integer" {
 		return int(number)
 	}
 	return number
@@ -430,17 +432,5 @@ func numberValue(value any) (float64, bool) {
 		return 0, false
 	}
 }
-func boolValue(value any) bool          { ret, _ := value.(bool); return ret }
-func boolPtr(value bool) *bool          { return &value }
-func mapValue(value any) map[string]any { ret, _ := value.(map[string]any); return ret }
-func cloneMap(source map[string]any) map[string]any {
-	target := make(map[string]any, len(source))
-	for key, value := range source {
-		if nested, ok := value.(map[string]any); ok {
-			target[key] = cloneMap(nested)
-		} else {
-			target[key] = value
-		}
-	}
-	return target
-}
+func boolValue(value any) bool { ret, _ := value.(bool); return ret }
+func boolPtr(value bool) *bool { return &value }

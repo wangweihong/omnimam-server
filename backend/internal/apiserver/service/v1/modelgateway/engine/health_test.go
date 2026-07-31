@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -10,14 +10,29 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type engineHealthStore struct {
-	executorApplicationStore
+	store.ApplicationPlatformStore
+	engine           *iapiserver.EngineInstance
 	updated          *iapiserver.EngineInstance
 	event            *iapiserver.ApplicationPlatformEvent
 	updateContextErr error
+}
+
+func (s *engineHealthStore) GetEngineInstance(context.Context, string) (*iapiserver.EngineInstance, error) {
+	return s.engine, nil
+}
+
+type engineTestFactory struct {
+	store.Factory
+	applications store.ApplicationPlatformStore
+}
+
+func (f *engineTestFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
+	return f.applications
 }
 
 func (s *engineHealthStore) UpdateEngineInstanceHealth(ctx context.Context, data *iapiserver.EngineInstance, _ int64, event *iapiserver.ApplicationPlatformEvent) (*iapiserver.EngineInstance, error) {
@@ -48,6 +63,54 @@ func (deadlineEngineHealthAdapter) Check(ctx context.Context, _ *iapiserver.Engi
 	return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "provider request timed out")
 }
 
+func TestValidateEngineAuthRejectsMismatchedUnion(t *testing.T) {
+	runtime, err := appregistry.LoadRuntimeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{runtime: runtime}
+	tests := []struct {
+		name, engineType, authType string
+		config                     map[string]any
+		valid                      bool
+	}{
+		{name: "none without config", engineType: "comfyui", authType: "none", valid: true},
+		{name: "none with config", engineType: "comfyui", authType: "none", config: map[string]any{"api_key": "secret"}},
+		{name: "api key", engineType: "comfyui", authType: "api_key", config: map[string]any{"api_key": "secret"}, valid: true},
+		{name: "api key extra field", engineType: "comfyui", authType: "api_key", config: map[string]any{"api_key": "secret", "token": "extra"}},
+		{name: "missing bearer token", engineType: "comfyui", authType: "bearer_token", config: map[string]any{}},
+		{name: "unsupported ak sk", engineType: "comfyui", authType: "ak_sk", config: map[string]any{"access_key": "a", "secret_key": "s"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.validateAuth(tt.engineType, tt.authType, tt.config)
+			if tt.valid && err != nil {
+				t.Fatalf("valid auth rejected: %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatal("invalid auth accepted")
+			}
+		})
+	}
+}
+
+func TestValidateRestrictionsRejectsCapabilityExpansion(t *testing.T) {
+	capability := &iapiserver.AIAppProviderCapability{
+		Models:     []iapiserver.ProviderCapabilityModel{{ID: "model-a"}},
+		Operations: []iapiserver.ProviderCapabilityOperation{{ID: "operation-a"}},
+		Variants:   []iapiserver.ProviderCapabilityVariant{{ID: "variant-a"}},
+	}
+	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-a"}}); err != nil {
+		t.Fatalf("valid restriction rejected: %v", err)
+	}
+	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-b"}}); err == nil {
+		t.Fatal("expanding restriction was accepted")
+	}
+	if err := validateRestrictions(capability, map[string]any{"unknown": []any{"x"}}); err == nil {
+		t.Fatal("unknown restriction was accepted")
+	}
+}
+
 func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
 	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
@@ -55,7 +118,7 @@ func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
 	}
 	tests := []struct {
 		name        string
-		adapter     EngineAdapter
+		adapter     Adapter
 		wantStatus  string
 		wantSummary string
 	}{
@@ -69,8 +132,8 @@ func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthOnline}
 			engine.ID = "engine-1"
-			storage := &engineHealthStore{executorApplicationStore: executorApplicationStore{engine: engine}}
-			service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: storage}, Runtime: runtimeRegistry, Adapters: map[string]EngineAdapter{"deepseek_official": tt.adapter}}}
+			storage := &engineHealthStore{engine: engine}
+			service := &Service{store: &engineTestFactory{applications: storage}, runtime: runtimeRegistry, adapters: map[string]Adapter{"deepseek_official": tt.adapter}}
 			result, err := service.CheckEngineInstanceHealthInternal(context.Background(), engine.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -98,8 +161,8 @@ func TestEngineHealthMissingAdapterIsPersistedAsDegraded(t *testing.T) {
 	}
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
-	storage := &engineHealthStore{executorApplicationStore: executorApplicationStore{engine: engine}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: storage}, Runtime: runtimeRegistry, Adapters: map[string]EngineAdapter{}}}
+	storage := &engineHealthStore{engine: engine}
+	service := &Service{store: &engineTestFactory{applications: storage}, runtime: runtimeRegistry, adapters: map[string]Adapter{}}
 	result, err := service.CheckEngineInstanceHealthInternal(context.Background(), engine.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +179,8 @@ func TestEngineHealthCancellationKeepsChunkRetryable(t *testing.T) {
 	}
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
-	storage := &engineHealthStore{executorApplicationStore: executorApplicationStore{engine: engine}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: storage}, Runtime: runtimeRegistry, Adapters: map[string]EngineAdapter{"deepseek_official": engineHealthAdapter{err: context.Canceled}}}}
+	storage := &engineHealthStore{engine: engine}
+	service := &Service{store: &engineTestFactory{applications: storage}, runtime: runtimeRegistry, adapters: map[string]Adapter{"deepseek_official": engineHealthAdapter{err: context.Canceled}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := service.CheckEngineInstanceHealthInternal(ctx, engine.ID); err == nil {
@@ -135,8 +198,8 @@ func TestEngineHealthDeadlinePersistsOfflineWithFreshContext(t *testing.T) {
 	}
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthUnknown}
 	engine.ID = "engine-1"
-	storage := &engineHealthStore{executorApplicationStore: executorApplicationStore{engine: engine}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: storage}, Runtime: runtimeRegistry, Adapters: map[string]EngineAdapter{"deepseek_official": deadlineEngineHealthAdapter{}}}}
+	storage := &engineHealthStore{engine: engine}
+	service := &Service{store: &engineTestFactory{applications: storage}, runtime: runtimeRegistry, adapters: map[string]Adapter{"deepseek_official": deadlineEngineHealthAdapter{}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 

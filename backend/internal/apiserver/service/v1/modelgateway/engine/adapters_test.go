@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -53,15 +56,15 @@ func TestApplyComfyInputsUsesWorkflowCopy(t *testing.T) {
 		"prompt": map[string]any{"node_id": "6", "input_name": "text"},
 		"seed":   "6.inputs.seed",
 	}}
-	resolved, err := applyComfyInputs(workflow, map[string]any{"prompt": "new", "seed": 42}, contract)
+	resolved, err := ApplyComfyInputs(workflow, map[string]any{"prompt": "new", "seed": 42}, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs := mapValue(mapValue(resolved["6"])["inputs"])
+	inputs := typeutil.As[map[string]any](typeutil.As[map[string]any](resolved["6"])["inputs"])
 	if inputs["text"] != "new" || inputs["seed"] != 42 {
 		t.Fatalf("workflow inputs were not resolved: %#v", resolved)
 	}
-	originalInputs := mapValue(mapValue(workflow["6"])["inputs"])
+	originalInputs := typeutil.As[map[string]any](typeutil.As[map[string]any](workflow["6"])["inputs"])
 	if originalInputs["text"] != "old" {
 		t.Fatalf("immutable workflow snapshot was mutated: %#v", workflow)
 	}
@@ -70,15 +73,15 @@ func TestApplyComfyInputsUsesWorkflowCopy(t *testing.T) {
 func TestApplyComfyInputsSupportsImportedTemplateContract(t *testing.T) {
 	workflow := map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{"seed": float64(1)}}}
 	contract := map[string]any{"fixed_parameters": []any{}, "parameter_mappings": []any{map[string]any{"input_key": "seed", "conversion_type": "DIRECT", "targets": []any{map[string]any{"node_id": "1", "input_name": "seed"}}}}}
-	resolved, err := applyComfyInputs(workflow, map[string]any{"seed": float64(42)}, contract)
+	resolved, err := ApplyComfyInputs(workflow, map[string]any{"seed": float64(42)}, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seed := mapValue(mapValue(resolved["1"])["inputs"])["seed"]
+	seed := typeutil.As[map[string]any](typeutil.As[map[string]any](resolved["1"])["inputs"])["seed"]
 	if seed != float64(42) {
 		t.Fatalf("seed=%v, want 42", seed)
 	}
-	original := mapValue(mapValue(workflow["1"])["inputs"])["seed"]
+	original := typeutil.As[map[string]any](typeutil.As[map[string]any](workflow["1"])["inputs"])["seed"]
 	if original != float64(1) {
 		t.Fatalf("source workflow was mutated: %v", original)
 	}
@@ -110,8 +113,8 @@ func TestComfyUIAdapterSubmitPollAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifacts := anySlice(output["artifacts"])
-	if len(artifacts) != 1 || !strings.Contains(firstString(artifacts[0].(map[string]any), "content_ref"), "/view?") {
+	artifacts := sliceutil.ToInterfaceSlice(output["artifacts"])
+	if len(artifacts) != 1 || !strings.Contains(maputil.FirstString(artifacts[0].(map[string]any), "content_ref"), "/view?") {
 		t.Fatalf("unexpected ComfyUI artifacts: %#v", output)
 	}
 	<-promptSubmitted
@@ -159,7 +162,7 @@ func TestModelArkAdapterSubmitAndPoll(t *testing.T) {
 	if _, ok := submitted["content"]; !ok {
 		t.Fatalf("prompt was not translated to content: %#v", submitted)
 	}
-	if len(anySlice(output["artifacts"])) != 1 {
+	if len(sliceutil.ToInterfaceSlice(output["artifacts"])) != 1 {
 		t.Fatalf("video artifact was not normalized: %#v", output)
 	}
 }
@@ -168,7 +171,7 @@ func TestProviderErrorAndAKSKMapping(t *testing.T) {
 	t.Run("authentication rejection", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "unauthorized", http.StatusUnauthorized) }))
 		defer server.Close()
-		_, err := NewEngineAdapters()["deepseek_official"].Check(context.Background(), testEngine(server.URL, "deepseek_official"))
+		_, err := NewAdapters()["deepseek_official"].Check(context.Background(), testEngine(server.URL, "deepseek_official"))
 		if errors.ToStatus(err).Code != code.ErrAIAppEngineAuthConfigInvalid {
 			t.Fatalf("unexpected error mapping: %v", err)
 		}
@@ -186,7 +189,7 @@ func TestProviderErrorAndAKSKMapping(t *testing.T) {
 		engine := testEngine(server.URL, "byteplus_modelark")
 		engine.AuthType = "ak_sk"
 		engine.AuthConfig = map[string]any{"access_key": "access", "secret_key": "secret"}
-		if _, err := NewEngineAdapters()["byteplus_modelark"].Check(context.Background(), engine); err != nil {
+		if _, err := NewAdapters()["byteplus_modelark"].Check(context.Background(), engine); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -215,7 +218,7 @@ func TestProviderRequestTimeout(t *testing.T) {
 	engine.RequestTimeoutSeconds = 0
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
-	_, err := NewEngineAdapters()["deepseek_official"].Check(ctx, engine)
+	_, err := NewAdapters()["deepseek_official"].Check(ctx, engine)
 	if errors.ToStatus(err).Code != code.ErrAIAppEngineUnavailable {
 		t.Fatalf("unexpected timeout error: %v", err)
 	}

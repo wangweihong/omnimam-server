@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -35,7 +35,6 @@ func (s *healthReconcileStore) ListEnabledEngineInstancesAfter(_ context.Context
 }
 
 type healthReconcileService struct {
-	ApplicationPlatformSrv
 	active  atomic.Int32
 	maximum atomic.Int32
 	failID  string
@@ -67,7 +66,7 @@ func TestEngineHealthReconcileHonorsConcurrencyAndStableCursor(t *testing.T) {
 	}
 	applicationStore := &healthReconcileStore{items: items}
 	service := &healthReconcileService{}
-	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	handler := NewEngineHealthReconcileHandler(&engineTestFactory{applications: applicationStore}, service)
 	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +98,7 @@ func TestEngineHealthReconcileDoesNotAdvanceIncompleteChunk(t *testing.T) {
 	}
 	applicationStore := &healthReconcileStore{items: items}
 	service := &healthReconcileService{failID: "engine-03"}
-	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	handler := NewEngineHealthReconcileHandler(&engineTestFactory{applications: applicationStore}, service)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	result, err := handler.Reconcile(ctx, taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 2, MaxItemsPerRun: 4, PerItemTimeout: 20 * time.Millisecond})
@@ -124,7 +123,7 @@ func TestEngineHealthReconcileBoundsAndPrioritizesDeferredInstances(t *testing.T
 	}
 	applicationStore := &healthReconcileStore{items: items}
 	service := &healthReconcileService{failID: "engine-22"}
-	handler := NewEngineHealthReconcileHandler(&executorFactory{applications: applicationStore}, service)
+	handler := NewEngineHealthReconcileHandler(&engineTestFactory{applications: applicationStore}, service)
 	result, err := handler.Reconcile(context.Background(), taskcenter.ReconcileRequest{Checkpoint: map[string]any{}, MaxParallelism: 22, MaxItemsPerRun: 22, PerItemTimeout: 20 * time.Millisecond})
 	if err == nil {
 		t.Fatal("expected incomplete chunk error")

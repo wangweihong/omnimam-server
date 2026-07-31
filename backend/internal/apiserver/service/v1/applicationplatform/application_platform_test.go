@@ -6,39 +6,30 @@ import (
 	"encoding/json"
 	"testing"
 
+	toolerrors "github.com/wangweihong/gotoolbox/pkg/errors"
+
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-func TestValidateEngineAuthRejectsMismatchedUnion(t *testing.T) {
+func TestSystemEngineBindingIsNotATemplateSource(t *testing.T) {
 	runtime, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := &applicationPlatformService{Dependencies: Dependencies{Runtime: runtime}}
-	tests := []struct {
-		name, engineType, authType string
-		config                     map[string]any
-		valid                      bool
-	}{
-		{name: "none without config", engineType: "comfyui", authType: "none", valid: true},
-		{name: "none with config", engineType: "comfyui", authType: "none", config: map[string]any{"api_key": "secret"}},
-		{name: "api key", engineType: "comfyui", authType: "api_key", config: map[string]any{"api_key": "secret"}, valid: true},
-		{name: "api key extra field", engineType: "comfyui", authType: "api_key", config: map[string]any{"api_key": "secret", "token": "extra"}},
-		{name: "missing bearer token", engineType: "comfyui", authType: "bearer_token", config: map[string]any{}},
-		{name: "unsupported ak sk", engineType: "comfyui", authType: "ak_sk", config: map[string]any{"access_key": "a", "secret_key": "s"}},
+	capabilities, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtime)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := service.validateEngineAuth(tt.engineType, tt.authType, tt.config)
-			if tt.valid && err != nil {
-				t.Fatalf("valid auth rejected: %v", err)
-			}
-			if !tt.valid && err == nil {
-				t.Fatal("invalid auth accepted")
-			}
-		})
+	service := &applicationPlatformService{Dependencies: Dependencies{Capabilities: capabilities}}
+	_, templateErr := service.templateVersionFromRequest(
+		"image.text_to_image", iapiserver.CapabilitySourceProviderCapability,
+		"comfyui-workflow-runtime", "workflow", nil, nil,
+	)
+	if status := toolerrors.ToStatus(templateErr); status.Code != code.ErrAIAppTemplateSourceInvalid {
+		t.Fatalf("template status=%#v", status)
 	}
 }
 
@@ -146,23 +137,6 @@ func TestCanonicalJSONDigestMatchesRFC8785Example(t *testing.T) {
 func TestCanonicalJSONRawDigestRejectsDuplicateObjectKeys(t *testing.T) {
 	if _, err := canonicalJSONRawDigest([]byte(`{"1":{"class_type":"A","class_type":"B","inputs":{}}}`), nil); err == nil {
 		t.Fatal("duplicate JSON object keys were accepted")
-	}
-}
-
-func TestValidateRestrictionsRejectsCapabilityExpansion(t *testing.T) {
-	capability := &iapiserver.AIAppProviderCapability{
-		Models:     []iapiserver.ProviderCapabilityModel{{ID: "model-a"}},
-		Operations: []iapiserver.ProviderCapabilityOperation{{ID: "operation-a"}},
-		Variants:   []iapiserver.ProviderCapabilityVariant{{ID: "variant-a"}},
-	}
-	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-a"}}); err != nil {
-		t.Fatalf("valid restriction rejected: %v", err)
-	}
-	if err := validateRestrictions(capability, map[string]any{"model_ids": []any{"model-b"}}); err == nil {
-		t.Fatal("expanding restriction was accepted")
-	}
-	if err := validateRestrictions(capability, map[string]any{"unknown": []any{"x"}}); err == nil {
-		t.Fatal("unknown restriction was accepted")
 	}
 }
 

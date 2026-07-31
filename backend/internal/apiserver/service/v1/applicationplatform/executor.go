@@ -16,10 +16,14 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/httpcli"
 	"github.com/wangweihong/gotoolbox/pkg/log"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -29,8 +33,8 @@ type ApplicationRunExecutor struct {
 	store        store.Factory
 	runtime      *appregistry.RuntimeRegistry
 	capabilities *appregistry.ProviderCapabilityRegistry
-	adapters     map[string]EngineAdapter
-	executors    map[string]OperationExecutor
+	adapters     map[string]enginegateway.Adapter
+	executors    map[string]enginegateway.OperationExecutor
 	assets       ArtifactLifecycle
 	events       EventPublisher
 	limitsMu     sync.Mutex
@@ -42,7 +46,7 @@ type engineActivity struct {
 	changed chan struct{}
 }
 
-func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRegistry, capabilities *appregistry.ProviderCapabilityRegistry, adapters map[string]EngineAdapter, executors map[string]OperationExecutor, assets ArtifactLifecycle, events EventPublisher) (*ApplicationRunExecutor, error) {
+func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRegistry, capabilities *appregistry.ProviderCapabilityRegistry, adapters map[string]enginegateway.Adapter, executors map[string]enginegateway.OperationExecutor, assets ArtifactLifecycle, events EventPublisher) (*ApplicationRunExecutor, error) {
 	if str == nil || runtime == nil {
 		return nil, fmt.Errorf("application run executor store and runtime registry are required")
 	}
@@ -75,7 +79,7 @@ func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.A
 	if e.adapters[engineType.EngineAdapterID] == nil {
 		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine adapter is not registered")
 	}
-	capabilityID := firstString(run.ExecutionSnapshot, "capability_definition_id")
+	capabilityID := maputil.FirstString(run.ExecutionSnapshot, "capability_definition_id")
 	if err := e.validateCurrentProviderBinding(ctx, run, engine, capabilityID); err != nil {
 		return nil, err
 	}
@@ -87,8 +91,8 @@ func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.A
 		if catalogErr != nil || catalog.Stale(time.Now()) {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "current object_info is missing or stale")
 		}
-		workflow := mapValue(run.CapabilitySourceSnapshot["comfyui_api_workflow"])
-		contract := mapValue(run.CapabilitySourceSnapshot["template_contract"])
+		workflow := typeutil.As[map[string]any](run.CapabilitySourceSnapshot["comfyui_api_workflow"])
+		contract := typeutil.As[map[string]any](run.CapabilitySourceSnapshot["template_contract"])
 		if validateErr := validateComfyUITemplateSnapshot(workflow, catalog.ObjectInfo, contract); validateErr != nil {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowIncompatible, "workflow is incompatible with the current object_info")
 		}
@@ -148,10 +152,10 @@ func (e *ApplicationRunExecutor) validateCurrentProviderBinding(ctx context.Cont
 		if binding.EngineInstanceID != engine.ID || binding.ProviderCapabilityRevision != capability.Revision {
 			continue
 		}
-		selectedModel := firstString(run.InputSnapshot, "model", "model_id")
+		selectedModel := maputil.FirstString(run.InputSnapshot, "model", "model_id")
 		if !restrictionAllows(binding.Restrictions, "model_ids", selectedModel) ||
 			!restrictionAllows(binding.Restrictions, "operation_ids", *run.ProviderOperationID) ||
-			!variantRestrictionAllows(binding.Restrictions, capability, selectedModel, *run.ProviderOperationID, firstString(run.InputSnapshot, "variant", "variant_id")) {
+			!variantRestrictionAllows(binding.Restrictions, capability, selectedModel, *run.ProviderOperationID, maputil.FirstString(run.InputSnapshot, "variant", "variant_id")) {
 			return errors.NewStatus(code.ErrAIAppEngineBindingIncompatible, "engine binding restrictions reject the immutable run snapshot")
 		}
 		return nil
@@ -160,7 +164,7 @@ func (e *ApplicationRunExecutor) validateCurrentProviderBinding(ctx context.Cont
 }
 
 func variantRestrictionAllows(restrictions map[string]any, capability *iapiserver.AIAppProviderCapability, modelID, operationID, selectedVariant string) bool {
-	allowed := anyStrings(restrictions["variant_ids"])
+	allowed := typeutil.SliceAs[string](restrictions["variant_ids"])
 	if len(allowed) == 0 {
 		return true
 	}
@@ -176,7 +180,7 @@ func variantRestrictionAllows(restrictions map[string]any, capability *iapiserve
 }
 
 func restrictionAllows(restrictions map[string]any, key, selected string) bool {
-	allowed := anyStrings(restrictions[key])
+	allowed := typeutil.SliceAs[string](restrictions[key])
 	if len(allowed) == 0 {
 		return true
 	}
@@ -235,9 +239,9 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 	}
 	sequences := map[string]int{}
 	for _, item := range items {
-		outputKey := firstString(item, "output_key")
-		contentRef := firstString(item, "content_ref")
-		mediaType := firstString(item, "media_type")
+		outputKey := maputil.FirstString(item, "output_key")
+		contentRef := maputil.FirstString(item, "content_ref")
+		mediaType := maputil.FirstString(item, "media_type")
 		sequence := artifactSequence(item, sequences[outputKey])
 		if sequence >= sequences[outputKey] {
 			sequences[outputKey] = sequence + 1
@@ -393,7 +397,7 @@ func (e *ApplicationRunExecutor) publishCorrection(ctx context.Context, run *iap
 	occurredAt := imachinery.Now()
 	payload := map[string]any{
 		"provider_capability_id": run.ProviderCapabilityID, "provider_capability_revision": run.ProviderCapabilityRevision,
-		"operation_id": run.ProviderOperationID, "model_id": firstString(run.InputSnapshot, "model", "model_id"),
+		"operation_id": run.ProviderOperationID, "model_id": maputil.FirstString(run.InputSnapshot, "model", "model_id"),
 		"field": "provider_request", "rejected_value": run.InputSnapshot,
 		"provider_error": map[string]any{"code": code.ErrAIAppProviderRuntimeCapabilityMismatch, "message": cause.Error()},
 		"occurred_at":    occurredAt,
@@ -431,7 +435,7 @@ func (e *ApplicationRunExecutor) openArtifactContent(ctx context.Context, engine
 	transport := artifactDownloadTransport(trustedHost)
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(target.String()).WithMethod(http.MethodGet).AddHeaderParam("Accept", "*/*")
 	if trustedOrigin {
-		if err := applyProviderAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
+		if err := enginegateway.ApplyProviderAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
 			return nil, "", err
 		}
 	}
@@ -564,25 +568,10 @@ func taskOutputValues(output map[string]any) []map[string]any {
 
 func taskArtifacts(output map[string]any) []map[string]any {
 	items := []map[string]any{}
-	for _, raw := range anySlice(output["artifacts"]) {
+	for _, raw := range sliceutil.ToInterfaceSlice(output["artifacts"]) {
 		if item, ok := raw.(map[string]any); ok {
 			items = append(items, item)
 		}
 	}
 	return items
-}
-
-func anySlice(value any) []any {
-	switch items := value.(type) {
-	case []any:
-		return items
-	case []map[string]any:
-		result := make([]any, len(items))
-		for index := range items {
-			result[index] = items[index]
-		}
-		return result
-	default:
-		return nil
-	}
 }

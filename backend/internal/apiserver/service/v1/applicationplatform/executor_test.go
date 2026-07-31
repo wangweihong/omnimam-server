@@ -13,6 +13,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
@@ -159,8 +160,8 @@ func TestApplicationRunExecutorUsesRegistriesAndEngineConcurrency(t *testing.T) 
 	operation := &fakeOperationExecutor{id: "deepseek_chat_completions"}
 	executor, err := NewApplicationRunExecutor(
 		&executorFactory{applications: applicationStore}, runtimeRegistry, nil,
-		map[string]EngineAdapter{"deepseek_official": fakeEngineAdapter{id: "deepseek_official"}},
-		map[string]OperationExecutor{"deepseek_chat_completions": operation}, nil, nil,
+		map[string]enginegateway.Adapter{"deepseek_official": fakeEngineAdapter{id: "deepseek_official"}},
+		map[string]enginegateway.OperationExecutor{"deepseek_chat_completions": operation}, nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

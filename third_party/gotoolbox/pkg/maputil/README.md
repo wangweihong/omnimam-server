@@ -18,6 +18,7 @@
 | `ToString[K, V](m) string` | 转为排序的 key=value 字符串 |
 | `Keys[K, V](m) []K` | 获取排序后的所有键 |
 | `TypedGet[K, T](m, key) T` | 类型安全的获取 |
+| `FirstString(m, keys...) string` | 按候选键顺序返回首个非空字符串 |
 
 ### 嵌套 Map 提取
 

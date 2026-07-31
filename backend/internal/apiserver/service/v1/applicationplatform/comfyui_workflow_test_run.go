@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/httpcli"
 	"gorm.io/gorm"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -72,7 +74,7 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	} else if !stderrors.Is(findErr, gorm.ErrRecordNotFound) {
 		return nil, findErr
 	}
-	engine, catalog, err := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	engine, catalog, err := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestEngineUnavailable, err.Error())
 	}
@@ -100,7 +102,7 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 	if engine.Region != "" {
 		engineSnapshot.Region = &engine.Region
 	}
-	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: cloneMap(workflow.APIWorkflow), Parameters: req.Parameters, OutputSelections: req.Outputs, Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
+	run := &iapiserver.ComfyUIWorkflowTestRun{WorkflowID: workflow.ID, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: engine.ID, EngineInstanceSnapshot: engineSnapshot, WorkflowValidationID: validation.ID, IdempotencyKey: req.IdempotencyKey, TaskCreationStatus: iapiserver.TaskCreationPending, WorkflowSnapshot: deepcopy.AnyMapClone(workflow.APIWorkflow), Parameters: req.Parameters, OutputSelections: req.Outputs, Outputs: []iapiserver.ComfyUIWorkflowTestOutput{}}
 	run.ID = uuid.NewString()
 	run.Name = "ComfyUI workflow test"
 	run, err = s.Store.ApplicationPlatforms().AddComfyUIWorkflowTestRun(ctx, run)
@@ -142,7 +144,7 @@ func (s *applicationPlatformService) CancelComfyUIWorkflowTestRun(ctx context.Co
 	}
 	if run.ExternalJobID != nil {
 		if engine, engineErr := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, run.EngineInstanceID); engineErr == nil {
-			_, _ = invokeProvider(context.WithoutCancel(ctx), engine, http.MethodPost, "/queue", map[string]any{"delete": []string{*run.ExternalJobID}})
+			_, _ = enginegateway.InvokeProvider(context.WithoutCancel(ctx), engine, http.MethodPost, "/queue", map[string]any{"delete": []string{*run.ExternalJobID}})
 		}
 	}
 	return s.projectComfyTestRun(ctx, run)
@@ -175,7 +177,7 @@ func (s *applicationPlatformService) GetComfyUIWorkflowTestOutputContent(ctx con
 	}
 	endpoint := strings.TrimRight(engine.BaseURL, "/") + "/view?" + query.Encode()
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(http.MethodGet).AddHeaderParam("Accept", "image/*")
-	if err := applyProviderAuthentication(builder, engine, http.MethodGet, "/view", nil); err != nil {
+	if err := enginegateway.ApplyProviderAuthentication(builder, engine, http.MethodGet, "/view", nil); err != nil {
 		return nil, "", err
 	}
 	timeout := time.Duration(engine.RequestTimeoutSeconds) * time.Second

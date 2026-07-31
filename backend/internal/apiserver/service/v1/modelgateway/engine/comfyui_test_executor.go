@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -9,7 +9,11 @@ import (
 	"path/filepath"
 
 	"github.com/google/uuid"
+	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -18,6 +22,7 @@ import (
 
 type ComfyUITestExecutor struct{ store store.Factory }
 
+// NewComfyUITestExecutor 构造执行 ComfyUI 测试运行 submit/poll/collect 步骤的 Worker executor。
 func NewComfyUITestExecutor(factory store.Factory) *ComfyUITestExecutor {
 	return &ComfyUITestExecutor{store: factory}
 }
@@ -30,20 +35,20 @@ func (e *ComfyUITestExecutor) Submit(ctx context.Context, testRunID string) (map
 	if run.ExternalJobID != nil && *run.ExternalJobID != "" {
 		return map[string]any{"prompt_id": *run.ExternalJobID, "external_job_id": *run.ExternalJobID}, nil
 	}
-	workflow := deepCopyMap(run.WorkflowSnapshot)
+	workflow := deepcopy.AnyMapClone(run.WorkflowSnapshot)
 	for _, parameter := range run.Parameters {
-		node := mapValue(workflow[parameter.NodeID])
-		inputs := mapValue(node["inputs"])
+		node := typeutil.As[map[string]any](workflow[parameter.NodeID])
+		inputs := typeutil.As[map[string]any](node["inputs"])
 		if inputs == nil {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUITestParameterInvalid, "parameter node is missing")
 		}
 		inputs[parameter.InputName] = parameter.Value
 	}
-	result, err := invokeProvider(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
+	result, err := InvokeProvider(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
 	if err != nil {
 		return nil, err
 	}
-	promptID := firstString(result, "prompt_id")
+	promptID := maputil.FirstString(result, "prompt_id")
 	if promptID == "" {
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "ComfyUI response does not contain prompt_id")
 	}
@@ -61,16 +66,16 @@ func (e *ComfyUITestExecutor) Poll(ctx context.Context, testRunID string) (map[s
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
 	promptID := *run.ExternalJobID
-	history, err := invokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
+	history, err := InvokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
 	if err != nil {
 		return nil, err
 	}
-	entry := mapValue(history[promptID])
+	entry := typeutil.As[map[string]any](history[promptID])
 	if len(entry) == 0 {
 		queuePosition := comfyQueuePosition(ctx, engine, promptID)
 		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID, "provider_state": "queued", "queue_position": queuePosition}, nil
 	}
-	status := mapValue(entry["status"])
+	status := typeutil.As[map[string]any](entry["status"])
 	if completed, _ := status["completed"].(bool); !completed {
 		return map[string]any{"in_progress": true, "callback_after_seconds": 2, "prompt_id": promptID, "provider_state": "running"}, nil
 	}
@@ -85,12 +90,12 @@ func (e *ComfyUITestExecutor) Collect(ctx context.Context, testRunID string) (ma
 	if run.ExternalJobID == nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
-	history, err := invokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil)
+	history, err := InvokeProvider(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil)
 	if err != nil {
 		return nil, err
 	}
-	entry := mapValue(history[*run.ExternalJobID])
-	outputs := collectTestOutputs(mapValue(entry["outputs"]), run.OutputSelections)
+	entry := typeutil.As[map[string]any](history[*run.ExternalJobID])
+	outputs := CollectTestOutputs(typeutil.As[map[string]any](entry["outputs"]), run.OutputSelections)
 	_, err = e.store.ApplicationPlatforms().SetComfyUIWorkflowTestRunOutputs(ctx, run.ID, outputs)
 	return map[string]any{"prompt_id": *run.ExternalJobID, "output_count": len(outputs)}, err
 }
@@ -106,26 +111,15 @@ func (e *ComfyUITestExecutor) load(ctx context.Context, id string) (*iapiserver.
 	}
 	return run, engine, nil
 }
-func deepCopyMap(value map[string]any) map[string]any {
-	result := make(map[string]any, len(value))
-	for key, item := range value {
-		if nested, ok := item.(map[string]any); ok {
-			result[key] = deepCopyMap(nested)
-		} else {
-			result[key] = item
-		}
-	}
-	return result
-}
 func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, promptID string) *int {
-	queue, err := invokeProvider(ctx, engine, http.MethodGet, "/queue", nil)
+	queue, err := InvokeProvider(ctx, engine, http.MethodGet, "/queue", nil)
 	if err != nil {
 		return nil
 	}
 	position := 0
 	for _, key := range []string{"queue_running", "queue_pending"} {
-		for _, raw := range anySlice(queue[key]) {
-			item := anySlice(raw)
+		for _, raw := range sliceutil.ToInterfaceSlice(queue[key]) {
+			item := sliceutil.ToInterfaceSlice(raw)
 			if len(item) > 1 && fmt.Sprint(item[1]) == promptID {
 				value := position
 				return &value
@@ -135,7 +129,9 @@ func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, 
 	}
 	return nil
 }
-func collectTestOutputs(outputs map[string]any, selections []iapiserver.ComfyUIWorkflowTestOutputSelection) []iapiserver.ComfyUIWorkflowTestOutput {
+
+// CollectTestOutputs 将选中的 ComfyUI 历史输出转换为持久化测试输出快照。
+func CollectTestOutputs(outputs map[string]any, selections []iapiserver.ComfyUIWorkflowTestOutputSelection) []iapiserver.ComfyUIWorkflowTestOutput {
 	result := []iapiserver.ComfyUIWorkflowTestOutput{}
 	selectedNodes := map[string]bool{}
 	for _, selection := range selections {
@@ -146,22 +142,22 @@ func collectTestOutputs(outputs map[string]any, selections []iapiserver.ComfyUIW
 		if len(selectedNodes) > 0 && !selectedNodes[nodeID] {
 			continue
 		}
-		output := mapValue(raw)
-		for _, image := range anySlice(output["images"]) {
-			item := mapValue(image)
-			filename := stringValue(item["filename"])
+		output := typeutil.As[map[string]any](raw)
+		for _, image := range sliceutil.ToInterfaceSlice(output["images"]) {
+			item := typeutil.As[map[string]any](image)
+			filename := typeutil.As[string](item["filename"])
 			if filename == "" {
 				continue
 			}
-			subfolder := stringValue(item["subfolder"])
-			storageType := stringValue(item["type"])
+			subfolder := typeutil.As[string](item["subfolder"])
+			storageType := typeutil.As[string](item["type"])
 			mimeType := mime.TypeByExtension(filepath.Ext(filename))
 			if mimeType == "" {
 				mimeType = "application/octet-stream"
 			}
 			result = append(result, iapiserver.ComfyUIWorkflowTestOutput{ID: uuid.NewString(), Kind: "image", NodeID: nodeID, Filename: &filename, Subfolder: &subfolder, StorageType: &storageType, MimeType: &mimeType})
 		}
-		for _, textValue := range anySlice(output["text"]) {
+		for _, textValue := range sliceutil.ToInterfaceSlice(output["text"]) {
 			text := fmt.Sprint(textValue)
 			result = append(result, iapiserver.ComfyUIWorkflowTestOutput{ID: uuid.NewString(), Kind: "text", NodeID: nodeID, Text: &text})
 		}

@@ -6,6 +6,9 @@ import (
 	"fmt"
 
 	"github.com/richinsley/comfy2go/graphapi"
+	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 )
 
 // ComfyWorkflowParser is the application-owned boundary around the upstream
@@ -70,8 +73,8 @@ func applyComfy2GoInputOrder(objects *graphapi.NodeObjects, objectInfo map[strin
 		if object == nil || object.Input == nil {
 			continue
 		}
-		definition := mapValue(objectInfo[classType])
-		inputOrder := mapValue(definition["input_order"])
+		definition := typeutil.As[map[string]any](objectInfo[classType])
+		inputOrder := typeutil.As[map[string]any](definition["input_order"])
 		object.Input.OrderedRequired = orderedComfyInputNames(inputOrder["required"], object.Input.OrderedRequired, object.Input.Required)
 		object.Input.OrderedOptional = orderedComfyInputNames(inputOrder["optional"], object.Input.OrderedOptional, object.Input.Optional)
 	}
@@ -80,7 +83,7 @@ func applyComfy2GoInputOrder(objects *graphapi.NodeObjects, objectInfo map[strin
 func orderedComfyInputNames(raw any, fallback []string, values map[string]*interface{}) []string {
 	ordered := make([]string, 0, len(values))
 	seen := make(map[string]bool, len(values))
-	for _, item := range anySlice(raw) {
+	for _, item := range sliceutil.ToInterfaceSlice(raw) {
 		name := fmt.Sprint(item)
 		if _, exists := values[name]; exists && !seen[name] {
 			ordered = append(ordered, name)
@@ -99,18 +102,18 @@ func orderedComfyInputNames(raw any, fallback []string, values map[string]*inter
 }
 
 func applyComfyVisualAdapters(api, visual map[string]any) error {
-	for _, rawNode := range anySlice(visual["nodes"]) {
-		node := mapValue(rawNode)
-		if stringValue(node["type"]) != "ZmlPowerLoraLoader" {
+	for _, rawNode := range sliceutil.ToInterfaceSlice(visual["nodes"]) {
+		node := typeutil.As[map[string]any](rawNode)
+		if typeutil.As[string](node["type"]) != "ZmlPowerLoraLoader" {
 			continue
 		}
-		apiNode := mapValue(api[fmt.Sprint(node["id"])])
-		inputs := mapValue(apiNode["inputs"])
+		apiNode := typeutil.As[map[string]any](api[fmt.Sprint(node["id"])])
+		inputs := typeutil.As[map[string]any](apiNode["inputs"])
 		if inputs == nil {
 			return fmt.Errorf("convert visual workflow with comfy2go: ZmlPowerLoraLoader prompt node is missing")
 		}
-		structured := mapValue(node["powerLoraLoader_data"])
-		if len(anySlice(structured["entries"])) == 0 {
+		structured := typeutil.As[map[string]any](node["powerLoraLoader_data"])
+		if len(sliceutil.ToInterfaceSlice(structured["entries"])) == 0 {
 			return fmt.Errorf("convert visual workflow with comfy2go: ZmlPowerLoraLoader lora configuration is invalid")
 		}
 		encoded, err := json.Marshal(structured)
@@ -123,19 +126,19 @@ func applyComfyVisualAdapters(api, visual map[string]any) error {
 }
 
 func normalizeComfy2GoObjectInfo(source map[string]any) map[string]any {
-	result := deepCopyMap(source)
+	result := deepcopy.AnyMapClone(source)
 	for _, rawDefinition := range result {
-		definition := mapValue(rawDefinition)
-		input := mapValue(definition["input"])
+		definition := typeutil.As[map[string]any](rawDefinition)
+		input := typeutil.As[map[string]any](definition["input"])
 		for _, sectionName := range []string{"required", "optional"} {
-			section := mapValue(input[sectionName])
+			section := typeutil.As[map[string]any](input[sectionName])
 			for _, rawSpec := range section {
-				spec := anySlice(rawSpec)
+				spec := sliceutil.ToInterfaceSlice(rawSpec)
 				if len(spec) < 2 {
 					continue
 				}
 				kind := fmt.Sprint(spec[0])
-				options := mapValue(spec[1])
+				options := typeutil.As[map[string]any](spec[1])
 				if options == nil {
 					continue
 				}
@@ -169,7 +172,7 @@ func detectComfyWorkflowSource(value map[string]any) string {
 	}
 	for _, raw := range value {
 		node, ok := raw.(map[string]any)
-		if !ok || stringValue(node["class_type"]) == "" || mapValue(node["inputs"]) == nil {
+		if !ok || typeutil.As[string](node["class_type"]) == "" || typeutil.As[map[string]any](node["inputs"]) == nil {
 			return ""
 		}
 	}

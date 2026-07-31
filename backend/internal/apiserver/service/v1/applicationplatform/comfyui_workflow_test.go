@@ -11,6 +11,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"gorm.io/gorm"
@@ -19,6 +20,26 @@ import (
 type staticPrincipal struct{ principal Principal }
 
 func (r staticPrincipal) Resolve(context.Context) (Principal, error) { return r.principal, nil }
+
+func newTestEngineService(t *testing.T, factory store.Factory, principal Principal) enginegateway.Srv {
+	t.Helper()
+	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityRegistry, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtimeRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := enginegateway.NewService(enginegateway.Dependencies{
+		Store: factory, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
+		Principals: staticPrincipal{principal: principal},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
 
 type recordingWorkflowAuditor struct{ records []WorkflowAuditRecord }
 
@@ -185,7 +206,8 @@ func TestConvertComfyUIWorkflowToAPIUsesRequestedEngine(t *testing.T) {
 	engine.ID = "engine-requested"
 	applicationStore := &workflowStore{workflow: workflow, engine: engine, catalog: currentTestCatalog()}
 	parser := &recordingWorkflowParser{api: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}}
+	factory := &executorFactory{applications: applicationStore}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: factory, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}, Srv: newTestEngineService(t, factory, Principal{UserID: "user-1"})}
 	result, err := service.ConvertComfyUIWorkflowToAPI(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowAPIConversionRequest{EngineInstanceID: engine.ID, ResourceVersion: 7})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +224,8 @@ func TestConvertComfyUIWorkflowToAPIPropagatesResourceVersionConflict(t *testing
 	engine.ID = "engine-1"
 	applicationStore := &workflowStore{workflow: workflow, engine: engine, catalog: currentTestCatalog(), updateErr: errors.NewStatus(code.ErrAIAppComfyUIResourceVersionConflict, "version changed")}
 	parser := &recordingWorkflowParser{api: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}}
+	factory := &executorFactory{applications: applicationStore}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: factory, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}, Srv: newTestEngineService(t, factory, Principal{UserID: "user-1"})}
 	result, err := service.ConvertComfyUIWorkflowToAPI(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowAPIConversionRequest{EngineInstanceID: engine.ID, ResourceVersion: 9})
 	if result != nil || errors.ToStatus(err).Code != code.ErrAIAppComfyUIResourceVersionConflict || applicationStore.updatedVersion != 9 {
 		t.Fatalf("conflicting conversion result=%#v err=%v store=%#v", result, err, applicationStore)
@@ -239,7 +262,8 @@ func TestConvertComfyUIWorkflowToAPIRejectsUnavailableEngineAndParserFailure(t *
 				parserAPI = map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}
 			}
 			parser := &recordingWorkflowParser{api: parserAPI, err: tt.parserErr}
-			service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}}
+			factory := &executorFactory{applications: applicationStore}
+			service := &applicationPlatformService{Dependencies: Dependencies{Store: factory, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}, Srv: newTestEngineService(t, factory, Principal{UserID: "user-1"})}
 			_, err := service.ConvertComfyUIWorkflowToAPI(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowAPIConversionRequest{EngineInstanceID: tt.engine.ID, ResourceVersion: 1})
 			if errors.ToStatus(err).Code != tt.expected || applicationStore.updatedWorkflow != nil {
 				t.Fatalf("conversion error=%v, want code=%d; update=%#v", err, tt.expected, applicationStore.updatedWorkflow)
@@ -257,7 +281,8 @@ func TestValidateComfyUIWorkflowPersistsFailedHistory(t *testing.T) {
 	workflow.ID = "workflow-1"
 	applicationStore := &workflowStore{workflow: workflow, engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}}
 	applicationStore.engine.ID = "engine-1"
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}}
+	factory := &executorFactory{applications: applicationStore}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: factory, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}, Srv: newTestEngineService(t, factory, Principal{UserID: "user-1"})}
 	result, err := service.ValidateComfyUIWorkflow(context.Background(), workflow.ID, &iapiserver.ComfyUIWorkflowValidationCreateRequest{EngineInstanceID: "engine-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +302,8 @@ func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
 	applicationStore := &workflowStore{workflow: workflow, engine: engine, catalog: saveImageTestCatalog()}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Events: NoopEventPublisher{}}}
+	factory := &executorFactory{applications: applicationStore}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: factory, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, Events: NoopEventPublisher{}}, Srv: newTestEngineService(t, factory, Principal{UserID: "user-1"})}
 	request := &iapiserver.ComfyUIWorkflowConvertRequest{Name: "Template", EngineInstanceID: engine.ID, CapabilityDefinitionID: "image.text_to_image", IdempotencyKey: "convert-1", TemplateContract: map[string]any{"inputs": []any{}, "fixed_parameters": []any{}, "parameter_mappings": []any{}, "outputs": []any{map[string]any{"key": "image", "node_id": "1", "output_index": float64(0), "data_type": "IMAGE", "media_type": "image"}}, "engine_restrictions": map[string]any{}}}
 	result, err := service.ConvertComfyUIWorkflow(context.Background(), workflow.ID, request)
 	if err != nil {

@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -13,46 +13,42 @@ import (
 )
 
 // GetComfyUIEngineObjectInfo 返回实例最后一次成功刷新的当前目录；stale 目录仅允许用于诊断读取。
-func (s *applicationPlatformService) GetComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoResponse, error) {
-	if _, err := s.principal(ctx, false); err != nil {
+func (s *Service) GetComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoResponse, error) {
+	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
-	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, engineID)
+	engine, err := s.store.ApplicationPlatforms().GetEngineInstance(ctx, engineID)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
 	}
 	if engine.ApplicationEngineTypeID != "comfyui" {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine instance is not ComfyUI")
 	}
-	catalog, err := s.Store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engineID)
+	catalog, err := s.store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engineID)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppComfyUIObjectInfoUnavailable, "current object_info is unavailable")
 	}
 	return &iapiserver.ComfyUIEngineObjectInfoResponse{
-		EngineInstanceID: engineID,
-		Available:        true,
-		Stale:            catalog.Stale(time.Now()),
-		ComfyUIVersion:   catalog.ComfyUIVersion,
-		RefreshedAt:      catalog.RefreshedAt,
-		ObjectInfo:       catalog.ObjectInfo,
+		EngineInstanceID: engineID, Available: true, Stale: catalog.Stale(time.Now()),
+		ComfyUIVersion: catalog.ComfyUIVersion, RefreshedAt: catalog.RefreshedAt, ObjectInfo: catalog.ObjectInfo,
 	}, nil
 }
 
 // RefreshComfyUIEngineObjectInfo 手动刷新当前目录，仅管理员可调用。
-func (s *applicationPlatformService) RefreshComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
+func (s *Service) RefreshComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
 	if _, err := s.principal(ctx, true); err != nil {
 		return nil, err
 	}
-	return s.refreshComfyUIEngineObjectInfo(ctx, engineID)
+	return s.refreshComfyUIObjectInfo(ctx, engineID)
 }
 
 // RefreshComfyUIEngineObjectInfoInternal 供 SYSTEM RECONCILE 使用，不经过 HTTP 用户鉴权。
-func (s *applicationPlatformService) RefreshComfyUIEngineObjectInfoInternal(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
-	return s.refreshComfyUIEngineObjectInfo(ctx, engineID)
+func (s *Service) RefreshComfyUIEngineObjectInfoInternal(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
+	return s.refreshComfyUIObjectInfo(ctx, engineID)
 }
 
-func (s *applicationPlatformService) refreshComfyUIEngineObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
-	catalog, err := s.Store.ApplicationPlatforms().RefreshComfyUIEngineObjectInfo(ctx, engineID, func(engine *iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error) {
+func (s *Service) refreshComfyUIObjectInfo(ctx context.Context, engineID string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error) {
+	catalog, err := s.store.ApplicationPlatforms().RefreshComfyUIEngineObjectInfo(ctx, engineID, func(engine *iapiserver.EngineInstance) (*iapiserver.ComfyUIEngineObjectInfo, error) {
 		if engine.ApplicationEngineTypeID != "comfyui" {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "engine instance is not ComfyUI")
 		}
@@ -74,7 +70,9 @@ func (s *applicationPlatformService) refreshComfyUIEngineObjectInfo(ctx context.
 		if versionReader, ok := reader.(ComfyUIVersionReader); ok {
 			version, _ = versionReader.ReadComfyUIVersion(ctx, engine)
 		}
-		return &iapiserver.ComfyUIEngineObjectInfo{EngineInstanceID: engineID, ObjectInfo: objectInfo, ComfyUIVersion: version, RefreshedAt: imachinery.Now()}, nil
+		return &iapiserver.ComfyUIEngineObjectInfo{
+			EngineInstanceID: engineID, ObjectInfo: objectInfo, ComfyUIVersion: version, RefreshedAt: imachinery.Now(),
+		}, nil
 	})
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
@@ -85,7 +83,10 @@ func (s *applicationPlatformService) refreshComfyUIEngineObjectInfo(ctx context.
 		version = &value
 	}
 	refreshedAt := catalog.RefreshedAt
-	return &iapiserver.ComfyUIEngineObjectInfoStatus{EngineInstanceID: engineID, Available: true, Stale: false, ComfyUIVersion: version, RefreshedAt: &refreshedAt}, nil
+	return &iapiserver.ComfyUIEngineObjectInfoStatus{
+		EngineInstanceID: engineID, Available: true, Stale: false,
+		ComfyUIVersion: version, RefreshedAt: &refreshedAt,
+	}, nil
 }
 
 func validateCurrentObjectInfo(objectInfo map[string]any) error {
@@ -107,20 +108,21 @@ func validateCurrentObjectInfo(objectInfo map[string]any) error {
 	return nil
 }
 
-func (s *applicationPlatformService) comfyUIObjectInfoReader() (ComfyUIObjectInfoReader, error) {
-	typeDef, ok := s.Runtime.EngineType("comfyui")
+func (s *Service) comfyUIObjectInfoReader() (ComfyUIObjectInfoReader, error) {
+	typeDef, ok := s.runtime.EngineType("comfyui")
 	if !ok {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIEngineTypeInvalid, "ComfyUI engine type is not registered")
 	}
-	reader, ok := s.Adapters[typeDef.EngineAdapterID].(ComfyUIObjectInfoReader)
+	reader, ok := s.adapters[typeDef.EngineAdapterID].(ComfyUIObjectInfoReader)
 	if !ok {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI object_info reader is unavailable")
 	}
 	return reader, nil
 }
 
-func (s *applicationPlatformService) usableComfyUIObjectInfo(ctx context.Context, engineID string) (*iapiserver.EngineInstance, *iapiserver.ComfyUIEngineObjectInfo, error) {
-	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, engineID)
+// ResolveUsableComfyUIObjectInfo 返回可执行工作流的 enabled、online 且未过期实例目录。
+func (s *Service) ResolveUsableComfyUIObjectInfo(ctx context.Context, engineID string) (*iapiserver.EngineInstance, *iapiserver.ComfyUIEngineObjectInfo, error) {
+	engine, err := s.store.ApplicationPlatforms().GetEngineInstance(ctx, engineID)
 	if err != nil {
 		return nil, nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
 	}
@@ -130,7 +132,7 @@ func (s *applicationPlatformService) usableComfyUIObjectInfo(ctx context.Context
 	if !engine.Enabled || engine.HealthStatus != iapiserver.EngineHealthOnline {
 		return nil, nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "ComfyUI engine instance is not enabled and online")
 	}
-	catalog, err := s.Store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engineID)
+	catalog, err := s.store.ApplicationPlatforms().GetComfyUIEngineObjectInfo(ctx, engineID)
 	if err != nil || catalog.Stale(time.Now()) {
 		return nil, nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, "current object_info is missing or stale")
 	}

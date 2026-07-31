@@ -14,6 +14,8 @@ import (
 
 	"github.com/gowebpki/jcs"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -108,7 +110,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflowToAPI(ctx context.Con
 	if workflow.SourceType != iapiserver.ComfyUIWorkflowSourceVisual || len(workflow.VisualWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "visual workflow source is unavailable")
 	}
-	_, catalog, err := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	_, catalog, err := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +194,7 @@ func (s *applicationPlatformService) deriveComfyUIWorkflow(ctx context.Context, 
 	if workflow.APIConversionStatus != iapiserver.ComfyUIAPIConversionReady || len(workflow.APIWorkflow) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIAPINotReady, "API workflow is not ready")
 	}
-	_, catalog, err := s.usableComfyUIObjectInfo(ctx, engineID)
+	_, catalog, err := s.ResolveUsableComfyUIObjectInfo(ctx, engineID)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +230,7 @@ func (s *applicationPlatformService) ValidateComfyUIWorkflow(ctx context.Context
 	now := imachinery.Now()
 	validation := &iapiserver.ComfyUIWorkflowValidation{WorkflowID: id, OwnerUserID: workflow.OwnerUserID, RequestedByUserID: p.UserID, EngineInstanceID: req.EngineInstanceID, ValidatedAt: now, NodeSummary: map[string]any{}, DependencySummary: map[string]any{}, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
 	validation.Name = "Compatibility check for " + workflow.Name
-	_, catalog, catalogErr := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+	_, catalog, catalogErr := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 	if catalogErr != nil {
 		if errors.ToStatus(catalogErr).Code != code.ErrAIAppComfyUIObjectInfoUnavailable {
 			return nil, catalogErr
@@ -285,7 +287,7 @@ func (s *applicationPlatformService) ConvertComfyUIWorkflow(ctx context.Context,
 	var result *iapiserver.ComfyUIWorkflowConvertResult
 	var revision string
 	err = s.Store.ApplicationPlatforms().WithEngineInstanceLock(ctx, req.EngineInstanceID, func() error {
-		_, catalog, lockErr := s.usableComfyUIObjectInfo(ctx, req.EngineInstanceID)
+		_, catalog, lockErr := s.ResolveUsableComfyUIObjectInfo(ctx, req.EngineInstanceID)
 		if lockErr != nil {
 			return lockErr
 		}
@@ -367,8 +369,8 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 	dependencyKeys := map[string]bool{}
 	known := map[string]struct{}{}
 	visualNodes := map[string]map[string]any{}
-	for _, raw := range anySlice(visual["nodes"]) {
-		item := mapValue(raw)
+	for _, raw := range sliceutil.ToInterfaceSlice(visual["nodes"]) {
+		item := typeutil.As[map[string]any](raw)
 		visualNodes[fmt.Sprint(item["id"])] = item
 	}
 	for _, id := range ids {
@@ -379,16 +381,16 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 		if !ok {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "workflow node is not an object")
 		}
-		class := stringValue(raw["class_type"])
+		class := typeutil.As[string](raw["class_type"])
 		inputs, ok := raw["inputs"].(map[string]any)
 		if class == "" || !ok {
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowFileInvalid, "workflow node requires class_type and inputs")
 		}
 		node := iapiserver.ComfyUIWorkflowNode{NodeID: id, ClassType: class, Inputs: []map[string]any{}, Outputs: []map[string]any{}, ParseStatus: iapiserver.ComfyUIParseFullySupported, Errors: []iapiserver.ComfyUIWorkflowDiagnostic{}, Warnings: []iapiserver.ComfyUIWorkflowDiagnostic{}}
 		if visualNode := visualNodes[id]; visualNode != nil {
-			node.Title = stringValue(visualNode["title"])
-			node.DisplayName = stringValue(visualNode["type"])
-			if position := mapValue(visualNode["pos"]); position != nil {
+			node.Title = typeutil.As[string](visualNode["title"])
+			node.DisplayName = typeutil.As[string](visualNode["type"])
+			if position := typeutil.As[map[string]any](visualNode["pos"]); position != nil {
 				node.Position = position
 			} else if visualNode["pos"] != nil {
 				node.Position = map[string]any{"value": visualNode["pos"]}
@@ -399,7 +401,7 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 			node.ParseStatus = iapiserver.ComfyUIParseUnsupported
 			result.status = iapiserver.ComfyUIParseUnsupported
 			node.Errors = append(node.Errors, iapiserver.ComfyUIWorkflowDiagnostic{Code: "NODE_TYPE_MISSING", Message: "class_type is absent from object_info"})
-		} else if module := stringValue(info["python_module"]); module != "" && module != "nodes" {
+		} else if module := typeutil.As[string](info["python_module"]); module != "" && module != "nodes" {
 			node.ParseStatus = iapiserver.ComfyUIParsePartiallySupported
 			node.Warnings = append(node.Warnings, iapiserver.ComfyUIWorkflowDiagnostic{Code: "CUSTOM_NODE_DEPENDENCY", Message: "custom node availability must be validated on each target instance", NodeID: stringPtr(id)})
 			key := "custom_node:" + module
@@ -433,9 +435,9 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 				if _, exists := known[ref.nodeID]; !exists {
 					return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowReferenceInvalid, "input references missing node "+ref.nodeID)
 				}
-				source := mapValue(workflow[ref.nodeID])
-				sourceInfo := mapValue(objectInfo[stringValue(source["class_type"])])
-				if outputs := anySlice(sourceInfo["output"]); ref.outputIndex >= len(outputs) {
+				source := typeutil.As[map[string]any](workflow[ref.nodeID])
+				sourceInfo := typeutil.As[map[string]any](objectInfo[typeutil.As[string](source["class_type"])])
+				if outputs := sliceutil.ToInterfaceSlice(sourceInfo["output"]); ref.outputIndex >= len(outputs) {
 					return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowReferenceInvalid, "input references missing source output")
 				}
 				candidate.Classification = "connection"
@@ -452,15 +454,15 @@ func parseComfyUIWorkflow(workflow, visual, objectInfo map[string]any) (*parsedC
 				}
 			}
 		}
-		outputTypes := anySlice(info["output"])
-		outputNames := anySlice(info["output_name"])
+		outputTypes := sliceutil.ToInterfaceSlice(info["output"])
+		outputNames := sliceutil.ToInterfaceSlice(info["output_name"])
 		outputNode, _ := info["output_node"].(bool)
 		for index, rawType := range outputTypes {
 			name := ""
 			if index < len(outputNames) {
-				name = stringValue(outputNames[index])
+				name = typeutil.As[string](outputNames[index])
 			}
-			dataType := stringValue(rawType)
+			dataType := typeutil.As[string](rawType)
 			candidate := iapiserver.ComfyUIWorkflowOutputCandidate{NodeID: id, OutputIndex: index, OutputName: name, DataType: dataType, Extractable: outputNode, MediaType: comfyUIMediaType(dataType)}
 			result.outputs = append(result.outputs, candidate)
 			node.Outputs = append(node.Outputs, map[string]any{"output_index": index, "output_name": name, "data_type": dataType})
@@ -552,9 +554,9 @@ type comfyInputDefinition struct {
 }
 
 func comfyUIInputDefinition(info map[string]any, name string) comfyInputDefinition {
-	input := mapValue(info["input"])
+	input := typeutil.As[map[string]any](info["input"])
 	for _, section := range []string{"required", "optional", "hidden"} {
-		definition := mapValue(input[section])
+		definition := typeutil.As[map[string]any](input[section])
 		raw, ok := definition[name]
 		if !ok {
 			continue
@@ -563,18 +565,18 @@ func comfyUIInputDefinition(info map[string]any, name string) comfyInputDefiniti
 		if section == "hidden" {
 			result.classification = "hidden"
 		}
-		items := anySlice(raw)
+		items := sliceutil.ToInterfaceSlice(raw)
 		if len(items) == 0 {
 			return result
 		}
-		if enum := anySlice(items[0]); len(enum) > 0 {
+		if enum := sliceutil.ToInterfaceSlice(items[0]); len(enum) > 0 {
 			result.dataType = "enum"
 			result.options = enum
-		} else if value := stringValue(items[0]); value != "" {
+		} else if value := typeutil.As[string](items[0]); value != "" {
 			result.dataType = strings.ToLower(value)
 		}
 		if len(items) > 1 {
-			options := mapValue(items[1])
+			options := typeutil.As[map[string]any](items[1])
 			result.minimum = floatPointer(options["min"])
 			result.maximum = floatPointer(options["max"])
 			result.step = floatPointer(options["step"])
@@ -634,33 +636,33 @@ func compatibilityDiagnostics(workflow *iapiserver.ComfyUIWorkflow, objectInfo m
 			diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "NODE_TYPE_MISSING", Message: "target instance does not provide " + node.ClassType, NodeID: &id})
 			continue
 		}
-		inputDefinitions := mapValue(info["input"])
-		required := mapValue(inputDefinitions["required"])
+		inputDefinitions := typeutil.As[map[string]any](info["input"])
+		required := typeutil.As[map[string]any](inputDefinitions["required"])
 		seenInputs := map[string]bool{}
 		for _, input := range node.Inputs {
-			name := stringValue(input["name"])
+			name := typeutil.As[string](input["name"])
 			seenInputs[name] = true
 			definition, defined := required[name]
 			if !defined {
-				definition, defined = mapValue(inputDefinitions["optional"])[name]
+				definition, defined = typeutil.As[map[string]any](inputDefinitions["optional"])[name]
 			}
 			if !defined {
-				definition, defined = mapValue(inputDefinitions["hidden"])[name]
+				definition, defined = typeutil.As[map[string]any](inputDefinitions["hidden"])[name]
 			}
 			if !defined {
 				id, field := node.NodeID, name
 				diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "INPUT_MISSING", Message: "target instance does not define workflow input", NodeID: &id, FieldName: &field})
 				continue
 			}
-			items := anySlice(definition)
+			items := sliceutil.ToInterfaceSlice(definition)
 			if len(items) > 0 {
 				targetType := ""
-				if enum := anySlice(items[0]); len(enum) > 0 {
+				if enum := sliceutil.ToInterfaceSlice(items[0]); len(enum) > 0 {
 					targetType = "enum"
 				} else {
-					targetType = strings.ToLower(stringValue(items[0]))
+					targetType = strings.ToLower(typeutil.As[string](items[0]))
 				}
-				sourceType := stringValue(input["data_type"])
+				sourceType := typeutil.As[string](input["data_type"])
 				if targetType != "" && sourceType != "" && sourceType != "unknown" && targetType != sourceType {
 					id, field := node.NodeID, name
 					diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "INPUT_TYPE_CHANGED", Message: "target input type differs from import snapshot", NodeID: &id, FieldName: &field})
@@ -673,17 +675,17 @@ func compatibilityDiagnostics(workflow *iapiserver.ComfyUIWorkflow, objectInfo m
 							break
 						}
 					}
-					sourceInfo := mapValue(objectInfo[sourceClass])
-					sourceOutputs := anySlice(sourceInfo["output"])
+					sourceInfo := typeutil.As[map[string]any](objectInfo[sourceClass])
+					sourceOutputs := sliceutil.ToInterfaceSlice(sourceInfo["output"])
 					if ref.outputIndex >= len(sourceOutputs) {
 						id, field := node.NodeID, name
 						diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "CONNECTION_OUTPUT_MISSING", Message: "target source output no longer exists", NodeID: &id, FieldName: &field})
-					} else if outputType := strings.ToLower(stringValue(sourceOutputs[ref.outputIndex])); targetType != "" && outputType != "" && targetType != "enum" && outputType != targetType {
+					} else if outputType := strings.ToLower(typeutil.As[string](sourceOutputs[ref.outputIndex])); targetType != "" && outputType != "" && targetType != "enum" && outputType != targetType {
 						id, field := node.NodeID, name
 						diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "CONNECTION_TYPE_MISMATCH", Message: "target connection types are incompatible", NodeID: &id, FieldName: &field})
 					}
 				}
-				if options := anySlice(items[0]); len(options) > 0 && stringValue(input["classification"]) != "connection" {
+				if options := sliceutil.ToInterfaceSlice(items[0]); len(options) > 0 && typeutil.As[string](input["classification"]) != "connection" {
 					current := fmt.Sprint(input["value"])
 					found := false
 					for _, option := range options {
@@ -697,8 +699,8 @@ func compatibilityDiagnostics(workflow *iapiserver.ComfyUIWorkflow, objectInfo m
 						diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "ENUM_VALUE_UNAVAILABLE", Message: "target instance does not allow the selected value", NodeID: &id, FieldName: &field})
 					}
 				}
-				if len(items) > 1 && stringValue(input["classification"]) != "connection" {
-					constraints := mapValue(items[1])
+				if len(items) > 1 && typeutil.As[string](input["classification"]) != "connection" {
+					constraints := typeutil.As[map[string]any](items[1])
 					if number, ok := numericValue(input["value"]); ok {
 						if minimum, ok := numericValue(constraints["min"]); ok && number < minimum {
 							id, field := node.NodeID, name
@@ -718,7 +720,7 @@ func compatibilityDiagnostics(workflow *iapiserver.ComfyUIWorkflow, objectInfo m
 				diagnostics = append(diagnostics, iapiserver.ComfyUIWorkflowDiagnostic{Code: "REQUIRED_INPUT_ADDED", Message: "target instance requires an input absent from the workflow", NodeID: &id, FieldName: &field})
 			}
 		}
-		outputTypes := anySlice(info["output"])
+		outputTypes := sliceutil.ToInterfaceSlice(info["output"])
 		for _, output := range node.Outputs {
 			index, valid := numberAsInt(output["output_index"])
 			if !valid || index >= len(outputTypes) {
@@ -768,15 +770,15 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 	}
 	nodes := map[string]map[string]any{}
 	for id, raw := range workflow.APIWorkflow {
-		nodes[id] = mapValue(raw)
+		nodes[id] = typeutil.As[map[string]any](raw)
 	}
 	inputKeys := map[string]struct{}{}
 	for _, raw := range inputs {
-		item := mapValue(raw)
-		key := stringValue(item["key"])
+		item := typeutil.As[map[string]any](raw)
+		key := typeutil.As[string](item["key"])
 		_, requiredOK := item["required"].(bool)
 		_, connectableOK := item["connectable"].(bool)
-		if key == "" || stringValue(item["data_type"]) == "" || !requiredOK || !connectableOK {
+		if key == "" || typeutil.As[string](item["data_type"]) == "" || !requiredOK || !connectableOK {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "template input key, data_type, required, and connectable are required")
 		}
 		if _, exists := inputKeys[key]; exists {
@@ -789,18 +791,18 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 		if node == nil {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "mapping target node does not exist")
 		}
-		if _, ok := mapValue(node["inputs"])[inputName]; !ok {
+		if _, ok := typeutil.As[map[string]any](node["inputs"])[inputName]; !ok {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "mapping target input does not exist")
 		}
 		return nil
 	}
 	configuredTargets := map[string]bool{}
 	for _, raw := range fixed {
-		item := mapValue(raw)
+		item := typeutil.As[map[string]any](raw)
 		if _, ok := item["value"]; !ok {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "fixed parameter value is required")
 		}
-		nodeID, inputName := stringValue(item["node_id"]), stringValue(item["input_name"])
+		nodeID, inputName := typeutil.As[string](item["node_id"]), typeutil.As[string](item["input_name"])
 		if err := validateTarget(nodeID, inputName); err != nil {
 			return err
 		}
@@ -808,23 +810,23 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 	}
 	allowedConversions := map[string]bool{"DIRECT": true, "FIXED_VALUE": true, "ENUM_MAP": true, "MULTI_TARGET_MAP": true, "ASPECT_RATIO_TO_SIZE": true, "BOOLEAN_SWITCH": true, "CONDITIONAL": true, "RANGE_SCALE": true, "CONCAT": true, "TEMPLATE_STRING": true}
 	for _, raw := range mappings {
-		item := mapValue(raw)
-		if !allowedConversions[stringValue(item["conversion_type"])] {
+		item := typeutil.As[map[string]any](raw)
+		if !allowedConversions[typeutil.As[string](item["conversion_type"])] {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "parameter mapping conversion_type is invalid")
 		}
-		if err := validateComfyUIConversionConfig(stringValue(item["conversion_type"]), mapValue(item["config"])); err != nil {
+		if err := validateComfyUIConversionConfig(typeutil.As[string](item["conversion_type"]), typeutil.As[map[string]any](item["config"])); err != nil {
 			return err
 		}
-		if _, ok := inputKeys[stringValue(item["input_key"])]; !ok {
+		if _, ok := inputKeys[typeutil.As[string](item["input_key"])]; !ok {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "parameter mapping references unknown template input")
 		}
-		targets := anySlice(item["targets"])
+		targets := sliceutil.ToInterfaceSlice(item["targets"])
 		if len(targets) == 0 {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "parameter mapping requires a target")
 		}
 		for _, targetRaw := range targets {
-			target := mapValue(targetRaw)
-			nodeID, inputName := stringValue(target["node_id"]), stringValue(target["input_name"])
+			target := typeutil.As[map[string]any](targetRaw)
+			nodeID, inputName := typeutil.As[string](target["node_id"]), typeutil.As[string](target["input_name"])
 			if err := validateTarget(nodeID, inputName); err != nil {
 				return err
 			}
@@ -850,13 +852,13 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 	}
 	outputKeys := map[string]bool{}
 	for _, raw := range outputs {
-		item := mapValue(raw)
-		key := stringValue(item["key"])
-		if key == "" || stringValue(item["data_type"]) == "" || outputKeys[key] {
+		item := typeutil.As[map[string]any](raw)
+		key := typeutil.As[string](item["key"])
+		if key == "" || typeutil.As[string](item["data_type"]) == "" || outputKeys[key] {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "template output keys and data_type are required and keys must be unique")
 		}
 		outputKeys[key] = true
-		mediaType := stringValue(item["media_type"])
+		mediaType := typeutil.As[string](item["media_type"])
 		if mediaType != "" && !map[string]bool{"image": true, "video": true, "audio": true, "text": true, "pdf": true, "other": true}[mediaType] {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "template output media_type is invalid")
 		}
@@ -864,7 +866,7 @@ func validateImportedComfyUITemplateContract(workflow *iapiserver.ComfyUIWorkflo
 		if !ok {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "output index is invalid")
 		}
-		if _, ok := candidates[fmt.Sprintf("%s:%d", stringValue(item["node_id"]), index)]; !ok {
+		if _, ok := candidates[fmt.Sprintf("%s:%d", typeutil.As[string](item["node_id"]), index)]; !ok {
 			return errors.NewStatus(code.ErrAIAppComfyUITemplateContractInvalid, "output does not reference an extractable candidate")
 		}
 	}
@@ -883,7 +885,7 @@ func validateComfyUIConversionConfig(conversion string, config map[string]any) e
 			return invalid()
 		}
 	case "ENUM_MAP", "ASPECT_RATIO_TO_SIZE":
-		if mapValue(config["values"]) == nil {
+		if typeutil.As[map[string]any](config["values"]) == nil {
 			return invalid()
 		}
 	case "BOOLEAN_SWITCH":
@@ -902,11 +904,11 @@ func validateComfyUIConversionConfig(conversion string, config map[string]any) e
 			return invalid()
 		}
 	case "TEMPLATE_STRING":
-		if stringValue(config["template"]) == "" {
+		if typeutil.As[string](config["template"]) == "" {
 			return invalid()
 		}
 	case "CONDITIONAL":
-		if mapValue(config["cases"]) == nil {
+		if typeutil.As[map[string]any](config["cases"]) == nil {
 			return invalid()
 		}
 	}
@@ -916,7 +918,7 @@ func validateComfyUITemplateSnapshot(workflow, objectInfo, contract map[string]a
 	if err := validateComfyUIWorkflow(workflow, objectInfo); err != nil {
 		return err
 	}
-	if outputs := anySlice(contract["outputs"]); len(outputs) > 0 {
+	if outputs := sliceutil.ToInterfaceSlice(contract["outputs"]); len(outputs) > 0 {
 		parsed, err := parseComfyUIWorkflow(workflow, nil, objectInfo)
 		if err != nil {
 			return err

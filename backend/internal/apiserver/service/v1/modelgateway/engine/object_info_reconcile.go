@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
@@ -15,10 +16,16 @@ const ComfyUIObjectInfoReconcileRef = "application-platform.comfyui-object-info-
 // ComfyUIObjectInfoReconcileHandler 按稳定实例 ID 刷新所有符合资格的当前目录，不创建逐实例任务。
 type ComfyUIObjectInfoReconcileHandler struct {
 	store   store.ApplicationPlatformStore
-	service ApplicationPlatformSrv
+	service ComfyUIObjectInfoRefresher
 }
 
-func NewComfyUIObjectInfoReconcileHandler(factory store.Factory, service ApplicationPlatformSrv) *ComfyUIObjectInfoReconcileHandler {
+// ComfyUIObjectInfoRefresher 是目录刷新 reconciler 消费的最小引擎服务边界。
+type ComfyUIObjectInfoRefresher interface {
+	RefreshComfyUIEngineObjectInfoInternal(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
+}
+
+// NewComfyUIObjectInfoReconcileHandler 构造由 Task Center 调度的 ComfyUI 目录刷新处理器。
+func NewComfyUIObjectInfoReconcileHandler(factory store.Factory, service ComfyUIObjectInfoRefresher) *ComfyUIObjectInfoReconcileHandler {
 	return &ComfyUIObjectInfoReconcileHandler{store: factory.ApplicationPlatforms(), service: service}
 }
 

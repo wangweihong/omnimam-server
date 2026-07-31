@@ -21,6 +21,8 @@
 | `InterfaceToInt(di) int` | interface 转 int |
 | `InterfaceToString(di) string` | interface 转 string |
 | `InterfaceToMapStringInterface(di) map[string]any` | interface 转 map |
+| `As[T](value) T` | 类型匹配时返回目标值，否则返回目标类型零值 |
+| `SliceAs[T](value) []T` | 将 `[]T` 或 `[]any` 中可赋值元素转换为目标切片 |
 | `SliceInterfaceToIntType(di...) []int` | interface 切片转 int 切片 |
 | `SliceIntToInterfaceType(di...) []any` | int 切片转 interface 切片 |
 | `SliceInterfaceToStringType(di...) []string` | interface 切片转 string 切片 |

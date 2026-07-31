@@ -1,5 +1,15 @@
 package maputil
 
+// FirstString returns the first non-empty string stored under keys.
+func FirstString(param map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := param[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // GetStringFromMapInterface 从对象中提取字符串
 // 支持以下：
 //

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 )
 
 func TestComfy2GoAcceptanceWorkflow(t *testing.T) {
@@ -47,17 +49,17 @@ func TestComfy2GoAcceptanceWorkflow(t *testing.T) {
 	if len(api) == 0 {
 		t.Fatal("comfy2go returned an empty API prompt")
 	}
-	kSampler := mapValue(mapValue(api["2"])["inputs"])
+	kSampler := typeutil.As[map[string]any](typeutil.As[map[string]any](api["2"])["inputs"])
 	seed, _ := kSampler["seed"].(float64)
 	if seed != 395983186260226 || fmt.Sprint(kSampler["steps"]) != "8" || fmt.Sprint(kSampler["sampler_name"]) != "er_sde" || fmt.Sprint(kSampler["scheduler"]) != "simple" {
 		t.Fatalf("KSampler widgets were mapped out of order: %#v", kSampler)
 	}
-	latent := mapValue(mapValue(api["10"])["inputs"])
+	latent := typeutil.As[map[string]any](typeutil.As[map[string]any](api["10"])["inputs"])
 	if fmt.Sprint(latent["batch_size"]) != "1" {
 		t.Fatalf("EmptyLatentImage batch_size was mapped incorrectly: %#v", latent)
 	}
-	lora := mapValue(mapValue(api["38"])["inputs"])
-	if stringValue(lora["lora_loader_data"]) == "" {
+	lora := typeutil.As[map[string]any](typeutil.As[map[string]any](api["38"])["inputs"])
+	if typeutil.As[string](lora["lora_loader_data"]) == "" {
 		t.Fatal("ZmlPowerLoraLoader adapter did not preserve lora_loader_data")
 	}
 }

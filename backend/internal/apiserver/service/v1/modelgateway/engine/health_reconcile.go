@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -41,10 +41,16 @@ type engineHealthReconcileInstanceSummary struct {
 // EngineHealthReconcileHandler 以稳定 EngineInstance ID 分块巡检；完整分块成功后才推进 checkpoint。
 type EngineHealthReconcileHandler struct {
 	store   store.ApplicationPlatformStore
-	service ApplicationPlatformSrv
+	service EngineHealthChecker
 }
 
-func NewEngineHealthReconcileHandler(factory store.Factory, service ApplicationPlatformSrv) *EngineHealthReconcileHandler {
+// EngineHealthChecker 是健康巡检消费的最小引擎服务边界。
+type EngineHealthChecker interface {
+	CheckEngineInstanceHealthInternal(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
+}
+
+// NewEngineHealthReconcileHandler 构造由 Task Center 调度的引擎健康巡检处理器。
+func NewEngineHealthReconcileHandler(factory store.Factory, service EngineHealthChecker) *EngineHealthReconcileHandler {
 	return &EngineHealthReconcileHandler{store: factory.ApplicationPlatforms(), service: service}
 }
 

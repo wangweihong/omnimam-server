@@ -1,4 +1,4 @@
-package applicationplatform
+package engine
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -59,7 +60,7 @@ func (s *systemBindingStore) GetEngineInstance(context.Context, string) (*iapise
 	return &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui"}, nil
 }
 
-func newSystemBindingService(t *testing.T, storage *systemBindingStore) *applicationPlatformService {
+func newSystemBindingService(t *testing.T, storage *systemBindingStore) *Service {
 	t.Helper()
 	runtime, err := appregistry.LoadRuntimeRegistry()
 	if err != nil {
@@ -73,7 +74,7 @@ func newSystemBindingService(t *testing.T, storage *systemBindingStore) *applica
 		Store:        &systemBindingFactory{applications: storage},
 		Runtime:      runtime,
 		Capabilities: capabilities,
-		Principals:   staticPrincipal{principal: Principal{UserID: "admin", Admin: true}},
+		Principals:   engineTestPrincipal{principal: modelgateway.Principal{UserID: "admin", Admin: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func TestReconcileRequiredEngineBindingsPropagatesStoreFailure(t *testing.T) {
 	}
 }
 
-func TestSystemEngineBindingIsImmutableAndNotATemplateSource(t *testing.T) {
+func TestSystemEngineBindingIsImmutable(t *testing.T) {
 	storage := &systemBindingStore{storedBinding: &iapiserver.EngineCapabilityBinding{ProviderCapabilityID: "comfyui-workflow-runtime"}}
 	service := newSystemBindingService(t, storage)
 
@@ -186,14 +187,7 @@ func TestSystemEngineBindingIsImmutableAndNotATemplateSource(t *testing.T) {
 		t.Fatalf("create status=%#v", status)
 	}
 
-	_, templateErr := service.CreateTemplate(context.Background(), &iapiserver.ApplicationTemplateCreateRequest{
-		Name: "invalid", CapabilitySourceType: iapiserver.CapabilitySourceProviderCapability, CapabilityDefinitionID: "image.text_to_image", ProviderCapabilityID: "comfyui-workflow-runtime", ProviderOperationID: "workflow",
-	})
-	if status := toolerrors.ToStatus(templateErr); status.Code != code.ErrAIAppTemplateSourceInvalid {
-		t.Fatalf("template status=%#v", status)
-	}
-
-	service.resolveBindingStatus(storage.storedBinding)
+	service.ResolveBindingStatus(storage.storedBinding)
 	if !storage.storedBinding.SystemManaged {
 		t.Fatal("system binding was not marked system_managed")
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -97,8 +98,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "load application platform provider capabilities")
 	}
-	adapters := appsvc.NewEngineAdapters()
-	executors := appsvc.NewOperationExecutors()
+	adapters := engine.NewAdapters()
 	assets := appsvc.NoopArtifactLifecycle{}
 	events := appsvc.NoopEventPublisher{}
 	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
@@ -119,7 +119,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
-		Adapters: adapters, Executors: executors, Tasks: taskCenterService, Assets: assets, Events: events,
+		Adapters: adapters, Tasks: taskCenterService, Assets: assets, Events: events,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct application platform service")
@@ -127,10 +127,10 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := applicationPlatformService.ReconcileRequiredEngineBindings(context.Background()); err != nil {
 		return nil, errors.Wrap(err, "reconcile required application platform bindings")
 	}
-	if err := reconcileRegistry.Register(appsvc.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
+	if err := reconcileRegistry.Register(engine.NewEngineHealthReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register engine health reconciler")
 	}
-	if err := reconcileRegistry.Register(appsvc.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
+	if err := reconcileRegistry.Register(engine.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
 	}
 

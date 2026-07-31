@@ -8,44 +8,33 @@ import (
 	"io"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/log"
+	"github.com/wangweihong/gotoolbox/pkg/maputil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 	"gorm.io/gorm"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/engine"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
-	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
 
 const (
 	applicationRunTaskDefinitionID = "application-platform.application-run"
 	applicationRunTaskFunctionRef  = "application-platform.run"
-	engineHealthPersistenceTimeout = time.Second
 )
 
 // ApplicationPlatformSrv implements the public S2 Application Platform operations.
 type ApplicationPlatformSrv interface {
-	ListProviderCapabilities(context.Context, *iapiserver.ProviderCapabilityListRequest) (*iapiserver.ProviderCapabilityListResponse, error)
-	GetProviderCapability(context.Context, string) (*iapiserver.AIAppProviderCapability, error)
-	ListProviderCapabilityLoadResults(context.Context, *iapiserver.ProviderCapabilityLoadResultListRequest) (*iapiserver.ProviderCapabilityLoadResultListResponse, error)
-	ListApplicationEngineTypes(context.Context, *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error)
-	ListEngineInstances(context.Context, *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error)
-	CreateEngineInstance(context.Context, *iapiserver.EngineInstanceCreateRequest) (*iapiserver.EngineInstance, error)
-	GetEngineInstance(context.Context, string) (*iapiserver.EngineInstance, error)
-	UpdateEngineInstance(context.Context, *iapiserver.EngineInstanceUpdateRequest) (*iapiserver.EngineInstance, error)
-	DeleteEngineInstance(context.Context, string) (*iapiserver.DeleteResult, error)
-	CheckEngineInstanceHealth(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
-	CheckEngineInstanceHealthInternal(context.Context, string) (*iapiserver.EngineHealthCheckResult, error)
-	GetComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoResponse, error)
-	RefreshComfyUIEngineObjectInfo(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
-	RefreshComfyUIEngineObjectInfoInternal(context.Context, string) (*iapiserver.ComfyUIEngineObjectInfoStatus, error)
+	modelgateway.ProviderCapabilitySrv
+	engine.Srv
 	ListComfyUIWorkflows(context.Context, *iapiserver.ComfyUIWorkflowListRequest) (*iapiserver.ComfyUIWorkflowListResponse, error)
 	ImportComfyUIWorkflow(context.Context, *iapiserver.ComfyUIWorkflowImportRequest) (*iapiserver.ComfyUIWorkflowImportResult, error)
 	GetComfyUIWorkflow(context.Context, string) (*iapiserver.ComfyUIWorkflowDetail, error)
@@ -64,10 +53,6 @@ type ApplicationPlatformSrv interface {
 	GetComfyUIWorkflowTestRun(context.Context, string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	CancelComfyUIWorkflowTestRun(context.Context, string) (*iapiserver.ComfyUIWorkflowTestRun, error)
 	GetComfyUIWorkflowTestOutputContent(context.Context, string, string) ([]byte, string, error)
-	ListEngineBindings(context.Context, *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error)
-	CreateEngineBinding(context.Context, *iapiserver.EngineCapabilityBindingCreateRequest) (*iapiserver.EngineCapabilityBinding, error)
-	UpdateEngineBinding(context.Context, *iapiserver.EngineCapabilityBindingUpdateRequest) (*iapiserver.EngineCapabilityBinding, error)
-	DeleteEngineBinding(context.Context, string) (*iapiserver.DeleteResult, error)
 	ListTemplates(context.Context, *iapiserver.ApplicationTemplateListRequest) (*iapiserver.ApplicationTemplateListResponse, error)
 	CreateTemplate(context.Context, *iapiserver.ApplicationTemplateCreateRequest) (*iapiserver.ApplicationTemplate, error)
 	GetTemplate(context.Context, string) (*iapiserver.ApplicationTemplate, error)
@@ -126,28 +111,8 @@ type CanvasApplicationRunRequest struct {
 	Arguments            map[string]any
 }
 
-type Principal struct {
-	UserID string
-	Admin  bool
-}
-
-type PrincipalResolver interface {
-	Resolve(context.Context) (Principal, error)
-}
-type EngineAdapter interface {
-	ID() string
-	Check(context.Context, *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error)
-}
-type ComfyUIObjectInfoReader interface {
-	ReadObjectInfo(context.Context, *iapiserver.EngineInstance) (map[string]any, error)
-}
-type ComfyUIVersionReader interface {
-	ReadComfyUIVersion(context.Context, *iapiserver.EngineInstance) (string, error)
-}
-type OperationExecutor interface {
-	ID() string
-	Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error)
-}
+type Principal = modelgateway.Principal
+type PrincipalResolver = modelgateway.PrincipalResolver
 
 // ArtifactLifecycle 是 ApplicationExecutor 消费的 Asset Library 写入边界。
 // Application Platform 只交付受控字节流，不传递 Provider URL、凭证或原始响应。
@@ -178,8 +143,7 @@ type Dependencies struct {
 	Runtime        *appregistry.RuntimeRegistry
 	Capabilities   *appregistry.ProviderCapabilityRegistry
 	Principals     PrincipalResolver
-	Adapters       map[string]EngineAdapter
-	Executors      map[string]OperationExecutor
+	Adapters       map[string]engine.Adapter
 	Tasks          taskcenter.TaskCenterSrv
 	Assets         ArtifactLifecycle
 	Events         EventPublisher
@@ -187,20 +151,21 @@ type Dependencies struct {
 	WorkflowParser ComfyWorkflowParser
 }
 
-type applicationPlatformService struct{ Dependencies }
+type applicationPlatformService struct {
+	Dependencies
+	modelgateway.ProviderCapabilitySrv
+	engine.Srv
+}
 
 func NewService(deps Dependencies) (*applicationPlatformService, error) {
 	if deps.Store == nil || deps.Runtime == nil || deps.Capabilities == nil {
 		return nil, fmt.Errorf("application platform store and registries are required")
 	}
 	if deps.Principals == nil {
-		deps.Principals = &storePrincipalResolver{store: deps.Store}
+		deps.Principals = modelgateway.NewStorePrincipalResolver(deps.Store)
 	}
 	if deps.Adapters == nil {
-		deps.Adapters = map[string]EngineAdapter{}
-	}
-	if deps.Executors == nil {
-		deps.Executors = map[string]OperationExecutor{}
+		deps.Adapters = map[string]engine.Adapter{}
 	}
 	if deps.Events == nil {
 		deps.Events = NoopEventPublisher{}
@@ -214,7 +179,23 @@ func NewService(deps Dependencies) (*applicationPlatformService, error) {
 	if deps.WorkflowParser == nil {
 		deps.WorkflowParser = comfy2GoWorkflowParser{}
 	}
-	return &applicationPlatformService{Dependencies: deps}, nil
+	providerCapabilityService, err := modelgateway.NewService(modelgateway.Dependencies{
+		Capabilities: deps.Capabilities,
+		Principals:   deps.Principals,
+	})
+	if err != nil {
+		return nil, err
+	}
+	engineService, err := engine.NewService(engine.Dependencies{
+		Store: deps.Store, Runtime: deps.Runtime, Capabilities: deps.Capabilities,
+		Principals: deps.Principals, Adapters: deps.Adapters,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &applicationPlatformService{
+		Dependencies: deps, ProviderCapabilitySrv: providerCapabilityService, Srv: engineService,
+	}, nil
 }
 
 type NoopEventPublisher struct{}
@@ -249,38 +230,6 @@ func (StructuredWorkflowAuditor) Record(_ context.Context, record WorkflowAuditR
 	return nil
 }
 
-type storePrincipalResolver struct{ store store.Factory }
-
-func (r *storePrincipalResolver) Resolve(ctx context.Context) (Principal, error) {
-	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
-	if err != nil || user == nil || user.ID == "" {
-		return Principal{}, errors.NewStatus(code.ErrAIAppPermissionDenied, "authenticated user is required")
-	}
-	principal := Principal{UserID: user.ID, Admin: user.ID == "system-admin"}
-	if principal.Admin {
-		return principal, nil
-	}
-	assignments, err := r.store.UserRoles().ListByUser(ctx, user.ID)
-	if err != nil {
-		return Principal{}, errors.WithStack(err)
-	}
-	roles, err := r.store.Roles().List(ctx)
-	if err != nil {
-		return Principal{}, errors.WithStack(err)
-	}
-	roleNames := make(map[string]string, len(roles))
-	for _, role := range roles {
-		roleNames[role.ID] = strings.ToUpper(role.Name)
-	}
-	for _, assignment := range assignments {
-		if name := roleNames[assignment.RoleID]; name == "ADMIN" || name == "SUPER_ADMIN" {
-			principal.Admin = true
-			break
-		}
-	}
-	return principal, nil
-}
-
 func (s *applicationPlatformService) principal(ctx context.Context, admin bool) (Principal, error) {
 	p, err := s.Principals.Resolve(ctx)
 	if err != nil {
@@ -290,408 +239,6 @@ func (s *applicationPlatformService) principal(ctx context.Context, admin bool) 
 		return Principal{}, errors.NewStatus(code.ErrAIAppPermissionDenied, "administrator permission is required")
 	}
 	return p, nil
-}
-
-func (s *applicationPlatformService) ListProviderCapabilities(ctx context.Context, req *iapiserver.ProviderCapabilityListRequest) (*iapiserver.ProviderCapabilityListResponse, error) {
-	if _, err := s.principal(ctx, false); err != nil {
-		return nil, err
-	}
-	items := s.Capabilities.Capabilities()
-	filtered := items[:0]
-	for _, item := range items {
-		if req.ApplicationEngineTypeID != "" && item.ApplicationEngineTypeID != req.ApplicationEngineTypeID {
-			continue
-		}
-		if req.Availability != "" && item.Availability != req.Availability {
-			continue
-		}
-		if !matchesKeyword(req.Keyword, item.Name, item.Description, item.ID) {
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	window, err := req.PagingParams.Normalize()
-	if err != nil {
-		return nil, err
-	}
-	page := imachinery.PaginateSlice(filtered, window)
-	return &iapiserver.ProviderCapabilityListResponse{Total: len(filtered), RegistryStatus: s.Capabilities.Status(), Items: page}, nil
-}
-
-func (s *applicationPlatformService) GetProviderCapability(ctx context.Context, id string) (*iapiserver.AIAppProviderCapability, error) {
-	if _, err := s.principal(ctx, false); err != nil {
-		return nil, err
-	}
-	item, ok := s.Capabilities.Get(id)
-	if !ok {
-		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityNotFound, "provider capability not found")
-	}
-	return item, nil
-}
-
-func (s *applicationPlatformService) ListProviderCapabilityLoadResults(ctx context.Context, req *iapiserver.ProviderCapabilityLoadResultListRequest) (*iapiserver.ProviderCapabilityLoadResultListResponse, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	items := s.Capabilities.Results()
-	filtered := items[:0]
-	for _, item := range items {
-		if req.Result == "" || item.Result == req.Result {
-			filtered = append(filtered, item)
-		}
-	}
-	window, err := req.PagingParams.Normalize()
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ProviderCapabilityLoadResultListResponse{Total: len(filtered), RegistryStatus: s.Capabilities.Status(), Items: imachinery.PaginateSlice(filtered, window)}, nil
-}
-
-func (s *applicationPlatformService) ListApplicationEngineTypes(ctx context.Context, req *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error) {
-	if _, err := s.principal(ctx, false); err != nil {
-		return nil, err
-	}
-	items := s.Runtime.EngineTypes()
-	filtered := items[:0]
-	for _, item := range items {
-		if matchesKeyword(req.Keyword, item.ID, item.Name) {
-			filtered = append(filtered, item)
-		}
-	}
-	window, err := req.PagingParams.Normalize()
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ApplicationEngineTypeListResponse{Total: len(filtered), Items: imachinery.PaginateSlice(filtered, window)}, nil
-}
-
-func (s *applicationPlatformService) ListEngineInstances(ctx context.Context, req *iapiserver.EngineInstanceListRequest) (*iapiserver.EngineInstanceListResponse, error) {
-	if _, err := s.principal(ctx, false); err != nil {
-		return nil, err
-	}
-	items, total, err := s.Store.ApplicationPlatforms().ListEngineInstances(ctx, req)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	summaries := make([]*iapiserver.EngineInstanceSummary, 0, len(items))
-	for _, item := range items {
-		summaries = append(summaries, item.Summary())
-	}
-	return &iapiserver.EngineInstanceListResponse{Total: total, Items: summaries}, nil
-}
-
-func (s *applicationPlatformService) CreateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceCreateRequest) (*iapiserver.EngineInstance, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	if req.Enabled == nil {
-		return nil, errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "enabled is required")
-	}
-	if err := s.validateEngineAuth(req.ApplicationEngineTypeID, req.AuthType, req.AuthConfig); err != nil {
-		return nil, err
-	}
-	item := &iapiserver.EngineInstance{ApplicationEngineTypeID: req.ApplicationEngineTypeID, BaseURL: req.BaseURL, AuthType: req.AuthType, AuthConfig: req.AuthConfig, Enabled: *req.Enabled, HealthStatus: iapiserver.EngineHealthUnknown, Region: req.Region, MaxConcurrency: req.MaxConcurrency, RequestTimeoutSeconds: defaultInt(req.RequestTimeoutSeconds, 60), TaskTimeoutSeconds: defaultInt(req.TaskTimeoutSeconds, 1800)}
-	item.Name, item.Description = req.Name, req.Description
-	bindings := s.requiredBindingsForEngineType(req.ApplicationEngineTypeID)
-	ret, err := s.Store.ApplicationPlatforms().AddEngineInstanceWithBindings(ctx, item, bindings)
-	if err == nil {
-		return ret, nil
-	}
-	if strings.Contains(err.Error(), "idx_aiapp_engine_instances_name") {
-		return nil, errors.NewStatus(code.ErrAIAppEngineInstanceNameDuplicated, "engine instance name already exists")
-	}
-	if stderrors.Is(err, store.ErrRequiredEngineBindingFailed) {
-		return nil, errors.NewStatus(code.ErrAIAppRequiredEngineBindingFailed, "required engine capability binding could not be created")
-	}
-	return nil, err
-}
-
-// ReconcileRequiredEngineBindings 在进程开始服务前恢复全部系统必需的不可变绑定。
-func (s *applicationPlatformService) ReconcileRequiredEngineBindings(ctx context.Context) error {
-	for _, capability := range s.Capabilities.Capabilities() {
-		if capability.Kind != iapiserver.ProviderCapabilityKindEngineBinding || capability.Origin != iapiserver.ProviderCapabilityOriginBuiltin || capability.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || capability.Availability != iapiserver.ProviderCapabilityAvailable {
-			continue
-		}
-		if err := s.Store.ApplicationPlatforms().EnsureRequiredEngineBindings(ctx, capability.ApplicationEngineTypeID, capability.ID, capability.Revision, capability.Name, "System-managed required capability binding"); err != nil {
-			return fmt.Errorf("reconcile required engine binding %s: %w", capability.ID, err)
-		}
-	}
-	return nil
-}
-
-func (s *applicationPlatformService) requiredBindingsForEngineType(engineTypeID string) []*iapiserver.EngineCapabilityBinding {
-	capabilities := s.Capabilities.RequiredBindingsForEngineType(engineTypeID)
-	bindings := make([]*iapiserver.EngineCapabilityBinding, 0, len(capabilities))
-	for _, capability := range capabilities {
-		binding := &iapiserver.EngineCapabilityBinding{
-			ProviderCapabilityID:       capability.ID,
-			ProviderCapabilityRevision: capability.Revision,
-			Enabled:                    true,
-			Restrictions:               map[string]any{},
-			EffectiveStatus:            iapiserver.BindingEffectiveAvailable,
-			SystemManaged:              true,
-		}
-		binding.Name = capability.Name
-		binding.Description = "System-managed required capability binding"
-		bindings = append(bindings, binding)
-	}
-	return bindings
-}
-
-func (s *applicationPlatformService) GetEngineInstance(ctx context.Context, id string) (*iapiserver.EngineInstance, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	item, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, id)
-	return item, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-}
-
-func (s *applicationPlatformService) UpdateEngineInstance(ctx context.Context, req *iapiserver.EngineInstanceUpdateRequest) (*iapiserver.EngineInstance, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	item, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, req.ID)
-	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-	}
-	applyEngineUpdate(item, req)
-	if err := s.validateEngineAuth(item.ApplicationEngineTypeID, item.AuthType, item.AuthConfig); err != nil {
-		return nil, err
-	}
-	ret, err := s.Store.ApplicationPlatforms().UpdateEngineInstance(ctx, item, req.ResourceVersion)
-	return ret, mapUnique(err, "idx_aiapp_engine_instances_name", code.ErrAIAppEngineInstanceNameDuplicated, "engine instance name already exists")
-}
-
-func (s *applicationPlatformService) DeleteEngineInstance(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	count, err := s.Store.ApplicationPlatforms().CountRunsByEngineInstance(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if count > 0 {
-		return nil, errors.NewStatus(code.ErrAIAppEngineReferenceBlocked, "engine instance has run references")
-	}
-	if err := s.Store.ApplicationPlatforms().DeleteEngineInstance(ctx, id); err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-	}
-	return &iapiserver.DeleteResult{ID: id, Deleted: true}, nil
-}
-
-func (s *applicationPlatformService) CheckEngineInstanceHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	return s.checkEngineInstanceHealth(ctx, id)
-}
-
-// CheckEngineInstanceHealthInternal 为受信任的 TaskWorker 执行健康探测，不经过 HTTP 用户鉴权。
-func (s *applicationPlatformService) CheckEngineInstanceHealthInternal(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
-	return s.checkEngineInstanceHealth(ctx, id)
-}
-
-func (s *applicationPlatformService) checkEngineInstanceHealth(ctx context.Context, id string) (*iapiserver.EngineHealthCheckResult, error) {
-	item, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, id)
-	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-	}
-	now := imachinery.Now()
-	var result *iapiserver.EngineHealthCheckResult
-	typeDef, ok := s.Runtime.EngineType(item.ApplicationEngineTypeID)
-	if !ok {
-		result = degradedEngineHealth(id, now, "engine type is not registered")
-	} else if adapter := s.Adapters[typeDef.EngineAdapterID]; adapter == nil {
-		result = degradedEngineHealth(id, now, "engine adapter is not registered")
-	} else {
-		result, err = adapter.Check(ctx, item)
-		if err != nil {
-			// Worker shutdown must leave the current chunk retryable; a bounded detection deadline is a valid offline observation.
-			if stderrors.Is(ctx.Err(), context.Canceled) {
-				return nil, ctx.Err()
-			}
-			result = engineHealthFromError(id, now, err)
-		}
-	}
-	result = normalizeEngineHealthResult(id, now, result)
-	old := item.HealthStatus
-	item.LastHealthCheckAt = &now
-	item.HealthStatus = result.HealthStatus
-	item.UnhealthyReason = result.FailureSummary
-	var event *iapiserver.ApplicationPlatformEvent
-	if old != item.HealthStatus {
-		payload := map[string]any{"engine_instance_id": id, "application_engine_type_id": item.ApplicationEngineTypeID, "health_status": item.HealthStatus, "checked_at": now, "failure_summary": item.UnhealthyReason}
-		event = &iapiserver.ApplicationPlatformEvent{Type: "engine_instance_health_changed", IdempotencyKey: id + ":" + now.String(), Payload: payload, OccurredAt: now}
-	}
-	persistCtx := ctx
-	persistCancel := func() {}
-	if stderrors.Is(ctx.Err(), context.DeadlineExceeded) {
-		// 单项探测超时是需要落库的 offline 事实，不能继续复用已过期的探测 context。
-		persistCtx, persistCancel = context.WithTimeout(context.WithoutCancel(ctx), engineHealthPersistenceTimeout)
-	}
-	defer persistCancel()
-	_, err = s.Store.ApplicationPlatforms().UpdateEngineInstanceHealth(persistCtx, item, item.ResourceVersion, event)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-func engineHealthFromError(id string, checkedAt imachinery.Time, err error) *iapiserver.EngineHealthCheckResult {
-	status := errors.ToStatus(err)
-	switch status.Code {
-	case code.ErrAIAppEngineAuthConfigInvalid:
-		return degradedEngineHealth(id, checkedAt, "provider authentication failed")
-	case code.ErrAIAppProviderRuntimeCapabilityMismatch:
-		return degradedEngineHealth(id, checkedAt, "provider health protocol is incompatible")
-	case code.ErrAIAppEngineUnavailable:
-		switch {
-		case strings.Contains(status.Desc, "timed out"):
-			return offlineEngineHealth(id, checkedAt, "provider request timed out")
-		case strings.Contains(status.Desc, "base URL"), strings.Contains(status.Desc, "could not be parsed"):
-			return degradedEngineHealth(id, checkedAt, "provider health protocol is incompatible")
-		default:
-			return offlineEngineHealth(id, checkedAt, "provider is unavailable")
-		}
-	default:
-		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
-	}
-}
-
-func normalizeEngineHealthResult(id string, checkedAt imachinery.Time, result *iapiserver.EngineHealthCheckResult) *iapiserver.EngineHealthCheckResult {
-	if result == nil {
-		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
-	}
-	result.EngineInstanceID, result.CheckedAt = id, checkedAt
-	switch result.HealthStatus {
-	case iapiserver.EngineHealthOnline:
-		result.FailureSummary = ""
-	case iapiserver.EngineHealthOffline:
-		result.FailureSummary = safeEngineHealthSummary(result.FailureSummary, "provider is unavailable")
-	case iapiserver.EngineHealthDegraded:
-		result.FailureSummary = safeEngineHealthSummary(result.FailureSummary, "engine health protocol is degraded")
-	default:
-		return degradedEngineHealth(id, checkedAt, "engine health adapter failed")
-	}
-	return result
-}
-
-func safeEngineHealthSummary(summary, fallback string) string {
-	switch summary {
-	case "engine type is not registered",
-		"engine adapter is not registered",
-		"provider authentication failed",
-		"provider health protocol is incompatible",
-		"provider request timed out",
-		"provider is unavailable",
-		"engine health adapter failed",
-		"engine health protocol is degraded":
-		return summary
-	default:
-		return fallback
-	}
-}
-
-func degradedEngineHealth(id string, checkedAt imachinery.Time, summary string) *iapiserver.EngineHealthCheckResult {
-	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: iapiserver.EngineHealthDegraded, CheckedAt: checkedAt, FailureSummary: summary}
-}
-
-func offlineEngineHealth(id string, checkedAt imachinery.Time, summary string) *iapiserver.EngineHealthCheckResult {
-	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: id, HealthStatus: iapiserver.EngineHealthOffline, CheckedAt: checkedAt, FailureSummary: summary}
-}
-
-func (s *applicationPlatformService) ListEngineBindings(ctx context.Context, req *iapiserver.EngineCapabilityBindingListRequest) (*iapiserver.EngineCapabilityBindingListResponse, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	items, total, err := s.Store.ApplicationPlatforms().ListEngineBindings(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range items {
-		s.resolveBindingStatus(item)
-	}
-	return &iapiserver.EngineCapabilityBindingListResponse{Total: total, Items: items}, nil
-}
-
-func (s *applicationPlatformService) CreateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingCreateRequest) (*iapiserver.EngineCapabilityBinding, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	if req.Enabled == nil {
-		return nil, errors.NewStatus(code.ErrAIAppEngineBindingIncompatible, "enabled is required")
-	}
-	engine, err := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, req.EngineInstanceID)
-	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineInstanceNotFound, "engine instance not found")
-	}
-	capability, ok := s.Capabilities.Get(req.ProviderCapabilityID)
-	if !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable {
-		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
-	}
-	if capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable {
-		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be created")
-	}
-	if capability.ApplicationEngineTypeID != engine.ApplicationEngineTypeID {
-		return nil, errors.NewStatus(code.ErrAIAppEngineBindingIncompatible, "engine type does not match capability")
-	}
-	if err := validateRestrictions(capability, req.Restrictions); err != nil {
-		return nil, err
-	}
-	item := &iapiserver.EngineCapabilityBinding{EngineInstanceID: engine.ID, ProviderCapabilityID: capability.ID, ProviderCapabilityRevision: capability.Revision, Enabled: *req.Enabled, Restrictions: req.Restrictions, EffectiveStatus: iapiserver.BindingEffectiveAvailable}
-	item.Name, item.Description = req.Name, req.Description
-	ret, err := s.Store.ApplicationPlatforms().AddEngineBinding(ctx, item)
-	return ret, mapUnique(err, "idx_aiapp_binding_engine_capability", code.ErrAIAppEngineBindingIncompatible, "binding already exists")
-}
-
-func (s *applicationPlatformService) UpdateEngineBinding(ctx context.Context, req *iapiserver.EngineCapabilityBindingUpdateRequest) (*iapiserver.EngineCapabilityBinding, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	item, err := s.Store.ApplicationPlatforms().GetEngineBinding(ctx, req.ID)
-	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineBindingNotFound, "engine binding not found")
-	}
-	if s.isSystemManagedBinding(item) {
-		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be updated")
-	}
-	capability, ok := s.Capabilities.Get(item.ProviderCapabilityID)
-	if !ok {
-		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityUnavailable, "provider capability is unavailable")
-	}
-	if req.Restrictions != nil {
-		if err := validateRestrictions(capability, req.Restrictions); err != nil {
-			return nil, err
-		}
-		item.Restrictions = req.Restrictions
-	}
-	applyString(&item.Name, req.Name)
-	applyString(&item.Description, req.Description)
-	if req.Enabled != nil {
-		item.Enabled = *req.Enabled
-	}
-	ret, err := s.Store.ApplicationPlatforms().UpdateEngineBinding(ctx, item, req.ResourceVersion)
-	if ret != nil {
-		s.resolveBindingStatus(ret)
-	}
-	return ret, err
-}
-
-func (s *applicationPlatformService) DeleteEngineBinding(ctx context.Context, id string) (*iapiserver.DeleteResult, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	item, err := s.Store.ApplicationPlatforms().GetEngineBinding(ctx, id)
-	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIAppEngineBindingNotFound, "engine binding not found")
-	}
-	if s.isSystemManagedBinding(item) {
-		return nil, errors.NewStatus(code.ErrAIAppSystemEngineBindingImmutable, "system-managed engine binding cannot be deleted")
-	}
-	if err := s.Store.ApplicationPlatforms().DeleteEngineBinding(ctx, id); err != nil {
-		return nil, err
-	}
-	return &iapiserver.DeleteResult{ID: id, Deleted: true}, nil
 }
 
 func (s *applicationPlatformService) ListTemplates(ctx context.Context, req *iapiserver.ApplicationTemplateListRequest) (*iapiserver.ApplicationTemplateListResponse, error) {
@@ -1242,10 +789,10 @@ func sameCanvasApplicationRun(
 ) bool {
 	return run != nil && req != nil &&
 		run.ApplicationVersionID == applicationVersionID &&
-		firstString(run.ExecutionSnapshot, "origin_type") == "canvas" &&
-		firstString(run.ExecutionSnapshot, "canvas_run_id") == req.CanvasRunID &&
-		firstString(run.ExecutionSnapshot, "canvas_node_run_id") == req.CanvasNodeRunID &&
-		firstString(run.ExecutionSnapshot, "execution_key") == req.ExecutionKey &&
+		maputil.FirstString(run.ExecutionSnapshot, "origin_type") == "canvas" &&
+		maputil.FirstString(run.ExecutionSnapshot, "canvas_run_id") == req.CanvasRunID &&
+		maputil.FirstString(run.ExecutionSnapshot, "canvas_node_run_id") == req.CanvasNodeRunID &&
+		maputil.FirstString(run.ExecutionSnapshot, "execution_key") == req.ExecutionKey &&
 		reflect.DeepEqual(run.InputSnapshot, resolvedInputs) &&
 		reflect.DeepEqual(run.ExecutionSnapshot["idempotency_inputs"], req.Inputs)
 }
@@ -1400,67 +947,6 @@ func (s *applicationPlatformService) attachApplicationRunRelations(ctx context.C
 	}
 }
 
-func (s *applicationPlatformService) validateEngineAuth(typeID, authType string, config map[string]any) error {
-	engineType, ok := s.Runtime.EngineType(typeID)
-	if !ok || !contains(engineType.AuthenticationTypes, authType) {
-		return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "unsupported engine authentication type")
-	}
-	schema := engineType.AuthenticationConfigSchema[authType]
-	if authType == iapiserver.EngineAuthNone {
-		if len(config) != 0 {
-			return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "auth_config must be omitted when auth_type is none")
-		}
-		return nil
-	}
-	allowed := map[string]struct{}{}
-	required, _ := schema["required"].([]any)
-	if required == nil {
-		if stringsList, ok := schema["required"].([]string); ok {
-			for _, key := range stringsList {
-				allowed[key] = struct{}{}
-				if stringValue(config[key]) == "" {
-					return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "missing authentication field "+key)
-				}
-			}
-		}
-	} else {
-		for _, raw := range required {
-			key, _ := raw.(string)
-			allowed[key] = struct{}{}
-			if stringValue(config[key]) == "" {
-				return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "missing authentication field "+key)
-			}
-		}
-	}
-	for key := range config {
-		if _, ok := allowed[key]; !ok {
-			return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "unknown authentication field "+key)
-		}
-	}
-	return nil
-}
-
-func (s *applicationPlatformService) resolveBindingStatus(binding *iapiserver.EngineCapabilityBinding) {
-	capability, ok := s.Capabilities.Get(binding.ProviderCapabilityID)
-	binding.SystemManaged = ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
-	switch {
-	case !binding.Enabled:
-		binding.EffectiveStatus = iapiserver.BindingEffectiveDisabled
-	case !ok || capability.Availability != iapiserver.ProviderCapabilityAvailable || capability.Revision != binding.ProviderCapabilityRevision:
-		binding.EffectiveStatus = iapiserver.BindingEffectiveUnavailable
-	default:
-		binding.EffectiveStatus = iapiserver.BindingEffectiveAvailable
-	}
-}
-
-func (s *applicationPlatformService) isSystemManagedBinding(binding *iapiserver.EngineCapabilityBinding) bool {
-	if binding == nil {
-		return false
-	}
-	capability, ok := s.Capabilities.Get(binding.ProviderCapabilityID)
-	return ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
-}
-
 func (s *applicationPlatformService) templateVersionFromRequest(capabilityDefinitionID, sourceType, providerID, operationID string, workflow, contract map[string]any) (*iapiserver.ApplicationTemplateVersion, error) {
 	version := &iapiserver.ApplicationTemplateVersion{CapabilitySourceType: sourceType, TemplateContract: contract, ComfyUIAPIWorkflow: workflow}
 	switch sourceType {
@@ -1598,7 +1084,7 @@ func snapshotValue[T any](snapshot map[string]any, key string) *T {
 	return &result
 }
 func applicationRunEventPayload(run *iapiserver.ApplicationRun) map[string]any {
-	originType := firstString(run.ExecutionSnapshot, "origin_type")
+	originType := maputil.FirstString(run.ExecutionSnapshot, "origin_type")
 	if originType == "" {
 		originType = "api"
 	}
@@ -1609,15 +1095,15 @@ func applicationRunEventPayload(run *iapiserver.ApplicationRun) map[string]any {
 		"provider_capability_id": run.ProviderCapabilityID, "provider_capability_revision": run.ProviderCapabilityRevision,
 		"provider_operation_id": run.ProviderOperationID, "workflow_contract_revision": run.WorkflowContractRevision,
 		"execution_snapshot": run.ExecutionSnapshot, "origin_type": originType,
-		"canvas_run_id":        firstString(run.ExecutionSnapshot, "canvas_run_id"),
-		"canvas_node_run_id":   firstString(run.ExecutionSnapshot, "canvas_node_run_id"),
-		"execution_key":        firstString(run.ExecutionSnapshot, "execution_key"),
+		"canvas_run_id":        maputil.FirstString(run.ExecutionSnapshot, "canvas_run_id"),
+		"canvas_node_run_id":   maputil.FirstString(run.ExecutionSnapshot, "canvas_node_run_id"),
+		"execution_key":        maputil.FirstString(run.ExecutionSnapshot, "execution_key"),
 		"task_creation_status": run.TaskCreationStatus,
 	}
 }
 
 func resolvedRuntimeInputs(inputs map[string]any, fields []iapiserver.RuntimeFormField) map[string]any {
-	resolved := copyMap(inputs)
+	resolved := maputil.Clone(inputs)
 	for _, field := range fields {
 		if field.Value == nil {
 			delete(resolved, field.Name)
@@ -1627,41 +1113,13 @@ func resolvedRuntimeInputs(inputs map[string]any, fields []iapiserver.RuntimeFor
 	}
 	return resolved
 }
-
-func validateRestrictions(capability *iapiserver.AIAppProviderCapability, restrictions map[string]any) error {
-	if len(restrictions) == 0 {
-		return nil
-	}
-	allowed := map[string]map[string]struct{}{"model_ids": {}, "operation_ids": {}, "variant_ids": {}}
-	for _, item := range capability.Models {
-		allowed["model_ids"][item.ID] = struct{}{}
-	}
-	for _, item := range capability.Operations {
-		allowed["operation_ids"][item.ID] = struct{}{}
-	}
-	for _, item := range capability.Variants {
-		allowed["variant_ids"][item.ID] = struct{}{}
-	}
-	for key, value := range restrictions {
-		set, ok := allowed[key]
-		if !ok {
-			return errors.NewStatus(code.ErrAIAppEngineBindingRestrictionExpands, "unknown restriction key "+key)
-		}
-		for _, item := range anyStrings(value) {
-			if _, ok := set[item]; !ok {
-				return errors.NewStatus(code.ErrAIAppEngineBindingRestrictionExpands, "restriction adds unknown value "+item)
-			}
-		}
-	}
-	return nil
-}
 func validateComfyUIWorkflow(workflow, objectInfo map[string]any) error {
 	for nodeID, raw := range workflow {
 		node, ok := raw.(map[string]any)
 		if !ok {
 			return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI node "+nodeID+" is invalid")
 		}
-		classType := stringValue(node["class_type"])
+		classType := typeutil.As[string](node["class_type"])
 		if classType == "" {
 			return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI node is missing class_type")
 		}
@@ -1676,8 +1134,8 @@ func validateComfyUIContract(workflow, objectInfo, contract map[string]any) erro
 	if err := validateComfyUIWorkflow(workflow, objectInfo); err != nil {
 		return err
 	}
-	mappings := mapValue(contract["request_mapping"])
-	outputs := mapValue(contract["outputs"])
+	mappings := typeutil.As[map[string]any](contract["request_mapping"])
+	outputs := typeutil.As[map[string]any](contract["outputs"])
 	if len(mappings) == 0 || len(outputs) == 0 {
 		return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "ComfyUI contract requires request_mapping and outputs")
 	}
@@ -1685,15 +1143,15 @@ func validateComfyUIContract(workflow, objectInfo, contract map[string]any) erro
 	for field := range mappings {
 		dummyInputs[field] = "validation"
 	}
-	for field, raw := range mapValue(contract["parameters"]) {
-		definition := mapValue(raw)
+	for field, raw := range typeutil.As[map[string]any](contract["parameters"]) {
+		definition := typeutil.As[map[string]any](raw)
 		if boolValue(definition["required"]) {
 			if _, exists := mappings[field]; !exists {
 				return errors.NewStatus(code.ErrAIAppTemplateSourceInvalid, "required ComfyUI parameter has no request mapping: "+field)
 			}
 		}
 	}
-	_, err := applyComfyInputs(workflow, dummyInputs, contract)
+	_, err := engine.ApplyComfyInputs(workflow, dummyInputs, contract)
 	return err
 }
 func findOperation(capability *iapiserver.AIAppProviderCapability, id string) (iapiserver.ProviderCapabilityOperation, bool) {
@@ -1703,22 +1161,6 @@ func findOperation(capability *iapiserver.AIAppProviderCapability, id string) (i
 		}
 	}
 	return iapiserver.ProviderCapabilityOperation{}, false
-}
-func applyEngineUpdate(item *iapiserver.EngineInstance, req *iapiserver.EngineInstanceUpdateRequest) {
-	applyString(&item.Name, req.Name)
-	applyString(&item.Description, req.Description)
-	applyString(&item.BaseURL, req.BaseURL)
-	applyString(&item.AuthType, req.AuthType)
-	if req.AuthConfig != nil {
-		item.AuthConfig = req.AuthConfig
-	}
-	if req.Enabled != nil {
-		item.Enabled = *req.Enabled
-	}
-	applyString(&item.Region, req.Region)
-	applyInt(&item.MaxConcurrency, req.MaxConcurrency)
-	applyInt(&item.RequestTimeoutSeconds, req.RequestTimeoutSeconds)
-	applyInt(&item.TaskTimeoutSeconds, req.TaskTimeoutSeconds)
 }
 func applyApplicationUpdate(item *iapiserver.Application, req *iapiserver.ApplicationUpdateRequest) {
 	applyString(&item.Name, req.Name)
@@ -1755,24 +1197,6 @@ func mapUnique(err error, constraint string, businessCode int, message string) e
 	}
 	return err
 }
-func matchesKeyword(keyword string, values ...string) bool {
-	if keyword == "" {
-		return true
-	}
-	keyword = strings.ToLower(keyword)
-	for _, value := range values {
-		if strings.Contains(strings.ToLower(value), keyword) {
-			return true
-		}
-	}
-	return false
-}
-func defaultInt(value, fallback int) int {
-	if value <= 0 {
-		return fallback
-	}
-	return value
-}
 func defaultBool(value *bool, fallback bool) bool {
 	if value == nil {
 		return fallback
@@ -1780,11 +1204,6 @@ func defaultBool(value *bool, fallback bool) bool {
 	return *value
 }
 func applyString(target *string, value *string) {
-	if value != nil {
-		*target = *value
-	}
-}
-func applyInt(target *int, value *int) {
 	if value != nil {
 		*target = *value
 	}
@@ -1798,20 +1217,3 @@ func contains(items []string, value string) bool {
 	return false
 }
 func stringPtr(value string) *string { return &value }
-func stringValue(value any) string   { ret, _ := value.(string); return ret }
-func anyStrings(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		return typed
-	case []any:
-		ret := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if value, ok := item.(string); ok {
-				ret = append(ret, value)
-			}
-		}
-		return ret
-	default:
-		return nil
-	}
-}
