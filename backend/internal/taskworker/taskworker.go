@@ -17,6 +17,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
@@ -77,7 +78,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	if cfg.WorkflowRuntimeOptions == nil || !cfg.WorkflowRuntimeOptions.Enabled {
 		return fmt.Errorf("workflow runtime must be enabled for taskworker")
 	}
-	if err := InitializeStore(cfg); err != nil {
+	if err := apiserver.InitializeStore(cfg); err != nil {
 		return err
 	}
 	runtime, err := workflowruntime.NewConductor(workflowruntime.ConductorConfig{

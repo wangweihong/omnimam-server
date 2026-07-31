@@ -1,4 +1,4 @@
-package apiserver
+package notificationworker
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
+	"github.com/wangweihong/omnimam/backend/internal/apiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/notificationworker"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
@@ -23,7 +23,7 @@ const (
 
 // RunNotificationWorker 启动独立通知源消费、规则处理、保留清理和统一 SSE UserEvent 投影。
 func RunNotificationWorker(cfg *config.Config) error {
-	if err := InitializeStore(cfg); err != nil {
+	if err := apiserver.InitializeStore(cfg); err != nil {
 		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -40,7 +40,7 @@ func runNotificationWorker(
 	ctx context.Context,
 	storeIns store.Factory,
 	userEventRetention time.Duration,
-	subscribe notificationworker.SubscribeFunc,
+	subscribe SubscribeFunc,
 ) error {
 	if storeIns == nil {
 		return fmt.Errorf("notification worker store is not configured")
@@ -64,7 +64,7 @@ func runNotificationWorker(
 		return fmt.Errorf("notification worker subscriber is not configured")
 	}
 
-	registry, err := notificationworker.BuildRegistry()
+	registry, err := BuildRegistry()
 	if err != nil {
 		return errors.Wrap(err, "build notification worker registry")
 	}
@@ -79,17 +79,17 @@ func runNotificationWorker(
 	}
 	defer projector.Close()
 
-	ruleWorker := notificationworker.NewRuleWorker(
+	ruleWorker := NewRuleWorker(
 		candidateFactory.NotificationCandidates(),
 		registry,
-		notificationworker.DefaultRuleWorkerConfig(),
+		DefaultRuleWorkerConfig(),
 	)
 	if err := ruleWorker.Start(ctx); err != nil {
 		return errors.Wrap(err, "start notification rule worker")
 	}
 	defer ruleWorker.Close()
 
-	sourceWorker := notificationworker.NewSourceWorker(
+	sourceWorker := NewSourceWorker(
 		candidateFactory.NotificationCandidates(),
 		registry,
 		subscribe,
@@ -99,7 +99,7 @@ func runNotificationWorker(
 	}
 	defer sourceWorker.Close()
 
-	retention := notificationworker.NewRetentionRunner(
+	retention := NewRetentionRunner(
 		retentionFactory.NotificationRetention(),
 		notificationRetentionInterval,
 		notificationRetentionBatch,

@@ -1,5 +1,5 @@
 package main
 
-import "github.com/wangweihong/omnimam/backend/internal/apiserver"
+import notificationworker "github.com/wangweihong/omnimam/backend/internal/notificationworker"
 
-func main() { apiserver.NewNotificationWorkerApp("notificationworker").Run() }
+func main() { notificationworker.NewNotificationWorkerApp("notificationworker").Run() }

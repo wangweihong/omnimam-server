@@ -1,5 +1,5 @@
 package main
 
-import "github.com/wangweihong/omnimam/backend/internal/apiserver"
+import taskworker "github.com/wangweihong/omnimam/backend/internal/taskworker"
 
-func main() { apiserver.NewTaskWorkerApp("taskworker").Run() }
+func main() { taskworker.NewTaskWorkerApp("taskworker").Run() }
