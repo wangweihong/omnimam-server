@@ -15,6 +15,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	mcpsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/mcp"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
@@ -26,6 +27,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
+	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
 type server struct {
@@ -39,6 +41,8 @@ type server struct {
 	workflowRuntime        workflowruntime.WorkflowRuntime
 	authOptions            *options.AuthOptions
 	sseOptions             *options.SSEOptions
+	mcpOptions             *options.MCPOptions
+	mcpProcessor           *mcpprotocol.Processor
 	serverMode             string
 	userEventCleanupCtx    context.Context
 	userEventCleanupCancel context.CancelFunc
@@ -142,6 +146,36 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
 	}
+	var mcpProcessor *mcpprotocol.Processor
+	if cfg.MCPOptions != nil && cfg.MCPOptions.Enabled {
+		mcpFactory, ok := storeIns.(store.MCPStoreFactory)
+		if !ok || mcpFactory.MCPTaskBindings() == nil {
+			return nil, errors.New("MCP Task Binding store is unavailable")
+		}
+		assetService := newAssetLibraryService(storeIns, taskCenterService, applicationPlatformService)
+		if assetService == nil {
+			return nil, errors.New("Asset Library service is unavailable for MCP")
+		}
+		mcpService, err := mcpsvc.New(mcpsvc.Dependencies{
+			Capabilities: runtimeRegistry, Applications: applicationPlatformService,
+			Tasks: taskCenterService, Assets: assetService, Bindings: mcpFactory.MCPTaskBindings(),
+			Config: mcpsvc.Config{
+				DiscoverTTL: cfg.MCPOptions.DiscoverTTL, ResourceTTL: cfg.MCPOptions.ResourceTTL,
+				TaskTTL: cfg.MCPOptions.TaskTTL, TaskPollInterval: cfg.MCPOptions.TaskPollInterval,
+				UploadTTL: cfg.MCPOptions.UploadTTL, PublicBaseURL: cfg.MCPOptions.PublicBaseURL,
+				RequestRate: cfg.MCPOptions.RequestRate, RequestBurst: cfg.MCPOptions.RequestBurst,
+				ToolRate: cfg.MCPOptions.ToolRate, ToolBurst: cfg.MCPOptions.ToolBurst,
+				MaxUploadBytes: cfg.MCPOptions.MaxUploadBytes, MaxLimiterScopes: cfg.MCPOptions.MaxLimiterScopes,
+			},
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "construct MCP service")
+		}
+		mcpProcessor, err = mcpprotocol.NewProcessor(mcpService)
+		if err != nil {
+			return nil, errors.Wrap(err, "construct MCP protocol processor")
+		}
+	}
 
 	server := &server{
 		httpServer:          genericServer,
@@ -152,6 +186,8 @@ func createServer(cfg *config.Config) (*server, error) {
 		workflowRuntime:     workflowRuntime,
 		authOptions:         cfg.AuthOptions,
 		sseOptions:          cfg.SSEOptions,
+		mcpOptions:          cfg.MCPOptions,
+		mcpProcessor:        mcpProcessor,
 		serverMode:          cfg.GenericServerRunOptions.Mode,
 	}
 
@@ -262,6 +298,9 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.ApplicationArtifactRef{},
 		&iapiserver.ApplicationArtifact{},
 
+		// mcp
+		&iapiserver.MCPTaskBinding{},
+
 		// notification center
 		&iapiserver.NotificationTopic{},
 		&iapiserver.NotificationEvent{},
@@ -331,7 +370,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
 	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.serverMode)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions, s.serverMode)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		ssectrl.BeginDraining()
@@ -352,6 +391,7 @@ func (s *server) PrepareRun() preparedServer {
 
 func (s preparedServer) Run(stopCh <-chan struct{}) error {
 	startUserEventCleanup(s.userEventCleanupCtx)
+	startMCPTaskBindingCleanup(s.userEventCleanupCtx)
 	if s.assetUpload != nil {
 		platformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
 		platformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)
@@ -362,6 +402,33 @@ func (s preparedServer) Run(stopCh <-chan struct{}) error {
 		log.Fatalf("start shutdown manager failed: %s", err.Error())
 	}
 	return s.httpServer.Run()
+}
+
+// startMCPTaskBindingCleanup 只物理删除过期协议映射，不修改 ApplicationRun、AtomicTask 或制品事实。
+func startMCPTaskBindingCleanup(ctx context.Context) {
+	prune := func(now time.Time) {
+		dataStore := store.Client()
+		factory, ok := dataStore.(store.MCPStoreFactory)
+		if !ok || factory.MCPTaskBindings() == nil {
+			return
+		}
+		if _, err := factory.MCPTaskBindings().DeleteExpired(ctx, now); err != nil {
+			log.Warnf("prune expired MCP task bindings: %v", err)
+		}
+	}
+	go func() {
+		prune(time.Now())
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				prune(now)
+			}
+		}
+	}()
 }
 
 // startUserEventCleanup 定期清理过期 SSE 投影，清理失败不影响任务执行和 API 服务。

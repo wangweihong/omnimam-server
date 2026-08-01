@@ -9,6 +9,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
+	mcpctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/mcp"
 	notificationctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/notification"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
@@ -28,6 +29,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericmiddleware"
+	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
 func initRouter(
@@ -36,10 +38,12 @@ func initRouter(
 	taskCenter taskcentersvc.TaskCenterSrv,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
+	mcpProcessor *mcpprotocol.Processor,
+	mcpOptions *options.MCPOptions,
 	mode string,
 ) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mode)
+	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mcpProcessor, mcpOptions, mode)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -53,7 +57,7 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), "release")
+	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions(), "release")
 }
 
 func installApis(
@@ -62,6 +66,8 @@ func installApis(
 	taskCenter taskcentersvc.TaskCenterSrv,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
+	mcpProcessor *mcpprotocol.Processor,
+	mcpOptions *options.MCPOptions,
 	mode string,
 ) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
@@ -69,13 +75,16 @@ func installApis(
 	})
 	storeIns := store.Client()
 	if storeIns != nil {
+		if mcpProcessor != nil && mcpOptions != nil && mcpOptions.Enabled {
+			g.POST("/mcp", mcpctrl.New(mcpProcessor, storeIns.Users(), mcpOptions).Handle)
+		}
 		v1 := g.Group("/api/v1")
 		{
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
 			installSSEApis(v1, storeIns, sseOptions)
 			installNotificationApis(v1, storeIns)
 			installPlatformApis(v1, storeIns, nil)
-			installAssetLibraryContractApis(v1, storeIns)
+			installAssetLibraryContractApis(v1, storeIns, taskCenter, applicationPlatform)
 			installAuthApis(v1, storeIns)
 			InstallSettingApis(v1, storeIns)
 			installAssetApis(v1, storeIns)
@@ -336,20 +345,20 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 
 }
 
-func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory) {
+func installAssetLibraryContractApis(
+	rg *gin.RouterGroup,
+	storeIns store.Factory,
+	tasks taskcentersvc.TaskCenterSrv,
+	applications appplatformsvc.ApplicationPlatformSrv,
+) {
 	assetStore := optionalAssetV1Store(storeIns)
 	if assetStore == nil {
 		return
 	}
-	tasks := taskcentersvc.NewService(storeIns)
-	service := assetlibrarysvc.NewStoreWithRelationsAndPolicy(assetStore, assetlibrarysvc.NewLocalContentStorage(storeIns), assetlibrarysvc.RelationReaders{
-		AtomicTasks:     tasks,
-		ApplicationRuns: appplatformsvc.NewRunSummaryReader(storeIns.ApplicationPlatforms()),
-		CanvasRuns:      workflowcanvassvc.New(storeIns, tasks),
-	}, assetlibrarysvc.DefaultRepresentationPolicy{}, assetlibrarysvc.WithStorageInspection(
-		storeIns.StorageBackends(),
-		assetlibrarysvc.NewRoleStorageAdminAuthorizer(storeIns.Roles(), storeIns.UserRoles()),
-	))
+	service := newAssetLibraryService(storeIns, tasks, applications)
+	if service == nil {
+		return
+	}
 	controller := assetlibraryctrl.New(service)
 
 	rg.GET("/blobs/:blob_id", controller.GetBlob)
@@ -428,6 +437,28 @@ func installAssetLibraryContractApis(rg *gin.RouterGroup, storeIns store.Factory
 	rg.GET("/asset-representations/:representation_id", controller.GetRepresentation)
 	rg.GET("/asset-representations/:representation_id/content", controller.ReadRepresentation)
 	rg.GET("/asset-representations/:representation_id/access-url", controller.RepresentationAccess)
+}
+
+func newAssetLibraryService(
+	storeIns store.Factory,
+	tasks taskcentersvc.TaskCenterSrv,
+	applications appplatformsvc.ApplicationPlatformSrv,
+) assetlibrarysvc.Service {
+	assetStore := optionalAssetV1Store(storeIns)
+	if assetStore == nil {
+		return nil
+	}
+	if tasks == nil {
+		tasks = taskcentersvc.NewService(storeIns)
+	}
+	return assetlibrarysvc.NewStoreWithRelationsAndPolicy(assetStore, assetlibrarysvc.NewLocalContentStorage(storeIns), assetlibrarysvc.RelationReaders{
+		AtomicTasks:     tasks,
+		ApplicationRuns: appplatformsvc.NewRunSummaryReader(storeIns.ApplicationPlatforms()),
+		CanvasRuns:      workflowcanvassvc.New(storeIns, tasks, applications),
+	}, assetlibrarysvc.DefaultRepresentationPolicy{}, assetlibrarysvc.WithStorageInspection(
+		storeIns.StorageBackends(),
+		assetlibrarysvc.NewRoleStorageAdminAuthorizer(storeIns.Roles(), storeIns.UserRoles()),
+	))
 }
 
 func optionalAssetV1Store(factory store.Factory) (assetStore store.AssetV1Store) {

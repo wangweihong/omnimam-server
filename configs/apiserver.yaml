@@ -95,3 +95,24 @@ workflow-runtime:
 auth:
   # 用户与权限系统完成前的开发兼容开关；release 模式下即使误配也不会启用匿名管理员。
   allow-anonymous-development: true
+
+# MCP 2026-07-28 Streamable HTTP 配置
+mcp:
+  enabled: true
+  # 浏览器 Origin 额外白名单；同源请求始终允许，非 loopback Origin 必须使用 HTTPS；无 Origin 的 CLI/stdio Proxy 请求仍需 Bearer JWT。
+  allowed-origins: []
+  max-request-bytes: 1048576
+  request-timeout: 30s
+  discover-ttl: 5m
+  resource-ttl: 1m
+  task-ttl: 24h
+  task-poll-interval: 2s
+  upload-ttl: 1h
+  request-rate-per-second: 20
+  request-burst: 40
+  tool-rate-per-second: 10
+  tool-burst: 20
+  max-upload-bytes: 2147483648
+  max-limiter-scopes: 20000
+  # 受控内容链接只能使用可信配置，禁止从客户端 Host Header 派生；远程部署必须改为公开 HTTPS Origin。
+  public-base-url: ${APISERVER_MCP_PUBLIC_BASE_URL}

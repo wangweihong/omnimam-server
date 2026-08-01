@@ -44,6 +44,121 @@ const (
 	ErrOperationBatchExecute
 )
 
+// mcp: spec-v1.9.2 protocol, dispatch, task mapping, and access errors.
+const (
+	// @HTTP 200
+	// @CN MCP 协议版本不受支持。
+	// @EN The requested MCP protocol version is not supported.
+	ErrMCPProtocolVersionUnsupported int = 190200
+	// @HTTP 200
+	// @CN MCP JSON-RPC 请求结构无效。
+	// @EN The MCP JSON-RPC request is invalid.
+	ErrMCPRequestInvalid int = 190201
+	// @HTTP 200
+	// @CN MCP 请求缺少必需的传输 Header。
+	// @EN A required MCP transport header is missing.
+	ErrMCPRequiredHeaderMissing int = 190202
+	// @HTTP 200
+	// @CN MCP Header 与 JSON-RPC Body 不一致。
+	// @EN MCP transport headers do not match the JSON-RPC body.
+	ErrMCPHeaderBodyMismatch int = 190203
+	// @HTTP 200
+	// @CN 当前 MCP 方法不受支持。
+	// @EN The MCP method is not supported.
+	ErrMCPMethodUnsupported int = 190204
+	// @HTTP 200
+	// @CN MCP Tool 名称或 Resource URI 元数据无效。
+	// @EN The MCP tool name or resource URI metadata is invalid.
+	ErrMCPNameInvalid int = 190205
+	// @HTTP 200
+	// @CN 客户端未声明可接受的 MCP 响应媒体类型。
+	// @EN The client did not advertise an acceptable MCP response media type.
+	ErrMCPResponseMediaUnsupported int = 190206
+
+	// @HTTP 200
+	// @CN Tool 不存在或当前主体不可见。
+	// @EN The tool does not exist or is not visible to the current principal.
+	ErrMCPToolNotVisible int = 190400
+	// @HTTP 200
+	// @CN Tool 参数不符合已发布输入 Schema。
+	// @EN Tool arguments do not conform to the published input schema.
+	ErrMCPToolArgumentInvalid int = 190401
+	// @HTTP 200
+	// @CN 下游结果无法转换为 Tool 输出 Schema。
+	// @EN A downstream result cannot be converted to the tool output schema.
+	ErrMCPToolResultInvalid int = 190402
+	// @HTTP 200
+	// @CN Resource URI 格式或类型无效。
+	// @EN The resource URI format or type is invalid.
+	ErrMCPResourceURIInvalid int = 190403
+	// @HTTP 200
+	// @CN Resource 不存在或当前主体不可见。
+	// @EN The resource does not exist or is not visible to the current principal.
+	ErrMCPResourceNotVisible int = 190404
+	// @HTTP 200
+	// @CN 当前 Resource 类型不受支持。
+	// @EN The requested resource type is not supported.
+	ErrMCPResourceTypeUnsupported int = 190405
+	// @HTTP 200
+	// @CN MCP 分页游标无效或已过期。
+	// @EN The MCP pagination cursor is invalid or expired.
+	ErrMCPCursorInvalid int = 190406
+
+	// @HTTP 200
+	// @CN 客户端未为当前请求协商 MCP Tasks 扩展。
+	// @EN The MCP Tasks extension was not negotiated for this request.
+	ErrMCPTaskExtensionNotNegotiated int = 190600
+	// @HTTP 200
+	// @CN MCP Task 不存在或当前主体不可见。
+	// @EN The MCP task does not exist or is not visible to the current principal.
+	ErrMCPTaskNotVisible int = 190601
+	// @HTTP 200
+	// @CN MCP Task 尚未形成完整的 ApplicationRun/AtomicTask 映射。
+	// @EN The MCP task does not have a complete ApplicationRun/AtomicTask binding.
+	ErrMCPTaskBindingUnavailable int = 190602
+	// @HTTP 200
+	// @CN MCP Task 映射已过期，请通过 ApplicationRun 查询事实。
+	// @EN The MCP task binding has expired; query the ApplicationRun instead.
+	ErrMCPTaskBindingExpired int = 190603
+	// @HTTP 200
+	// @CN MCP Task 当前状态不允许请求取消。
+	// @EN The MCP task cannot be canceled in its current state.
+	ErrMCPTaskNotCancellable int = 190604
+	// @HTTP 200
+	// @CN MCP Task 对应的 ApplicationRun 或 AtomicTask 当前不可读取。
+	// @EN The ApplicationRun or AtomicTask backing the MCP task is unavailable.
+	ErrMCPTaskSourceUnavailable int = 190605
+
+	// @HTTP 200
+	// @CN 当前请求缺少有效 Identity JWT。
+	// @EN The request does not contain a valid Identity JWT.
+	ErrMCPAuthenticationRequired int = 190800
+	// @HTTP 200
+	// @CN 当前主体无权使用该 MCP 协议能力。
+	// @EN The current principal is not allowed to use this MCP protocol capability.
+	ErrMCPPermissionDenied int = 190801
+	// @HTTP 200
+	// @CN 请求 Origin 不在允许范围内。
+	// @EN The request Origin is not allowed.
+	ErrMCPOriginRejected int = 190802
+	// @HTTP 200
+	// @CN MCP 请求体或 Header 超过允许上限。
+	// @EN The MCP request body or headers exceed the configured limit.
+	ErrMCPRequestTooLarge int = 190803
+	// @HTTP 200
+	// @CN MCP 请求超过速率或费用限制。
+	// @EN The MCP request exceeds a rate or cost limit.
+	ErrMCPRateLimited int = 190804
+	// @HTTP 200
+	// @CN MCP ApplicationRun 并发超过允许上限。
+	// @EN The MCP ApplicationRun concurrency limit has been reached.
+	ErrMCPConcurrencyLimited int = 190805
+	// @HTTP 200
+	// @CN 安全审计边界当前不可用，受控操作未执行。
+	// @EN The security audit boundary is unavailable and the controlled operation was not executed.
+	ErrMCPAuditUnavailable int = 190806
+)
+
 // notification-center: spec-v1.8.0 business errors.
 const (
 	// @HTTP 200

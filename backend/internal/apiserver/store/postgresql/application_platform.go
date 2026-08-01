@@ -404,6 +404,9 @@ func (s *applicationPlatformStore) ListApplications(ctx context.Context, req *ia
 		if req.RunEnabled != nil {
 			q = q.Where("run_enabled = ?", *req.RunEnabled)
 		}
+		if req.PublishedOnly {
+			q = q.Where("current_version_id IS NOT NULL AND current_version_id <> ''")
+		}
 		return q
 	})
 	total, err := CountAndFindPage(query, req.PagingParams, &items)

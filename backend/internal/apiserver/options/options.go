@@ -2,6 +2,9 @@ package options
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -34,6 +37,7 @@ type Options struct {
 	AuthOptions                *AuthOptions                    `json:"auth"             mapstructure:"auth"`
 	WorkflowRuntimeOptions     *WorkflowRuntimeOptions         `json:"workflow-runtime" mapstructure:"workflow-runtime"`
 	SSEOptions                 *SSEOptions                     `json:"sse" mapstructure:"sse"`
+	MCPOptions                 *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
 }
 
 // AuthOptions 控制用户系统完成前的开发态认证兼容路径。
@@ -42,6 +46,56 @@ type AuthOptions struct {
 }
 
 func NewAuthOptions() *AuthOptions { return &AuthOptions{} }
+
+// MCPOptions 控制已发布 MCP 传输限制、Origin、协议缓存和短期 Task/Upload 映射策略。
+type MCPOptions struct {
+	Enabled          bool          `json:"enabled" mapstructure:"enabled"`
+	AllowedOrigins   []string      `json:"allowed-origins" mapstructure:"allowed-origins"`
+	MaxRequestBytes  int64         `json:"max-request-bytes" mapstructure:"max-request-bytes"`
+	RequestTimeout   time.Duration `json:"request-timeout" mapstructure:"request-timeout"`
+	DiscoverTTL      time.Duration `json:"discover-ttl" mapstructure:"discover-ttl"`
+	ResourceTTL      time.Duration `json:"resource-ttl" mapstructure:"resource-ttl"`
+	TaskTTL          time.Duration `json:"task-ttl" mapstructure:"task-ttl"`
+	TaskPollInterval time.Duration `json:"task-poll-interval" mapstructure:"task-poll-interval"`
+	UploadTTL        time.Duration `json:"upload-ttl" mapstructure:"upload-ttl"`
+	PublicBaseURL    string        `json:"public-base-url" mapstructure:"public-base-url"`
+	RequestRate      int           `json:"request-rate-per-second" mapstructure:"request-rate-per-second"`
+	RequestBurst     int           `json:"request-burst" mapstructure:"request-burst"`
+	ToolRate         int           `json:"tool-rate-per-second" mapstructure:"tool-rate-per-second"`
+	ToolBurst        int           `json:"tool-burst" mapstructure:"tool-burst"`
+	MaxUploadBytes   int64         `json:"max-upload-bytes" mapstructure:"max-upload-bytes"`
+	MaxLimiterScopes int           `json:"max-limiter-scopes" mapstructure:"max-limiter-scopes"`
+}
+
+func NewMCPOptions() *MCPOptions {
+	return &MCPOptions{
+		Enabled: true, MaxRequestBytes: 1 << 20, RequestTimeout: 30 * time.Second,
+		DiscoverTTL: 5 * time.Minute, ResourceTTL: time.Minute, TaskTTL: 24 * time.Hour,
+		TaskPollInterval: 2 * time.Second, UploadTTL: time.Hour,
+		PublicBaseURL: "http://127.0.0.1:8080",
+		RequestRate:   20, RequestBurst: 40, ToolRate: 10, ToolBurst: 20,
+		MaxUploadBytes: 2 << 30, MaxLimiterScopes: 20000,
+	}
+}
+
+func (o *MCPOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.BoolVar(&o.Enabled, "mcp.enabled", o.Enabled, "enable the released MCP POST /mcp endpoint")
+	fs.StringSliceVar(&o.AllowedOrigins, "mcp.allowed-origins", o.AllowedOrigins, "allowed browser origins; same-origin is always accepted")
+	fs.Int64Var(&o.MaxRequestBytes, "mcp.max-request-bytes", o.MaxRequestBytes, "maximum MCP JSON-RPC request body size")
+	fs.DurationVar(&o.RequestTimeout, "mcp.request-timeout", o.RequestTimeout, "timeout for one MCP request")
+	fs.DurationVar(&o.DiscoverTTL, "mcp.discover-ttl", o.DiscoverTTL, "private server discovery cache lifetime")
+	fs.DurationVar(&o.ResourceTTL, "mcp.resource-ttl", o.ResourceTTL, "private Resource projection cache lifetime")
+	fs.DurationVar(&o.TaskTTL, "mcp.task-ttl", o.TaskTTL, "MCP Task Binding lifetime")
+	fs.DurationVar(&o.TaskPollInterval, "mcp.task-poll-interval", o.TaskPollInterval, "suggested MCP Task poll interval")
+	fs.DurationVar(&o.UploadTTL, "mcp.upload-ttl", o.UploadTTL, "reported controlled UploadSession lifetime")
+	fs.StringVar(&o.PublicBaseURL, "mcp.public-base-url", o.PublicBaseURL, "public API base URL used for controlled upload/content links")
+	fs.IntVar(&o.RequestRate, "mcp.request-rate-per-second", o.RequestRate, "per-principal MCP request rate per API instance")
+	fs.IntVar(&o.RequestBurst, "mcp.request-burst", o.RequestBurst, "per-principal MCP request burst per API instance")
+	fs.IntVar(&o.ToolRate, "mcp.tool-rate-per-second", o.ToolRate, "per-principal and Tool call rate per API instance")
+	fs.IntVar(&o.ToolBurst, "mcp.tool-burst", o.ToolBurst, "per-principal and Tool call burst per API instance")
+	fs.Int64Var(&o.MaxUploadBytes, "mcp.max-upload-bytes", o.MaxUploadBytes, "maximum size admitted for one MCP upload session")
+	fs.IntVar(&o.MaxLimiterScopes, "mcp.max-limiter-scopes", o.MaxLimiterScopes, "maximum in-memory MCP limiter scopes per API instance")
+}
 
 // SSEOptions 控制用户事件保留、流式轮询、心跳和单实例连接上限。
 type SSEOptions struct {
@@ -137,6 +191,7 @@ func NewOptions() *Options {
 		AuthOptions:                NewAuthOptions(),
 		WorkflowRuntimeOptions:     NewWorkflowRuntimeOptions(),
 		SSEOptions:                 NewSSEOptions(),
+		MCPOptions:                 NewMCPOptions(),
 	}
 
 	return &s
@@ -156,6 +211,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
 	o.WorkflowRuntimeOptions.AddFlags(fss.FlagSet("workflow runtime"))
 	o.SSEOptions.AddFlags(fss.FlagSet("sse"))
+	o.MCPOptions.AddFlags(fss.FlagSet("mcp"))
 	fs := fss.FlagSet("authentication")
 	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
 		"allow anonymous development authentication for unfinished user management")
@@ -198,8 +254,51 @@ func (o *Options) Complete() error {
 	if o.SSEOptions == nil {
 		o.SSEOptions = NewSSEOptions()
 	}
+	if o.MCPOptions == nil {
+		o.MCPOptions = NewMCPOptions()
+	}
+	if o.MCPOptions.MaxRequestBytes < 1024 || o.MCPOptions.MaxRequestBytes > 16<<20 ||
+		o.MCPOptions.RequestTimeout <= 0 || o.MCPOptions.DiscoverTTL <= 0 || o.MCPOptions.ResourceTTL <= 0 ||
+		o.MCPOptions.DiscoverTTL > time.Hour || o.MCPOptions.ResourceTTL > 5*time.Minute ||
+		o.MCPOptions.TaskTTL <= 0 || o.MCPOptions.TaskPollInterval < 100*time.Millisecond || o.MCPOptions.UploadTTL <= 0 ||
+		o.MCPOptions.RequestRate < 1 || o.MCPOptions.RequestBurst < 1 || o.MCPOptions.ToolRate < 1 ||
+		o.MCPOptions.ToolBurst < 1 || o.MCPOptions.MaxUploadBytes < 1 || o.MCPOptions.MaxLimiterScopes < 1 {
+		return fmt.Errorf("MCP limits, timeout, cache TTLs, task TTL, poll interval, and upload TTL are invalid")
+	}
+	publicBaseURL, err := normalizeMCPBaseURL(o.MCPOptions.PublicBaseURL)
+	if err != nil {
+		return err
+	}
+	o.MCPOptions.PublicBaseURL = publicBaseURL
+	for index, origin := range o.MCPOptions.AllowedOrigins {
+		normalized, err := normalizeMCPBaseURL(origin)
+		if err != nil {
+			return fmt.Errorf("invalid MCP allowed origin: %w", err)
+		}
+		o.MCPOptions.AllowedOrigins[index] = normalized
+	}
 	if o.SSEOptions.Retention <= 0 || o.SSEOptions.PollInterval <= 0 || o.SSEOptions.HeartbeatInterval <= 0 || o.SSEOptions.MaxConnectionsPerUser <= 0 {
 		return fmt.Errorf("SSE retention, intervals, and connection limit must be positive")
 	}
 	return nil
+}
+
+func normalizeMCPBaseURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("MCP public base URL and allowed origins must be absolute HTTP origins")
+	}
+	if parsed.Scheme == "http" && !isLocalMCPHost(parsed.Hostname()) {
+		return "", fmt.Errorf("remote MCP public base URL and allowed origins must use HTTPS")
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func isLocalMCPHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

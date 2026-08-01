@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 5c66c724fa57e9107bfdea0244bc41beff9ed4ed
-contract_version: spec-v1.9.1
+commit: 32ae994256beb84a59e2e5c9fcc00c2f6d029756
+contract_version: spec-v1.9.2
 updated_at: 2026-08-01
 status: released
-note: Provider capabilities are adapter-local const YAML with strict input and compatible output validation.
+note: MCP 2026-07-28 protocol contracts for POST /mcp, fixed tools/resources, and task projection.

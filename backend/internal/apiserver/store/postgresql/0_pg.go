@@ -88,6 +88,37 @@ SET logs_ref = 'task-attempt-log:' || id
 WHERE COALESCE(logs_ref, '') = '' AND id <> '';
 `
 
+const mcpTaskBindingConstraintsSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_binding_principal_run
+ON mcp_task_bindings(principal_id, application_run_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_task_bindings_expiry
+ON mcp_task_bindings(expires_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_task_bindings_principal_access
+ON mcp_task_bindings(principal_id, last_accessed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_task_bindings_atomic_task
+ON mcp_task_bindings(atomic_task_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_mcp_task_binding_ids') THEN
+    ALTER TABLE mcp_task_bindings ADD CONSTRAINT chk_mcp_task_binding_ids CHECK (
+      btrim(mcp_task_id) <> '' AND btrim(principal_id) <> '' AND
+      btrim(application_run_id) <> '' AND btrim(atomic_task_id) <> ''
+    );
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_mcp_task_binding_extension') THEN
+    ALTER TABLE mcp_task_bindings ADD CONSTRAINT chk_mcp_task_binding_extension
+      CHECK (extension_id = 'io.modelcontextprotocol/tasks');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_mcp_task_binding_expiry') THEN
+    ALTER TABLE mcp_task_bindings ADD CONSTRAINT chk_mcp_task_binding_expiry
+      CHECK (expires_at > created_at);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_mcp_task_binding_resource_version') THEN
+    ALTER TABLE mcp_task_bindings ADD CONSTRAINT chk_mcp_task_binding_resource_version
+      CHECK (resource_version >= 0);
+  END IF;
+END $$;
+`
+
 const taskCenterDAGObservabilityMigrationSQL = `
 UPDATE atomic_tasks
 SET dag_node_key = child_key
@@ -437,7 +468,14 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureNotificationCenterScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureMCPScheme(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (ds *datastore) ensureMCPScheme() error {
+	return ds.db.Exec(mcpTaskBindingConstraintsSQL).Error
 }
 
 func (ds *datastore) ensureAssetLibraryScheme() error {
@@ -612,6 +650,10 @@ func (ds *datastore) NotificationRetention() store.NotificationRetentionStore {
 
 func (ds *datastore) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return newApplicationPlatform(ds)
+}
+
+func (ds *datastore) MCPTaskBindings() store.MCPTaskBindingStore {
+	return newMCPTaskBindingStore(ds)
 }
 
 func (ds *datastore) FeatureFlags() store.FeatureFlagStore {

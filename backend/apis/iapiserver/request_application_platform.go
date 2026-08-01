@@ -43,6 +43,8 @@ type ApplicationListRequest struct {
 	RunEnabled             *bool  `form:"run_enabled"`
 	OwnerUserID            string `form:"-"`
 	IncludeGlobal          bool   `form:"-"`
+	// PublishedOnly 是受控内部读取条件；REST 入参不能设置，用于 MCP 等消费方排除无发布版本应用。
+	PublishedOnly bool `form:"-" json:"-"`
 }
 type ApplicationVersionListRequest struct {
 	imachinery.BasicQueryParam

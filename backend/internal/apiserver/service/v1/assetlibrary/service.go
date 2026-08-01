@@ -45,6 +45,8 @@ type Service interface {
 	CreateUploads(context.Context, *iapiserver.CreateAssetUploadsRequest) (*iapiserver.CreateAssetUploadsResponse, error)
 	UploadContent(context.Context, string, int, string, string, io.Reader) (*iapiserver.AssetUploadSession, error)
 	CompleteUpload(context.Context, string, *iapiserver.CompleteAssetUploadRequest) (*iapiserver.CompleteAssetUploadResponse, error)
+	// CompleteUploadSession 供受控协议适配器按服务端会话事实完成单文件上传，不接收客户端伪造 checksum/parts。
+	CompleteUploadSession(context.Context, string, string) (*iapiserver.CompleteAssetUploadResponse, error)
 	CancelUpload(context.Context, string) (*iapiserver.AssetUploadSession, error)
 	GetBlob(context.Context, string) (*iapiserver.AssetBlobDetail, error)
 	ListStorageBackends(context.Context, *iapiserver.StorageBackendListRequest) (*iapiserver.StorageBackendListResponse, error)
@@ -458,6 +460,26 @@ func (s *service) CompleteUpload(ctx context.Context, id string, req *iapiserver
 	}
 	result, err := s.store.CompleteAssetUploadWithPlan(ctx, owner, id, req, content, s.representationPlan(mediaTypeFromUpload(upload), upload.ProfileVersion))
 	return result, mapUploadError(err)
+}
+
+// CompleteUploadSession 从当前主体可见的 UploadSession 派生 checksum 和已接收分片，再复用正式完成路径。
+func (s *service) CompleteUploadSession(
+	ctx context.Context,
+	id string,
+	idempotencyKey string,
+) (*iapiserver.CompleteAssetUploadResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	upload, err := s.store.GetAssetUpload(ctx, owner, id)
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAssetUploadNotFoundOrNotVisible)
+	}
+	// UploadSession ID 是 Asset Library 的完成幂等身份；调用键由协议边界校验并显式传入，但不创建第二套幂等表。
+	_ = idempotencyKey
+	parts := append([]iapiserver.UploadedPart(nil), upload.UploadedParts...)
+	return s.CompleteUpload(ctx, id, &iapiserver.CompleteAssetUploadRequest{SHA256: upload.SHA256, Parts: parts})
 }
 func (s *service) CancelUpload(ctx context.Context, id string) (*iapiserver.AssetUploadSession, error) {
 	owner, err := currentUserID(ctx)

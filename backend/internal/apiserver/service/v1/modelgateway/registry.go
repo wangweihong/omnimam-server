@@ -2,6 +2,7 @@ package modelgateway
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"sort"
@@ -212,6 +213,25 @@ func (r *RuntimeRegistry) Capability(id string) (*iapiserver.CapabilityDefinitio
 	copyItem.InputMediaTypes = append([]string(nil), item.InputMediaTypes...)
 	copyItem.OutputMediaTypes = append([]string(nil), item.OutputMediaTypes...)
 	return &copyItem, true
+}
+
+// CapabilityDefinitions 返回按 ID 排序的公共能力定义快照，供 MCP 等受控只读消费方使用。
+func (r *RuntimeRegistry) CapabilityDefinitions() []*iapiserver.CapabilityDefinition {
+	ids := make([]string, 0, len(r.capabilities))
+	for id := range r.capabilities {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make([]*iapiserver.CapabilityDefinition, 0, len(ids))
+	for _, id := range ids {
+		item := r.capabilities[id]
+		copyItem := item
+		copyItem.NameI18n = maps.Clone(item.NameI18n)
+		copyItem.InputMediaTypes = append([]string(nil), item.InputMediaTypes...)
+		copyItem.OutputMediaTypes = append([]string(nil), item.OutputMediaTypes...)
+		result = append(result, &copyItem)
+	}
+	return result
 }
 
 func (r *RuntimeRegistry) operationExecutor(engineTypeID, capabilityID string) (iapiserver.OperationExecutorDefinition, bool) {

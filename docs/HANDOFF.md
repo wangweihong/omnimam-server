@@ -2,164 +2,201 @@
 
 ## Current goal and status
 
-Replace direct Go ProviderCapability values with strict adapter-local const
-YAML manifests, complete the registered providers' stable non-streaming
-schemas, and enforce input/output validation consistently in API Server and
-TaskWorker.
+Fix API Server startup failure:
+`MCP public base URL and allowed origins must be absolute HTTP origins`.
 
-Status: implementation and scoped verification complete. `spec-v1.9.1` is
-released and pinned at `5c66c724fa57e9107bfdea0244bc41beff9ed4ed`.
-Provider/protocol/transport separation and registry ownership consolidation in
-`modelgateway` are complete; runtime IDs and external behavior remain unchanged.
+Status: MCP implementation and startup fix complete, verified locally, and
+committed as one cohesive change. The repository and clean
+`ssot/` submodule are pinned to released tag `spec-v1.9.2` commit
+`32ae994256beb84a59e2e5c9fcc00c2f6d029756`, matching `SSOT_VERSION`.
+
+Full SSOT completion is still gated by upstream facts absent from this server:
+a shared quota/cost service and durable Identity role-permission/audit
+boundaries. Consumer-owned MCP interfaces exist, but the production composition
+currently uses bounded local admission and structured logging adapters.
 
 ## Work completed in this session
 
-- Revalidated the current `spec-v1.9.1` pin and loaded the backend/spec rules.
-- Confirmed the independent spec checkout is dirty and selected the clean
-  `/home/wwhvw/codespace/omnimam-spec-provider-static` worktree instead.
-- Confirmed current gaps: permissive schemas for OpenAI/xAI/Google, no complete
-  JSON Schema enforcement, and stale image packaging of the deleted directory.
-- Released `spec-v1.9.1` from the isolated spec worktree and updated the server
-  submodule/`SSOT_VERSION` pin.
-- Added strict multi-document YAML parsing, Draft 2020-12 schema compilation,
-  named validator resolution, and input/output validation methods.
-- Migrated ComfyUI, DeepSeek, Google, ModelArk, Ollama, OpenAI, RunningHub, and
-  xAI capability facts into one adapter-local `capability.go` per provider;
-  DeepSeek now owns a distinct provider package while reusing wire helpers.
-- Integrated strict input validation before API persistence and Worker calls,
-  compatible output validation after values normalization, and error 130831.
-- Closed schema fallback gaps found during verification: fixed catalog providers
-  now require an exact operation/model variant, while dynamic Ollama operations
-  retain operation-level fallback; successful provider execution must return a
-  normalized `values` object before output schema validation.
-- Added Ollama `/api/tags` discovery, transient RuntimeForm variants, and the
-  `ollama.model-installed` execution-time validator.
-- Removed all backend image packaging of an external provider-capabilities
-  directory and updated the capability registry architecture guide.
-- Separated implementation ownership into `adapters/providers`,
-  `adapters/protocols`, and `adapters/transports`; DeepSeek/OpenAI provider
-  packages now bind themselves to the neutral `openaicompat` protocol package,
-  xAI reuses that protocol without importing the OpenAI provider, and generic
-  authenticated JSON calls live in `transports/httpjson`.
-- Added a package-ownership regression test for the OpenAI-compatible provider
-  mappings and documented the one-way dependency rules.
-- Moved RuntimeRegistry, ProviderCapabilityRegistry, manifest parsing, schema
-  compilation/validation, and their tests into the `modelgateway` root package;
-  removed the standalone `internal/apiserver/applicationplatform` package and
-  renamed adapter aggregation to `adapters/bootstrap.go`.
+- Re-read repository/backend rules, `skills/omnimam-server-backend/SKILL.md`,
+  and applicable Go troubleshooting, safety, viper/cobra, and testing skills.
+- Re-ran the MCP-focused race/unit tests, API Server integration package tests,
+  both binary builds, Compose rendering, and patch-format checks immediately
+  before committing the complete MCP change set.
+- Confirmed `git submodule status ssot` reports
+  `32ae994256beb84a59e2e5c9fcc00c2f6d029756 ssot (spec-v1.9.2)` and
+  `SSOT_VERSION.commit` matches with `status: released`.
+- Root-caused the startup failure to `deployments/docker-compose.yaml`:
+  `/tmp/apiserver.yaml` was rendered without setting or replacing
+  `APISERVER_MCP_PUBLIC_BASE_URL`, leaving the literal placeholder in
+  `mcp.public-base-url`.
+- Added `APISERVER_MCP_PUBLIC_BASE_URL` to the API Server compose environment
+  and render substitution list. The default is
+  `http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}`, with
+  `OMNIMAM_MCP_PUBLIC_BASE_URL` available for explicit production HTTPS
+  origins.
+- Re-read repository/backend rules, the MCP backend skill, and applicable Go
+  security, safety, testing, concurrency, context, and database guidance.
+- Revalidated the SSOT release gate and preserved the existing dirty MCP work.
+- Hardened extensible `_meta` decoding while rejecting null known objects.
+- Enforced HTTPS for every non-loopback proxy endpoint, public link Origin, and
+  allowed browser Origin; redirect following remains disabled.
+- Added bounded per-Principal request and per-Principal/Tool token buckets plus
+  pre-create single-upload size admission.
+- Added startup and hourly physical cleanup of expired `McpTaskBinding` rows.
+- Completed audit correlation for Resource URI, MCP Task/ApplicationRun IDs,
+  and Tool business failures; sanitized log fields remain token/payload-free.
+- Preserved released MCP business errors inside Tool `isError=true` results
+  and mapped unknown internal source failures to
+  `ERR_MCP_TOOL_RESULT_INVALID` without returning internal descriptions.
+- Tightened published Tool output schemas for nested AtomicTask,
+  Representation, error causes, and controlled upload URL shape; added a
+  regression test rejecting undeclared nested projection fields.
+- Added the Chinese MCP operator/security guide.
+- Regenerated error code code/docs and API deepcopy code.
 
 ## Current in-progress work
 
-- None for provider capability, adapter package separation, or registry
-  ownership. The worktree is ready for final review and commit.
+No implementation command is currently running. The MCP implementation,
+compose startup fix, and requested commit are complete.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `SSOT_VERSION`, `ssot`, API metadata/error/generated targets,
-  registry/bootstrap/provider registration code and tests, and handoff.
-- Added: shared manifest/schema validation code and provider `capability.go`
-  files; added the DeepSeek provider registration package.
-- Moved: provider directories under
-  `backend/internal/apiserver/service/v1/modelgateway/adapters/providers/`;
-  shared OpenAI-compatible code to `adapters/protocols/openaicompat/`; generic
-  HTTP JSON transport to `adapters/transports/httpjson/`.
-- Moved: `internal/apiserver/applicationplatform/{registry,manifest,
-  capability_validation}*` into
-  `internal/apiserver/service/v1/modelgateway/`; no compatibility package or
-  legacy empty asset directory remains.
+Added:
+
+- `backend/apis/iapiserver/meta_mcp.go`
+- `backend/cmd/omnimam-mcp-proxy/main.go`
+- `backend/internal/apiserver/controller/v1/mcp/controller.go`
+- `backend/internal/apiserver/service/v1/mcp/{admission,cursor,errors,projection,projection_service,resources,service,tasks,tools}.go`
+- `backend/internal/apiserver/store/mcp.go`
+- `backend/internal/apiserver/store/postgresql/mcp.go`
+- `backend/pkg/mcp/{arguments,catalog,processor,types,validation}.go`
+- `backend/pkg/mcp/{output_contract,processor}_test.go`
+- `backend/pkg/mcpproxy/{proxy,proxy_test}.go`
+- `docs/guide/zh-CN/architecture/mcp-server.md`
+
+Modified:
+
+- `SSOT_VERSION` and the `ssot` gitlink
+- `deployments/docker-compose.yaml`
+- `backend/apis/iapiserver/deepcopy_generated.go`
+- `backend/apis/iapiserver/request_application_platform.go`
+- `backend/internal/apiserver/middleware/authentication.go`
+- `backend/internal/apiserver/options/options.go`
+- `backend/internal/apiserver/{route,server}.go`
+- `backend/internal/apiserver/service/v1/assetlibrary/service.go`
+- `backend/internal/apiserver/service/v1/modelgateway/registry.go`
+- `backend/internal/apiserver/service/v1/platform/service.go`
+- `backend/internal/apiserver/store/postgresql/{0_pg,application_platform}.go`
+- `backend/internal/pkg/code/{base,code_generated}.go`
+- `configs/apiserver.yaml`
+- `docs/guide/zh-CN/api/error_code_generated.md`
+- `scripts/install/environment.sh`
+- `docs/HANDOFF.md`
+
+Renamed or removed: none.
 
 ## Key architectural or design decisions
 
-- YAML is an immutable Go const owned by each provider adapter; no disk,
-  directory, environment, database, import API, reload, or runtime override.
-- YAML owns ProviderCapability facts only. EngineType, Adapter, Executor, and
-  validator implementations remain explicit Go registrations.
-- Inputs are strict; outputs validate required structure while allowing new
-  upstream fields. Streaming remains unsupported.
-- Package ownership is explicit: `adapters/providers/<provider>` owns provider
-  facts and provider-specific behavior; `adapters/protocols/openaicompat` owns
-  reusable OpenAI-compatible wire behavior; `adapters/transports/httpjson` owns
-  generic authenticated JSON HTTP transport. Bootstrap consumes provider
-  constructors and does not select a provider's wire protocol directly.
-- Runtime registry, provider capability manifest parsing, and schema validation
-  belong to the `modelgateway` root package; no standalone
-  `internal/apiserver/applicationplatform` package remains after migration.
+- MCP HTTP is installed in the existing stateless API Server; the separately
+  requested stdio binary only translates newline-delimited stdio to HTTP.
+- MCP consumes source domains through consumer-owned interfaces and owns only
+  `McpTaskBinding`; it never reads their private tables.
+- Tool business failures use `isError=true`; protocol/Resource/Task failures
+  use JSON-RPC errors. Successful structured Tool output is validated against
+  compiled Draft 2020-12 schemas before response.
+- Credential-bearing links use normalized configured origins, never the
+  request `Host` header. Remote HTTP is rejected.
+- Identity JWT parsing and object visibility reuse existing boundaries.
+  `Authorizer`, `Auditor`, and `AdmissionController` remain injectable so
+  future shared services do not require Tool/service rewrites.
 
 ## API, schema, dependency, or configuration changes
 
-- Released S2 adds operation-level input/output schemas and provider response
-  validation error `130831`; no database migration is planned.
+- SSOT pin changed from released `spec-v1.9.1` to released
+  `spec-v1.9.2`.
+- Added `POST /mcp` and fixed 11 Tools, 6 Resource templates, and Tasks
+  extension handling.
+- Added runtime `mcp_task_bindings` creation/constraints/indexes matching the
+  released design schema; no additional MCP table or domain event was added.
+- Added `mcp` API Server flags/YAML configuration and
+  `APISERVER_MCP_PUBLIC_BASE_URL`.
+- Added the explicitly requested `omnimam-mcp-proxy` binary.
+- No new Go module dependency was introduced by this session.
 
 ## Verification performed and remaining checks
 
-- Passed current SSOT pin/release consistency and worktree isolation checks.
-- Passed: manifest/registry, adapter, Ollama discovery/model validation, and
-  ApplicationRun input/output execution tests.
-- Re-ran focused application-platform, provider adapter, and TaskWorker package
-  tests successfully; `git diff --check` also passed.
-- Regenerated error-code and deepcopy artifacts successfully; generated diffs
-  are limited to error 130831 and the new operation schema fields.
-- Focused golangci-lint, `make build`, and `go vet ./backend/...` passed.
-- Capability-focused `go test -race` passed for registry, application service,
-  all provider adapters, and TaskWorker.
-- Re-ran focused tests and race after the package separation for all provider,
-  protocol, transport, Application Platform, API Server bootstrap, and
-  TaskWorker packages; scoped golangci-lint, backend vet, and all three binary
-  builds passed.
-- Re-ran focused tests and race after consolidating Registry, manifest, and
-  schema validation into `modelgateway`; modelgateway/adapters,
-  Application Platform, API Server bootstrap, and TaskWorker all passed.
-  Scoped golangci-lint, `go vet ./backend/...`, and all three binary builds also
-  passed with the old package path and alias absent.
-- API Server and TaskWorker images built successfully, and both images were
-  verified not to contain `/opt/omnimam/provider-capabilities`.
-- Rebuilt API Server and TaskWorker images after the package separation and
-  repeated the image layout check. Existing compose containers were not
-  replaced because this refactor does not change runtime behavior.
-- Rebuilt and layout-checked both images again after Registry ownership
-  consolidation; existing compose containers remain untouched.
-- Live smoke against the already-running provider-validation deployment passed:
-  `/healthz` returned OK and the capability endpoint returned all 9 registered
-  capabilities with input/output schemas on every catalog operation. No
-  capability bootstrap fatal/panic appeared in API Server or TaskWorker logs.
-- Full `make test` runs all packages but currently fails only in pre-existing
-  task-name localization expectations (`thumbnail视图` versus
-  `thumbnail 表现形式`) in taskname/taskcenter; capability-focused packages
-  pass in the same run.
-- Final stale directory search, generated diff review, SSOT pin check,
-  formatting check, and `git diff --check` passed.
+Passed:
+
+- Manual render of `configs/apiserver.yaml` with the compose substitution list
+  now produces `mcp.public-base-url: http://127.0.0.1:8080`.
+- `docker compose -f deployments/docker-compose.yaml config`
+- Confirmed compose-expanded environment contains
+  `APISERVER_MCP_PUBLIC_BASE_URL: http://127.0.0.1:8080`.
+- `go test ./backend/internal/apiserver/options`
+- `go build ./backend/cmd/apiserver` (removed generated root `apiserver`
+  binary afterward).
+- Rendered a temporary API Server config and ran
+  `timeout 8s go run ./backend/cmd/apiserver -c <temp config>`; the previous
+  MCP origin error did not recur, `POST /mcp` was registered, and `/healthz`
+  became healthy before timeout stopped the server.
+- `make gen`
+- `make gen.deepcopy` (completed with existing unsupported-alias warnings)
+- focused MCP protocol/proxy/controller/service/PostgreSQL tests
+- `go test -race ./backend/pkg/mcp ./backend/pkg/mcpproxy`
+- scoped `go vet`
+- API Server and stdio proxy builds
+- `git diff --check` and changed-Go-file `gofmt` check
+- live API Server health, missing/invalid JWT business error, illegal Origin
+  HTTP 403, and stdio request-ID/one-line JSON-RPC smoke tests
+
+Repository baselines:
+
+- `go test ./backend/...` reaches all packages and fails only the existing
+  task-name localization expectations: `thumbnail视图` versus
+  `thumbnail 表现形式` in taskcenter/taskname tests.
+- `make lint` fails only existing `cancelled` misspell findings in
+  `backend/internal/apiserver/store/postgresql/asset_upload_contract.go`.
+
+Remaining checks:
+
+- Run a successful authenticated live `server/discover` and one read-only
+  Tool after a real Identity user/JWT fixture is available. The current dev
+  database contained no persisted users, so smoke testing stopped at the
+  authentication boundary without creating test identity data.
+- Re-run focused checks after any quota or Identity adapter is added.
 
 ## Outstanding tasks
 
-- No provider capability, adapter package-separation, or Registry ownership
-  task remains.
-- Fix the unrelated repository-wide lint/test/vet baselines only under a
-  separate scope.
+1. Supply or explicitly defer SSOT-aligned shared facts/adapters for concurrent
+   ApplicationRun, daily runs, cost ceiling, and total storage quota. Current
+   local admission covers request rate, Tool rate, and single-upload bytes.
+2. Supply or explicitly defer durable Identity role-permission, token
+   revocation, and audit-write boundaries. Current defaults authenticate each
+   request, reuse source object visibility, recognize released permissions, and
+   emit sanitized structured audit logs.
+3. Perform authenticated success-path live smoke testing once Identity data is
+   available.
 
 ## Known issues and risks
 
-- The independent `/home/wwhvw/codespace/omnimam-spec` checkout has unrelated
-  changes and must not be modified.
-- `make verify` currently reaches lint but the repository-wide misspell linter
-  also fails on pre-existing `cancelled` status literals in
-  `backend/internal/apiserver/store/postgresql/asset_upload_contract.go`; that
-  unrelated asset contract has not been changed in this task. RunningHub's
-  upstream-compatible `cancelled` response spelling now has a focused,
-  justified `nolint:misspell` directive.
-- Repository-wide `go vet ./...` also reports the pre-existing
-  `tools/deepcopy-gen/generators/deepcopy.go:120: append with no values`; scoped
-  `go vet ./backend/...` passes.
-- `make test` is blocked by pre-existing task-name localization failures in
-  `backend/internal/apiserver/taskname` and the dependent task-center test;
-  provider capability packages pass.
-- Provider documentation breadth is large; every declared field must remain
-  tied to an executable non-streaming path and a cited checked source.
+- The released S1 quota ordering requires idempotency before quota admission.
+  Application Platform owns idempotency, but exposes no read-only preflight
+  boundary; MCP must not inspect its private store or invent a second table.
+- Shared cost and total-storage facts have no current consumer contract.
+- Identity S2 has no durable role-permission or audit persistence contract in
+  this repository. The default adapters are intentionally replaceable and
+  should not be mistaken for those missing facts.
+- The stdio binary is under `backend/cmd/`; prior explicit MCP Server work was
+  treated as permission to add this required binary.
+- The live smoke server used the normal development PostgreSQL schema bootstrap
+  and was stopped afterward. Its temporary copied configuration was moved to
+  the system trash and is recoverable until trash cleanup.
 
 ## Exact recommended next step
 
-Review `git diff --find-renames`, then stage and commit the provider capability,
-adapter package separation, and modelgateway Registry consolidation without
-including unrelated baseline fixes.
+Run a successful authenticated live `server/discover` and one read-only Tool
+when an Identity user/JWT fixture is available. Then address or explicitly
+defer the remaining shared quota and durable Identity adapter gaps.
 
 Next Prompt:
 

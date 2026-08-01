@@ -35,7 +35,7 @@ func Authentication(authOptions *options.AuthOptions, mode string, userStore sto
 				return
 			}
 		}
-		setUserContext(c, user)
+		SetUserContext(c, user)
 		c.Next()
 	}
 }
@@ -47,7 +47,12 @@ func resolveUser(c *gin.Context, userStore store.UserStore) (*iapiserver.User, e
 			raw = "Bearer " + token
 		}
 	}
-	if raw == "" {
+	return ResolveBearerUser(c.Request.Context(), raw, userStore)
+}
+
+// ResolveBearerUser consumes the existing Identity Bearer JWT boundary without accepting connection-scoped identity.
+func ResolveBearerUser(ctx context.Context, raw string, userStore store.UserStore) (*iapiserver.User, error) {
+	if strings.TrimSpace(raw) == "" {
 		return nil, errors.NewStatus(code.ErrMissingHeader, "authentication credentials are required")
 	}
 	parts := strings.Fields(raw)
@@ -61,7 +66,7 @@ func resolveUser(c *gin.Context, userStore store.UserStore) (*iapiserver.User, e
 	if userStore == nil {
 		return nil, errors.NewStatus(code.ErrTokenInvalid, "user store is not configured")
 	}
-	user, err := userStore.Get(c.Request.Context(), claims.UserUUID)
+	user, err := userStore.Get(ctx, claims.UserUUID)
 	if err != nil || user == nil || user.ID == "" {
 		return nil, errors.NewStatus(code.ErrTokenInvalid, "authenticated user was not found")
 	}
@@ -76,7 +81,8 @@ func isMissingCredentials(c *gin.Context) bool {
 	return err != nil
 }
 
-func setUserContext(c *gin.Context, user *iapiserver.User) {
+// SetUserContext injects an already verified Identity user into Gin and request contexts.
+func SetUserContext(c *gin.Context, user *iapiserver.User) {
 	c.Set(iapiserver.GinContextKeyUser, user)
 	ctx := context.WithValue(c.Request.Context(), iapiserver.GinContextKeyUser, user)
 	c.Request = c.Request.WithContext(ctx)

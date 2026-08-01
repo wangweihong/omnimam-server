@@ -29,6 +29,33 @@
 | ErrTokenInvalid | 100005 | 401 | Token invalid. | 令牌无效 |
 | ErrPageNotFound | 100006 | 404 | Page not found. | 请求路由不存在 |
 | ErrOperationBatchExecute | 100007 | 200 | Operation batch execute. | 批量执行操作 |
+| ErrMCPProtocolVersionUnsupported | 190200 | 200 | The requested MCP protocol version is not supported. | MCP 协议版本不受支持。 |
+| ErrMCPRequestInvalid | 190201 | 200 | The MCP JSON-RPC request is invalid. | MCP JSON-RPC 请求结构无效。 |
+| ErrMCPRequiredHeaderMissing | 190202 | 200 | A required MCP transport header is missing. | MCP 请求缺少必需的传输 Header。 |
+| ErrMCPHeaderBodyMismatch | 190203 | 200 | MCP transport headers do not match the JSON-RPC body. | MCP Header 与 JSON-RPC Body 不一致。 |
+| ErrMCPMethodUnsupported | 190204 | 200 | The MCP method is not supported. | 当前 MCP 方法不受支持。 |
+| ErrMCPNameInvalid | 190205 | 200 | The MCP tool name or resource URI metadata is invalid. | MCP Tool 名称或 Resource URI 元数据无效。 |
+| ErrMCPResponseMediaUnsupported | 190206 | 200 | The client did not advertise an acceptable MCP response media type. | 客户端未声明可接受的 MCP 响应媒体类型。 |
+| ErrMCPToolNotVisible | 190400 | 200 | The tool does not exist or is not visible to the current principal. | Tool 不存在或当前主体不可见。 |
+| ErrMCPToolArgumentInvalid | 190401 | 200 | Tool arguments do not conform to the published input schema. | Tool 参数不符合已发布输入 Schema。 |
+| ErrMCPToolResultInvalid | 190402 | 200 | A downstream result cannot be converted to the tool output schema. | 下游结果无法转换为 Tool 输出 Schema。 |
+| ErrMCPResourceURIInvalid | 190403 | 200 | The resource URI format or type is invalid. | Resource URI 格式或类型无效。 |
+| ErrMCPResourceNotVisible | 190404 | 200 | The resource does not exist or is not visible to the current principal. | Resource 不存在或当前主体不可见。 |
+| ErrMCPResourceTypeUnsupported | 190405 | 200 | The requested resource type is not supported. | 当前 Resource 类型不受支持。 |
+| ErrMCPCursorInvalid | 190406 | 200 | The MCP pagination cursor is invalid or expired. | MCP 分页游标无效或已过期。 |
+| ErrMCPTaskExtensionNotNegotiated | 190600 | 200 | The MCP Tasks extension was not negotiated for this request. | 客户端未为当前请求协商 MCP Tasks 扩展。 |
+| ErrMCPTaskNotVisible | 190601 | 200 | The MCP task does not exist or is not visible to the current principal. | MCP Task 不存在或当前主体不可见。 |
+| ErrMCPTaskBindingUnavailable | 190602 | 200 | The MCP task does not have a complete ApplicationRun/AtomicTask binding. | MCP Task 尚未形成完整的 ApplicationRun/AtomicTask 映射。 |
+| ErrMCPTaskBindingExpired | 190603 | 200 | The MCP task binding has expired; query the ApplicationRun instead. | MCP Task 映射已过期，请通过 ApplicationRun 查询事实。 |
+| ErrMCPTaskNotCancellable | 190604 | 200 | The MCP task cannot be canceled in its current state. | MCP Task 当前状态不允许请求取消。 |
+| ErrMCPTaskSourceUnavailable | 190605 | 200 | The ApplicationRun or AtomicTask backing the MCP task is unavailable. | MCP Task 对应的 ApplicationRun 或 AtomicTask 当前不可读取。 |
+| ErrMCPAuthenticationRequired | 190800 | 200 | The request does not contain a valid Identity JWT. | 当前请求缺少有效 Identity JWT。 |
+| ErrMCPPermissionDenied | 190801 | 200 | The current principal is not allowed to use this MCP protocol capability. | 当前主体无权使用该 MCP 协议能力。 |
+| ErrMCPOriginRejected | 190802 | 200 | The request Origin is not allowed. | 请求 Origin 不在允许范围内。 |
+| ErrMCPRequestTooLarge | 190803 | 200 | The MCP request body or headers exceed the configured limit. | MCP 请求体或 Header 超过允许上限。 |
+| ErrMCPRateLimited | 190804 | 200 | The MCP request exceeds a rate or cost limit. | MCP 请求超过速率或费用限制。 |
+| ErrMCPConcurrencyLimited | 190805 | 200 | The MCP ApplicationRun concurrency limit has been reached. | MCP ApplicationRun 并发超过允许上限。 |
+| ErrMCPAuditUnavailable | 190806 | 200 | The security audit boundary is unavailable and the controlled operation was not executed. | 安全审计边界当前不可用，受控操作未执行。 |
 | ErrNotificationNotVisible | 180200 | 200 | The notification does not exist or is not visible to the current user. | 通知不存在或不属于当前用户。 |
 | ErrNotificationStateConflict | 180201 | 200 | The current notification state does not allow this inbox action. | 当前通知状态不允许执行该收件箱操作。 |
 | ErrNotificationBatchInvalid | 180202 | 200 | A batch notification request must contain 1 to 200 unique notification identifiers. | 批量通知请求必须包含 1 至 200 个唯一通知标识。 |
