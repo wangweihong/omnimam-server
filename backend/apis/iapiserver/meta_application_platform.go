@@ -120,8 +120,8 @@ type ProviderLifecycle struct {
 type ProviderCapabilityModel struct {
 	ID                  string            `json:"id" yaml:"id"`
 	ProviderModelID     string            `json:"provider_model_id" yaml:"provider_model_id"`
-	DisplayNameI18n     map[string]string `json:"display_name_i18n"`
-	DescriptionI18n     map[string]string `json:"description_i18n"`
+	DisplayNameI18n     map[string]string `json:"display_name_i18n" yaml:"display_name_i18n"`
+	DescriptionI18n     map[string]string `json:"description_i18n" yaml:"description_i18n"`
 	Family              string            `json:"family" yaml:"family"`
 	Variant             string            `json:"variant" yaml:"variant"`
 	Lifecycle           ProviderLifecycle `json:"lifecycle" yaml:"lifecycle"`
@@ -134,11 +134,15 @@ type ProviderCapabilityModel struct {
 type ProviderCapabilityOperation struct {
 	ID                     string            `json:"id" yaml:"id"`
 	CapabilityDefinitionID string            `json:"capability_definition_id" yaml:"capability_definition_id"`
-	NameI18n               map[string]string `json:"name_i18n"`
-	DescriptionI18n        map[string]string `json:"description_i18n"`
+	NameI18n               map[string]string `json:"name_i18n" yaml:"name_i18n"`
+	DescriptionI18n        map[string]string `json:"description_i18n" yaml:"description_i18n"`
 	ExecutionMode          string            `json:"execution_mode" yaml:"execution_mode"`
 	InputMediaTypes        []string          `json:"input_media_types" yaml:"input_media_types"`
 	OutputMediaTypes       []string          `json:"output_media_types" yaml:"output_media_types"`
+	// InputSchema 和 OutputSchema 描述不依赖固定模型的稳定非流式协议基础约束。
+	InputSchema           map[string]any `json:"input_schema,omitempty" yaml:"input_schema,omitempty"`
+	OutputSchema          map[string]any `json:"output_schema,omitempty" yaml:"output_schema,omitempty"`
+	UnsupportedParameters []string       `json:"unsupported_parameters,omitempty" yaml:"unsupported_parameters,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -159,8 +163,8 @@ type ProviderCapabilityVariant struct {
 type AIAppProviderCapability struct {
 	SchemaVersion   string            `json:"schema_version" yaml:"schema_version"`
 	ID              string            `json:"id" yaml:"id"`
-	NameI18n        map[string]string `json:"name_i18n"`
-	DescriptionI18n map[string]string `json:"description_i18n"`
+	NameI18n        map[string]string `json:"name_i18n" yaml:"name_i18n"`
+	DescriptionI18n map[string]string `json:"description_i18n" yaml:"description_i18n"`
 	// Kind 区分完整模型目录与仅用于标识引擎运行时身份的绑定能力。
 	Kind string `json:"kind" yaml:"kind"`
 	// Origin 固定为 static，表示能力随协议适配器编译交付。

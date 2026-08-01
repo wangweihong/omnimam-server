@@ -33,8 +33,7 @@ VOLUME ["/etc/omnimam"]
 COPY ./platforms/$TARGETPLATFORM/__COMMAND__ /opt/omnimam/bin/
 COPY __COMMAND__.yaml /etc/omnimam/
 
-# ProviderCapability 是 Provider 模型、operation 和参数约束的只读清单；Worker 依赖它复核 ApplicationRun 的能力 revision 后执行。
-COPY provider-capabilities /opt/omnimam/provider-capabilities
+# ProviderCapability 已编译进 Worker 二进制，用于复核 ApplicationRun 的能力 revision 后执行。
 
 ENTRYPOINT ["/opt/omnimam/bin/__COMMAND__"]
 CMD ["-c", "/etc/omnimam/__COMMAND__.yaml"]

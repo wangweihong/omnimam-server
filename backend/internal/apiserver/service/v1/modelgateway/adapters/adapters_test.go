@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,15 +17,17 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
-	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 func TestStaticRegistrationsHaveImplementations(t *testing.T) {
-	registrations := NewRegistrations()
-	runtime, err := appregistry.NewRuntimeRegistry(registrations)
+	registrations, err := NewRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := enginegateway.NewRuntimeRegistry(registrations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,9 +36,104 @@ func TestStaticRegistrationsHaveImplementations(t *testing.T) {
 	if err := ValidateImplementations(runtime, adapters, executors); err != nil {
 		t.Fatal(err)
 	}
+	capabilities, err := enginegateway.NewProviderCapabilityRegistry(registrations, runtime, NewCapabilityValidators()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range capabilities.Capabilities() {
+		if capability.Kind == iapiserver.ProviderCapabilityKindEngineBinding {
+			if len(capability.Models) != 0 || len(capability.Operations) != 0 || len(capability.Variants) != 0 {
+				t.Fatalf("engine binding %s exposes a model catalog", capability.ID)
+			}
+			continue
+		}
+		for _, operation := range capability.Operations {
+			if operation.InputSchema == nil || operation.OutputSchema == nil {
+				t.Fatalf("catalog %s operation %s lacks protocol schemas", capability.ID, operation.ID)
+			}
+			if operation.InputSchema["additionalProperties"] != false {
+				t.Fatalf("catalog %s operation %s input is not strict", capability.ID, operation.ID)
+			}
+		}
+	}
 	delete(executors, "openai_responses_create")
 	if err := ValidateImplementations(runtime, adapters, executors); err == nil || !strings.Contains(err.Error(), "openai_responses_create") {
 		t.Fatalf("missing executor was not rejected: %v", err)
+	}
+}
+
+func TestOpenAICompatibleProvidersUseProtocolPackage(t *testing.T) {
+	implementations := map[string]any{
+		"deepseek adapter":  NewEngineAdapters()["deepseek_official"],
+		"openai responses":  NewEngineAdapters()["openai_responses"],
+		"openai images":     NewEngineAdapters()["openai_images"],
+		"deepseek executor": NewOperationExecutors()["deepseek_chat_completions"],
+		"openai executor":   NewOperationExecutors()["openai_responses_create"],
+		"xai executor":      NewOperationExecutors()["xai_responses_create"],
+	}
+	const protocolPackage = "/adapters/protocols/openaicompat"
+	for name, implementation := range implementations {
+		t.Run(name, func(t *testing.T) {
+			typeOf := reflect.TypeOf(implementation)
+			if typeOf.Kind() == reflect.Pointer {
+				typeOf = typeOf.Elem()
+			}
+			if !strings.HasSuffix(typeOf.PkgPath(), protocolPackage) {
+				t.Fatalf("implementation package = %q, want suffix %q", typeOf.PkgPath(), protocolPackage)
+			}
+		})
+	}
+}
+
+func TestOllamaDiscoversInstanceModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Fatalf("path = %s, want /api/tags", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen3:8b"},{"model":"llama3.2:latest"},{"name":"qwen3:8b"}]}`))
+	}))
+	defer server.Close()
+	engine := testEngine(server.URL+"/v1", "ollama")
+	discoverer, ok := NewEngineAdapters()["ollama"].(enginegateway.InstanceModelDiscoverer)
+	if !ok {
+		t.Fatal("ollama adapter does not implement InstanceModelDiscoverer")
+	}
+	models, err := discoverer.DiscoverModels(context.Background(), engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0] != "llama3.2:latest" || models[1] != "qwen3:8b" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
+func TestOllamaModelValidatorRejectsMissingModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"qwen3:8b"}]}`))
+	}))
+	defer server.Close()
+	registrations, err := NewRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := enginegateway.NewRuntimeRegistry(registrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := enginegateway.NewProviderCapabilityRegistry(registrations, runtime, NewCapabilityValidators()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := testEngine(server.URL+"/v1", "ollama")
+	valid := map[string]any{"model": "qwen3:8b", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if err := capabilities.ValidateInput(context.Background(), "ollama-openai-compatible", "chat-completions", "qwen3:8b", engine, nil, valid); err != nil {
+		t.Fatalf("installed model rejected: %v", err)
+	}
+	missing := map[string]any{"model": "missing:latest", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if err := capabilities.ValidateInput(context.Background(), "ollama-openai-compatible", "chat-completions", "missing:latest", engine, nil, missing); err == nil {
+		t.Fatal("missing Ollama model was accepted")
 	}
 }
 

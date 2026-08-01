@@ -12,7 +12,6 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/helpers"
@@ -22,6 +21,11 @@ import (
 type Adapter interface {
 	ID() string
 	Check(context.Context, *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error)
+}
+
+// InstanceModelDiscoverer 为本地或实例私有模型服务提供临时模型目录，不写入全局 Registry。
+type InstanceModelDiscoverer interface {
+	DiscoverModels(context.Context, *iapiserver.EngineInstance) ([]string, error)
 }
 
 // OperationExecutor 将不可变 ApplicationRun 快照翻译为具体引擎协议调用。
@@ -62,8 +66,8 @@ type EngineSrv interface {
 // EngineDependencies 声明引擎服务所需的 store、注册表、身份与适配器边界。
 type EngineDependencies struct {
 	Store        store.Factory
-	Runtime      *appregistry.RuntimeRegistry
-	Capabilities *appregistry.ProviderCapabilityRegistry
+	Runtime      *RuntimeRegistry
+	Capabilities *ProviderCapabilityRegistry
 	Principals   PrincipalResolver
 	Adapters     map[string]Adapter
 }
@@ -71,8 +75,8 @@ type EngineDependencies struct {
 // EngineService 实现 Model Gateway 的引擎管理与运行时诊断服务。
 type EngineService struct {
 	store        store.Factory
-	runtime      *appregistry.RuntimeRegistry
-	capabilities *appregistry.ProviderCapabilityRegistry
+	runtime      *RuntimeRegistry
+	capabilities *ProviderCapabilityRegistry
 	principals   PrincipalResolver
 	adapters     map[string]Adapter
 }

@@ -35,7 +35,6 @@ RUN if [ `echo $BASE_IMAGE | grep -q -E "ubuntu" && echo 1 || echo 0` -eq 1 ]; t
 
 COPY --from=builder /gobuild/_output/platforms/$TARGETPLATFORM/__COMMAND__ /opt/omnimam/bin/
 COPY --from=builder /gobuild/_output/configs/__COMMAND__.yaml /etc/omnimam/
-COPY --from=builder /gobuild/provider-capabilities /opt/omnimam/provider-capabilities
 
 ENTRYPOINT ["/opt/omnimam/bin/__COMMAND__"]
 CMD ["-c", "/etc/omnimam/__COMMAND__.yaml"]

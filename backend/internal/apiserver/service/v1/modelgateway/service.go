@@ -8,7 +8,6 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
@@ -75,13 +74,13 @@ func (r *StorePrincipalResolver) Resolve(ctx context.Context) (Principal, error)
 
 // Dependencies 声明 ProviderCapability 服务需要的注册表与身份解析边界。
 type Dependencies struct {
-	Capabilities *appregistry.ProviderCapabilityRegistry
+	Capabilities *ProviderCapabilityRegistry
 	Principals   PrincipalResolver
 }
 
 // Service 实现 Model Gateway 的 ProviderCapability 查询服务。
 type Service struct {
-	capabilities *appregistry.ProviderCapabilityRegistry
+	capabilities *ProviderCapabilityRegistry
 	principals   PrincipalResolver
 }
 

@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `kind` | `catalog` | 完整 Provider 目录，包含 model、operation、variant 与参数 schema，可用于 Provider ApplicationTemplate 和 RuntimeForm。 |
 | `kind` | `engine_binding` | 只标识 EngineType 的基础运行时身份，不声明模型、operation、variant 或参数能力。 |
-| `origin` | `static` | 能力由具体协议适配器以不可变 Go 注册随构建交付。 |
+| `origin` | `static` | 能力由具体协议适配器以编译进二进制的 const YAML 随构建交付。 |
 | `binding_policy` | `manual` | 管理员可以创建、更新、禁用、收紧或删除兼容绑定。 |
 | `binding_policy` | `required_immutable` | 系统为相同 EngineType 的所有实例维护唯一绑定，管理员不能创建、修改、禁用或删除。 |
 
@@ -23,13 +23,58 @@
 | `comfyui-workflow-runtime` | `engine_binding` | `static` | `required_immutable` |
 | `runninghub-workflow-runtime` | `engine_binding` | `static` | `required_immutable` |
 
-`origin` 是只读字段。平台不接受 YAML/JSON 清单、目录覆盖、数据库资源、远程目录或运行时编辑；能力变化只能通过适配器代码修改、评审、构建和部署完成。
+`origin` 是只读字段。平台只解析 provider 包内的 const YAML，不接受磁盘/网络 YAML、目录覆盖、数据库资源、远程目录或运行时编辑；能力变化只能通过提供商代码修改、评审、构建和部署完成。
+
+## 代码包边界
+
+提供商事实、线协议和通用传输必须分层，不能作为同级 provider 目录混放：
+
+```text
+modelgateway/
+├── registry.go
+├── manifest.go
+├── capability_validation.go
+└── adapters/
+    ├── bootstrap.go
+    ├── providers/
+    │   ├── deepseek/
+    │   ├── openai/
+    │   ├── xai/
+    │   └── ...
+    ├── protocols/
+    │   └── openaicompat/
+    └── transports/
+        └── httpjson/
+```
+
+各层职责固定如下：
+
+| 层级 | 拥有内容 | 禁止内容 |
+| --- | --- | --- |
+| `modelgateway` 根包 | RuntimeRegistry、ProviderCapabilityRegistry、manifest 严格解析、schema 编译与校验，以及消费方 Adapter/Executor interface | 具体 provider、protocol 或 transport 实现 |
+| `adapters/bootstrap.go` | 显式收集 provider 注册、Adapter、Executor 和命名校验器，并交给根包 Registry 原子组装 | ProviderCapability 事实、协议请求逻辑或运行时可变配置 |
+| `providers/<provider>` | EngineType、ProviderCapability const YAML、官方 URL、鉴权声明、模型/schema、provider 特有 Adapter/Validator，以及绑定协议实现的构造函数 | 其他提供商的事实或通过其他 provider 包复用协议实现 |
+| `protocols/<protocol>` | 可由多个提供商复用的 endpoint 语义、请求转换、模型 ID 映射和响应归一化 | ProviderCapability、供应商品牌、官方 URL、固定模型目录 |
+| `transports/<transport>` | HTTP JSON 调用、Header/签名选项、超时、响应解码和公共错误映射 | Provider operation、模型或业务能力语义 |
+
+依赖方向为 `adapters/bootstrap -> modelgateway + providers -> protocols -> transports`。`modelgateway` 根包不反向依赖 `adapters`；Provider 特有协议可以从 `providers` 直接依赖 `transports`；`protocols` 和 `transports` 都不得反向依赖 `providers`，provider 之间也不得互相 import。原 `internal/apiserver/applicationplatform` Registry 包已删除，不保留兼容转发层。
+
+当前 OpenAI-compatible 映射为：
+
+| Provider 包 | Provider 身份 | 复用协议 |
+| --- | --- | --- |
+| `providers/deepseek` | DeepSeek 官方 API、模型和 Chat Completions schema | `protocols/openaicompat` Chat Completions |
+| `providers/openai` | OpenAI Responses/Images 官方能力 | `protocols/openaicompat` JSON endpoint executor |
+| `providers/xai` | xAI 官方身份、健康检测和 Grok schema | `protocols/openaicompat` Responses executor |
+| `providers/ollama` | Ollama 实例模型发现和复检 | provider 特有实现直接使用 `transports/httpjson`，不复用固定模型目录 |
 
 ## 启动组装
 
-API Server 和 TaskWorker 的 bootstrap 显式收集各适配器导出的 CapabilityDefinition、ApplicationEngineType、EngineAdapter、OperationExecutor 和 ProviderCapability。组装依次检查全局 ID、共享能力定义、双语字段、官方 URL、鉴权 schema、模型/operation/variant 关系以及 Adapter/Executor 实现引用。
+API Server 和 TaskWorker 的 bootstrap 显式收集各 provider 包导出的 CapabilityDefinition、ApplicationEngineType、EngineAdapter、OperationExecutor 和 ProviderCapability。provider 包内部选择协议实现，bootstrap 不直接替提供商选择 `protocols`。组装依次严格解析 YAML、预编译 Operation/Variant 的 Draft 2020-12 schema，并检查全局 ID、共享能力定义、双语字段、官方 URL、模型关系、命名校验器和 Adapter/Executor 实现引用。
 
 任一注册不合法都会阻止进程启动，不建立部分 Registry，也不存在 degraded 注册表或文件级加载诊断。Registry 在进程运行期间保持不可变。
+
+Operation 声明协议基础 input/output schema，固定模型 Variant 只做进一步收紧。ApplicationRun 创建和 Worker 提交前严格校验输入；归一化 `values` 校验必需输出结构，同时允许供应商新增字段。Ollama 模型只从所选实例 `/api/tags` 临时发现并在执行前复检，不写入静态 Registry 或数据库。
 
 ## 系统不可变绑定
 

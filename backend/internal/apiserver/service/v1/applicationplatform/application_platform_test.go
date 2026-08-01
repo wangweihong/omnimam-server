@@ -10,19 +10,22 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
-func testStaticRegistries(t *testing.T) (*appregistry.RuntimeRegistry, *appregistry.ProviderCapabilityRegistry) {
+func testStaticRegistries(t *testing.T) (*modelgateway.RuntimeRegistry, *modelgateway.ProviderCapabilityRegistry) {
 	t.Helper()
-	registrations := modeladapters.NewRegistrations()
-	runtime, err := appregistry.NewRuntimeRegistry(registrations)
+	registrations, err := modeladapters.NewRegistrations()
 	if err != nil {
 		t.Fatal(err)
 	}
-	capabilities, err := appregistry.NewProviderCapabilityRegistry(registrations, runtime)
+	runtime, err := modelgateway.NewRuntimeRegistry(registrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := modelgateway.NewProviderCapabilityRegistry(registrations, runtime, modeladapters.NewCapabilityValidators()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +180,33 @@ func TestBuildRuntimeFieldsRejectsEmptyPolicyIntersection(t *testing.T) {
 	_, _, violations := buildRuntimeFields(properties, nil, policies, nil)
 	if len(violations) != 1 || violations[0].Code != "NO_VALID_OPTION" {
 		t.Fatalf("empty capability-policy intersection was not rejected: %#v", violations)
+	}
+}
+
+func TestRuntimeFormMaterializesOperationAndVariantSchemas(t *testing.T) {
+	base := map[string]any{
+		"type": "object", "additionalProperties": false, "required": []any{"model", "prompt"},
+		"properties": map[string]any{
+			"model":      map[string]any{"type": "string"},
+			"prompt":     map[string]any{"type": "string", "minLength": 1},
+			"resolution": map[string]any{"type": "string", "enum": []any{"720p", "1080p", "4k"}},
+		},
+	}
+	narrowing := map[string]any{"type": "object", "properties": map[string]any{
+		"model":      map[string]any{"const": "fast-model"},
+		"resolution": map[string]any{"enum": []any{"720p"}},
+	}}
+	materialized := materializeRuntimeInputSchema(base, narrowing)
+	variant := iapiserver.ProviderCapabilityVariant{ModelID: "fast-model", InputSchema: materialized}
+	properties := map[string]any{}
+	required := []string{}
+	mergeVariantProperties(properties, &required, []iapiserver.ProviderCapabilityVariant{variant})
+	if properties["prompt"] == nil || !contains(required, "prompt") || !contains(required, "model") {
+		t.Fatalf("operation fields were not materialized: properties=%#v required=%#v", properties, required)
+	}
+	resolution := properties["resolution"].(map[string]any)
+	if values := anyValues(resolution["enum"]); len(values) != 1 || values[0] != "720p" {
+		t.Fatalf("variant narrowing was not applied: %#v", resolution)
 	}
 }
 

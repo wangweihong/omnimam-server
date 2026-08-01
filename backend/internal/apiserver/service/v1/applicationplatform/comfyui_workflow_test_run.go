@@ -17,7 +17,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/provider"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/transports/httpjson"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -144,7 +144,7 @@ func (s *applicationPlatformService) CancelComfyUIWorkflowTestRun(ctx context.Co
 	}
 	if run.ExternalJobID != nil {
 		if engine, engineErr := s.Store.ApplicationPlatforms().GetEngineInstance(ctx, run.EngineInstanceID); engineErr == nil {
-			_, _ = provider.Invoke(context.WithoutCancel(ctx), engine, http.MethodPost, "/queue", map[string]any{"delete": []string{*run.ExternalJobID}})
+			_, _ = httpjson.Invoke(context.WithoutCancel(ctx), engine, http.MethodPost, "/queue", map[string]any{"delete": []string{*run.ExternalJobID}})
 		}
 	}
 	return s.projectComfyTestRun(ctx, run)
@@ -177,7 +177,7 @@ func (s *applicationPlatformService) GetComfyUIWorkflowTestOutputContent(ctx con
 	}
 	endpoint := strings.TrimRight(engine.BaseURL, "/") + "/view?" + query.Encode()
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(http.MethodGet).AddHeaderParam("Accept", "image/*")
-	if err := provider.ApplyAuthentication(builder, engine, http.MethodGet, "/view", nil); err != nil {
+	if err := httpjson.ApplyAuthentication(builder, engine, http.MethodGet, "/view", nil); err != nil {
 		return nil, "", err
 	}
 	timeout := time.Duration(engine.RequestTimeoutSeconds) * time.Second

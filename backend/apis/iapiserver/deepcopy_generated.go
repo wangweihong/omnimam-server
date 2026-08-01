@@ -1785,6 +1785,13 @@ func (in *ProviderCapabilityOperation) DeepCopyInto(out *ProviderCapabilityOpera
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	deepcopyGenAnyInto(&in.InputSchema, &out.InputSchema)
+	deepcopyGenAnyInto(&in.OutputSchema, &out.OutputSchema)
+	if in.UnsupportedParameters != nil {
+		in, out := &in.UnsupportedParameters, &out.UnsupportedParameters
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

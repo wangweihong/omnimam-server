@@ -22,9 +22,8 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/provider"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/transports/httpjson"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -32,8 +31,8 @@ import (
 // ApplicationRunExecutor executes Task Center claims and projects terminal facts back to ApplicationRun.
 type ApplicationRunExecutor struct {
 	store        store.Factory
-	runtime      *appregistry.RuntimeRegistry
-	capabilities *appregistry.ProviderCapabilityRegistry
+	runtime      *enginegateway.RuntimeRegistry
+	capabilities *enginegateway.ProviderCapabilityRegistry
 	adapters     map[string]enginegateway.Adapter
 	executors    map[string]enginegateway.OperationExecutor
 	assets       ArtifactLifecycle
@@ -47,7 +46,7 @@ type engineActivity struct {
 	changed chan struct{}
 }
 
-func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRegistry, capabilities *appregistry.ProviderCapabilityRegistry, adapters map[string]enginegateway.Adapter, executors map[string]enginegateway.OperationExecutor, assets ArtifactLifecycle, events EventPublisher) (*ApplicationRunExecutor, error) {
+func NewApplicationRunExecutor(str store.Factory, runtime *enginegateway.RuntimeRegistry, capabilities *enginegateway.ProviderCapabilityRegistry, adapters map[string]enginegateway.Adapter, executors map[string]enginegateway.OperationExecutor, assets ArtifactLifecycle, events EventPublisher) (*ApplicationRunExecutor, error) {
 	if str == nil || runtime == nil {
 		return nil, fmt.Errorf("application run executor store and runtime registry are required")
 	}
@@ -107,6 +106,12 @@ func (e *ApplicationRunExecutor) execute(ctx context.Context, task *iapiserver.A
 			return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowIncompatible, "workflow is incompatible with the current object_info")
 		}
 	}
+	if run.ProviderCapabilityID != nil {
+		modelID := maputil.FirstString(run.InputSnapshot, "model", "model_id")
+		if err := e.capabilities.ValidateInput(ctx, *run.ProviderCapabilityID, dereference(run.ProviderOperationID), modelID, engine, run, canonicalProviderInput(run.InputSnapshot)); err != nil {
+			return nil, errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "provider input does not conform to the current capability schema")
+		}
+	}
 	executorDefinition, ok := e.runtime.OperationExecutor(engine.ApplicationEngineTypeID, capabilityID)
 	if !ok {
 		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "operation executor mapping is unavailable")
@@ -138,7 +143,30 @@ func (e *ApplicationRunExecutor) execute(ctx context.Context, task *iapiserver.A
 	if err != nil && run.ProviderCapabilityID != nil && errors.ToStatus(err).Code == code.ErrAIAppProviderRuntimeCapabilityMismatch {
 		e.publishCorrection(ctx, run, err)
 	}
+	if err == nil && run.ProviderCapabilityID != nil {
+		modelID := maputil.FirstString(run.InputSnapshot, "model", "model_id")
+		values, ok := output["values"].(map[string]any)
+		if !ok {
+			return nil, errors.NewStatus(code.ErrAIAppProviderResponseInvalid, "provider response does not contain normalized values")
+		}
+		if validationErr := e.capabilities.ValidateOutput(ctx, *run.ProviderCapabilityID, dereference(run.ProviderOperationID), modelID, engine, run, values); validationErr != nil {
+			return nil, errors.NewStatus(code.ErrAIAppProviderResponseInvalid, "provider response does not conform to the current capability output schema")
+		}
+	}
 	return output, err
+}
+
+func canonicalProviderInput(input map[string]any) map[string]any {
+	canonical := maputil.Clone(input)
+	if _, exists := canonical["model"]; !exists {
+		if modelID := maputil.FirstString(canonical, "model_id"); modelID != "" {
+			canonical["model"] = modelID
+		}
+	}
+	delete(canonical, "model_id")
+	delete(canonical, "variant")
+	delete(canonical, "variant_id")
+	return canonical
 }
 
 func (e *ApplicationRunExecutor) validateCurrentProviderBinding(ctx context.Context, run *iapiserver.ApplicationRun, engine *iapiserver.EngineInstance, capabilityDefinitionID string) error {
@@ -475,7 +503,7 @@ func (e *ApplicationRunExecutor) openArtifactContent(ctx context.Context, engine
 	transport := artifactDownloadTransport(trustedHost)
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(target.String()).WithMethod(http.MethodGet).AddHeaderParam("Accept", "*/*")
 	if trustedOrigin {
-		if err := provider.ApplyAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
+		if err := httpjson.ApplyAuthentication(builder, engine, http.MethodGet, target.RequestURI(), nil); err != nil {
 			return nil, "", err
 		}
 	}

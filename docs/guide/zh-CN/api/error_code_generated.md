@@ -134,6 +134,7 @@
 | ErrAIAppArtifactRegistrationAtomicTaskUnchanged | 130828 | 200 | The Artifact could not be registered as a UserAsset; the AtomicTask terminal state is unchanged. | Artifact 未能登记为 UserAsset，AtomicTask 终态不受影响。 |
 | ErrAIAppArtifactProcessingFailed | 130829 | 200 | Artifact transfer or processing failed. | Artifact 传输或处理失败。 |
 | ErrAIAppArtifactStateInvalid | 130830 | 200 | The Artifact processing or registration state does not allow this transition. | Artifact 当前处理或登记状态不允许该转换。 |
+| ErrAIAppProviderResponseInvalid | 130831 | 200 | The external provider response does not conform to the current ProviderCapability output contract. | 外部平台响应不符合当前 ProviderCapability 输出契约。 |
 | ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
 | ErrAIAppComfyUIWorkflowFileInvalid | 131220 | 200 | The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure. | API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。 |
 | ErrAIAppComfyUIEngineTypeInvalid | 131221 | 200 | The selected source or target EngineInstance is not a ComfyUI engine. | 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。 |

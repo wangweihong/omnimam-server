@@ -45,6 +45,7 @@ var applicationPlatformErrors = map[int]errorDefinition{
 	code.ErrAIAppApplicationRunCreateFailed:              {name: "ERR_AIAPP_APPLICATION_RUN_CREATE_FAILED", retryable: true},
 	code.ErrAIAppTaskProjectionStale:                     {name: "ERR_AIAPP_TASK_PROJECTION_STALE"},
 	code.ErrAIAppProviderRuntimeCapabilityMismatch:       {name: "ERR_AIAPP_PROVIDER_RUNTIME_CAPABILITY_MISMATCH"},
+	code.ErrAIAppProviderResponseInvalid:                 {name: "ERR_AIAPP_PROVIDER_RESPONSE_INVALID"},
 	code.ErrAIAppTaskRunCreateFailed:                     {name: "ERR_AIAPP_TASK_RUN_CREATE_FAILED", retryable: true},
 	code.ErrAIAppAtomicTaskCreateFailed:                  {name: "ERR_AIAPP_ATOMIC_TASK_CREATE_FAILED", retryable: true},
 	code.ErrAIAppAtomicTaskProjectionStale:               {name: "ERR_AIAPP_ATOMIC_TASK_PROJECTION_STALE"},

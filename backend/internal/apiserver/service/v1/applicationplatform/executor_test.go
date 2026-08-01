@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wangweihong/gotoolbox/pkg/errors"
+
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type executorFactory struct {
@@ -34,6 +37,11 @@ type executorApplicationStore struct {
 	projected *iapiserver.ApplicationRun
 	artifact  *iapiserver.Artifact
 	ref       *iapiserver.ApplicationArtifactRef
+	bindings  []*iapiserver.EngineCapabilityBinding
+}
+
+func (s *executorApplicationStore) ListEngineBindings(context.Context, *iapiserver.EngineCapabilityBindingListRequest) ([]*iapiserver.EngineCapabilityBinding, int64, error) {
+	return s.bindings, int64(len(s.bindings)), nil
 }
 
 type executorTaskStore struct {
@@ -84,6 +92,8 @@ type fakeOperationExecutor struct {
 	id      string
 	active  atomic.Int32
 	maximum atomic.Int32
+	calls   atomic.Int32
+	output  map[string]any
 }
 
 type fakeCheckpointOperationExecutor struct {
@@ -104,6 +114,7 @@ func (e *fakeCheckpointOperationExecutor) CancelExternalJob(_ context.Context, _
 
 func (e *fakeOperationExecutor) ID() string { return e.id }
 func (e *fakeOperationExecutor) Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error) {
+	e.calls.Add(1)
 	active := e.active.Add(1)
 	defer e.active.Add(-1)
 	for {
@@ -113,6 +124,9 @@ func (e *fakeOperationExecutor) Execute(context.Context, *iapiserver.EngineInsta
 		}
 	}
 	time.Sleep(10 * time.Millisecond)
+	if e.output != nil {
+		return e.output, nil
+	}
 	return map[string]any{"values": map[string]any{"text": "ok"}}, nil
 }
 
@@ -191,6 +205,61 @@ func TestApplicationRunExecutorUsesRegistriesAndEngineConcurrency(t *testing.T) 
 	wait.Wait()
 	if operation.maximum.Load() != 1 {
 		t.Fatalf("engine concurrency was not enforced: maximum=%d", operation.maximum.Load())
+	}
+}
+
+func TestApplicationRunExecutorValidatesProviderInputAndOutput(t *testing.T) {
+	runtimeRegistry, capabilities := testStaticRegistries(t)
+	capabilityID, revision, operationID := "deepseek-official", "2026-08-01.1", "chat-completions"
+	newStore := func(input map[string]any) *executorApplicationStore {
+		return &executorApplicationStore{
+			run: &iapiserver.ApplicationRun{
+				EngineInstanceID: "engine-1", ProviderCapabilityID: &capabilityID, ProviderCapabilityRevision: &revision, ProviderOperationID: &operationID,
+				CapabilitySourceType: iapiserver.CapabilitySourceProviderCapability, InputSnapshot: input, ExecutionSnapshot: map[string]any{"capability_definition_id": "text.chat_completion"},
+			},
+			engine:   &iapiserver.EngineInstance{ObjectMeta: imachinery.ObjectMeta{ID: "engine-1"}, ApplicationEngineTypeID: "deepseek_official", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline, MaxConcurrency: 1, TaskTimeoutSeconds: 2},
+			bindings: []*iapiserver.EngineCapabilityBinding{{EngineInstanceID: "engine-1", ProviderCapabilityID: capabilityID, ProviderCapabilityRevision: revision, Enabled: true, Restrictions: map[string]any{}}},
+		}
+	}
+	newExecutor := func(applicationStore *executorApplicationStore, operation *fakeOperationExecutor) *ApplicationRunExecutor {
+		executor, err := NewApplicationRunExecutor(
+			&executorFactory{applications: applicationStore}, runtimeRegistry, capabilities,
+			map[string]enginegateway.Adapter{"deepseek_official": fakeEngineAdapter{id: "deepseek_official"}},
+			map[string]enginegateway.OperationExecutor{"deepseek_chat_completions": operation}, nil, nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return executor
+	}
+
+	invalidOperation := &fakeOperationExecutor{id: "deepseek_chat_completions"}
+	invalidExecutor := newExecutor(newStore(map[string]any{"model": "deepseek-v4-pro", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": true}), invalidOperation)
+	_, err := invalidExecutor.Execute(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"})
+	if errors.ToStatus(err).Code != code.ErrAIAppApplicationInputInvalid || invalidOperation.calls.Load() != 0 {
+		t.Fatalf("invalid input = err %v calls %d", err, invalidOperation.calls.Load())
+	}
+
+	validInput := map[string]any{"model": "deepseek-v4-pro", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	invalidOutputOperation := &fakeOperationExecutor{id: "deepseek_chat_completions", output: map[string]any{"values": map[string]any{"id": "response-1"}}}
+	invalidOutputExecutor := newExecutor(newStore(validInput), invalidOutputOperation)
+	_, err = invalidOutputExecutor.Execute(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"})
+	if errors.ToStatus(err).Code != code.ErrAIAppProviderResponseInvalid || invalidOutputOperation.calls.Load() != 1 {
+		t.Fatalf("invalid output = err %v calls %d", err, invalidOutputOperation.calls.Load())
+	}
+
+	missingValuesOperation := &fakeOperationExecutor{id: "deepseek_chat_completions", output: map[string]any{"id": "response-1", "model": "deepseek-v4-pro", "choices": []any{map[string]any{}}, "usage": map[string]any{}}}
+	missingValuesExecutor := newExecutor(newStore(validInput), missingValuesOperation)
+	_, err = missingValuesExecutor.Execute(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"})
+	if errors.ToStatus(err).Code != code.ErrAIAppProviderResponseInvalid || missingValuesOperation.calls.Load() != 1 {
+		t.Fatalf("missing normalized values = err %v calls %d", err, missingValuesOperation.calls.Load())
+	}
+
+	validOutput := map[string]any{"id": "response-1", "model": "deepseek-v4-pro", "choices": []any{map[string]any{}}, "usage": map[string]any{}, "provider_added": true}
+	validOperation := &fakeOperationExecutor{id: "deepseek_chat_completions", output: map[string]any{"values": validOutput}}
+	validExecutor := newExecutor(newStore(validInput), validOperation)
+	if _, err = validExecutor.Execute(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"}); err != nil {
+		t.Fatalf("valid provider execution failed: %v", err)
 	}
 }
 

@@ -567,6 +567,10 @@ const (
 	// @EN The Artifact processing or registration state does not allow this transition.
 	ErrAIAppArtifactStateInvalid int = 130830
 	// @HTTP 200
+	// @CN 外部平台响应不符合当前 ProviderCapability 输出契约。
+	// @EN The external provider response does not conform to the current ProviderCapability output contract.
+	ErrAIAppProviderResponseInvalid int = 130831
+	// @HTTP 200
 	// @CN 当前用户缺少所需的应用平台权限。
 	// @EN The current user lacks the required application-platform permission.
 	ErrAIAppPermissionDenied int = 131020

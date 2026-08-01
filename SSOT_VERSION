@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: deae3f15d65b78f9e811f53f99149c1f74cab0c5
-contract_version: spec-v1.9.0
-updated_at: 2026-07-31
+commit: 5c66c724fa57e9107bfdea0244bc41beff9ed4ed
+contract_version: spec-v1.9.1
+updated_at: 2026-08-01
 status: released
-note: Application Platform provider capabilities are adapter-owned static registrations with bilingual metadata and official service addresses.
+note: Provider capabilities are adapter-local const YAML with strict input and compatible output validation.

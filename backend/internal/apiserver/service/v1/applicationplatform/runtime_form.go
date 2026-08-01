@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/deepcopy"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -172,7 +174,28 @@ func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Conte
 			baseVariants = append(baseVariants, variant)
 		}
 	}
-	candidates := make([]runtimeCandidate, 0, len(bindings))
+	operation, operationExists := findOperation(capability, operationID)
+	if operationExists {
+		for index := range baseVariants {
+			baseVariants[index].InputSchema = materializeRuntimeInputSchema(operation.InputSchema, baseVariants[index].InputSchema)
+		}
+	}
+	dynamicModels := len(baseVariants) == 0 && operationExists && operation.InputSchema != nil
+	var discoverer modelgateway.InstanceModelDiscoverer
+	if dynamicModels {
+		engineType, ok := s.Runtime.EngineType(capability.ApplicationEngineTypeID)
+		if ok {
+			discoverer, _ = s.Adapters[engineType.EngineAdapterID].(modelgateway.InstanceModelDiscoverer)
+		}
+		if discoverer == nil {
+			return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine adapter does not support instance model discovery")
+		}
+	}
+	type candidateSource struct {
+		engine       *iapiserver.EngineInstance
+		restrictions map[string]any
+	}
+	sources := make([]candidateSource, 0, len(bindings))
 	for _, binding := range bindings {
 		s.ResolveBindingStatus(binding)
 		if binding.EffectiveStatus != iapiserver.BindingEffectiveAvailable || (selectedEngineID != "" && binding.EngineInstanceID != selectedEngineID) {
@@ -182,15 +205,113 @@ func (s *applicationPlatformService) providerRuntimeCandidates(ctx context.Conte
 		if engineErr != nil || !runtimeHealthy(engine) || engine.ApplicationEngineTypeID != capability.ApplicationEngineTypeID {
 			continue
 		}
-		variants := restrictVariants(baseVariants, binding.Restrictions)
-		if len(variants) > 0 {
-			candidates = append(candidates, runtimeCandidate{engineID: engine.ID, variants: variants})
+		sources = append(sources, candidateSource{engine: engine, restrictions: binding.Restrictions})
+	}
+	candidates := make([]runtimeCandidate, 0, len(sources))
+	if !dynamicModels {
+		for _, source := range sources {
+			variants := restrictVariants(baseVariants, source.restrictions)
+			if len(variants) > 0 {
+				candidates = append(candidates, runtimeCandidate{engineID: source.engine.ID, variants: variants})
+			}
+		}
+	} else {
+		discovered := make([]runtimeCandidate, len(sources))
+		valid := make([]bool, len(sources))
+		var wait sync.WaitGroup
+		for index := range sources {
+			wait.Add(1)
+			go func(index int) {
+				defer wait.Done()
+				discoveryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				models, discoveryErr := discoverer.DiscoverModels(discoveryCtx, sources[index].engine)
+				if discoveryErr != nil {
+					return
+				}
+				variants := restrictVariants(dynamicOperationVariants(operation, models), sources[index].restrictions)
+				if len(variants) == 0 {
+					return
+				}
+				discovered[index] = runtimeCandidate{engineID: sources[index].engine.ID, variants: variants}
+				valid[index] = true
+			}(index)
+		}
+		wait.Wait()
+		for index := range discovered {
+			if valid[index] {
+				candidates = append(candidates, discovered[index])
+			}
 		}
 	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].engineID < candidates[j].engineID })
 	if len(candidates) == 0 {
 		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "no enabled and healthy engine binding")
 	}
 	return candidates, nil
+}
+
+func materializeRuntimeInputSchema(base, narrowing map[string]any) map[string]any {
+	result := deepcopy.AnyMapClone(base)
+	if result == nil {
+		result = map[string]any{}
+	}
+	baseProperties, _ := result["properties"].(map[string]any)
+	if baseProperties == nil {
+		baseProperties = map[string]any{}
+		result["properties"] = baseProperties
+	}
+	narrowingProperties, _ := narrowing["properties"].(map[string]any)
+	for name, raw := range narrowingProperties {
+		narrowingProperty, _ := raw.(map[string]any)
+		baseProperty, _ := baseProperties[name].(map[string]any)
+		if baseProperty == nil {
+			baseProperty = map[string]any{}
+		} else {
+			baseProperty = deepcopy.AnyMapClone(baseProperty)
+		}
+		for key, value := range narrowingProperty {
+			baseProperty[key] = value
+		}
+		if constant, exists := baseProperty["const"]; exists {
+			baseProperty["enum"] = []any{constant}
+		}
+		baseProperties[name] = baseProperty
+	}
+	required := typeutil.SliceAs[string](result["required"])
+	for _, name := range typeutil.SliceAs[string](narrowing["required"]) {
+		if !contains(required, name) {
+			required = append(required, name)
+		}
+	}
+	result["required"] = required
+	return result
+}
+
+func dynamicOperationVariants(operation iapiserver.ProviderCapabilityOperation, models []string) []iapiserver.ProviderCapabilityVariant {
+	variants := make([]iapiserver.ProviderCapabilityVariant, 0, len(models))
+	for _, modelID := range models {
+		if strings.TrimSpace(modelID) == "" {
+			continue
+		}
+		inputSchema := deepcopy.AnyMapClone(operation.InputSchema)
+		properties, _ := inputSchema["properties"].(map[string]any)
+		if properties == nil {
+			properties = map[string]any{}
+			inputSchema["properties"] = properties
+		}
+		modelSchema, _ := properties["model"].(map[string]any)
+		if modelSchema == nil {
+			modelSchema = map[string]any{"type": "string"}
+			properties["model"] = modelSchema
+		}
+		modelSchema["enum"] = []any{modelID}
+		variants = append(variants, iapiserver.ProviderCapabilityVariant{
+			ID: "instance-model:" + modelID + ":" + operation.ID, ModelID: modelID, OperationID: operation.ID,
+			Lifecycle: iapiserver.ProviderLifecycle{Status: "active"}, InputSchema: inputSchema, OutputSchema: deepcopy.AnyMapClone(operation.OutputSchema),
+		})
+	}
+	return variants
 }
 
 func selectRuntimeVariants(candidates []runtimeCandidate, values map[string]any) []iapiserver.ProviderCapabilityVariant {
@@ -232,6 +353,9 @@ func restrictVariants(variants []iapiserver.ProviderCapabilityVariant, restricti
 
 func mergeVariantProperties(properties map[string]any, required *[]string, variants []iapiserver.ProviderCapabilityVariant) {
 	properties["model"] = map[string]any{"type": "string", "enum": variantModelIDs(variants)}
+	if len(variants) > 0 && !contains(*required, "model") {
+		*required = append(*required, "model")
+	}
 	for _, variant := range variants {
 		variantProps, _ := variant.InputSchema["properties"].(map[string]any)
 		for name, raw := range variantProps {

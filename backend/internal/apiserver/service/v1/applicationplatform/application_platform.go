@@ -17,9 +17,8 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
-	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
@@ -152,8 +151,8 @@ type WorkflowAuditRecord struct {
 
 type Dependencies struct {
 	Store          store.Factory
-	Runtime        *appregistry.RuntimeRegistry
-	Capabilities   *appregistry.ProviderCapabilityRegistry
+	Runtime        *modelgateway.RuntimeRegistry
+	Capabilities   *modelgateway.ProviderCapabilityRegistry
 	Principals     PrincipalResolver
 	Adapters       map[string]modelgateway.Adapter
 	Tasks          taskcenter.TaskCenterSrv
@@ -556,6 +555,9 @@ func (s *applicationPlatformService) CreateApplicationRun(ctx context.Context, a
 		if capability, ok := s.Capabilities.Get(*run.ProviderCapabilityID); ok {
 			run.CapabilitySourceSnapshot["provider_capability"] = capability
 		}
+		if err := s.validateProviderRunInput(ctx, run, engine); err != nil {
+			return nil, err
+		}
 	}
 	created, err := s.Store.ApplicationPlatforms().AddApplicationRun(ctx, run)
 	if err != nil {
@@ -764,6 +766,14 @@ func (s *applicationPlatformService) EnsureCanvasApplicationRun(
 			return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine instance is unavailable")
 		}
 		run = newApplicationRun(req.OwnerUserID, app, version, template, engine, resolved, original, form)
+		if run.ProviderCapabilityID != nil {
+			if capability, ok := s.Capabilities.Get(*run.ProviderCapabilityID); ok {
+				run.CapabilitySourceSnapshot["provider_capability"] = capability
+			}
+			if validationErr := s.validateProviderRunInput(ctx, run, engine); validationErr != nil {
+				return nil, validationErr
+			}
+		}
 		run.ExecutionSnapshot["origin_type"] = "canvas"
 		run.ExecutionSnapshot["canvas_run_id"] = req.CanvasRunID
 		run.ExecutionSnapshot["canvas_node_run_id"] = req.CanvasNodeRunID
@@ -806,6 +816,17 @@ func (s *applicationPlatformService) EnsureCanvasApplicationRun(
 		}
 	}
 	return run, nil
+}
+
+func (s *applicationPlatformService) validateProviderRunInput(ctx context.Context, run *iapiserver.ApplicationRun, engine *iapiserver.EngineInstance) error {
+	if run == nil || run.ProviderCapabilityID == nil || run.ProviderOperationID == nil {
+		return nil
+	}
+	modelID := maputil.FirstString(run.InputSnapshot, "model", "model_id")
+	if err := s.Capabilities.ValidateInput(ctx, *run.ProviderCapabilityID, *run.ProviderOperationID, modelID, engine, run, canonicalProviderInput(run.InputSnapshot)); err != nil {
+		return errors.NewStatus(code.ErrAIAppApplicationInputInvalid, "application input does not conform to the current provider capability schema")
+	}
+	return nil
 }
 
 func sameCanvasApplicationRun(

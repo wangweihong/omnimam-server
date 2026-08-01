@@ -10,7 +10,6 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/shutdown/managers/posixsignal"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
@@ -18,7 +17,7 @@ import (
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
-	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
+	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
 	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -92,12 +91,15 @@ func createServer(cfg *config.Config) (*server, error) {
 		return nil, err
 	}
 	storeIns := store.Client()
-	registrations := modeladapters.NewRegistrations()
-	runtimeRegistry, err := appregistry.NewRuntimeRegistry(registrations)
+	registrations, err := modeladapters.NewRegistrations()
+	if err != nil {
+		return nil, errors.Wrap(err, "load application platform adapter registrations")
+	}
+	runtimeRegistry, err := engine.NewRuntimeRegistry(registrations)
 	if err != nil {
 		return nil, errors.Wrap(err, "build application platform runtime registry")
 	}
-	capabilityRegistry, err := appregistry.NewProviderCapabilityRegistry(registrations, runtimeRegistry)
+	capabilityRegistry, err := engine.NewProviderCapabilityRegistry(registrations, runtimeRegistry, modeladapters.NewCapabilityValidators()...)
 	if err != nil {
 		return nil, errors.Wrap(err, "build application platform provider capabilities")
 	}

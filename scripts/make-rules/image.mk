@@ -105,8 +105,6 @@ image.build.%: go.build.%
 		| sed -e "s#\$$TARGETPLATFORM#$(IMAGE_PLAT)#g" -e "s#__COMMAND__#$(IMAGE)#g" >$(TMP_DIR)/$(IMAGE)/Dockerfile
 	@cp $(OUTPUT_DIR)/configs/$(CONFIG_COMPONENT).yaml $(TMP_DIR)/$(IMAGE)/$(IMAGE).yaml
 	@cp -rf $(OUTPUT_DIR)/platforms $(TMP_DIR)/$(IMAGE)/
-	@# ProviderCapability 是 API 与 Worker 共享的只读执行契约：API 用于表单/绑定校验，Worker 按同一 revision 校验并执行。
-	@if [[ "$(IMAGE)" == "apiserver" || "$(IMAGE)" == "taskworker" ]]; then cp -rf $(ROOT_DIR)/provider-capabilities $(TMP_DIR)/$(IMAGE)/; fi
 	@DST_DIR=$(TMP_DIR)/$(IMAGE) $(ROOT_DIR)/build/docker/$(IMAGE)/build.sh 2>/dev/null || true
 	$(eval BUILD_SUFFIX := $(_DOCKER_BUILD_EXTRA_ARGS) -t $(IMAGETAG) $(TMP_DIR)/$(IMAGE))
 	@$(DOCKER) build $(BUILD_SUFFIX)
@@ -131,8 +129,6 @@ image.build.multiarch.%: image.dockerbuildx.prerequisite
 		| sed -e "s#__COMMAND__#$(IMAGE)#g" >$(TMP_DIR)/$(IMAGE)/Dockerfile
 	@cp $(OUTPUT_DIR)/configs/$(CONFIG_COMPONENT).yaml $(TMP_DIR)/$(IMAGE)/$(IMAGE).yaml
 	@cp -rf $(OUTPUT_DIR)/platforms $(TMP_DIR)/$(IMAGE)/
-	@# ProviderCapability 必须与 API/Worker 镜像同步发布，避免多架构产物使用不同的模型和参数约束。
-	@if [[ "$(IMAGE)" == "apiserver" || "$(IMAGE)" == "taskworker" ]]; then cp -rf $(ROOT_DIR)/provider-capabilities $(TMP_DIR)/$(IMAGE)/; fi
 	@docker buildx build $(_DOCKER_BUILD_EXTRA_ARGS)\
 		--output type=registry \
 		--platform  $(BUILDPLTFORM)  \
