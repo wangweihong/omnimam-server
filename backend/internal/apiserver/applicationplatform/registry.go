@@ -1,37 +1,31 @@
 package applicationplatform
 
 import (
-	"embed"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"net/url"
+	"reflect"
 	"sort"
 	"strings"
-	"time"
 
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
-	"gopkg.in/yaml.v3"
 )
 
-//go:embed assets/runtime-registry.yaml assets/provider-capability.schema.yaml assets/builtin-provider-capabilities/*.yaml
-var registryAssets embed.FS
+const (
+	localeChinese = "zh-CN"
+	localeEnglish = "en-US"
+)
 
-const builtinProviderCapabilityDirectory = "assets/builtin-provider-capabilities"
-
-type runtimeRegistryDocument struct {
-	SchemaVersion          string                                   `yaml:"schema_version"`
-	CapabilityDefinitions  []iapiserver.CapabilityDefinition        `yaml:"capability_definitions"`
-	EngineAdapters         []iapiserver.EngineAdapterDefinition     `yaml:"engine_adapters"`
-	OperationExecutors     []iapiserver.OperationExecutorDefinition `yaml:"operation_executors"`
-	ApplicationEngineTypes []iapiserver.ApplicationEngineType       `yaml:"application_engine_types"`
+// Registration 是一个具体协议适配器随构建交付的完整静态注册。
+type Registration struct {
+	CapabilityDefinitions []iapiserver.CapabilityDefinition
+	EngineAdapter         iapiserver.EngineAdapterDefinition
+	OperationExecutors    []iapiserver.OperationExecutorDefinition
+	EngineType            iapiserver.ApplicationEngineType
+	ProviderCapabilities  []iapiserver.AIAppProviderCapability
 }
 
-// RuntimeRegistry is the immutable set of executable types compiled into the server.
+// RuntimeRegistry 是由全部适配器静态注册原子组装的不可变执行目录。
 type RuntimeRegistry struct {
 	capabilities map[string]iapiserver.CapabilityDefinition
 	adapters     map[string]iapiserver.EngineAdapterDefinition
@@ -40,76 +34,156 @@ type RuntimeRegistry struct {
 	engineList   []*iapiserver.ApplicationEngineType
 }
 
-func LoadRuntimeRegistry() (*RuntimeRegistry, error) {
-	raw, err := registryAssets.ReadFile("assets/runtime-registry.yaml")
-	if err != nil {
-		return nil, fmt.Errorf("read embedded runtime registry: %w", err)
+// AuthenticationConfigSchema 返回 EngineType 使用的严格鉴权字段结构。
+func AuthenticationConfigSchema(authTypes ...string) map[string]map[string]any {
+	schemas := make(map[string]map[string]any, len(authTypes))
+	for _, authType := range authTypes {
+		required, ok := authenticationFields(authType)
+		if !ok {
+			continue
+		}
+		schema := map[string]any{"type": "object", "additionalProperties": false, "required": required}
+		if authType == iapiserver.EngineAuthNone {
+			schema["forbidden"] = true
+		}
+		schemas[authType] = schema
 	}
-	var document runtimeRegistryDocument
-	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return nil, fmt.Errorf("parse embedded runtime registry: %w", err)
-	}
-	r := &RuntimeRegistry{
+	return schemas
+}
+
+// NewRuntimeRegistry 显式合并适配器注册；任一冲突或缺失引用都会阻止启动。
+func NewRuntimeRegistry(registrations []Registration) (*RuntimeRegistry, error) {
+	registry := &RuntimeRegistry{
 		capabilities: make(map[string]iapiserver.CapabilityDefinition),
 		adapters:     make(map[string]iapiserver.EngineAdapterDefinition),
 		executors:    make(map[string]iapiserver.OperationExecutorDefinition),
 		engineTypes:  make(map[string]iapiserver.ApplicationEngineType),
-		engineList:   make([]*iapiserver.ApplicationEngineType, 0, len(document.ApplicationEngineTypes)),
+		engineList:   make([]*iapiserver.ApplicationEngineType, 0, len(registrations)),
 	}
-	for _, item := range document.CapabilityDefinitions {
-		if item.ID == "" || r.capabilities[item.ID].ID != "" || item.NameI18n["zh-CN"] == "" || item.NameI18n["en-US"] == "" {
-			return nil, fmt.Errorf("invalid or duplicate capability definition %q", item.ID)
-		}
-		r.capabilities[item.ID] = item
-	}
-	for _, item := range document.EngineAdapters {
-		if item.ID == "" || r.adapters[item.ID].ID != "" {
-			return nil, fmt.Errorf("invalid or duplicate engine adapter %q", item.ID)
-		}
-		r.adapters[item.ID] = item
-	}
-	for _, item := range document.OperationExecutors {
-		if item.ID == "" || r.executors[item.ID].ID != "" {
-			return nil, fmt.Errorf("invalid or duplicate operation executor %q", item.ID)
-		}
-		if r.adapters[item.EngineAdapterID].ID == "" {
-			return nil, fmt.Errorf("executor %s references unknown adapter %s", item.ID, item.EngineAdapterID)
-		}
-		for _, capabilityID := range item.CapabilityDefinitionIDs {
-			if r.capabilities[capabilityID].ID == "" {
-				return nil, fmt.Errorf("executor %s references unknown capability %s", item.ID, capabilityID)
+	for _, registration := range registrations {
+		for _, definition := range registration.CapabilityDefinitions {
+			if err := registry.addCapabilityDefinition(definition); err != nil {
+				return nil, err
 			}
 		}
-		r.executors[item.ID] = item
+		adapter := registration.EngineAdapter
+		if strings.TrimSpace(adapter.ID) == "" {
+			return nil, fmt.Errorf("static adapter registration has empty adapter id")
+		}
+		if _, exists := registry.adapters[adapter.ID]; exists {
+			return nil, fmt.Errorf("duplicate static engine adapter %q", adapter.ID)
+		}
+		registry.adapters[adapter.ID] = adapter
 	}
-	for i := range document.ApplicationEngineTypes {
-		item := document.ApplicationEngineTypes[i]
-		if item.ID == "" || r.engineTypes[item.ID].ID != "" {
-			return nil, fmt.Errorf("invalid or duplicate application engine type %q", item.ID)
-		}
-		if r.adapters[item.EngineAdapterID].ID == "" {
-			return nil, fmt.Errorf("engine type %s references unknown adapter %s", item.ID, item.EngineAdapterID)
-		}
-		capabilityIDs := make([]string, 0, len(item.OperationExecutors))
-		for capabilityID, executorID := range item.OperationExecutors {
-			executor := r.executors[executorID]
-			if executor.ID == "" || !containsString(executor.CapabilityDefinitionIDs, capabilityID) {
-				return nil, fmt.Errorf("engine type %s has invalid executor mapping %s=%s", item.ID, capabilityID, executorID)
+	for _, registration := range registrations {
+		for _, executor := range registration.OperationExecutors {
+			if err := registry.addExecutor(executor); err != nil {
+				return nil, err
 			}
-			capabilityIDs = append(capabilityIDs, capabilityID)
 		}
-		sort.Strings(capabilityIDs)
-		item.CapabilityDefinitions = map[string][]string{"zh-CN": {}, "en-US": {}}
-		for _, capabilityID := range capabilityIDs {
-			definition := r.capabilities[capabilityID]
-			item.CapabilityDefinitions["zh-CN"] = append(item.CapabilityDefinitions["zh-CN"], definition.NameI18n["zh-CN"])
-			item.CapabilityDefinitions["en-US"] = append(item.CapabilityDefinitions["en-US"], definition.NameI18n["en-US"])
-		}
-		r.engineTypes[item.ID] = item
-		r.engineList = append(r.engineList, item.DeepCopy())
 	}
-	sort.Slice(r.engineList, func(i, j int) bool { return r.engineList[i].ID < r.engineList[j].ID })
-	return r, nil
+	for _, registration := range registrations {
+		if err := registry.addEngineType(registration.EngineType); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(registry.engineList, func(i, j int) bool { return registry.engineList[i].ID < registry.engineList[j].ID })
+	return registry, nil
+}
+
+func (r *RuntimeRegistry) addCapabilityDefinition(item iapiserver.CapabilityDefinition) error {
+	if strings.TrimSpace(item.ID) == "" || !hasBilingualText(item.NameI18n) {
+		return fmt.Errorf("invalid static capability definition %q", item.ID)
+	}
+	if existing, exists := r.capabilities[item.ID]; exists {
+		if !reflect.DeepEqual(existing, item) {
+			return fmt.Errorf("conflicting static capability definition %q", item.ID)
+		}
+		return nil
+	}
+	r.capabilities[item.ID] = item
+	return nil
+}
+
+func (r *RuntimeRegistry) addExecutor(item iapiserver.OperationExecutorDefinition) error {
+	if strings.TrimSpace(item.ID) == "" {
+		return fmt.Errorf("static operation executor has empty id")
+	}
+	if _, exists := r.executors[item.ID]; exists {
+		return fmt.Errorf("duplicate static operation executor %q", item.ID)
+	}
+	if _, ok := r.adapters[item.EngineAdapterID]; !ok {
+		return fmt.Errorf("executor %s references unknown adapter %s", item.ID, item.EngineAdapterID)
+	}
+	for _, capabilityID := range item.CapabilityDefinitionIDs {
+		if _, ok := r.capabilities[capabilityID]; !ok {
+			return fmt.Errorf("executor %s references unknown capability %s", item.ID, capabilityID)
+		}
+	}
+	r.executors[item.ID] = item
+	return nil
+}
+
+func (r *RuntimeRegistry) addEngineType(item iapiserver.ApplicationEngineType) error {
+	if strings.TrimSpace(item.ID) == "" {
+		return fmt.Errorf("static application engine type has empty id")
+	}
+	if _, exists := r.engineTypes[item.ID]; exists {
+		return fmt.Errorf("duplicate static application engine type %q", item.ID)
+	}
+	if !hasBilingualText(item.NameI18n) || !hasBilingualText(item.DescriptionI18n) {
+		return fmt.Errorf("engine type %s is missing zh-CN or en-US text", item.ID)
+	}
+	for field, value := range map[string]string{
+		"official_website_url":       item.OfficialWebsiteURL,
+		"official_documentation_url": item.OfficialDocumentationURL,
+		"default_api_base_url":       item.DefaultAPIBaseURL,
+	} {
+		if !validAbsoluteURL(value) {
+			return fmt.Errorf("engine type %s has invalid %s", item.ID, field)
+		}
+	}
+	if _, ok := r.adapters[item.EngineAdapterID]; !ok {
+		return fmt.Errorf("engine type %s references unknown adapter %s", item.ID, item.EngineAdapterID)
+	}
+	seenAuthTypes := make(map[string]struct{}, len(item.AuthenticationTypes))
+	for _, authType := range item.AuthenticationTypes {
+		expectedFields, supported := authenticationFields(authType)
+		if !supported {
+			return fmt.Errorf("engine type %s has unsupported authentication type %s", item.ID, authType)
+		}
+		if _, duplicate := seenAuthTypes[authType]; duplicate {
+			return fmt.Errorf("engine type %s has duplicate authentication type %s", item.ID, authType)
+		}
+		seenAuthTypes[authType] = struct{}{}
+		schema, exists := item.AuthenticationConfigSchema[authType]
+		if !exists || !validAuthenticationSchema(schema, expectedFields, authType == iapiserver.EngineAuthNone) {
+			return fmt.Errorf("engine type %s has invalid authentication schema for %s", item.ID, authType)
+		}
+	}
+	for authType := range item.AuthenticationConfigSchema {
+		if _, exists := seenAuthTypes[authType]; !exists {
+			return fmt.Errorf("engine type %s has authentication schema for unsupported type %s", item.ID, authType)
+		}
+	}
+	capabilityIDs := make([]string, 0, len(item.OperationExecutors))
+	for capabilityID, executorID := range item.OperationExecutors {
+		executor, ok := r.executors[executorID]
+		if !ok || !containsString(executor.CapabilityDefinitionIDs, capabilityID) {
+			return fmt.Errorf("engine type %s has invalid executor mapping %s=%s", item.ID, capabilityID, executorID)
+		}
+		capabilityIDs = append(capabilityIDs, capabilityID)
+	}
+	sort.Strings(capabilityIDs)
+	item.CapabilityDefinitions = map[string][]string{localeChinese: {}, localeEnglish: {}}
+	for _, capabilityID := range capabilityIDs {
+		definition := r.capabilities[capabilityID]
+		item.CapabilityDefinitions[localeChinese] = append(item.CapabilityDefinitions[localeChinese], definition.NameI18n[localeChinese])
+		item.CapabilityDefinitions[localeEnglish] = append(item.CapabilityDefinitions[localeEnglish], definition.NameI18n[localeEnglish])
+	}
+	r.engineTypes[item.ID] = item
+	r.engineList = append(r.engineList, item.DeepCopy())
+	return nil
 }
 
 func (r *RuntimeRegistry) EngineTypes() []*iapiserver.ApplicationEngineType {
@@ -153,297 +227,131 @@ func (r *RuntimeRegistry) operationExecutor(engineTypeID, capabilityID string) (
 	return executor, ok
 }
 
-// OperationExecutor resolves the immutable executor mapping for an engine type and standard capability.
+// OperationExecutor 解析 EngineType 与标准能力的不可变执行器映射。
 func (r *RuntimeRegistry) OperationExecutor(engineTypeID, capabilityID string) (iapiserver.OperationExecutorDefinition, bool) {
 	return r.operationExecutor(engineTypeID, capabilityID)
 }
 
-type capabilityEntry struct {
-	capability *iapiserver.AIAppProviderCapability
-	result     *iapiserver.ProviderCapabilityLoadResult
-}
-
-// ProviderCapabilityRegistry is frozen after startup and safe for concurrent reads.
+// ProviderCapabilityRegistry 是进程启动后冻结的静态能力目录。
 type ProviderCapabilityRegistry struct {
-	status       string
 	capabilities map[string]*iapiserver.AIAppProviderCapability
 	ordered      []*iapiserver.AIAppProviderCapability
-	results      []*iapiserver.ProviderCapabilityLoadResult
 }
 
-func LoadProviderCapabilityRegistry(directory string, runtime *RuntimeRegistry) (*ProviderCapabilityRegistry, error) {
+// NewProviderCapabilityRegistry 校验全部适配器能力并原子构造只读 Registry。
+func NewProviderCapabilityRegistry(registrations []Registration, runtime *RuntimeRegistry) (*ProviderCapabilityRegistry, error) {
 	if runtime == nil {
 		return nil, fmt.Errorf("runtime registry is required")
 	}
 	registry := &ProviderCapabilityRegistry{
-		status:       iapiserver.ProviderRegistryReady,
 		capabilities: make(map[string]*iapiserver.AIAppProviderCapability),
 		ordered:      []*iapiserver.AIAppProviderCapability{},
-		results:      []*iapiserver.ProviderCapabilityLoadResult{},
 	}
-	schema, err := compileProviderCapabilitySchema()
-	if err != nil {
-		return nil, err
-	}
-	builtinEntries, err := fs.ReadDir(registryAssets, builtinProviderCapabilityDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("read embedded provider capabilities: %w", err)
-	}
-	for _, entry := range builtinEntries {
-		if entry.IsDir() || !isYAMLFile(entry.Name()) {
-			continue
-		}
-		assetPath := builtinProviderCapabilityDirectory + "/" + entry.Name()
-		raw, readErr := registryAssets.ReadFile(assetPath)
-		if readErr != nil {
-			return nil, fmt.Errorf("read embedded provider capability %s: %w", entry.Name(), readErr)
-		}
-		result := loadCapabilityBytes("embedded://provider-capabilities/"+entry.Name(), raw, iapiserver.ProviderCapabilityOriginBuiltin, schema, runtime)
-		if result.capability == nil || result.result.Result != "loaded" {
-			return nil, fmt.Errorf("invalid embedded provider capability %s: %s", entry.Name(), result.result.FailureDetail)
-		}
-		if _, exists := registry.capabilities[result.capability.ID]; exists {
-			return nil, fmt.Errorf("duplicate embedded provider capability %q", result.capability.ID)
-		}
-		registry.capabilities[result.capability.ID] = result.capability
-		registry.ordered = append(registry.ordered, result.capability)
-		registry.results = append(registry.results, result.result)
-	}
-
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		registry.status = iapiserver.ProviderRegistryDegraded
-		registry.results = append(registry.results, loadFailure(nil, directory,
-			"ERR_AIAPP_PROVIDER_CAPABILITY_DIRECTORY_UNREADABLE",
-			code.ErrAIAppProviderCapabilityDirectoryUnreadable, err.Error()))
-		sort.Slice(registry.ordered, func(i, j int) bool { return registry.ordered[i].ID < registry.ordered[j].ID })
-		return registry, nil
-	}
-	loaded := make([]*capabilityEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !isYAMLFile(entry.Name()) {
-			continue
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		loaded = append(loaded, loadCapabilityFile(filepath.Join(directory, entry.Name()), schema, runtime))
-	}
-	duplicates := make(map[string][]int)
-	duplicateIDs := make(map[string]struct{})
-	reservedIndexes := make(map[int]struct{})
-	for i, entry := range loaded {
-		if entry.capability != nil && entry.capability.ID != "" {
-			if _, reserved := registry.capabilities[entry.capability.ID]; reserved {
-				reservedIndexes[i] = struct{}{}
-				entry.capability.Availability = iapiserver.ProviderCapabilityUnavailable
-				entry.capability.UnavailableCode = "ERR_AIAPP_PROVIDER_CAPABILITY_ID_RESERVED"
-				entry.capability.UnavailableSummary = "reserved builtin ProviderCapability id: " + entry.capability.ID
-				entry.result.Result = "failed"
-				entry.result.ErrorCode = entry.capability.UnavailableCode
-				entry.result.ErrorValue = code.ErrAIAppProviderCapabilityIDReserved
-				entry.result.FailureDetail = entry.capability.UnavailableSummary
-				continue
+	for _, registration := range registrations {
+		for index := range registration.ProviderCapabilities {
+			capability := registration.ProviderCapabilities[index].DeepCopy()
+			if _, exists := registry.capabilities[capability.ID]; exists {
+				return nil, fmt.Errorf("duplicate static provider capability %q", capability.ID)
 			}
-			duplicates[entry.capability.ID] = append(duplicates[entry.capability.ID], i)
+			if err := validateCapability(capability, runtime, registration.EngineAdapter.ID); err != nil {
+				return nil, fmt.Errorf("static provider capability %s: %w", capability.ID, err)
+			}
+			registry.capabilities[capability.ID] = capability
+			registry.ordered = append(registry.ordered, capability)
 		}
-	}
-	for id, indexes := range duplicates {
-		if len(indexes) < 2 {
-			continue
-		}
-		duplicateIDs[id] = struct{}{}
-		for _, index := range indexes {
-			entry := loaded[index]
-			entry.capability.Availability = iapiserver.ProviderCapabilityUnavailable
-			entry.capability.UnavailableCode = "ERR_AIAPP_PROVIDER_CAPABILITY_ID_DUPLICATED"
-			entry.capability.UnavailableSummary = "duplicate ProviderCapability id: " + id
-			entry.result.Result = "failed"
-			entry.result.ErrorCode = entry.capability.UnavailableCode
-			entry.result.ErrorValue = code.ErrAIAppProviderCapabilityIDDuplicated
-			entry.result.FailureDetail = entry.capability.UnavailableSummary
-		}
-	}
-	for index, entry := range loaded {
-		registry.results = append(registry.results, entry.result)
-		if entry.capability == nil || entry.capability.ID == "" {
-			continue
-		}
-		if _, duplicated := duplicateIDs[entry.capability.ID]; duplicated {
-			continue
-		}
-		if _, reserved := reservedIndexes[index]; reserved {
-			continue
-		}
-		registry.capabilities[entry.capability.ID] = entry.capability
-		registry.ordered = append(registry.ordered, entry.capability)
 	}
 	sort.Slice(registry.ordered, func(i, j int) bool { return registry.ordered[i].ID < registry.ordered[j].ID })
 	return registry, nil
 }
 
-func compileProviderCapabilitySchema() (*jsonschema.Schema, error) {
-	raw, err := registryAssets.ReadFile("assets/provider-capability.schema.yaml")
-	if err != nil {
-		return nil, fmt.Errorf("read embedded provider capability schema: %w", err)
+func validateCapability(capability *iapiserver.AIAppProviderCapability, runtime *RuntimeRegistry, adapterID string) error {
+	if capability == nil || strings.TrimSpace(capability.ID) == "" {
+		return fmt.Errorf("id is required")
 	}
-	var document any
-	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return nil, fmt.Errorf("parse embedded provider capability schema: %w", err)
+	if capability.SchemaVersion != "1.0" || capability.Origin != iapiserver.ProviderCapabilityOriginStatic {
+		return fmt.Errorf("schema_version=1.0 and origin=static are required")
 	}
-	compiler := jsonschema.NewCompiler()
-	compiler.AssertFormat()
-	const schemaURL = "https://omnimam.local/schemas/application-platform/provider-capability.schema.yaml"
-	if err := compiler.AddResource(schemaURL, document); err != nil {
-		return nil, fmt.Errorf("register provider capability schema: %w", err)
+	if !hasBilingualText(capability.NameI18n) || !hasBilingualText(capability.DescriptionI18n) {
+		return fmt.Errorf("zh-CN and en-US name/description are required")
 	}
-	schema, err := compiler.Compile(schemaURL)
-	if err != nil {
-		return nil, fmt.Errorf("compile provider capability schema: %w", err)
+	if strings.TrimSpace(capability.Revision) == "" {
+		return fmt.Errorf("revision is required")
 	}
-	return schema, nil
-}
-
-func loadCapabilityFile(path string, schema *jsonschema.Schema, runtime *RuntimeRegistry) *capabilityEntry {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		loadedAt := imachinery.NewTime(time.Now())
-		result := &iapiserver.ProviderCapabilityLoadResult{SourceFile: path, Result: "failed", LoadedAt: loadedAt}
-		result.ErrorCode = "ERR_AIAPP_PROVIDER_CAPABILITY_YAML_INVALID"
-		result.ErrorValue = code.ErrAIAppProviderCapabilityYAMLInvalid
-		result.FailureDetail = err.Error()
-		return &capabilityEntry{result: result}
+	if len(capability.Provider) == 0 || len(capability.Sources) == 0 {
+		return fmt.Errorf("provider and official sources are required")
 	}
-	return loadCapabilityBytes(path, raw, iapiserver.ProviderCapabilityOriginDirectory, schema, runtime)
-}
-
-func loadCapabilityBytes(source string, raw []byte, origin string, schema *jsonschema.Schema, runtime *RuntimeRegistry) *capabilityEntry {
-	loadedAt := imachinery.NewTime(time.Now())
-	result := &iapiserver.ProviderCapabilityLoadResult{SourceFile: source, Result: "failed", LoadedAt: loadedAt}
-	var document any
-	if err := yaml.Unmarshal(raw, &document); err != nil {
-		result.ErrorCode = "ERR_AIAPP_PROVIDER_CAPABILITY_YAML_INVALID"
-		result.ErrorValue = code.ErrAIAppProviderCapabilityYAMLInvalid
-		result.FailureDetail = err.Error()
-		return &capabilityEntry{result: result}
+	if website, _ := capability.Provider["official_website"].(string); !validAbsoluteURL(website) {
+		return fmt.Errorf("provider official_website is invalid")
 	}
-	var capability iapiserver.AIAppProviderCapability
-	if err := yaml.Unmarshal(raw, &capability); err != nil {
-		result.ErrorCode = "ERR_AIAPP_PROVIDER_CAPABILITY_YAML_INVALID"
-		result.ErrorValue = code.ErrAIAppProviderCapabilityYAMLInvalid
-		result.FailureDetail = err.Error()
-		return &capabilityEntry{result: result}
-	}
-	capability.LoadedAt = loadedAt
-	capability.Origin = origin
-	if capability.ID != "" {
-		id := capability.ID
-		result.ProviderCapabilityID = &id
-	}
-	if capability.SchemaVersion != "1.0" {
-		return rejectedEntry(result, "ERR_AIAPP_PROVIDER_CAPABILITY_SCHEMA_VERSION_UNSUPPORTED", code.ErrAIAppProviderCapabilitySchemaVersionUnsupported, "unsupported schema_version")
-	}
-	if err := schema.Validate(document); err != nil {
-		return rejectedEntry(result, "ERR_AIAPP_PROVIDER_CAPABILITY_SCHEMA_INVALID", code.ErrAIAppProviderCapabilitySchemaInvalid, err.Error())
-	}
-	if failure := validateCapabilitySemantics(&capability, runtime, origin); failure != nil {
-		return unavailableEntry(&capability, result, failure.name, failure.value, failure.detail)
-	}
-	if capability.Enabled {
-		capability.Availability = iapiserver.ProviderCapabilityAvailable
-		result.Result = "loaded"
-	} else {
-		capability.Availability = iapiserver.ProviderCapabilityDisabled
-		result.Result = "disabled"
-	}
-	return &capabilityEntry{capability: &capability, result: result}
-}
-
-type validationFailure struct {
-	name   string
-	value  int
-	detail string
-}
-
-func validateCapabilitySemantics(capability *iapiserver.AIAppProviderCapability, runtime *RuntimeRegistry, origin string) *validationFailure {
-	if origin == iapiserver.ProviderCapabilityOriginDirectory && capability.BindingPolicy != iapiserver.ProviderBindingPolicyManual {
-		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_SCHEMA_INVALID", code.ErrAIAppProviderCapabilitySchemaInvalid, "directory capabilities must use manual binding_policy"}
+	for index, source := range capability.Sources {
+		sourceURL, _ := source["url"].(string)
+		if !validAbsoluteURL(sourceURL) {
+			return fmt.Errorf("source %d has invalid url", index)
+		}
 	}
 	engineType, ok := runtime.EngineType(capability.ApplicationEngineTypeID)
-	if !ok {
-		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_ENGINE_TYPE_MISSING", code.ErrAIAppProviderCapabilityEngineTypeMissing, "application engine type is not registered"}
-	}
-	if runtime.adapters[engineType.EngineAdapterID].ID == "" {
-		return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_ADAPTER_MISSING", code.ErrAIAppProviderCapabilityAdapterMissing, "engine adapter is not registered"}
+	if !ok || engineType.EngineAdapterID != adapterID {
+		return fmt.Errorf("engine type %q does not resolve to adapter %q", capability.ApplicationEngineTypeID, adapterID)
 	}
 	if capability.Kind == iapiserver.ProviderCapabilityKindEngineBinding {
-		return nil
+		if capability.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || len(capability.Models) != 0 || len(capability.Operations) != 0 || len(capability.Variants) != 0 {
+			return fmt.Errorf("engine_binding must be required_immutable and have no model catalog")
+		}
+	} else if capability.Kind != iapiserver.ProviderCapabilityKindCatalog || capability.BindingPolicy != iapiserver.ProviderBindingPolicyManual {
+		return fmt.Errorf("catalog must use manual binding policy")
 	}
 	models := make(map[string]struct{}, len(capability.Models))
 	for _, model := range capability.Models {
+		if strings.TrimSpace(model.ID) == "" || strings.TrimSpace(model.ProviderModelID) == "" || strings.TrimSpace(model.Family) == "" || strings.TrimSpace(model.Variant) == "" || !hasBilingualText(model.DisplayNameI18n) || !hasBilingualText(model.DescriptionI18n) || !validLifecycleStatus(model.Lifecycle.Status) {
+			return fmt.Errorf("model %q is incomplete", model.ID)
+		}
 		if _, exists := models[model.ID]; exists {
-			return variantFailure("duplicate model " + model.ID)
+			return fmt.Errorf("duplicate model %q", model.ID)
 		}
 		models[model.ID] = struct{}{}
 	}
-	operations := make(map[string]iapiserver.ProviderCapabilityOperation, len(capability.Operations))
+	operations := make(map[string]struct{}, len(capability.Operations))
 	for _, operation := range capability.Operations {
+		if strings.TrimSpace(operation.ID) == "" || strings.TrimSpace(operation.CapabilityDefinitionID) == "" || !hasBilingualText(operation.NameI18n) || !hasBilingualText(operation.DescriptionI18n) || !validExecutionMode(operation.ExecutionMode) || operation.InputMediaTypes == nil || operation.OutputMediaTypes == nil {
+			return fmt.Errorf("operation %q is incomplete", operation.ID)
+		}
 		if _, exists := operations[operation.ID]; exists {
-			return variantFailure("duplicate operation " + operation.ID)
+			return fmt.Errorf("duplicate operation %q", operation.ID)
 		}
 		if _, ok := runtime.Capability(operation.CapabilityDefinitionID); !ok {
-			return variantFailure("unknown capability definition " + operation.CapabilityDefinitionID)
+			return fmt.Errorf("operation %s references unknown capability %s", operation.ID, operation.CapabilityDefinitionID)
 		}
 		if _, ok := runtime.operationExecutor(capability.ApplicationEngineTypeID, operation.CapabilityDefinitionID); !ok {
-			return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_EXECUTOR_MISSING", code.ErrAIAppProviderCapabilityExecutorMissing, "operation executor is not registered for " + operation.CapabilityDefinitionID}
+			return fmt.Errorf("operation %s has no registered executor", operation.ID)
 		}
-		operations[operation.ID] = operation
+		operations[operation.ID] = struct{}{}
 	}
 	variants := make(map[string]struct{}, len(capability.Variants))
 	for _, variant := range capability.Variants {
+		if strings.TrimSpace(variant.ID) == "" {
+			return fmt.Errorf("variant id is required")
+		}
 		if _, exists := variants[variant.ID]; exists {
-			return variantFailure("duplicate variant " + variant.ID)
+			return fmt.Errorf("duplicate variant %q", variant.ID)
 		}
 		if _, ok := models[variant.ModelID]; !ok {
-			return variantFailure("variant references unknown model " + variant.ModelID)
+			return fmt.Errorf("variant %s references unknown model %s", variant.ID, variant.ModelID)
 		}
 		if _, ok := operations[variant.OperationID]; !ok {
-			return variantFailure("variant references unknown operation " + variant.OperationID)
+			return fmt.Errorf("variant %s references unknown operation %s", variant.ID, variant.OperationID)
+		}
+		if !validLifecycleStatus(variant.Lifecycle.Status) || variant.InputSchema == nil || variant.OutputSchema == nil {
+			return fmt.Errorf("variant %s is incomplete", variant.ID)
 		}
 		variants[variant.ID] = struct{}{}
 	}
+	if capability.Enabled {
+		capability.Availability = iapiserver.ProviderCapabilityAvailable
+	} else {
+		capability.Availability = iapiserver.ProviderCapabilityDisabled
+	}
 	return nil
 }
-
-func variantFailure(detail string) *validationFailure {
-	return &validationFailure{"ERR_AIAPP_PROVIDER_CAPABILITY_VARIANT_INVALID", code.ErrAIAppProviderCapabilityVariantInvalid, detail}
-}
-
-func unavailableEntry(capability *iapiserver.AIAppProviderCapability, result *iapiserver.ProviderCapabilityLoadResult, name string, value int, detail string) *capabilityEntry {
-	capability.Availability = iapiserver.ProviderCapabilityUnavailable
-	capability.UnavailableCode = name
-	capability.UnavailableSummary = detail
-	result.Result = "failed"
-	result.ErrorCode = name
-	result.ErrorValue = value
-	result.FailureDetail = detail
-	return &capabilityEntry{capability: capability, result: result}
-}
-
-func rejectedEntry(result *iapiserver.ProviderCapabilityLoadResult, name string, value int, detail string) *capabilityEntry {
-	result.Result = "failed"
-	result.ErrorCode = name
-	result.ErrorValue = value
-	result.FailureDetail = detail
-	return &capabilityEntry{result: result}
-}
-
-func loadFailure(id *string, source, name string, value int, detail string) *iapiserver.ProviderCapabilityLoadResult {
-	return &iapiserver.ProviderCapabilityLoadResult{ProviderCapabilityID: id, SourceFile: source, Result: "failed", ErrorCode: name, ErrorValue: value, FailureDetail: detail, LoadedAt: imachinery.NewTime(time.Now())}
-}
-
-func (r *ProviderCapabilityRegistry) Status() string { return r.status }
 
 func (r *ProviderCapabilityRegistry) Capabilities() []*iapiserver.AIAppProviderCapability {
 	items := make([]*iapiserver.AIAppProviderCapability, 0, len(r.ordered))
@@ -461,11 +369,11 @@ func (r *ProviderCapabilityRegistry) Get(id string) (*iapiserver.AIAppProviderCa
 	return item.DeepCopy(), true
 }
 
-// RequiredBindingsForEngineType 返回指定 EngineType 必须具备的内置不可变绑定。
+// RequiredBindingsForEngineType 返回适用于 EngineType 的系统不可变绑定能力。
 func (r *ProviderCapabilityRegistry) RequiredBindingsForEngineType(engineTypeID string) []*iapiserver.AIAppProviderCapability {
 	items := make([]*iapiserver.AIAppProviderCapability, 0)
 	for _, item := range r.ordered {
-		if item.ApplicationEngineTypeID != engineTypeID || item.Kind != iapiserver.ProviderCapabilityKindEngineBinding || item.Origin != iapiserver.ProviderCapabilityOriginBuiltin || item.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || item.Availability != iapiserver.ProviderCapabilityAvailable {
+		if item.ApplicationEngineTypeID != engineTypeID || item.Kind != iapiserver.ProviderCapabilityKindEngineBinding || item.Origin != iapiserver.ProviderCapabilityOriginStatic || item.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable || item.Availability != iapiserver.ProviderCapabilityAvailable {
 			continue
 		}
 		items = append(items, item.DeepCopy())
@@ -473,26 +381,79 @@ func (r *ProviderCapabilityRegistry) RequiredBindingsForEngineType(engineTypeID 
 	return items
 }
 
-func (r *ProviderCapabilityRegistry) Results() []*iapiserver.ProviderCapabilityLoadResult {
-	items := make([]*iapiserver.ProviderCapabilityLoadResult, 0, len(r.results))
-	for _, item := range r.results {
-		copyItem := *item
-		items = append(items, &copyItem)
-	}
-	return items
+func hasBilingualText(values map[string]string) bool {
+	return strings.TrimSpace(values[localeChinese]) != "" && strings.TrimSpace(values[localeEnglish]) != ""
 }
 
-func isYAMLFile(name string) bool {
-	extension := strings.ToLower(filepath.Ext(name))
-	return extension == ".yaml" || extension == ".yml"
+func validAbsoluteURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && parsed.IsAbs() && parsed.Host != ""
 }
-func containsString(items []string, value string) bool {
+
+func containsString(items []string, target string) bool {
 	for _, item := range items {
-		if item == value {
+		if item == target {
 			return true
 		}
 	}
 	return false
 }
 
-var _ fs.FS = registryAssets
+func authenticationFields(authType string) ([]string, bool) {
+	switch authType {
+	case iapiserver.EngineAuthNone:
+		return []string{}, true
+	case iapiserver.EngineAuthAPIKey:
+		return []string{"api_key"}, true
+	case iapiserver.EngineAuthBearerToken:
+		return []string{"bearer_token"}, true
+	case iapiserver.EngineAuthAKSK:
+		return []string{"access_key", "secret_key"}, true
+	default:
+		return nil, false
+	}
+}
+
+func sameRequiredFields(raw any, expected []string) bool {
+	actual, ok := raw.([]string)
+	if !ok || len(actual) != len(expected) {
+		return false
+	}
+	actualSet := make(map[string]struct{}, len(actual))
+	for _, field := range actual {
+		actualSet[field] = struct{}{}
+	}
+	if len(actualSet) != len(expected) {
+		return false
+	}
+	for _, field := range expected {
+		if _, exists := actualSet[field]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func validAuthenticationSchema(schema map[string]any, expectedFields []string, forbidden bool) bool {
+	if schema["type"] != "object" || schema["additionalProperties"] != false || !sameRequiredFields(schema["required"], expectedFields) {
+		return false
+	}
+	configuredForbidden, hasForbidden := schema["forbidden"].(bool)
+	if forbidden {
+		return hasForbidden && configuredForbidden
+	}
+	return !hasForbidden || !configuredForbidden
+}
+
+func validLifecycleStatus(status string) bool {
+	switch status {
+	case "active", "preview", "deprecated", "retired":
+		return true
+	default:
+		return false
+	}
+}
+
+func validExecutionMode(mode string) bool {
+	return mode == "synchronous" || mode == "asynchronous"
+}

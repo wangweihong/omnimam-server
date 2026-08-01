@@ -11,13 +11,9 @@ import (
 const (
 	ProviderCapabilityAvailable            = "available"
 	ProviderCapabilityDisabled             = "disabled"
-	ProviderCapabilityUnavailable          = "unavailable"
-	ProviderRegistryReady                  = "ready"
-	ProviderRegistryDegraded               = "degraded"
 	ProviderCapabilityKindCatalog          = "catalog"
 	ProviderCapabilityKindEngineBinding    = "engine_binding"
-	ProviderCapabilityOriginBuiltin        = "builtin"
-	ProviderCapabilityOriginDirectory      = "directory"
+	ProviderCapabilityOriginStatic         = "static"
 	ProviderBindingPolicyManual            = "manual"
 	ProviderBindingPolicyRequiredImmutable = "required_immutable"
 
@@ -58,19 +54,18 @@ const (
 	RuntimeInvalidClamp    = "clamp"
 	RuntimeInvalidReject   = "reject"
 
-	AIAppProviderCapabilityRead            = "aiapp.provider_capability.read"
-	AIAppProviderCapabilityReadDiagnostics = "aiapp.provider_capability.read_diagnostics"
-	AIAppEngineInstanceManage              = "aiapp.engine_instance.manage"
-	AIAppEngineInstanceRead                = "aiapp.engine_instance.read"
-	AIAppEngineBindingManage               = "aiapp.engine_binding.manage"
-	AIAppComfyUIWorkflowRead               = "aiapp.comfyui_workflow.read"
-	AIAppComfyUIWorkflowManage             = "aiapp.comfyui_workflow.manage"
-	AIAppComfyUIWorkflowValidate           = "aiapp.comfyui_workflow.validate"
-	AIAppComfyUIWorkflowConvert            = "aiapp.comfyui_workflow.convert"
-	AIAppComfyUIWorkflowTest               = "aiapp.comfyui_workflow.test"
-	AIAppApplicationRead                   = "aiapp.application.read"
-	AIAppApplicationManage                 = "aiapp.application.manage"
-	AIAppApplicationRun                    = "aiapp.application.run"
+	AIAppProviderCapabilityRead  = "aiapp.provider_capability.read"
+	AIAppEngineInstanceManage    = "aiapp.engine_instance.manage"
+	AIAppEngineInstanceRead      = "aiapp.engine_instance.read"
+	AIAppEngineBindingManage     = "aiapp.engine_binding.manage"
+	AIAppComfyUIWorkflowRead     = "aiapp.comfyui_workflow.read"
+	AIAppComfyUIWorkflowManage   = "aiapp.comfyui_workflow.manage"
+	AIAppComfyUIWorkflowValidate = "aiapp.comfyui_workflow.validate"
+	AIAppComfyUIWorkflowConvert  = "aiapp.comfyui_workflow.convert"
+	AIAppComfyUIWorkflowTest     = "aiapp.comfyui_workflow.test"
+	AIAppApplicationRead         = "aiapp.application.read"
+	AIAppApplicationManage       = "aiapp.application.manage"
+	AIAppApplicationRun          = "aiapp.application.run"
 )
 
 // CapabilityDefinition 描述平台内置的统一业务能力分类。
@@ -97,8 +92,12 @@ type OperationExecutorDefinition struct {
 // ApplicationEngineType 是系统启动时注册的不可写引擎类型。
 // +k8s:deepcopy-gen=true
 type ApplicationEngineType struct {
-	ID                         string                    `json:"id" yaml:"id"`
-	Name                       string                    `json:"name" yaml:"name"`
+	ID                         string                    `json:"id"`
+	NameI18n                   map[string]string         `json:"name_i18n"`
+	DescriptionI18n            map[string]string         `json:"description_i18n"`
+	OfficialWebsiteURL         string                    `json:"official_website_url"`
+	OfficialDocumentationURL   string                    `json:"official_documentation_url"`
+	DefaultAPIBaseURL          string                    `json:"default_api_base_url"`
 	Enabled                    bool                      `json:"enabled" yaml:"enabled"`
 	EngineAdapterID            string                    `json:"engine_adapter_id" yaml:"engine_adapter_id"`
 	AuthenticationTypes        []string                  `json:"authentication_types" yaml:"authentication_types"`
@@ -121,7 +120,8 @@ type ProviderLifecycle struct {
 type ProviderCapabilityModel struct {
 	ID                  string            `json:"id" yaml:"id"`
 	ProviderModelID     string            `json:"provider_model_id" yaml:"provider_model_id"`
-	DisplayName         string            `json:"display_name" yaml:"display_name"`
+	DisplayNameI18n     map[string]string `json:"display_name_i18n"`
+	DescriptionI18n     map[string]string `json:"description_i18n"`
 	Family              string            `json:"family" yaml:"family"`
 	Variant             string            `json:"variant" yaml:"variant"`
 	Lifecycle           ProviderLifecycle `json:"lifecycle" yaml:"lifecycle"`
@@ -132,12 +132,13 @@ type ProviderCapabilityModel struct {
 
 // +k8s:deepcopy-gen=true
 type ProviderCapabilityOperation struct {
-	ID                     string   `json:"id" yaml:"id"`
-	CapabilityDefinitionID string   `json:"capability_definition_id" yaml:"capability_definition_id"`
-	ExecutionMode          string   `json:"execution_mode" yaml:"execution_mode"`
-	InputMediaTypes        []string `json:"input_media_types" yaml:"input_media_types"`
-	OutputMediaTypes       []string `json:"output_media_types" yaml:"output_media_types"`
-	Description            string   `json:"description,omitempty" yaml:"description,omitempty"`
+	ID                     string            `json:"id" yaml:"id"`
+	CapabilityDefinitionID string            `json:"capability_definition_id" yaml:"capability_definition_id"`
+	NameI18n               map[string]string `json:"name_i18n"`
+	DescriptionI18n        map[string]string `json:"description_i18n"`
+	ExecutionMode          string            `json:"execution_mode" yaml:"execution_mode"`
+	InputMediaTypes        []string          `json:"input_media_types" yaml:"input_media_types"`
+	OutputMediaTypes       []string          `json:"output_media_types" yaml:"output_media_types"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -152,17 +153,17 @@ type ProviderCapabilityVariant struct {
 	Notes                 []string          `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
 
-// AIAppProviderCapability 是从启动目录加载的只读能力清单，不持久化到数据库。
+// AIAppProviderCapability 是由具体协议适配器静态注册的只读能力清单，不持久化到数据库。
 // Go 名称带领域前缀，避免与 model-management 的同名资源混淆。
 // +k8s:deepcopy-gen=true
 type AIAppProviderCapability struct {
-	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
-	ID            string `json:"id" yaml:"id"`
-	Name          string `json:"name" yaml:"name"`
-	Description   string `json:"description,omitempty" yaml:"description,omitempty"`
+	SchemaVersion   string            `json:"schema_version" yaml:"schema_version"`
+	ID              string            `json:"id" yaml:"id"`
+	NameI18n        map[string]string `json:"name_i18n"`
+	DescriptionI18n map[string]string `json:"description_i18n"`
 	// Kind 区分完整模型目录与仅用于标识引擎运行时身份的绑定能力。
 	Kind string `json:"kind" yaml:"kind"`
-	// Origin 由加载器派生，外部清单不能声明或覆盖 builtin 来源。
+	// Origin 固定为 static，表示能力随协议适配器编译交付。
 	Origin string `json:"origin" yaml:"-"`
 	// BindingPolicy 决定绑定由管理员维护，还是由系统强制维护且不可变。
 	BindingPolicy           string                        `json:"binding_policy" yaml:"binding_policy"`
@@ -178,31 +179,11 @@ type AIAppProviderCapability struct {
 	Notes                   []string                      `json:"notes,omitempty" yaml:"notes,omitempty"`
 	Extensions              map[string]any                `json:"extensions,omitempty" yaml:"extensions,omitempty"`
 	Availability            string                        `json:"availability" yaml:"-"`
-	UnavailableCode         string                        `json:"unavailable_code,omitempty" yaml:"-"`
-	UnavailableSummary      string                        `json:"unavailable_summary,omitempty" yaml:"-"`
-	LoadedAt                imachinery.Time               `json:"loaded_at" yaml:"-"`
-}
-
-type ProviderCapabilityLoadResult struct {
-	ProviderCapabilityID *string         `json:"provider_capability_id"`
-	SourceFile           string          `json:"source_file"`
-	Result               string          `json:"result"`
-	ErrorCode            string          `json:"error_code,omitempty"`
-	ErrorValue           int             `json:"error_value,omitempty"`
-	FailureDetail        string          `json:"failure_detail,omitempty"`
-	LoadedAt             imachinery.Time `json:"loaded_at"`
 }
 
 type ProviderCapabilityListResponse struct {
-	Total          int                        `json:"total"`
-	RegistryStatus string                     `json:"registry_status"`
-	Items          []*AIAppProviderCapability `json:"items"`
-}
-
-type ProviderCapabilityLoadResultListResponse struct {
-	Total          int                             `json:"total"`
-	RegistryStatus string                          `json:"registry_status"`
-	Items          []*ProviderCapabilityLoadResult `json:"items"`
+	Total int                        `json:"total"`
+	Items []*AIAppProviderCapability `json:"items"`
 }
 
 type ApplicationEngineTypeListResponse struct {

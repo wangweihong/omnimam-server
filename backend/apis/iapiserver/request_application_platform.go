@@ -10,11 +10,7 @@ import (
 type ProviderCapabilityListRequest struct {
 	imachinery.BasicQueryParam
 	ApplicationEngineTypeID string `form:"application_engine_type_id"`
-	Availability            string `form:"availability" binding:"omitempty,oneof=available disabled unavailable"`
-}
-type ProviderCapabilityLoadResultListRequest struct {
-	imachinery.BasicQueryParam
-	Result string `form:"result" binding:"omitempty,oneof=loaded disabled failed"`
+	Availability            string `form:"availability" binding:"omitempty,oneof=available disabled"`
 }
 type ApplicationEngineTypeListRequest struct{ imachinery.BasicQueryParam }
 type EngineInstanceListRequest struct {

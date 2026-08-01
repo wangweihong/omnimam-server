@@ -30,6 +30,17 @@ type OperationExecutor interface {
 	Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error)
 }
 
+// CheckpointOperationExecutor 用 runtime task 小型输出恢复外部异步作业，避免 Worker 重启或自动重试时重复提交。
+type CheckpointOperationExecutor interface {
+	OperationExecutor
+	ExecuteCheckpoint(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun, map[string]any) (map[string]any, error)
+}
+
+// ExternalJobCanceler 使用 TaskAttempt/runtime output 中已持久化的外部作业 ID 执行协作式取消。
+type ExternalJobCanceler interface {
+	CancelExternalJob(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun, map[string]any) error
+}
+
 // EngineSrv 提供 Model Gateway 引擎实例、能力绑定、健康状态与组合的适配器服务。
 type EngineSrv interface {
 	ListApplicationEngineTypes(context.Context, *iapiserver.ApplicationEngineTypeListRequest) (*iapiserver.ApplicationEngineTypeListResponse, error)
@@ -99,7 +110,7 @@ func (s *EngineService) ListApplicationEngineTypes(ctx context.Context, req *iap
 	items := s.runtime.EngineTypes()
 	filtered := items[:0]
 	for _, item := range items {
-		if helpers.MatchesKeyword(req.Keyword, item.ID, item.Name) {
+		if helpers.MatchesKeyword(req.Keyword, item.ID, item.NameI18n["zh-CN"], item.NameI18n["en-US"], item.DescriptionI18n["zh-CN"], item.DescriptionI18n["en-US"]) {
 			filtered = append(filtered, item)
 		}
 	}
@@ -162,14 +173,14 @@ func (s *EngineService) CreateEngineInstance(ctx context.Context, req *iapiserve
 func (s *EngineService) ReconcileRequiredEngineBindings(ctx context.Context) error {
 	for _, capability := range s.capabilities.Capabilities() {
 		if capability.Kind != iapiserver.ProviderCapabilityKindEngineBinding ||
-			capability.Origin != iapiserver.ProviderCapabilityOriginBuiltin ||
+			capability.Origin != iapiserver.ProviderCapabilityOriginStatic ||
 			capability.BindingPolicy != iapiserver.ProviderBindingPolicyRequiredImmutable ||
 			capability.Availability != iapiserver.ProviderCapabilityAvailable {
 			continue
 		}
 		if err := s.store.ApplicationPlatforms().EnsureRequiredEngineBindings(
 			ctx, capability.ApplicationEngineTypeID, capability.ID, capability.Revision,
-			capability.Name, "System-managed required capability binding",
+			capabilityName(capability), "System-managed required capability binding",
 		); err != nil {
 			return fmt.Errorf("reconcile required engine binding %s: %w", capability.ID, err)
 		}
@@ -186,7 +197,7 @@ func (s *EngineService) requiredBindingsForEngineType(engineTypeID string) []*ia
 			Enabled: true, Restrictions: map[string]any{}, EffectiveStatus: iapiserver.BindingEffectiveAvailable,
 			SystemManaged: true,
 		}
-		binding.Name = capability.Name
+		binding.Name = capabilityName(capability)
 		binding.Description = "System-managed required capability binding"
 		bindings = append(bindings, binding)
 	}

@@ -1077,7 +1077,11 @@ func engineInstanceRefSummary(item *iapiserver.EngineInstance) *iapiserver.Engin
 }
 
 func providerCapabilityRefSummary(capability *iapiserver.AIAppProviderCapability, operationID *string) *iapiserver.ProviderCapabilityRefSummary {
-	summary := &iapiserver.ProviderCapabilityRefSummary{ID: capability.ID, Name: capability.Name, Revision: capability.Revision, Availability: capability.Availability, OperationID: operationID}
+	name := capability.NameI18n["zh-CN"]
+	if name == "" {
+		name = capability.NameI18n["en-US"]
+	}
+	summary := &iapiserver.ProviderCapabilityRefSummary{ID: capability.ID, Name: name, Revision: capability.Revision, Availability: capability.Availability, OperationID: operationID}
 	if operationID == nil {
 		return summary
 	}
@@ -1085,7 +1089,10 @@ func providerCapabilityRefSummary(capability *iapiserver.AIAppProviderCapability
 		if operation.ID != *operationID {
 			continue
 		}
-		name := operation.Description
+		name := operation.NameI18n["zh-CN"]
+		if name == "" {
+			name = operation.NameI18n["en-US"]
+		}
 		if name == "" {
 			name = operation.ID
 		}

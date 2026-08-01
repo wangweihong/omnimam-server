@@ -92,15 +92,20 @@ func createServer(cfg *config.Config) (*server, error) {
 		return nil, err
 	}
 	storeIns := store.Client()
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	registrations := modeladapters.NewRegistrations()
+	runtimeRegistry, err := appregistry.NewRuntimeRegistry(registrations)
 	if err != nil {
-		return nil, errors.Wrap(err, "load application platform runtime registry")
+		return nil, errors.Wrap(err, "build application platform runtime registry")
 	}
-	capabilityRegistry, err := appregistry.LoadProviderCapabilityRegistry(cfg.ApplicationPlatformOptions.ProviderCapabilityDirectory, runtimeRegistry)
+	capabilityRegistry, err := appregistry.NewProviderCapabilityRegistry(registrations, runtimeRegistry)
 	if err != nil {
-		return nil, errors.Wrap(err, "load application platform provider capabilities")
+		return nil, errors.Wrap(err, "build application platform provider capabilities")
 	}
 	adapters := modeladapters.NewEngineAdapters()
+	executors := modeladapters.NewOperationExecutors()
+	if err := modeladapters.ValidateImplementations(runtimeRegistry, adapters, executors); err != nil {
+		return nil, errors.Wrap(err, "validate application platform adapter implementations")
+	}
 	assets := appsvc.NoopArtifactLifecycle{}
 	events := appsvc.NoopEventPublisher{}
 	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})

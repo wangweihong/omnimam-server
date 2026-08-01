@@ -99,14 +99,15 @@ type Schedule struct {
 }
 
 type WorkerTask struct {
-	AtomicTaskID  string
-	WorkflowID    string
-	RuntimeTaskID string
-	FunctionRef   string
-	RetryCount    int
-	RetriedTaskID string
-	Arguments     map[string]any
-	Logger        TaskLogger
+	AtomicTaskID     string
+	WorkflowID       string
+	RuntimeTaskID    string
+	FunctionRef      string
+	RetryCount       int
+	RetriedTaskID    string
+	Arguments        map[string]any
+	Logger           TaskLogger
+	checkpointLoader func(context.Context) (map[string]any, error)
 }
 
 // Log 通过运行时绑定的 best-effort logger 记录当前 Attempt 日志；缺少 logger 时安全忽略。
@@ -114,6 +115,21 @@ func (t WorkerTask) Log(ctx context.Context, entry TaskLogEntry) {
 	if t.Logger != nil {
 		t.Logger.Log(ctx, entry)
 	}
+}
+
+// LoadCheckpoint 读取同一 runtime task 上次 IN_PROGRESS 返回的小型输出；首次执行返回空 map。
+func (t WorkerTask) LoadCheckpoint(ctx context.Context) (map[string]any, error) {
+	if t.checkpointLoader == nil {
+		return map[string]any{}, nil
+	}
+	checkpoint, err := t.checkpointLoader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if checkpoint == nil {
+		return map[string]any{}, nil
+	}
+	return checkpoint, nil
 }
 
 type Handler func(context.Context, WorkerTask) (map[string]any, error)

@@ -9,7 +9,6 @@ import (
 	toolerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -67,14 +66,7 @@ func (s *systemBindingStore) GetEngineInstance(context.Context, string) (*iapise
 
 func newSystemBindingService(t *testing.T, storage *systemBindingStore) *EngineService {
 	t.Helper()
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, capabilities := newGatewayTestRegistries(t)
 	service, err := NewEngineService(EngineDependencies{
 		Store:        &systemBindingFactory{applications: storage},
 		Runtime:      runtime,
@@ -146,7 +138,7 @@ func TestCreateEngineDoesNotMisclassifyParentInsertFailure(t *testing.T) {
 	}
 }
 
-func TestReconcileRequiredEngineBindingsUsesBuiltinCapability(t *testing.T) {
+func TestReconcileRequiredEngineBindingsUsesStaticCapability(t *testing.T) {
 	storage := &systemBindingStore{}
 	service := newSystemBindingService(t, storage)
 	if err := service.ReconcileRequiredEngineBindings(context.Background()); err != nil {
@@ -156,7 +148,7 @@ func TestReconcileRequiredEngineBindingsUsesBuiltinCapability(t *testing.T) {
 		t.Fatalf("ensure calls=%#v", storage.ensured)
 	}
 	call := storage.ensured[0]
-	if call.engineTypeID != "comfyui" || call.capabilityID != "comfyui-workflow-runtime" || call.revision != "2026-07-24.1" {
+	if call.engineTypeID != "comfyui" || call.capabilityID != "comfyui-workflow-runtime" || call.revision != "1" {
 		t.Fatalf("unexpected ensure call: %#v", call)
 	}
 }

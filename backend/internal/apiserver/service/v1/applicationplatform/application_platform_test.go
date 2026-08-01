@@ -11,18 +11,26 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
+func testStaticRegistries(t *testing.T) (*appregistry.RuntimeRegistry, *appregistry.ProviderCapabilityRegistry) {
+	t.Helper()
+	registrations := modeladapters.NewRegistrations()
+	runtime, err := appregistry.NewRuntimeRegistry(registrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := appregistry.NewProviderCapabilityRegistry(registrations, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime, capabilities
+}
+
 func TestSystemEngineBindingIsNotATemplateSource(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, capabilities := testStaticRegistries(t)
 	service := &applicationPlatformService{Dependencies: Dependencies{Capabilities: capabilities}}
 	_, templateErr := service.templateVersionFromRequest(
 		"image.text_to_image", iapiserver.CapabilitySourceProviderCapability,

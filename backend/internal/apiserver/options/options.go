@@ -67,19 +67,16 @@ type AssetUploadOptions struct {
 	ChunkCleanupHours int    `json:"chunk-cleanup-hours" mapstructure:"chunk-cleanup-hours"`
 }
 
-// ApplicationPlatformOptions configures the immutable provider capability snapshot loaded at startup.
+// ApplicationPlatformOptions 配置 Application Platform 周期性运行参数。
 type ApplicationPlatformOptions struct {
-	ProviderCapabilityDirectory string        `json:"provider-capability-directory" mapstructure:"provider-capability-directory"`
-	EngineHealthInterval        time.Duration `json:"engine-health-interval" mapstructure:"engine-health-interval"`
+	EngineHealthInterval time.Duration `json:"engine-health-interval" mapstructure:"engine-health-interval"`
 }
 
 func NewApplicationPlatformOptions() *ApplicationPlatformOptions {
-	return &ApplicationPlatformOptions{ProviderCapabilityDirectory: "./provider-capabilities", EngineHealthInterval: 30 * time.Second}
+	return &ApplicationPlatformOptions{EngineHealthInterval: 30 * time.Second}
 }
 
 func (o *ApplicationPlatformOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.ProviderCapabilityDirectory, "application-platform.provider-capability-directory", o.ProviderCapabilityDirectory,
-		"directory containing immutable ProviderCapability YAML manifests")
 	fs.DurationVar(&o.EngineHealthInterval, "application-platform.engine-health-interval", o.EngineHealthInterval,
 		"interval for Task Center managed EngineInstance health checks; zero disables automatic checks")
 }
@@ -204,9 +201,5 @@ func (o *Options) Complete() error {
 	if o.SSEOptions.Retention <= 0 || o.SSEOptions.PollInterval <= 0 || o.SSEOptions.HeartbeatInterval <= 0 || o.SSEOptions.MaxConnectionsPerUser <= 0 {
 		return fmt.Errorf("SSE retention, intervals, and connection limit must be positive")
 	}
-	if o.ApplicationPlatformOptions.ProviderCapabilityDirectory == "" {
-		o.ApplicationPlatformOptions.ProviderCapabilityDirectory = "./provider-capabilities"
-	}
-
 	return nil
 }

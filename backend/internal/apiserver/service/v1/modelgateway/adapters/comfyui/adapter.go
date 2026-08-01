@@ -31,14 +31,14 @@ type Adapter struct{}
 func (Adapter) ID() string { return AdapterID }
 
 func (Adapter) Check(ctx context.Context, engine *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
-	if _, err := provider.Invoke(ctx, engine, http.MethodGet, "/system_stats", nil); err != nil {
+	if err := provider.Probe(ctx, engine, http.MethodGet, "/system_stats", provider.WithAPIKeyHeader("X-API-Key")); err != nil {
 		return nil, err
 	}
 	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: engine.ID, HealthStatus: iapiserver.EngineHealthOnline}, nil
 }
 
 func (Adapter) ReadObjectInfo(ctx context.Context, engine *iapiserver.EngineInstance) (map[string]any, error) {
-	result, err := provider.Invoke(ctx, engine, http.MethodGet, "/object_info", nil)
+	result, err := provider.Invoke(ctx, engine, http.MethodGet, "/object_info", nil, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUIObjectInfoUnavailable, err.Error())
 	}
@@ -49,7 +49,7 @@ func (Adapter) ReadObjectInfo(ctx context.Context, engine *iapiserver.EngineInst
 }
 
 func (Adapter) ReadComfyUIVersion(ctx context.Context, engine *iapiserver.EngineInstance) (string, error) {
-	result, err := provider.Invoke(ctx, engine, http.MethodGet, "/system_stats", nil)
+	result, err := provider.Invoke(ctx, engine, http.MethodGet, "/system_stats", nil, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return "", err
 	}
@@ -73,7 +73,7 @@ func (Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstance, 
 	if err != nil {
 		return nil, err
 	}
-	submitted, err := provider.Invoke(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
+	submitted, err := provider.Invoke(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID}, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil, err
 	}
@@ -86,10 +86,10 @@ func (Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstance, 
 	for {
 		select {
 		case <-ctx.Done():
-			_, cancelErr := provider.Invoke(context.WithoutCancel(ctx), engine, http.MethodPost, "/interrupt", map[string]any{})
+			_, cancelErr := provider.Invoke(context.WithoutCancel(ctx), engine, http.MethodPost, "/interrupt", map[string]any{}, provider.WithAPIKeyHeader("X-API-Key"))
 			return nil, stderrors.Join(ctx.Err(), cancelErr)
 		case <-ticker.C:
-			history, pollErr := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
+			history, pollErr := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil, provider.WithAPIKeyHeader("X-API-Key"))
 			if pollErr != nil {
 				return nil, pollErr
 			}

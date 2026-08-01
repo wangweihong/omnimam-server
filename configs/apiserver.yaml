@@ -80,7 +80,6 @@ asset-upload:
   chunk-temp-dir: ${APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR}
 
 application-platform:
-  provider-capability-directory: ${APISERVER_PROVIDER_CAPABILITY_DIRECTORY}
   engine-health-interval: ${APISERVER_ENGINE_HEALTH_INTERVAL}
   chunk-cleanup-hours: ${APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS}
 

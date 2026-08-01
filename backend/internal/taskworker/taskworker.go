@@ -100,13 +100,14 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "start SSE source projector")
 	}
 	defer projector.Close()
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+	registrations := modeladapters.NewRegistrations()
+	runtimeRegistry, err := appregistry.NewRuntimeRegistry(registrations)
 	if err != nil {
-		return errors.Wrap(err, "load application runtime registry")
+		return errors.Wrap(err, "build application runtime registry")
 	}
-	capabilities, err := appregistry.LoadProviderCapabilityRegistry(cfg.ApplicationPlatformOptions.ProviderCapabilityDirectory, runtimeRegistry)
+	capabilities, err := appregistry.NewProviderCapabilityRegistry(registrations, runtimeRegistry)
 	if err != nil {
-		return errors.Wrap(err, "load provider capabilities")
+		return errors.Wrap(err, "build provider capabilities")
 	}
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
 	tasks := taskcentersvc.NewServiceWithRegistries(storeIns, runtime, reconcileRegistry,
@@ -116,6 +117,9 @@ func RunTaskWorker(cfg *config.Config) error {
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
 	adapters := modeladapters.NewEngineAdapters()
 	executors := modeladapters.NewOperationExecutors()
+	if err := modeladapters.ValidateImplementations(runtimeRegistry, adapters, executors); err != nil {
+		return errors.Wrap(err, "validate application platform adapter implementations")
+	}
 	events := appsvc.NoopEventPublisher{}
 	artifactLifecycle := &workerArtifactLifecycle{
 		store: storeIns.AssetsV1(), storage: assetlibrarysvc.NewLocalContentStorage(storeIns),
@@ -220,9 +224,17 @@ func RunTaskWorker(cfg *config.Config) error {
 			atomicTask.ApplicationRunID = run.ID
 			atomicTask.Arguments = task.Arguments
 		}
-		output, err := applicationExecutor.Execute(ctx, atomicTask)
+		checkpoint, err := task.LoadCheckpoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		output, err := applicationExecutor.ExecuteWithCheckpoint(ctx, atomicTask, checkpoint)
 		if err == nil {
-			task.Log(ctx, workflowruntime.WorkerLog("application.execution.completed", workflowruntime.TaskLogLevelInfo, "Application provider execution returned a result."))
+			if inProgress, _ := output["in_progress"].(bool); inProgress {
+				task.Log(ctx, workflowruntime.WorkerLog("application.execution.waiting", workflowruntime.TaskLogLevelInfo, "External application job is waiting for the next callback."))
+			} else {
+				task.Log(ctx, workflowruntime.WorkerLog("application.execution.completed", workflowruntime.TaskLogLevelInfo, "Application provider execution returned a result."))
+			}
 		}
 		return output, err
 	}); err != nil {

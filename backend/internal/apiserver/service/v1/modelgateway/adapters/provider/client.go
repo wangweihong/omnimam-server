@@ -21,12 +21,47 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
+type invokeOptions struct {
+	apiKeyHeader    string
+	apiKeyInPayload bool
+	modelArkSigning bool
+	baseURL         string
+}
+
+// InvokeOption 定义由具体协议适配器选择的请求认证策略。
+type InvokeOption func(*invokeOptions)
+
+// WithAPIKeyHeader 将 api_key 认证映射到指定 Header，而不是默认 Bearer Header。
+func WithAPIKeyHeader(header string) InvokeOption {
+	return func(options *invokeOptions) { options.apiKeyHeader = header }
+}
+
+// WithAPIKeyInPayload 校验 api_key 已配置，但不生成认证 Header；具体适配器负责写入请求体。
+func WithAPIKeyInPayload() InvokeOption {
+	return func(options *invokeOptions) { options.apiKeyInPayload = true }
+}
+
+// WithModelArkSigning 为 BytePlus ModelArk 请求启用官方 AK/SK 签名。
+func WithModelArkSigning() InvokeOption {
+	return func(options *invokeOptions) { options.modelArkSigning = true }
+}
+
+// WithBaseURL 为同一服务的原生端点覆盖 EngineInstance 的协议前缀。
+func WithBaseURL(baseURL string) InvokeOption {
+	return func(options *invokeOptions) { options.baseURL = baseURL }
+}
+
 // Invoke 执行带 EngineInstance 认证与超时约束的 JSON Provider 请求。
-func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, payload any) (map[string]any, error) {
+func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, payload any, options ...InvokeOption) (map[string]any, error) {
 	if engine == nil || strings.TrimSpace(engine.BaseURL) == "" {
 		return nil, errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine base URL is required")
 	}
-	endpoint := strings.TrimRight(engine.BaseURL, "/") + "/" + strings.TrimLeft(requestPath, "/")
+	config := resolveOptions(options)
+	baseURL := engine.BaseURL
+	if strings.TrimSpace(config.baseURL) != "" {
+		baseURL = config.baseURL
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(requestPath, "/")
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(method).AddHeaderParam("Accept", "application/json")
 	var raw json.RawMessage
 	if payload != nil {
@@ -37,7 +72,7 @@ func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requ
 		raw = encoded
 		builder.WithBody("json", raw).AddHeaderParam("Content-Type", "application/json")
 	}
-	if err := ApplyAuthentication(builder, engine, method, requestPath, raw); err != nil {
+	if err := applyAuthentication(builder, engine, method, requestPath, raw, config); err != nil {
 		return nil, err
 	}
 	timeout := time.Duration(engine.RequestTimeoutSeconds) * time.Second
@@ -72,8 +107,48 @@ func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requ
 	return decoded, nil
 }
 
-// ApplyAuthentication 将 EngineInstance 的鉴权联合类型映射到 Provider 请求头或签名。
+// Probe 只验证官方服务地址可达和认证请求可发送，不要求响应体为 JSON。
+func Probe(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, options ...InvokeOption) error {
+	if engine == nil || strings.TrimSpace(engine.BaseURL) == "" {
+		return errors.NewStatus(code.ErrAIAppEngineUnavailable, "engine base URL is required")
+	}
+	config := resolveOptions(options)
+	baseURL := engine.BaseURL
+	if strings.TrimSpace(config.baseURL) != "" {
+		baseURL = config.baseURL
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(requestPath, "/")
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(method).AddHeaderParam("Accept", "application/json")
+	if err := applyAuthentication(builder, engine, method, requestPath, nil, config); err != nil {
+		return err
+	}
+	timeout := time.Duration(engine.RequestTimeoutSeconds) * time.Second
+	if timeout <= 0 || timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	response, err := builder.Build().InvokeWithContext(ctx, httpcli.TimeoutCallOption(timeout))
+	if err != nil {
+		return errors.NewStatus(code.ErrAIAppEngineUnavailable, "provider health probe failed")
+	}
+	if response.GetStatusCode() < http.StatusOK || response.GetStatusCode() >= http.StatusMultipleChoices {
+		switch response.GetStatusCode() {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "provider authentication was rejected")
+		case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
+			return errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, fmt.Sprintf("provider health probe returned HTTP status %d", response.GetStatusCode()))
+		default:
+			return errors.NewStatus(code.ErrAIAppEngineUnavailable, fmt.Sprintf("provider health probe returned HTTP status %d", response.GetStatusCode()))
+		}
+	}
+	return nil
+}
+
+// ApplyAuthentication 使用默认 Bearer 规则处理普通 Provider 请求。
 func ApplyAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver.EngineInstance, method, requestPath string, body []byte) error {
+	return applyAuthentication(builder, engine, method, requestPath, body, invokeOptions{})
+}
+
+func applyAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver.EngineInstance, method, requestPath string, body []byte, options invokeOptions) error {
 	switch engine.AuthType {
 	case "none", "":
 		return nil
@@ -82,11 +157,14 @@ func ApplyAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver
 		if apiKey == "" {
 			return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "api_key is required")
 		}
-		if engine.ApplicationEngineTypeID == "comfyui" {
-			builder.AddHeaderParam("X-API-Key", apiKey)
-		} else {
-			builder.AddHeaderParam("Authorization", "Bearer "+apiKey)
+		if options.apiKeyInPayload {
+			return nil
 		}
+		if options.apiKeyHeader != "" {
+			builder.AddHeaderParam(options.apiKeyHeader, apiKey)
+			return nil
+		}
+		builder.AddHeaderParam("Authorization", "Bearer "+apiKey)
 		return nil
 	case "bearer_token":
 		token, _ := engine.AuthConfig["bearer_token"].(string)
@@ -96,10 +174,23 @@ func ApplyAuthentication(builder *httpcli.HttpRequestBuilder, engine *iapiserver
 		builder.AddHeaderParam("Authorization", "Bearer "+token)
 		return nil
 	case "ak_sk":
+		if !options.modelArkSigning {
+			return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "ak_sk is not supported by this engine adapter")
+		}
 		return applyModelArkSignature(builder, engine, method, requestPath, body, time.Now().UTC())
 	default:
 		return errors.NewStatus(code.ErrAIAppEngineAuthConfigInvalid, "engine authentication type is unsupported")
 	}
+}
+
+func resolveOptions(options []InvokeOption) invokeOptions {
+	config := invokeOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	return config
 }
 
 func applyModelArkSignature(builder *httpcli.HttpRequestBuilder, engine *iapiserver.EngineInstance, method, requestPath string, body []byte, now time.Time) error {

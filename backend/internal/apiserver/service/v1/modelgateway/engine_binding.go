@@ -115,7 +115,7 @@ func (s *EngineService) DeleteEngineBinding(ctx context.Context, id string) (*ia
 // ResolveBindingStatus 按当前不可变目录修正绑定的系统管理标记与有效状态投影。
 func (s *EngineService) ResolveBindingStatus(binding *iapiserver.EngineCapabilityBinding) {
 	capability, ok := s.capabilities.Get(binding.ProviderCapabilityID)
-	binding.SystemManaged = ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
+	binding.SystemManaged = ok && capability.Origin == iapiserver.ProviderCapabilityOriginStatic && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
 	switch {
 	case !binding.Enabled:
 		binding.EffectiveStatus = iapiserver.BindingEffectiveDisabled
@@ -131,5 +131,5 @@ func (s *EngineService) isSystemManagedBinding(binding *iapiserver.EngineCapabil
 		return false
 	}
 	capability, ok := s.capabilities.Get(binding.ProviderCapabilityID)
-	return ok && capability.Origin == iapiserver.ProviderCapabilityOriginBuiltin && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
+	return ok && capability.Origin == iapiserver.ProviderCapabilityOriginStatic && capability.BindingPolicy == iapiserver.ProviderBindingPolicyRequiredImmutable
 }

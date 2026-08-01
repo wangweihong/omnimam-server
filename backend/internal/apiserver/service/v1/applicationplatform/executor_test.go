@@ -12,7 +12,6 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
@@ -87,6 +86,22 @@ type fakeOperationExecutor struct {
 	maximum atomic.Int32
 }
 
+type fakeCheckpointOperationExecutor struct {
+	fakeOperationExecutor
+	checkpoint       map[string]any
+	cancelCheckpoint map[string]any
+}
+
+func (e *fakeCheckpointOperationExecutor) ExecuteCheckpoint(_ context.Context, _ *iapiserver.EngineInstance, _ *iapiserver.ApplicationRun, checkpoint map[string]any) (map[string]any, error) {
+	e.checkpoint = checkpoint
+	return map[string]any{"external_job_id": checkpoint["external_job_id"], "in_progress": true}, nil
+}
+
+func (e *fakeCheckpointOperationExecutor) CancelExternalJob(_ context.Context, _ *iapiserver.EngineInstance, _ *iapiserver.ApplicationRun, checkpoint map[string]any) error {
+	e.cancelCheckpoint = checkpoint
+	return nil
+}
+
 func (e *fakeOperationExecutor) ID() string { return e.id }
 func (e *fakeOperationExecutor) Execute(context.Context, *iapiserver.EngineInstance, *iapiserver.ApplicationRun) (map[string]any, error) {
 	active := e.active.Add(1)
@@ -149,10 +164,7 @@ func (p *recordingEventPublisher) Publish(_ context.Context, event *iapiserver.A
 }
 
 func TestApplicationRunExecutorUsesRegistriesAndEngineConcurrency(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, _ := testStaticRegistries(t)
 	applicationStore := &executorApplicationStore{
 		run:    &iapiserver.ApplicationRun{EngineInstanceID: "engine-1", ExecutionSnapshot: map[string]any{"capability_definition_id": "text.chat_completion"}},
 		engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline, MaxConcurrency: 1, TaskTimeoutSeconds: 2},
@@ -182,11 +194,55 @@ func TestApplicationRunExecutorUsesRegistriesAndEngineConcurrency(t *testing.T) 
 	}
 }
 
-func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
+func TestApplicationRunExecutorPassesRuntimeCheckpoint(t *testing.T) {
+	runtimeRegistry, _ := testStaticRegistries(t)
+	applicationStore := &executorApplicationStore{
+		run:    &iapiserver.ApplicationRun{EngineInstanceID: "engine-1", ExecutionSnapshot: map[string]any{"capability_definition_id": "text.chat_completion"}},
+		engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline, MaxConcurrency: 1, TaskTimeoutSeconds: 2},
+	}
+	operation := &fakeCheckpointOperationExecutor{fakeOperationExecutor: fakeOperationExecutor{id: "deepseek_chat_completions"}}
+	executor, err := NewApplicationRunExecutor(
+		&executorFactory{applications: applicationStore}, runtimeRegistry, nil,
+		map[string]enginegateway.Adapter{"deepseek_official": fakeEngineAdapter{id: "deepseek_official"}},
+		map[string]enginegateway.OperationExecutor{"deepseek_chat_completions": operation}, nil, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkpoint := map[string]any{"external_job_id": "job-1"}
+	output, err := executor.ExecuteWithCheckpoint(context.Background(), &iapiserver.AtomicTask{ApplicationRunID: "run-1"}, checkpoint)
+	if err != nil || operation.checkpoint["external_job_id"] != "job-1" || output["in_progress"] != true {
+		t.Fatalf("checkpoint execution = output %#v, checkpoint %#v, err %v", output, operation.checkpoint, err)
+	}
+}
+
+func TestApplicationRunExecutorCancelsCheckpointedExternalJob(t *testing.T) {
+	runtimeRegistry, _ := testStaticRegistries(t)
+	applicationStore := &executorApplicationStore{
+		run:    &iapiserver.ApplicationRun{EngineInstanceID: "engine-1", ExecutionSnapshot: map[string]any{"capability_definition_id": "text.chat_completion"}},
+		engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline},
+	}
+	operation := &fakeCheckpointOperationExecutor{fakeOperationExecutor: fakeOperationExecutor{id: "deepseek_chat_completions"}}
+	executor, err := NewApplicationRunExecutor(
+		&executorFactory{applications: applicationStore}, runtimeRegistry, nil,
+		map[string]enginegateway.Adapter{"deepseek_official": fakeEngineAdapter{id: "deepseek_official"}},
+		map[string]enginegateway.OperationExecutor{"deepseek_chat_completions": operation}, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &iapiserver.AtomicTask{ApplicationRunID: "run-1", Status: iapiserver.AtomicTaskStatusCanceled, Output: map[string]any{"external_job_id": "job-1"}}
+	task.ID, task.ResourceVersion = "task-1", 2
+	if err := executor.Completed(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if operation.cancelCheckpoint["external_job_id"] != "job-1" {
+		t.Fatalf("cancel checkpoint = %#v", operation.cancelCheckpoint)
+	}
+}
+
+func TestApplicationRunExecutorProjectsAndRegistersArtifact(t *testing.T) {
+	runtimeRegistry, _ := testStaticRegistries(t)
 	contentServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "video/mp4")
 		_, _ = response.Write([]byte("video"))

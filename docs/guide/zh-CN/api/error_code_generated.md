@@ -99,18 +99,8 @@
 | ErrDefaultModelInvalid | 120601 | 200 | Default model candidate is not available. | 默认模型候选不可用。 |
 | ErrModelHealthCheckFailed | 120800 | 200 | Model health check failed. | 模型健康检测失败。 |
 | ErrModelAccessDenied | 121000 | 200 | Current user is not allowed to access this model configuration. | 当前用户无权访问该模型配置。 |
-| ErrAIAppProviderCapabilityDirectoryUnreadable | 130220 | 200 | The ProviderCapability directory is missing or unreadable; the registry is degraded. | ProviderCapability 目录不存在或不可读取，能力注册表已降级。 |
-| ErrAIAppProviderCapabilityYAMLInvalid | 130221 | 200 | The ProviderCapability file is not valid YAML. | ProviderCapability 文件不是合法 YAML。 |
-| ErrAIAppProviderCapabilitySchemaInvalid | 130222 | 200 | ProviderCapability fields do not conform to the current schema. | ProviderCapability 字段不符合当前 Schema。 |
-| ErrAIAppProviderCapabilitySchemaVersionUnsupported | 130223 | 200 | The ProviderCapability schema_version is not supported. | ProviderCapability schema_version 不受支持。 |
-| ErrAIAppProviderCapabilityIDDuplicated | 130224 | 200 | Multiple ProviderCapability files declare the same ID; all conflicting entries are unavailable. | 多个 ProviderCapability 文件声明了相同 ID，所有冲突项均不可用。 |
-| ErrAIAppProviderCapabilityEngineTypeMissing | 130225 | 200 | The ApplicationEngineType referenced by ProviderCapability is not registered. | ProviderCapability 引用的 ApplicationEngineType 未注册。 |
-| ErrAIAppProviderCapabilityAdapterMissing | 130226 | 200 | The EngineAdapter required by ProviderCapability is not registered. | ProviderCapability 对应的 EngineAdapter 未注册。 |
-| ErrAIAppProviderCapabilityExecutorMissing | 130227 | 200 | At least one ProviderCapability operation has no registered OperationExecutor. | ProviderCapability 中至少一个 Operation 缺少 OperationExecutor。 |
-| ErrAIAppProviderCapabilityVariantInvalid | 130228 | 200 | ProviderCapability models, operations, variants, or parameter constraints are inconsistent. | ProviderCapability 的模型、Operation、Variant 或参数约束不一致。 |
 | ErrAIAppProviderCapabilityUnavailable | 130229 | 200 | The ProviderCapability is currently unavailable or disabled. | ProviderCapability 当前不可用或已禁用。 |
 | ErrAIAppProviderCapabilityNotFound | 130230 | 200 | The ProviderCapability does not exist. | ProviderCapability 不存在。 |
-| ErrAIAppProviderCapabilityIDReserved | 130231 | 200 | An external ProviderCapability manifest uses a reserved builtin ID and cannot override the builtin capability. | 外部 ProviderCapability 清单使用了系统内置保留 ID，不能覆盖内置能力。 |
 | ErrAIAppEngineInstanceNotFound | 130420 | 200 | The ApplicationEngineInstance does not exist. | ApplicationEngineInstance 不存在。 |
 | ErrAIAppEngineAuthConfigInvalid | 130421 | 200 | The EngineInstance authentication configuration does not satisfy its EngineType. | EngineInstance 的鉴权配置不符合 EngineType 要求。 |
 | ErrAIAppEngineBindingIncompatible | 130422 | 200 | The EngineCapabilityBinding is incompatible with its EngineType or ProviderCapability. | EngineCapabilityBinding 与 EngineType 或 ProviderCapability 不兼容。 |
@@ -142,6 +132,8 @@
 | ErrAIAppAtomicTaskCreateFailed | 130826 | 200 | AtomicTask creation failed; the ApplicationRun snapshot is retained and may be retried with the same idempotency key. | AtomicTask 创建暂时失败，ApplicationRun 快照已保留，可使用相同幂等键重试。 |
 | ErrAIAppAtomicTaskProjectionStale | 130827 | 200 | The AtomicTask projection event is older than the current ApplicationRun projection. | AtomicTask 投影事件版本早于当前 ApplicationRun 投影。 |
 | ErrAIAppArtifactRegistrationAtomicTaskUnchanged | 130828 | 200 | The Artifact could not be registered as a UserAsset; the AtomicTask terminal state is unchanged. | Artifact 未能登记为 UserAsset，AtomicTask 终态不受影响。 |
+| ErrAIAppArtifactProcessingFailed | 130829 | 200 | Artifact transfer or processing failed. | Artifact 传输或处理失败。 |
+| ErrAIAppArtifactStateInvalid | 130830 | 200 | The Artifact processing or registration state does not allow this transition. | Artifact 当前处理或登记状态不允许该转换。 |
 | ErrAIAppPermissionDenied | 131020 | 200 | The current user lacks the required application-platform permission. | 当前用户缺少所需的应用平台权限。 |
 | ErrAIAppComfyUIWorkflowFileInvalid | 131220 | 200 | The API Workflow file is missing, invalid JSON, or not a valid ComfyUI API Workflow structure. | API Workflow 文件缺失、不是合法 JSON 或不符合 ComfyUI API Workflow 基础结构。 |
 | ErrAIAppComfyUIEngineTypeInvalid | 131221 | 200 | The selected source or target EngineInstance is not a ComfyUI engine. | 指定的来源或目标 EngineInstance 不是 ComfyUI 类型。 |

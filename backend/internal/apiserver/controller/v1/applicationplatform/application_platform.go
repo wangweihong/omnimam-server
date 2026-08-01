@@ -36,11 +36,6 @@ func (c *Controller) GetProviderCapability(ctx *gin.Context) {
 		return c.service.GetProviderCapability(ctx, ctx.Param("provider_capability_id"))
 	})
 }
-func (c *Controller) ListProviderCapabilityLoadResults(ctx *gin.Context) {
-	run(ctx, &iapiserver.ProviderCapabilityLoadResultListRequest{}, func(r *iapiserver.ProviderCapabilityLoadResultListRequest) (any, error) {
-		return c.service.ListProviderCapabilityLoadResults(ctx, r)
-	})
-}
 func (c *Controller) ListApplicationEngineTypes(ctx *gin.Context) {
 	run(ctx, &iapiserver.ApplicationEngineTypeListRequest{}, func(r *iapiserver.ApplicationEngineTypeListRequest) (any, error) {
 		return c.service.ListApplicationEngineTypes(ctx, r)

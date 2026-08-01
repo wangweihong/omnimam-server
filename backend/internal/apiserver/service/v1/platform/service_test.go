@@ -582,7 +582,6 @@ func TestMeIncludesReleasedFrontendPermissions(t *testing.T) {
 		"sse.stream.read",
 		"sse.history.read",
 		iapiserver.AIAppProviderCapabilityRead,
-		iapiserver.AIAppProviderCapabilityReadDiagnostics,
 		iapiserver.AIAppEngineInstanceRead,
 		iapiserver.AIAppEngineInstanceManage,
 		iapiserver.AIAppEngineBindingManage,

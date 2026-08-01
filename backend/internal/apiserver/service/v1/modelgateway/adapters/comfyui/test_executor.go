@@ -45,7 +45,7 @@ func (e *TestExecutor) Submit(ctx context.Context, testRunID string) (map[string
 		}
 		inputs[parameter.InputName] = parameter.Value
 	}
-	result, err := provider.Invoke(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID})
+	result, err := provider.Invoke(ctx, engine, http.MethodPost, "/prompt", map[string]any{"prompt": workflow, "client_id": run.ID}, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (e *TestExecutor) Poll(ctx context.Context, testRunID string) (map[string]a
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
 	promptID := *run.ExternalJobID
-	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil)
+	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(promptID), nil, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func (e *TestExecutor) Collect(ctx context.Context, testRunID string) (map[strin
 	if run.ExternalJobID == nil {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunStateBlocked, "prompt id is missing")
 	}
-	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil)
+	history, err := provider.Invoke(ctx, engine, http.MethodGet, "/history/"+url.PathEscape(*run.ExternalJobID), nil, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (e *TestExecutor) load(ctx context.Context, id string) (*iapiserver.ComfyUI
 	return run, engine, nil
 }
 func comfyQueuePosition(ctx context.Context, engine *iapiserver.EngineInstance, promptID string) *int {
-	queue, err := provider.Invoke(ctx, engine, http.MethodGet, "/queue", nil)
+	queue, err := provider.Invoke(ctx, engine, http.MethodGet, "/queue", nil, provider.WithAPIKeyHeader("X-API-Key"))
 	if err != nil {
 		return nil
 	}

@@ -2010,7 +2010,6 @@ func defaultPermissions() []string {
 		"notification.preference.manage",
 		"feature.manage",
 		iapiserver.AIAppProviderCapabilityRead,
-		iapiserver.AIAppProviderCapabilityReadDiagnostics,
 		iapiserver.AIAppEngineInstanceRead,
 		iapiserver.AIAppEngineInstanceManage,
 		iapiserver.AIAppEngineBindingManage,

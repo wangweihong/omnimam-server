@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 44e659294c3fc8fa948345cc42faf5fcc05b5aa8
-contract_version: spec-v1.8.0
-updated_at: 2026-07-29
+commit: deae3f15d65b78f9e811f53f99149c1f74cab0c5
+contract_version: spec-v1.9.0
+updated_at: 2026-07-31
 status: released
-note: Notification Center adds ACTIVE standalone AtomicTask and CanvasRun inbox projections, counters, preferences, a dedicated worker, and unified SSE events.
+note: Application Platform provider capabilities are adapter-owned static registrations with bilingual metadata and official service addresses.

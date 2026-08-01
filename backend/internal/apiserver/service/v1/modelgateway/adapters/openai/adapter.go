@@ -19,28 +19,37 @@ func NewAdapter(id string) *Adapter { return &Adapter{id: id} }
 func (a *Adapter) ID() string { return a.id }
 
 func (*Adapter) Check(ctx context.Context, engine *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
-	if _, err := provider.Invoke(ctx, engine, http.MethodGet, "/models", nil); err != nil {
+	if err := provider.Probe(ctx, engine, http.MethodGet, "/models"); err != nil {
 		return nil, err
 	}
 	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: engine.ID, HealthStatus: iapiserver.EngineHealthOnline}, nil
 }
 
-// Executor 将运行快照转换为 OpenAI-compatible chat completions 请求。
-type Executor struct{ id string }
+// Executor 将运行快照转换为指定的 OpenAI-compatible JSON 请求。
+type Executor struct {
+	id          string
+	requestPath string
+}
 
 // NewExecutor 构造绑定到 Runtime Registry operation ID 的 OpenAI-compatible 执行器。
-func NewExecutor(id string) *Executor { return &Executor{id: id} }
+func NewExecutor(id string) *Executor { return &Executor{id: id, requestPath: "/chat/completions"} }
+
+// NewJSONExecutor 构造绑定到指定 OpenAI JSON endpoint 的执行器。
+func NewJSONExecutor(id, requestPath string) *Executor {
+	return &Executor{id: id, requestPath: requestPath}
+}
 
 func (e *Executor) ID() string { return e.id }
 
-func (*Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstance, run *iapiserver.ApplicationRun) (map[string]any, error) {
+func (e *Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstance, run *iapiserver.ApplicationRun) (map[string]any, error) {
 	payload := maputil.Clone(run.InputSnapshot)
 	if _, ok := payload["model"]; !ok {
 		if model := providerModelID(run, payload); model != "" {
 			payload["model"] = model
 		}
 	}
-	response, err := provider.Invoke(ctx, engine, http.MethodPost, "/chat/completions", payload)
+	delete(payload, "model_id")
+	response, err := provider.Invoke(ctx, engine, http.MethodPost, e.requestPath, payload)
 	if err != nil {
 		return nil, err
 	}

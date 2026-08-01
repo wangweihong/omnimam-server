@@ -427,42 +427,6 @@ const (
 // application-platform: SSOT scoped business errors.
 const (
 	// @HTTP 200
-	// @CN ProviderCapability 目录不存在或不可读取，能力注册表已降级。
-	// @EN The ProviderCapability directory is missing or unreadable; the registry is degraded.
-	ErrAIAppProviderCapabilityDirectoryUnreadable int = 130220
-	// @HTTP 200
-	// @CN ProviderCapability 文件不是合法 YAML。
-	// @EN The ProviderCapability file is not valid YAML.
-	ErrAIAppProviderCapabilityYAMLInvalid int = 130221
-	// @HTTP 200
-	// @CN ProviderCapability 字段不符合当前 Schema。
-	// @EN ProviderCapability fields do not conform to the current schema.
-	ErrAIAppProviderCapabilitySchemaInvalid int = 130222
-	// @HTTP 200
-	// @CN ProviderCapability schema_version 不受支持。
-	// @EN The ProviderCapability schema_version is not supported.
-	ErrAIAppProviderCapabilitySchemaVersionUnsupported int = 130223
-	// @HTTP 200
-	// @CN 多个 ProviderCapability 文件声明了相同 ID，所有冲突项均不可用。
-	// @EN Multiple ProviderCapability files declare the same ID; all conflicting entries are unavailable.
-	ErrAIAppProviderCapabilityIDDuplicated int = 130224
-	// @HTTP 200
-	// @CN ProviderCapability 引用的 ApplicationEngineType 未注册。
-	// @EN The ApplicationEngineType referenced by ProviderCapability is not registered.
-	ErrAIAppProviderCapabilityEngineTypeMissing int = 130225
-	// @HTTP 200
-	// @CN ProviderCapability 对应的 EngineAdapter 未注册。
-	// @EN The EngineAdapter required by ProviderCapability is not registered.
-	ErrAIAppProviderCapabilityAdapterMissing int = 130226
-	// @HTTP 200
-	// @CN ProviderCapability 中至少一个 Operation 缺少 OperationExecutor。
-	// @EN At least one ProviderCapability operation has no registered OperationExecutor.
-	ErrAIAppProviderCapabilityExecutorMissing int = 130227
-	// @HTTP 200
-	// @CN ProviderCapability 的模型、Operation、Variant 或参数约束不一致。
-	// @EN ProviderCapability models, operations, variants, or parameter constraints are inconsistent.
-	ErrAIAppProviderCapabilityVariantInvalid int = 130228
-	// @HTTP 200
 	// @CN ProviderCapability 当前不可用或已禁用。
 	// @EN The ProviderCapability is currently unavailable or disabled.
 	ErrAIAppProviderCapabilityUnavailable int = 130229
@@ -470,10 +434,6 @@ const (
 	// @CN ProviderCapability 不存在。
 	// @EN The ProviderCapability does not exist.
 	ErrAIAppProviderCapabilityNotFound int = 130230
-	// @HTTP 200
-	// @CN 外部 ProviderCapability 清单使用了系统内置保留 ID，不能覆盖内置能力。
-	// @EN An external ProviderCapability manifest uses a reserved builtin ID and cannot override the builtin capability.
-	ErrAIAppProviderCapabilityIDReserved int = 130231
 	// @HTTP 200
 	// @CN ApplicationEngineInstance 不存在。
 	// @EN The ApplicationEngineInstance does not exist.
@@ -598,6 +558,14 @@ const (
 	// @CN Artifact 未能登记为 UserAsset，AtomicTask 终态不受影响。
 	// @EN The Artifact could not be registered as a UserAsset; the AtomicTask terminal state is unchanged.
 	ErrAIAppArtifactRegistrationAtomicTaskUnchanged int = 130828
+	// @HTTP 200
+	// @CN Artifact 传输或处理失败。
+	// @EN Artifact transfer or processing failed.
+	ErrAIAppArtifactProcessingFailed int = 130829
+	// @HTTP 200
+	// @CN Artifact 当前处理或登记状态不允许该转换。
+	// @EN The Artifact processing or registration state does not allow this transition.
+	ErrAIAppArtifactStateInvalid int = 130830
 	// @HTTP 200
 	// @CN 当前用户缺少所需的应用平台权限。
 	// @EN The current user lacks the required application-platform permission.

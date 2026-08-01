@@ -279,7 +279,16 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 	typed := worker.NewTypedWorker[workerInput, any](functionRef, func(ctx worker.TaskContext, input workerInput) (any, error) {
 		logger := newBoundTaskLogger("conductor", ctx.TaskID(), r)
 		logger.Log(ctx, LifecycleLog("attempt.started", TaskLogLevelInfo, "Execution attempt started."))
-		output, err := handler(ctx, WorkerTask{AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef, RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments, Logger: logger})
+		output, err := handler(ctx, WorkerTask{
+			AtomicTaskID: input.AtomicTaskID, WorkflowID: ctx.WorkflowInstanceID(), RuntimeTaskID: ctx.TaskID(), FunctionRef: functionRef,
+			RetryCount: ctx.RetryCount(), RetriedTaskID: ctx.RetriedTaskID(), Arguments: input.Arguments, Logger: logger,
+			checkpointLoader: func(loadCtx context.Context) (map[string]any, error) {
+				return loadTaskCheckpoint(loadCtx, ctx.TaskID(), ctx.RetriedTaskID(), func(loadCtx context.Context, taskID string) (map[string]any, error) {
+					task, _, loadErr := r.taskClient.GetTask(loadCtx, taskID)
+					return task.OutputData, loadErr
+				})
+			},
+		})
 		if err != nil {
 			logger.Log(ctx, LifecycleLog("attempt.failed", TaskLogLevelError, "Execution attempt failed."))
 			return nil, err
@@ -311,6 +320,21 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 	}
 	r.registeredTasks[functionRef] = struct{}{}
 	return nil
+}
+
+func loadTaskCheckpoint(ctx context.Context, taskID, retriedTaskID string, load func(context.Context, string) (map[string]any, error)) (map[string]any, error) {
+	checkpoint, err := load(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load workflow runtime task checkpoint: %w", err)
+	}
+	if len(checkpoint) != 0 || retriedTaskID == "" {
+		return checkpoint, nil
+	}
+	checkpoint, err = load(ctx, retriedTaskID)
+	if err != nil {
+		return nil, fmt.Errorf("load retried workflow runtime task checkpoint: %w", err)
+	}
+	return checkpoint, nil
 }
 
 func (r *ConductorRuntime) Close() error {

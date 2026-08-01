@@ -26,7 +26,7 @@ type Adapter struct{}
 func (Adapter) ID() string { return AdapterID }
 
 func (Adapter) Check(ctx context.Context, engine *iapiserver.EngineInstance) (*iapiserver.EngineHealthCheckResult, error) {
-	if _, err := provider.Invoke(ctx, engine, http.MethodGet, "/api/v3/contents/generations/tasks", nil); err != nil {
+	if err := provider.Probe(ctx, engine, http.MethodGet, "/api/v3/contents/generations/tasks", provider.WithModelArkSigning()); err != nil {
 		return nil, err
 	}
 	return &iapiserver.EngineHealthCheckResult{EngineInstanceID: engine.ID, HealthStatus: iapiserver.EngineHealthOnline}, nil
@@ -49,7 +49,7 @@ func (e *Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstanc
 		delete(payload, "prompt")
 	}
 	requestPath := "/api/v3/contents/generations/tasks"
-	submitted, err := provider.Invoke(ctx, engine, http.MethodPost, requestPath, payload)
+	submitted, err := provider.Invoke(ctx, engine, http.MethodPost, requestPath, payload, provider.WithModelArkSigning())
 	if err != nil {
 		return nil, err
 	}
@@ -62,10 +62,10 @@ func (e *Executor) Execute(ctx context.Context, engine *iapiserver.EngineInstanc
 	for {
 		select {
 		case <-ctx.Done():
-			_, cancelErr := provider.Invoke(context.WithoutCancel(ctx), engine, http.MethodDelete, requestPath+"/"+url.PathEscape(taskID), nil)
+			_, cancelErr := provider.Invoke(context.WithoutCancel(ctx), engine, http.MethodDelete, requestPath+"/"+url.PathEscape(taskID), nil, provider.WithModelArkSigning())
 			return nil, stderrors.Join(ctx.Err(), cancelErr)
 		case <-ticker.C:
-			result, pollErr := provider.Invoke(ctx, engine, http.MethodGet, requestPath+"/"+url.PathEscape(taskID), nil)
+			result, pollErr := provider.Invoke(ctx, engine, http.MethodGet, requestPath+"/"+url.PathEscape(taskID), nil, provider.WithModelArkSigning())
 			if pollErr != nil {
 				return nil, pollErr
 			}

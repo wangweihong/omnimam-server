@@ -62,6 +62,15 @@ func NewApplicationRunExecutor(str store.Factory, runtime *appregistry.RuntimeRe
 
 // Execute resolves the engine adapter from Runtime Registry and honors engine task timeout/concurrency.
 func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.AtomicTask) (map[string]any, error) {
+	return e.execute(ctx, task, nil)
+}
+
+// ExecuteWithCheckpoint 恢复 runtime task 已持久化的小型外部作业状态；同步执行器忽略 checkpoint。
+func (e *ApplicationRunExecutor) ExecuteWithCheckpoint(ctx context.Context, task *iapiserver.AtomicTask, checkpoint map[string]any) (map[string]any, error) {
+	return e.execute(ctx, task, checkpoint)
+}
+
+func (e *ApplicationRunExecutor) execute(ctx context.Context, task *iapiserver.AtomicTask, checkpoint map[string]any) (map[string]any, error) {
 	if task == nil || task.ApplicationRunID == "" {
 		return nil, errors.NewStatus(code.ErrAIAppApplicationRunNotFound, "application run id is required")
 	}
@@ -104,7 +113,7 @@ func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.A
 	}
 	executor := e.executors[executorDefinition.ID]
 	if executor == nil {
-		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityExecutorMissing, "operation executor is not registered")
+		return nil, errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "operation executor is not registered")
 	}
 	release, err := e.acquire(ctx, engine.ID, engine.MaxConcurrency)
 	if err != nil {
@@ -117,7 +126,12 @@ func (e *ApplicationRunExecutor) Execute(ctx context.Context, task *iapiserver.A
 	}
 	executeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := executor.Execute(executeCtx, engine, run)
+	var output map[string]any
+	if checkpointExecutor, ok := executor.(enginegateway.CheckpointOperationExecutor); ok {
+		output, err = checkpointExecutor.ExecuteCheckpoint(executeCtx, engine, run, checkpoint)
+	} else {
+		output, err = executor.Execute(executeCtx, engine, run)
+	}
 	if executeCtx.Err() != nil {
 		return nil, executeCtx.Err()
 	}
@@ -217,6 +231,11 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 		"output_values":         outputValues,
 		"failure_summary":       task.LastError.Message,
 	})
+	if task.Status == iapiserver.AtomicTaskStatusCanceled || task.Status == iapiserver.AtomicTaskStatusTimeout {
+		if err := e.cancelExternalJob(ctx, projected, task.Output); err != nil {
+			return err
+		}
+	}
 	if task.Status != iapiserver.AtomicTaskStatusSuccess {
 		return nil
 	}
@@ -315,6 +334,26 @@ func (e *ApplicationRunExecutor) Completed(ctx context.Context, task *iapiserver
 		}
 	}
 	return nil
+}
+
+func (e *ApplicationRunExecutor) cancelExternalJob(ctx context.Context, run *iapiserver.ApplicationRun, checkpoint map[string]any) error {
+	if run == nil || maputil.FirstString(checkpoint, "external_job_id", "taskId", "task_id") == "" {
+		return nil
+	}
+	engine, err := e.store.ApplicationPlatforms().GetEngineInstance(ctx, run.EngineInstanceID)
+	if err != nil {
+		return err
+	}
+	capabilityID := maputil.FirstString(run.ExecutionSnapshot, "capability_definition_id")
+	definition, ok := e.runtime.OperationExecutor(engine.ApplicationEngineTypeID, capabilityID)
+	if !ok {
+		return errors.NewStatus(code.ErrAIAppProviderRuntimeCapabilityMismatch, "operation executor mapping is unavailable for external cancellation")
+	}
+	executor, ok := e.executors[definition.ID].(enginegateway.ExternalJobCanceler)
+	if !ok {
+		return nil
+	}
+	return executor.CancelExternalJob(ctx, engine, run, checkpoint)
 }
 
 func artifactProcessingErrorCode(err error) string {

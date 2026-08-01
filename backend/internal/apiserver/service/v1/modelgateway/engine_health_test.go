@@ -14,6 +14,44 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
+func newGatewayTestRegistries(t *testing.T) (*appregistry.RuntimeRegistry, *appregistry.ProviderCapabilityRegistry) {
+	t.Helper()
+	registrations := gatewayTestRegistrations()
+	runtime, err := appregistry.NewRuntimeRegistry(registrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := appregistry.NewProviderCapabilityRegistry(registrations, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime, capabilities
+}
+
+func gatewayTestRegistrations() []appregistry.Registration {
+	bilingual := func(chinese, english string) map[string]string {
+		return map[string]string{"zh-CN": chinese, "en-US": english}
+	}
+	comfyDefinition := iapiserver.CapabilityDefinition{ID: "image.text_to_image", NameI18n: bilingual("文生图", "Text to Image"), InputMediaTypes: []string{"text"}, OutputMediaTypes: []string{"image"}}
+	chatDefinition := iapiserver.CapabilityDefinition{ID: "text.chat_completion", NameI18n: bilingual("对话补全", "Chat Completion"), InputMediaTypes: []string{"text", "json"}, OutputMediaTypes: []string{"text", "json"}}
+	return []appregistry.Registration{
+		{
+			CapabilityDefinitions: []iapiserver.CapabilityDefinition{comfyDefinition},
+			EngineAdapter:         iapiserver.EngineAdapterDefinition{ID: "comfyui"},
+			OperationExecutors:    []iapiserver.OperationExecutorDefinition{{ID: "comfyui_workflow", EngineAdapterID: "comfyui", CapabilityDefinitionIDs: []string{comfyDefinition.ID}}},
+			EngineType:            iapiserver.ApplicationEngineType{ID: "comfyui", NameI18n: bilingual("ComfyUI", "ComfyUI"), DescriptionI18n: bilingual("ComfyUI 测试服务。", "ComfyUI test service."), OfficialWebsiteURL: "https://www.comfy.org/", OfficialDocumentationURL: "https://docs.comfy.org/", DefaultAPIBaseURL: "http://localhost:8188", Enabled: true, EngineAdapterID: "comfyui", AuthenticationTypes: []string{iapiserver.EngineAuthNone, iapiserver.EngineAuthAPIKey, iapiserver.EngineAuthBearerToken}, AuthenticationConfigSchema: appregistry.AuthenticationConfigSchema(iapiserver.EngineAuthNone, iapiserver.EngineAuthAPIKey, iapiserver.EngineAuthBearerToken), OperationExecutors: map[string]string{comfyDefinition.ID: "comfyui_workflow"}},
+			ProviderCapabilities:  []iapiserver.AIAppProviderCapability{{SchemaVersion: "1.0", ID: "comfyui-workflow-runtime", NameI18n: bilingual("ComfyUI 工作流运行时", "ComfyUI Workflow Runtime"), DescriptionI18n: bilingual("ComfyUI 测试绑定。", "ComfyUI test binding."), Kind: iapiserver.ProviderCapabilityKindEngineBinding, Origin: iapiserver.ProviderCapabilityOriginStatic, BindingPolicy: iapiserver.ProviderBindingPolicyRequiredImmutable, ApplicationEngineTypeID: "comfyui", Revision: "1", Enabled: true, Provider: map[string]any{"code": "comfyui", "official_website": "https://www.comfy.org/"}, Sources: []map[string]any{{"url": "https://docs.comfy.org/"}}, Models: []iapiserver.ProviderCapabilityModel{}, Operations: []iapiserver.ProviderCapabilityOperation{}, Variants: []iapiserver.ProviderCapabilityVariant{}}},
+		},
+		{
+			CapabilityDefinitions: []iapiserver.CapabilityDefinition{chatDefinition},
+			EngineAdapter:         iapiserver.EngineAdapterDefinition{ID: "deepseek_official"},
+			OperationExecutors:    []iapiserver.OperationExecutorDefinition{{ID: "deepseek_chat_completions", EngineAdapterID: "deepseek_official", CapabilityDefinitionIDs: []string{chatDefinition.ID}}},
+			EngineType:            iapiserver.ApplicationEngineType{ID: "deepseek_official", NameI18n: bilingual("DeepSeek", "DeepSeek"), DescriptionI18n: bilingual("DeepSeek 测试服务。", "DeepSeek test service."), OfficialWebsiteURL: "https://www.deepseek.com/", OfficialDocumentationURL: "https://api-docs.deepseek.com/", DefaultAPIBaseURL: "https://api.deepseek.com", Enabled: true, EngineAdapterID: "deepseek_official", AuthenticationTypes: []string{iapiserver.EngineAuthAPIKey}, AuthenticationConfigSchema: appregistry.AuthenticationConfigSchema(iapiserver.EngineAuthAPIKey), OperationExecutors: map[string]string{chatDefinition.ID: "deepseek_chat_completions"}},
+			ProviderCapabilities:  []iapiserver.AIAppProviderCapability{},
+		},
+	}
+}
+
 type engineHealthStore struct {
 	store.ApplicationPlatformStore
 	engine           *iapiserver.EngineInstance
@@ -64,10 +102,7 @@ func (deadlineEngineHealthAdapter) Check(ctx context.Context, _ *iapiserver.Engi
 }
 
 func TestValidateEngineAuthRejectsMismatchedUnion(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, _ := newGatewayTestRegistries(t)
 	service := &EngineService{runtime: runtime}
 	tests := []struct {
 		name, engineType, authType string
@@ -112,10 +147,7 @@ func TestValidateRestrictionsRejectsCapabilityExpansion(t *testing.T) {
 }
 
 func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, _ := newGatewayTestRegistries(t)
 	tests := []struct {
 		name        string
 		adapter     Adapter
@@ -155,10 +187,7 @@ func TestEngineHealthClassificationAndSafeSummary(t *testing.T) {
 }
 
 func TestEngineHealthMissingAdapterIsPersistedAsDegraded(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, _ := newGatewayTestRegistries(t)
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
 	storage := &engineHealthStore{engine: engine}
@@ -173,10 +202,7 @@ func TestEngineHealthMissingAdapterIsPersistedAsDegraded(t *testing.T) {
 }
 
 func TestEngineHealthCancellationKeepsChunkRetryable(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, _ := newGatewayTestRegistries(t)
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthOnline}
 	engine.ID = "engine-1"
 	storage := &engineHealthStore{engine: engine}
@@ -192,10 +218,7 @@ func TestEngineHealthCancellationKeepsChunkRetryable(t *testing.T) {
 }
 
 func TestEngineHealthDeadlinePersistsOfflineWithFreshContext(t *testing.T) {
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, _ := newGatewayTestRegistries(t)
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "deepseek_official", HealthStatus: iapiserver.EngineHealthUnknown}
 	engine.ID = "engine-1"
 	storage := &engineHealthStore{engine: engine}

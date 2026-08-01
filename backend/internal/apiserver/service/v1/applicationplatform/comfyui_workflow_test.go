@@ -10,7 +10,6 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
 	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -24,14 +23,7 @@ func (r staticPrincipal) Resolve(context.Context) (Principal, error) { return r.
 
 func newTestEngineService(t *testing.T, factory store.Factory, principal Principal) Srv {
 	t.Helper()
-	runtimeRegistry, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityRegistry, err := appregistry.LoadProviderCapabilityRegistry(t.TempDir(), runtimeRegistry)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeRegistry, capabilityRegistry := testStaticRegistries(t)
 	service, err := enginegateway.NewEngineService(enginegateway.EngineDependencies{
 		Store: factory, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
 		Principals: staticPrincipal{principal: principal},
@@ -163,10 +155,7 @@ func (s *workflowStore) ConvertComfyUIWorkflow(_ context.Context, workflowID, _,
 }
 
 func TestImportComfyUIAPIWorkflowDoesNotRequireEngineAndReportsOwnerDuplicates(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, _ := testStaticRegistries(t)
 	applicationStore := &workflowStore{duplicates: []string{"workflow-old"}}
 	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}}}
 	request := &iapiserver.ComfyUIWorkflowImportRequest{Name: "Workflow", APIWorkflow: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}, APIWorkflowRaw: []byte(`{"1":{"class_type":"KSampler","inputs":{}}}`)}
@@ -180,15 +169,12 @@ func TestImportComfyUIAPIWorkflowDoesNotRequireEngineAndReportsOwnerDuplicates(t
 }
 
 func TestImportComfyUIVisualWorkflowStaysPendingWithoutParserOrEngine(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, _ := testStaticRegistries(t)
 	applicationStore := &workflowStore{}
 	parser := &recordingWorkflowParser{err: stderrors.New("parser must not be called during import")}
 	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: applicationStore}, Runtime: runtime, Principals: staticPrincipal{principal: Principal{UserID: "user-1"}}, WorkflowParser: parser}}
 	visual := map[string]any{"nodes": []any{}, "links": []any{}}
-	_, err = service.ImportComfyUIWorkflow(context.Background(), &iapiserver.ComfyUIWorkflowImportRequest{Name: "Workflow", SourceWorkflow: visual, SourceWorkflowRaw: []byte(`{"nodes":[],"links":[]}`)})
+	_, err := service.ImportComfyUIWorkflow(context.Background(), &iapiserver.ComfyUIWorkflowImportRequest{Name: "Workflow", SourceWorkflow: visual, SourceWorkflowRaw: []byte(`{"nodes":[],"links":[]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,10 +266,7 @@ func TestConvertComfyUIWorkflowToAPIRejectsUnavailableEngineAndParserFailure(t *
 }
 
 func TestValidateComfyUIWorkflowPersistsFailedHistory(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, _ := testStaticRegistries(t)
 	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", APIConversionStatus: iapiserver.ComfyUIAPIConversionReady, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "KSampler", "inputs": map[string]any{}}}}
 	workflow.ID = "workflow-1"
 	applicationStore := &workflowStore{workflow: workflow, engine: &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}}
@@ -300,10 +283,7 @@ func TestValidateComfyUIWorkflowPersistsFailedHistory(t *testing.T) {
 }
 
 func TestConvertComfyUIWorkflowCreatesImmutableSourceSnapshot(t *testing.T) {
-	runtime, err := appregistry.LoadRuntimeRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime, _ := testStaticRegistries(t)
 	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "user-1", APIConversionStatus: iapiserver.ComfyUIAPIConversionReady, APIWorkflow: map[string]any{"1": map[string]any{"class_type": "SaveImage", "inputs": map[string]any{"images": "value"}}}}
 	workflow.ID = "workflow-1"
 	engine := &iapiserver.EngineInstance{ApplicationEngineTypeID: "comfyui", Enabled: true, HealthStatus: iapiserver.EngineHealthOnline}

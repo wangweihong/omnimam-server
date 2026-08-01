@@ -16,9 +16,28 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	appregistry "github.com/wangweihong/omnimam/backend/internal/apiserver/applicationplatform"
+	enginegateway "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/comfyui"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
+
+func TestStaticRegistrationsHaveImplementations(t *testing.T) {
+	registrations := NewRegistrations()
+	runtime, err := appregistry.NewRuntimeRegistry(registrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapters := NewEngineAdapters()
+	executors := NewOperationExecutors()
+	if err := ValidateImplementations(runtime, adapters, executors); err != nil {
+		t.Fatal(err)
+	}
+	delete(executors, "openai_responses_create")
+	if err := ValidateImplementations(runtime, adapters, executors); err == nil || !strings.Contains(err.Error(), "openai_responses_create") {
+		t.Fatalf("missing executor was not rejected: %v", err)
+	}
+}
 
 func TestOpenAIAdapterExecute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +184,116 @@ func TestModelArkAdapterSubmitAndPoll(t *testing.T) {
 	}
 	if len(sliceutil.ToInterfaceSlice(output["artifacts"])) != 1 {
 		t.Fatalf("video artifact was not normalized: %#v", output)
+	}
+}
+
+func TestRunningHubUsesBodyAPIKeyWithoutAuthorizationHeader(t *testing.T) {
+	polled := make(chan struct{})
+	releasePoll := make(chan struct{})
+	canceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authorization := r.Header.Get("Authorization"); authorization != "" {
+			t.Errorf("RunningHub request leaked Authorization header: %q", authorization)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["apiKey"] != "secret" {
+			t.Errorf("RunningHub apiKey missing from request body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/task/openapi/create":
+			_, _ = w.Write([]byte(`{"taskId":"task-1"}`))
+		case "/task/openapi/outputs":
+			close(polled)
+			<-releasePoll
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		case "/task/openapi/cancel":
+			close(canceled)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		executor := NewOperationExecutors()["runninghub_workflow_execute"].(enginegateway.CheckpointOperationExecutor)
+		_, err := executor.ExecuteCheckpoint(ctx, testEngine(server.URL, "runninghub_workflow"), &iapiserver.ApplicationRun{InputSnapshot: map[string]any{"workflowId": "workflow-1"}}, map[string]any{"external_job_id": "task-1"})
+		done <- err
+	}()
+	<-polled
+	cancel()
+	err := <-done
+	close(releasePoll)
+	if err == nil {
+		t.Fatal("RunningHub execution should return the cancellation error")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("RunningHub cancel request was not sent")
+	}
+}
+
+func TestRunningHubCheckpointResumesWithoutResubmitting(t *testing.T) {
+	var creates atomic.Int32
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authorization := r.Header.Get("Authorization"); authorization != "" {
+			t.Errorf("RunningHub request leaked Authorization header: %q", authorization)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["apiKey"] != "secret" {
+			t.Errorf("RunningHub apiKey missing from request body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/task/openapi/create":
+			creates.Add(1)
+			_, _ = w.Write([]byte(`{"taskId":"task-1"}`))
+		case "/task/openapi/outputs":
+			if body["taskId"] != "task-1" {
+				t.Errorf("poll did not restore external job id: %#v", body)
+			}
+			if polls.Add(1) == 1 {
+				_, _ = w.Write([]byte(`{"status":"running"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"status":"success","data":{"outputs":["result"]}}`))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	executor, ok := NewOperationExecutors()["runninghub_workflow_execute"].(enginegateway.CheckpointOperationExecutor)
+	if !ok {
+		t.Fatal("RunningHub executor is not checkpoint-aware")
+	}
+	engine := testEngine(server.URL, "runninghub_workflow")
+	run := &iapiserver.ApplicationRun{InputSnapshot: map[string]any{"workflowId": "workflow-1"}}
+	checkpoint, err := executor.ExecuteCheckpoint(context.Background(), engine, run, nil)
+	if err != nil || checkpoint["external_job_id"] != "task-1" || checkpoint["in_progress"] != true {
+		t.Fatalf("submit checkpoint = %#v, %v", checkpoint, err)
+	}
+	checkpoint, err = executor.ExecuteCheckpoint(context.Background(), engine, run, checkpoint)
+	if err != nil || checkpoint["external_job_id"] != "task-1" || checkpoint["in_progress"] != true {
+		t.Fatalf("poll checkpoint = %#v, %v", checkpoint, err)
+	}
+	output, err := executor.ExecuteCheckpoint(context.Background(), engine, run, checkpoint)
+	if err != nil || output["external_job_id"] != "task-1" || output["values"] == nil {
+		t.Fatalf("completed output = %#v, %v", output, err)
+	}
+	if creates.Load() != 1 || polls.Load() != 2 {
+		t.Fatalf("requests: creates=%d polls=%d", creates.Load(), polls.Load())
 	}
 }
 

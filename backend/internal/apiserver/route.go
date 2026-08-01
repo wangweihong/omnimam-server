@@ -132,7 +132,6 @@ func installApplicationPlatformApis(rg *gin.RouterGroup, service appplatformsvc.
 		providerCapabilities.GET("", controller.ListProviderCapabilities)
 		providerCapabilities.GET("/:provider_capability_id", controller.GetProviderCapability)
 	}
-	rg.GET("/provider-capability-load-results", controller.ListProviderCapabilityLoadResults)
 	rg.GET("/application-engine-types", controller.ListApplicationEngineTypes)
 
 	engines := rg.Group("/engine-instances")

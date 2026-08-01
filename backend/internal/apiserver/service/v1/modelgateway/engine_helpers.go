@@ -13,6 +13,16 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/helpers"
 )
 
+func capabilityName(capability *iapiserver.AIAppProviderCapability) string {
+	if capability == nil {
+		return ""
+	}
+	if name := capability.NameI18n["zh-CN"]; name != "" {
+		return name
+	}
+	return capability.NameI18n["en-US"]
+}
+
 func applyEngineUpdate(item *iapiserver.EngineInstance, req *iapiserver.EngineInstanceUpdateRequest) {
 	helpers.ApplyString(&item.Name, req.Name)
 	helpers.ApplyString(&item.Description, req.Description)

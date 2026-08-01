@@ -15,11 +15,10 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/helpers"
 )
 
-// ProviderCapabilitySrv 提供 Model Gateway 的只读 ProviderCapability 目录与加载诊断查询。
+// ProviderCapabilitySrv 提供 Model Gateway 的只读静态 ProviderCapability 目录查询。
 type ProviderCapabilitySrv interface {
 	ListProviderCapabilities(context.Context, *iapiserver.ProviderCapabilityListRequest) (*iapiserver.ProviderCapabilityListResponse, error)
 	GetProviderCapability(context.Context, string) (*iapiserver.AIAppProviderCapability, error)
-	ListProviderCapabilityLoadResults(context.Context, *iapiserver.ProviderCapabilityLoadResultListRequest) (*iapiserver.ProviderCapabilityLoadResultListResponse, error)
 }
 
 // Principal 表示 Model Gateway 与 Application Platform 共享的调用方身份裁剪结果。
@@ -119,7 +118,7 @@ func (s *Service) ListProviderCapabilities(ctx context.Context, req *iapiserver.
 		if req.Availability != "" && item.Availability != req.Availability {
 			continue
 		}
-		if !helpers.MatchesKeyword(req.Keyword, item.Name, item.Description, item.ID) {
+		if !helpers.MatchesKeyword(req.Keyword, item.ID, item.NameI18n["zh-CN"], item.NameI18n["en-US"], item.DescriptionI18n["zh-CN"], item.DescriptionI18n["en-US"]) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -129,7 +128,7 @@ func (s *Service) ListProviderCapabilities(ctx context.Context, req *iapiserver.
 		return nil, err
 	}
 	return &iapiserver.ProviderCapabilityListResponse{
-		Total: len(filtered), RegistryStatus: s.capabilities.Status(), Items: imachinery.PaginateSlice(filtered, window),
+		Total: len(filtered), Items: imachinery.PaginateSlice(filtered, window),
 	}, nil
 }
 
@@ -143,27 +142,6 @@ func (s *Service) GetProviderCapability(ctx context.Context, id string) (*iapise
 		return nil, errors.NewStatus(code.ErrAIAppProviderCapabilityNotFound, "provider capability not found")
 	}
 	return item, nil
-}
-
-// ListProviderCapabilityLoadResults 返回管理员可见的目录加载诊断，不暴露引擎凭证。
-func (s *Service) ListProviderCapabilityLoadResults(ctx context.Context, req *iapiserver.ProviderCapabilityLoadResultListRequest) (*iapiserver.ProviderCapabilityLoadResultListResponse, error) {
-	if _, err := s.principal(ctx, true); err != nil {
-		return nil, err
-	}
-	items := s.capabilities.Results()
-	filtered := items[:0]
-	for _, item := range items {
-		if req.Result == "" || item.Result == req.Result {
-			filtered = append(filtered, item)
-		}
-	}
-	window, err := req.PagingParams.Normalize()
-	if err != nil {
-		return nil, err
-	}
-	return &iapiserver.ProviderCapabilityLoadResultListResponse{
-		Total: len(filtered), RegistryStatus: s.capabilities.Status(), Items: imachinery.PaginateSlice(filtered, window),
-	}, nil
 }
 
 var _ ProviderCapabilitySrv = (*Service)(nil)

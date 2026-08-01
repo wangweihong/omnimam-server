@@ -1,9 +1,38 @@
 package workflowruntime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
+
+func TestWorkerTaskLoadCheckpoint(t *testing.T) {
+	checkpoint, err := (WorkerTask{}).LoadCheckpoint(context.Background())
+	if err != nil || len(checkpoint) != 0 {
+		t.Fatalf("empty checkpoint = %#v, %v", checkpoint, err)
+	}
+	task := WorkerTask{checkpointLoader: func(context.Context) (map[string]any, error) {
+		return map[string]any{"external_job_id": "job-1"}, nil
+	}}
+	checkpoint, err = task.LoadCheckpoint(context.Background())
+	if err != nil || checkpoint["external_job_id"] != "job-1" {
+		t.Fatalf("loaded checkpoint = %#v, %v", checkpoint, err)
+	}
+}
+
+func TestLoadTaskCheckpointFallsBackToRetriedTask(t *testing.T) {
+	var loaded []string
+	checkpoint, err := loadTaskCheckpoint(context.Background(), "current", "previous", func(_ context.Context, taskID string) (map[string]any, error) {
+		loaded = append(loaded, taskID)
+		if taskID == "previous" {
+			return map[string]any{"external_job_id": "job-1"}, nil
+		}
+		return map[string]any{}, nil
+	})
+	if err != nil || checkpoint["external_job_id"] != "job-1" || len(loaded) != 2 || loaded[0] != "current" || loaded[1] != "previous" {
+		t.Fatalf("checkpoint = %#v, loaded = %#v, err = %v", checkpoint, loaded, err)
+	}
+}
 
 func TestConductorTaskMapsRetryPolicy(t *testing.T) {
 	task := conductorTask(Task{Name: "asset-library.representation.generate", ReferenceName: "thumbnail", Type: "SIMPLE", Retry: RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF"}})
