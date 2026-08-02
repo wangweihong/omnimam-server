@@ -19,12 +19,12 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
+	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
-	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
@@ -113,7 +113,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
 	tasks := taskcentersvc.NewServiceWithRegistries(storeIns, runtime, reconcileRegistry,
-		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
+		appplatformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
@@ -131,7 +131,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	thumbnailExecutor := platformsvc.NewThumbnailExecutor(storeIns)
+	thumbnailExecutor := appplatformsvc.NewThumbnailExecutor(storeIns)
 	artifactProcessExecutor := assetlibrarysvc.NewArtifactProcessExecutor(storeIns)
 	assetStorage := assetlibrarysvc.NewLocalContentStorage(storeIns)
 	ffprobeInspector, err := assetlibrarysvc.NewLocalFFprobeMediaMetadataInspector()
@@ -242,7 +242,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(platformsvc.FunctionAssetThumbnailGenerate, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+	if err := runtime.RegisterHandler(appplatformsvc.FunctionAssetThumbnailGenerate, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		atomicTask, err := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
 		if err != nil {
 			return nil, err
@@ -380,7 +380,7 @@ func RunTaskWorker(cfg *config.Config) error {
 			}
 			thumbnail, err := storeIns.AssetThumbnails().GetByAsset(ctx, event.AssetID)
 			if err == nil {
-				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: "thumbnail", Name: "Generate asset thumbnail", FunctionRef: platformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "thumbnail_id": thumbnail.ID}, RequiredCapabilities: platformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: "asset-thumbnail", IdempotencyKey: "thumbnail:" + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
+				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: "thumbnail", Name: "Generate asset thumbnail", FunctionRef: appplatformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "thumbnail_id": thumbnail.ID}, RequiredCapabilities: appplatformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: "asset-thumbnail", IdempotencyKey: "thumbnail:" + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
 			}
 			if err != nil {
 				msg.Nack()

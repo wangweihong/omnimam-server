@@ -1,4 +1,4 @@
-package platform
+package applicationplatform
 
 import (
 	"archive/zip"
@@ -259,7 +259,7 @@ func StartProviderModelHealthCheck(stopCh <-chan struct{}, storeIns store.Factor
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	svc := NewService(storeIns)
+	svc := NewLegacyService(storeIns)
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
@@ -275,7 +275,7 @@ func StartProviderModelHealthCheck(stopCh <-chan struct{}, storeIns store.Factor
 	}()
 }
 
-func NewService(str store.Factory, dispatcher ...TaskDispatcher) *platformService {
+func NewLegacyService(str store.Factory, dispatcher ...TaskDispatcher) *platformService {
 	service := &platformService{store: str}
 	if len(dispatcher) > 0 {
 		service.dispatcher = dispatcher[0]

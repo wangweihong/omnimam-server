@@ -9,9 +9,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
+	identityctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/identity"
 	mcpctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/mcp"
 	notificationctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/notification"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
+	platformmanagementctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platformmanagement"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
@@ -20,9 +22,11 @@ import (
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	legacyappsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	notificationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/notification"
-	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
+	platformmanagementsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platformmanagement"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -81,6 +85,7 @@ func installApis(
 		v1 := g.Group("/api/v1")
 		{
 			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
+			installV11IdentityPlatformApis(v1, storeIns, authOptions, mode)
 			installSSEApis(v1, storeIns, sseOptions)
 			installNotificationApis(v1, storeIns)
 			installPlatformApis(v1, storeIns, nil)
@@ -101,6 +106,104 @@ func installApis(
 	}
 
 	return g
+}
+
+// installV11IdentityPlatformApis installs the released v1.11 contracts behind one JWT, permission and audit chain.
+func installV11IdentityPlatformApis(rg *gin.RouterGroup, factory store.Factory, authOptions *options.AuthOptions, mode string) {
+	if authOptions == nil {
+		authOptions = options.NewAuthOptions()
+	}
+	identityFactory, identityOK := factory.(store.IdentityV11Factory)
+	platformFactory, platformOK := factory.(store.PlatformManagementFactory)
+	if !identityOK || !platformOK {
+		return
+	}
+	identityStore := identityFactory.IdentityV11()
+	platformStore := platformFactory.PlatformManagement()
+	identityService := identitysvc.NewV11Service(identityStore, platformStore, authOptions.JWTSecret)
+	identityController := identityctrl.NewController(identityService)
+
+	iam := rg.Group("/iam")
+	iam.Use(authmiddleware.Audit(platformStore, "identity"))
+	iam.Use(authmiddleware.IdentityAuthentication(authOptions, mode, identityStore))
+	auth := iam.Group("/auth")
+	{
+		auth.POST("/register", identityController.Register)
+		auth.POST("/login", identityController.Login)
+		auth.POST("/refresh", identityController.Refresh)
+		protected := auth.Group("")
+		protected.Use(authmiddleware.RequireIdentityPermission("identity.auth.session"))
+		protected.POST("/presence/heartbeat", identityController.Heartbeat)
+		protected.POST("/logout", identityController.Logout)
+		protected.POST("/logout-all", identityController.LogoutAll)
+		protected.POST("/change-password", identityController.ChangePassword)
+		protected.GET("/sessions", identityController.Sessions)
+		protected.DELETE("/sessions/:session_id", identityController.RevokeSession)
+		me := auth.Group("/me")
+		me.Use(authmiddleware.RequireIdentityPermission("identity.user.read"))
+		me.GET("", identityController.Me)
+	}
+	permissions := iam.Group("/auth/permissions")
+	permissions.Use(authmiddleware.RequireIdentityPermission("identity.permission.read"))
+	permissions.GET("", identityController.Permissions)
+	permissionDefinitions := iam.Group("/admin/permissions")
+	permissionDefinitions.Use(authmiddleware.RequireIdentityPermission("identity.permission.read"))
+	permissionDefinitions.GET("", identityController.ListPermissionDefinitions)
+	users := iam.Group("/admin/users")
+	users.Use(authmiddleware.RequireIdentityPermission("identity.user.manage"))
+	users.GET("", identityController.ListUsers)
+	users.POST("", identityController.AdminCreateUser)
+	users.GET("/:user_id", identityController.GetUser)
+	users.PUT("/:user_id", identityController.UpdateUser)
+	users.DELETE("/:user_id", identityController.DeleteUser)
+	users.POST("/:user_id/disable", identityController.DisableUser)
+	users.POST("/:user_id/enable", identityController.EnableUser)
+	users.POST("/:user_id/unlock", identityController.UnlockUser)
+	roles := iam.Group("/admin/roles")
+	roles.Use(authmiddleware.RequireIdentityPermission("identity.role.manage"))
+	roles.GET("", identityController.ListRoles)
+	roles.POST("", identityController.CreateRole)
+	roles.GET("/:role_id", identityController.GetRole)
+	roles.PUT("/:role_id", identityController.UpdateRole)
+	roles.PUT("/:role_id/permissions", identityController.ReplaceRolePermissions)
+	groups := iam.Group("/admin/groups")
+	groups.Use(authmiddleware.RequireIdentityPermission("identity.group.manage"))
+	groups.GET("", identityController.ListGroups)
+	groups.POST("", identityController.CreateGroup)
+	groups.GET("/:group_id", identityController.GetGroup)
+	groups.PUT("/:group_id", identityController.UpdateGroup)
+	groups.PUT("/:group_id/members", identityController.ReplaceGroupMembers)
+	groups.PUT("/:group_id/roles", identityController.ReplaceGroupRoles)
+	grants := iam.Group("/resources/:resource_type/:resource_id/grants")
+	grants.GET("", authmiddleware.RequireIdentityPermission("identity.resource_grant.read"), identityController.ListResourceGrants)
+	grants.POST("", authmiddleware.RequireIdentityPermission("identity.resource_grant.manage"), identityController.CreateResourceGrant)
+	grants.PATCH("/:grant_id", authmiddleware.RequireIdentityPermission("identity.resource_grant.manage"), identityController.UpdateResourceGrant)
+	grants.DELETE("/:grant_id", authmiddleware.RequireIdentityPermission("identity.resource_grant.manage"), identityController.RevokeResourceGrant)
+	serviceAccounts := iam.Group("/admin/service-accounts")
+	serviceAccounts.Use(authmiddleware.RequireIdentityPermission("identity.service_account.read"))
+	serviceAccounts.GET("", identityController.ListServiceAccounts)
+	serviceAccounts.GET("/:service_account_id", identityController.GetServiceAccount)
+	serviceAccounts.POST("/:service_account_id/disable", authmiddleware.RequireIdentityPermission("identity.service_account.manage"), identityController.DisableServiceAccount)
+	serviceAccounts.POST("/:service_account_id/enable", authmiddleware.RequireIdentityPermission("identity.service_account.manage"), identityController.EnableServiceAccount)
+	serviceAccounts.POST("/:service_account_id/rotate-credential", authmiddleware.RequireIdentityPermission("identity.service_account.manage"), identityController.RotateServiceAccountCredential)
+	serviceAccounts.POST("", authmiddleware.RequireIdentityPermission("identity.service_account.manage"), identityController.CreateServiceAccount)
+	serviceAccounts.PUT("/:service_account_id", authmiddleware.RequireIdentityPermission("identity.service_account.manage"), identityController.UpdateServiceAccount)
+
+	platformService := platformmanagementsvc.NewService(platformStore)
+	platformController := platformmanagementctrl.NewController(platformService)
+	platform := rg.Group("/platform")
+	platform.Use(authmiddleware.Audit(platformStore, "platform-management"))
+	platform.Use(authmiddleware.IdentityAuthentication(authOptions, mode, identityStore))
+	platform.GET("/overview", authmiddleware.RequireIdentityPermission("platform.overview.read"), platformController.Overview)
+	platform.GET("/auth-config", authmiddleware.RequireIdentityPermission("platform.auth_config.read"), platformController.GetAuthConfig)
+	platform.PUT("/auth-config", authmiddleware.RequireIdentityPermission("platform.auth_config.manage"), platformController.ReplaceAuthConfig)
+	platform.GET("/audit-logs", authmiddleware.RequireIdentityPermission("platform.audit.read"), platformController.ListAudit)
+	platform.GET("/audit-logs/:audit_log_id", authmiddleware.RequireIdentityPermission("platform.audit.read"), platformController.GetAudit)
+	internal := platform.Group("/internal")
+	internal.GET("/system-auth-config", authmiddleware.RequireIdentityPermission("platform.auth_config.read_internal"), authmiddleware.RequireServicePrincipal(), platformController.GetAuthConfig)
+	internal.Use(authmiddleware.RequireIdentityPermission("platform.audit.record"))
+	internal.Use(authmiddleware.RequireServicePrincipal())
+	internal.POST("/audit-records", platformController.AppendAudit)
 }
 
 func installNotificationApis(rg *gin.RouterGroup, factory store.Factory) {
@@ -295,7 +398,7 @@ func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
 	}
 }
 
-func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher platformsvc.TaskDispatcher) {
+func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher legacyappsvc.TaskDispatcher) {
 	platformController := platformctrl.NewController(storeIns, dispatcher)
 
 	rg.GET("/me", platformController.Me)

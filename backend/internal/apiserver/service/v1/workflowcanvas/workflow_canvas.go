@@ -95,6 +95,9 @@ func (s *service) ListNodeDefinitions(
 	resolvedApplications := s.resolveCanvasApplicationVersions(ctx, requests)
 	result := make([]*iapiserver.WorkflowNodeDefinitionListItem, 0, len(items))
 	for _, item := range items {
+		if item.NodeType == "promptGroup" && item.DefinitionVersion == builtInDefinitionVersion {
+			continue
+		}
 		if item.ApplicationVersionID != nil {
 			if !applicationDefinitionMatches(item, resolvedApplications[item.ID]) {
 				continue
@@ -116,6 +119,12 @@ func (s *service) ListNodeDefinitions(
 				CreatedAt:         item.CreatedAt,
 			},
 		)
+	}
+	// Stores exclude the internal promptGroup before pagination. Keep the
+	// service defensive for alternate store implementations so the response
+	// total still describes the visible catalog.
+	if hidden := len(items) - len(result); hidden > 0 {
+		total -= int64(hidden)
 	}
 	return &iapiserver.WorkflowNodeDefinitionListResponse{Total: total, Items: result}, nil
 }
@@ -1323,11 +1332,16 @@ func validateNodeDefinitionRequest(req *iapiserver.WorkflowNodeDefinitionRegiste
 	binding := req.ExecutionBinding
 	switch binding.Mode {
 	case iapiserver.CanvasExecutionPassive:
-		if binding.FunctionRef != nil || binding.ApplicationVersionID != nil {
+		if binding.CompilerKey != nil || binding.FunctionRef != nil || binding.ApplicationVersionID != nil {
 			return errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "passive node cannot contain an execution reference")
 		}
+	case iapiserver.CanvasExecutionCompileTime:
+		if binding.CompilerKey == nil || !registeredBuiltInCompilerKey(req.NodeType, req.DefinitionVersion, *binding.CompilerKey) ||
+			binding.FunctionRef != nil || binding.ApplicationVersionID != nil || req.AvailabilityScope != iapiserver.CanvasAvailabilitySystem {
+			return errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "compile-time node requires its registered system compiler key")
+		}
 	case iapiserver.CanvasExecutionAtomic, iapiserver.CanvasExecutionExpanded:
-		if (binding.FunctionRef == nil) == (binding.ApplicationVersionID == nil) {
+		if binding.CompilerKey != nil || (binding.FunctionRef == nil) == (binding.ApplicationVersionID == nil) {
 			return errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "executable node requires exactly one execution reference")
 		}
 	default:

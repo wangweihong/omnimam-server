@@ -6,7 +6,7 @@ type WorkflowNodeDefinitionListRequest struct {
 	imachinery.BasicQueryParam
 	Category          string `form:"category"           binding:"omitempty,max=100"`
 	NodeKind          string `form:"node_kind"          binding:"omitempty,oneof=data processor generator controller orchestrator viewer"`
-	ExecutionMode     string `form:"execution_mode"     binding:"omitempty,oneof=passive atomic expanded"`
+	ExecutionMode     string `form:"execution_mode"     binding:"omitempty,oneof=passive compile_time atomic expanded"`
 	IncludeDeprecated bool   `form:"include_deprecated"`
 }
 type WorkflowNodeDefinitionRegisterRequest struct {

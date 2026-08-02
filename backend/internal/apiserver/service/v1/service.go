@@ -2,10 +2,10 @@ package v1
 
 import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
+	appplatform "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/asset"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/canvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/setting"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
@@ -19,18 +19,18 @@ type Service interface {
 	Assets() asset.AssetSrv
 	Prompts() prompt.PromptSrv
 	Canvases() canvas.CanvasSrv
-	Platforms() platform.PlatformSrv
+	Platforms() appplatform.PlatformSrv
 	TaskCenters() taskcenter.TaskCenterSrv
 	AIChat() aichat.AIChatSrv
 }
 
 type service struct {
 	store              store.Factory
-	platformDispatcher platform.TaskDispatcher
+	platformDispatcher appplatform.TaskDispatcher
 }
 
 // NewService returns Service interface.
-func NewService(store store.Factory, dispatcher ...platform.TaskDispatcher) Service {
+func NewService(store store.Factory, dispatcher ...appplatform.TaskDispatcher) Service {
 	service := &service{store: store}
 	if len(dispatcher) > 0 {
 		service.platformDispatcher = dispatcher[0]
@@ -58,8 +58,8 @@ func (s *service) Canvases() canvas.CanvasSrv {
 	return canvas.NewService(s.store)
 }
 
-func (s *service) Platforms() platform.PlatformSrv {
-	return platform.NewService(s.store, s.platformDispatcher)
+func (s *service) Platforms() appplatform.PlatformSrv {
+	return appplatform.NewLegacyService(s.store, s.platformDispatcher)
 }
 
 func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
@@ -67,5 +67,5 @@ func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
 }
 
 func (s *service) AIChat() aichat.AIChatSrv {
-	return aichat.NewService(s.store, platform.NewService(s.store))
+	return aichat.NewService(s.store, appplatform.NewLegacyService(s.store))
 }

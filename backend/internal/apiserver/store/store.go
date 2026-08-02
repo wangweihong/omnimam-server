@@ -64,6 +64,74 @@ type UserStore interface {
 	Add(ctx context.Context, data *iapiserver.User) (*iapiserver.User, error)
 }
 
+// IdentityV11Store is the consumer-side boundary for spec-v1.11 authentication and authorization.
+// It owns password/session/token state and returns only redacted identity facts to callers.
+type IdentityV11Store interface {
+	GetUser(ctx context.Context, id string) (*iapiserver.IdentityUser, error)
+	GetUserByLogin(ctx context.Context, login string) (*iapiserver.IdentityUser, error)
+	ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) ([]*iapiserver.IdentityUser, int64, error)
+	ListPermissionDefinitions(ctx context.Context, req *iapiserver.IdentityPermissionListRequest) ([]*iapiserver.IdentityPermissionDefinition, int64, error)
+	CreateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error)
+	UpdateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error)
+	GetSession(ctx context.Context, id string) (*iapiserver.IdentityAuthSession, error)
+	ListSessions(ctx context.Context, userID string, req *iapiserver.IdentitySessionListRequest) ([]*iapiserver.IdentityAuthSession, int64, error)
+	CreateSession(ctx context.Context, session *iapiserver.IdentityAuthSession) (*iapiserver.IdentityAuthSession, error)
+	TouchSession(ctx context.Context, id string, at imachinery.Time) (*iapiserver.IdentityAuthSession, error)
+	RevokeSession(ctx context.Context, id, reason string) error
+	RevokeUserSessions(ctx context.Context, userID, reason string) error
+	CreateTokenCredential(ctx context.Context, token *iapiserver.IdentityTokenCredential) error
+	GetTokenCredentialByJTI(ctx context.Context, jti string) (*iapiserver.IdentityTokenCredential, error)
+	RevokeTokenCredential(ctx context.Context, jti string) error
+	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iapiserver.IdentityRefreshToken, error)
+	CreateRefreshToken(ctx context.Context, token *iapiserver.IdentityRefreshToken) error
+	MarkRefreshTokenUsed(ctx context.Context, id string) error
+	RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error
+	PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error)
+	EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition) error
+}
+
+// PlatformManagementStore is the persistence boundary for SystemAuthConfig and append-only AuditLog.
+type PlatformManagementStore interface {
+	GetSystemAuthConfig(ctx context.Context) (*iapiserver.PlatformSystemAuthConfig, error)
+	ReplaceSystemAuthConfig(ctx context.Context, config *iapiserver.PlatformSystemAuthConfig, expectedVersion int64) (*iapiserver.PlatformSystemAuthConfig, error)
+	AppendAuditLog(ctx context.Context, record *iapiserver.PlatformAuditLog) (*iapiserver.PlatformAuditLog, error)
+	GetAuditLog(ctx context.Context, id string) (*iapiserver.PlatformAuditLog, error)
+	ListAuditLogs(ctx context.Context, req *iapiserver.PlatformAuditLogListRequest) ([]*iapiserver.PlatformAuditLog, int64, error)
+}
+
+// IdentityV11Factory is an optional capability implemented by stores that have the released Identity schema.
+type IdentityV11Factory interface{ IdentityV11() IdentityV11Store }
+
+// IdentityAdminStore is the optional v1.11 RBAC, resource-grant, and service-account capability.
+type IdentityAdminStore interface {
+	ListRoles(ctx context.Context, req *iapiserver.IdentityRoleListRequest) ([]*iapiserver.IdentityRole, int64, error)
+	GetRole(ctx context.Context, id string) (*iapiserver.IdentityRole, error)
+	CreateRole(ctx context.Context, role *iapiserver.IdentityRole) (*iapiserver.IdentityRole, error)
+	UpdateRole(ctx context.Context, role *iapiserver.IdentityRole) (*iapiserver.IdentityRole, error)
+	ReplaceRolePermissions(ctx context.Context, id string, permissionCodes []string) error
+	ListGroups(ctx context.Context, req *iapiserver.IdentityGroupListRequest) ([]*iapiserver.IdentityGroup, int64, error)
+	GetGroup(ctx context.Context, id string) (*iapiserver.IdentityGroup, error)
+	CreateGroup(ctx context.Context, group *iapiserver.IdentityGroup) (*iapiserver.IdentityGroup, error)
+	UpdateGroup(ctx context.Context, group *iapiserver.IdentityGroup) (*iapiserver.IdentityGroup, error)
+	ReplaceGroupMembers(ctx context.Context, id string, userIDs []string) error
+	ReplaceGroupRoles(ctx context.Context, id string, roleIDs []string) error
+	ListResourceGrants(ctx context.Context, resourceType, resourceID string, req *iapiserver.IdentityResourceGrantListRequest) ([]*iapiserver.IdentityResourceAccessGrant, int64, error)
+	CreateResourceGrant(ctx context.Context, grant *iapiserver.IdentityResourceAccessGrant) (*iapiserver.IdentityResourceAccessGrant, error)
+	UpdateResourceGrant(ctx context.Context, grant *iapiserver.IdentityResourceAccessGrant) (*iapiserver.IdentityResourceAccessGrant, error)
+	RevokeResourceGrant(ctx context.Context, id string) error
+	ListServiceAccounts(ctx context.Context, req *iapiserver.IdentityServiceAccountListRequest) ([]*iapiserver.IdentityServiceAccount, int64, error)
+	GetServiceAccount(ctx context.Context, id string) (*iapiserver.IdentityServiceAccount, error)
+	CreateServiceAccount(ctx context.Context, account *iapiserver.IdentityServiceAccount, permissionCodes []string) (*iapiserver.IdentityServiceAccount, error)
+	UpdateServiceAccount(ctx context.Context, account *iapiserver.IdentityServiceAccount, permissionCodes []string) (*iapiserver.IdentityServiceAccount, error)
+	SetServiceAccountStatus(ctx context.Context, id, status string) (*iapiserver.IdentityServiceAccount, error)
+	RotateServiceAccountCredential(ctx context.Context, id string) (*iapiserver.IdentityServiceAccountCredentialResponse, error)
+}
+
+// PlatformManagementFactory is an optional capability implemented by stores that have the released Platform schema.
+type PlatformManagementFactory interface {
+	PlatformManagement() PlatformManagementStore
+}
+
 type OneTimeTokenStore interface {
 	GetByHash(ctx context.Context, hash string) (*iapiserver.OneTimeToken, error)
 	Delete(ctx context.Context, id string) error

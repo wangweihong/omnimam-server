@@ -1,4 +1,4 @@
-package platform
+package applicationplatform
 
 import (
 	"context"
@@ -19,12 +19,12 @@ func (dispatcherStub) DispatchAsync(context.Context, string) {}
 
 func TestNewServiceUsesInjectedDispatcher(t *testing.T) {
 	dispatcher := dispatcherStub{}
-	service := NewService(&thumbnailExecutorFactory{}, dispatcher)
+	service := NewLegacyService(&thumbnailExecutorFactory{}, dispatcher)
 	if service.dispatcher != dispatcher {
 		t.Fatal("platform service did not retain the bootstrap dispatcher")
 	}
 
-	serviceWithoutDispatcher := NewService(&thumbnailExecutorFactory{})
+	serviceWithoutDispatcher := NewLegacyService(&thumbnailExecutorFactory{})
 	if serviceWithoutDispatcher.dispatcher != nil {
 		t.Fatal("platform service constructed an implicit dispatcher")
 	}

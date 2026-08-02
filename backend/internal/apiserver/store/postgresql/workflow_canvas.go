@@ -2,6 +2,7 @@ package postgresql
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"reflect"
@@ -36,6 +37,9 @@ func (s *workflowCanvasStore) ListWorkflowNodeDefinitions(
 			projectID,
 			namespace,
 		)
+		// promptGroup is an internal normalization container. It remains addressable
+		// for draft/version validation, but must not consume catalog pages or totals.
+		q = q.Where("node_type <> ?", "promptGroup")
 		if req.Category != "" {
 			q = q.Where("category = ?", req.Category)
 		}
@@ -83,15 +87,8 @@ func (s *workflowCanvasStore) AddWorkflowNodeDefinitionIdempotent(
 		var existing iapiserver.WorkflowNodeDefinition
 		err := tx.Where("node_type = ? AND definition_version = ?", data.NodeType, data.DefinitionVersion).First(&existing).Error
 		if err == nil {
-			if existing.Title != data.Title || existing.Description != data.Description || existing.Category != data.Category ||
-				existing.NodeKind != data.NodeKind ||
-				!reflect.DeepEqual(existing.Ports, data.Ports) ||
-				!reflect.DeepEqual(existing.ConfigSchema, data.ConfigSchema) ||
-				!reflect.DeepEqual(existing.ControllerStateSchema, data.ControllerStateSchema) ||
-				!reflect.DeepEqual(existing.ExecutionBinding, data.ExecutionBinding) ||
-				!reflect.DeepEqual(existing.Renderer, data.Renderer) ||
-				existing.AvailabilityScope != data.AvailabilityScope {
-				return errors.NewStatus(code.ErrWorkflowNodeDefinitionConflict, "workflow node definition content differs")
+			if mismatch := workflowNodeDefinitionMismatch(&existing, data); mismatch != "" {
+				return errors.NewStatusF(code.ErrWorkflowNodeDefinitionConflict, "workflow node definition content differs: %s", mismatch)
 			}
 			result = &existing
 			return nil
@@ -99,13 +96,65 @@ func (s *workflowCanvasStore) AddWorkflowNodeDefinitionIdempotent(
 		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
 			return errors.WithStack(err)
 		}
-		if err := tx.Create(data).Error; err != nil {
-			return errors.WithStack(err)
+		create := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "node_type"}, {Name: "definition_version"}},
+			DoNothing: true,
+		}).Create(data)
+		if create.Error != nil {
+			return errors.WithStack(create.Error)
+		}
+		if create.RowsAffected == 0 {
+			if err := tx.Where("node_type = ? AND definition_version = ?", data.NodeType, data.DefinitionVersion).First(&existing).Error; err != nil {
+				return errors.WithStack(err)
+			}
+			if mismatch := workflowNodeDefinitionMismatch(&existing, data); mismatch != "" {
+				return errors.NewStatusF(code.ErrWorkflowNodeDefinitionConflict, "workflow node definition content differs: %s", mismatch)
+			}
+			result = &existing
+			return nil
 		}
 		result, created = data, true
 		return nil
 	})
 	return result, created, err
+}
+
+func workflowNodeDefinitionMismatch(existing, expected *iapiserver.WorkflowNodeDefinition) string {
+	checks := []struct {
+		name string
+		ok   bool
+	}{
+		{"title", existing.Title == expected.Title},
+		{"description", existing.Description == expected.Description},
+		{"category", existing.Category == expected.Category},
+		{"node_kind", existing.NodeKind == expected.NodeKind},
+		{"ports", workflowJSONEqual(existing.Ports, expected.Ports)},
+		{"config_schema", workflowJSONEqual(existing.ConfigSchema, expected.ConfigSchema)},
+		{"controller_state_schema", workflowJSONEqual(existing.ControllerStateSchema, expected.ControllerStateSchema)},
+		{"controller_schema_version", reflect.DeepEqual(existing.ControllerSchemaVersion, expected.ControllerSchemaVersion)},
+		{"execution_binding", reflect.DeepEqual(existing.ExecutionBinding, expected.ExecutionBinding)},
+		{"renderer", reflect.DeepEqual(existing.Renderer, expected.Renderer)},
+		{"cache_allowed", existing.CacheAllowed == expected.CacheAllowed},
+		{"reuse_ttl_seconds", reflect.DeepEqual(existing.ReuseTTLSeconds, expected.ReuseTTLSeconds)},
+		{"availability_scope", existing.AvailabilityScope == expected.AvailabilityScope},
+		{"project_id", reflect.DeepEqual(existing.ProjectID, expected.ProjectID)},
+		{"namespace", reflect.DeepEqual(existing.Namespace, expected.Namespace)},
+	}
+	for _, check := range checks {
+		if !check.ok {
+			return check.name
+		}
+	}
+	return ""
+}
+
+// workflowJSONEqual compares persisted JSON values by their wire representation.
+// PostgreSQL JSON decoding normalizes numbers to float64, so Go's reflect.DeepEqual
+// would reject semantically identical schemas after a restart.
+func workflowJSONEqual(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func (s *workflowCanvasStore) DeprecateWorkflowNodeDefinition(

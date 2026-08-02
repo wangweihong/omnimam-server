@@ -520,6 +520,14 @@ func (ds *datastore) Users() store.UserStore {
 	return newUser(ds)
 }
 
+func (ds *datastore) IdentityV11() store.IdentityV11Store {
+	return newIdentityV11Store(ds)
+}
+
+func (ds *datastore) PlatformManagement() store.PlatformManagementStore {
+	return newPlatformManagementStore(ds)
+}
+
 /* ------ setting ------- */
 func (ds *datastore) IdentityProviders() store.IdentityProviderStore {
 	return newIdentityProvider(ds)

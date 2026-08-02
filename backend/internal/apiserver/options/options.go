@@ -42,10 +42,13 @@ type Options struct {
 
 // AuthOptions 控制用户系统完成前的开发态认证兼容路径。
 type AuthOptions struct {
-	AllowAnonymousDevelopment bool `json:"allow-anonymous-development" mapstructure:"allow-anonymous-development"`
+	AllowAnonymousDevelopment bool   `json:"allow-anonymous-development" mapstructure:"allow-anonymous-development"`
+	JWTSecret                 string `json:"jwt-secret" mapstructure:"jwt-secret"`
 }
 
-func NewAuthOptions() *AuthOptions { return &AuthOptions{} }
+func NewAuthOptions() *AuthOptions {
+	return &AuthOptions{JWTSecret: "dfVpOK8LZeJLZHYmHdb1VdyRrACKpqoo"}
+}
 
 // MCPOptions 控制已发布 MCP 传输限制、Origin、协议缓存和短期 Task/Upload 映射策略。
 type MCPOptions struct {
@@ -215,6 +218,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	fs := fss.FlagSet("authentication")
 	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
 		"allow anonymous development authentication for unfinished user management")
+	fs.StringVar(&o.AuthOptions.JWTSecret, "auth.jwt-secret", o.AuthOptions.JWTSecret, "signing secret for Identity access tokens")
 
 	fs = fss.FlagSet("misc")
 	fs.StringVar(&o.Name, "misc.name", o.Name, "name of server")

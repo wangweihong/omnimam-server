@@ -21,10 +21,12 @@ type WorkflowPortDefinition struct {
 	ArtifactReadyTimeoutSeconds *int   `json:"artifact_ready_timeout_seconds,omitempty"`
 }
 
-// WorkflowExecutionBinding 只允许被注册的 functionRef 或已发布 ApplicationVersion。
+// WorkflowExecutionBinding 只允许被注册的编译器、functionRef 或已发布 ApplicationVersion。
 type WorkflowExecutionBinding struct {
-	Mode                 string  `json:"mode"`
-	BindingVersion       string  `json:"binding_version"`
+	Mode           string `json:"mode"`
+	BindingVersion string `json:"binding_version"`
+	// CompilerKey 标识服务端注册的确定性编译期能力；该模式不创建自身 AtomicTask。
+	CompilerKey          *string `json:"compiler_key,omitempty"`
 	FunctionRef          *string `json:"function_ref,omitempty"`
 	ApplicationVersionID *string `json:"application_version_id,omitempty"`
 	MaxDynamicTasks      *int    `json:"max_dynamic_tasks,omitempty"`
@@ -39,20 +41,22 @@ type WorkflowRendererCapability struct {
 
 // WorkflowNodeDefinition 是不可变节点能力版本；deprecated 只阻止新引用。
 type WorkflowNodeDefinition struct {
-	imachinery.ObjectMeta         `json:"-"`
-	NodeType                      string                      `json:"node_type"                           gorm:"column:node_type;type:varchar(200);not null;uniqueIndex:idx_workflow_node_definition_version,priority:1"`
-	DefinitionVersion             string                      `json:"definition_version"                  gorm:"column:definition_version;type:varchar(64);not null;uniqueIndex:idx_workflow_node_definition_version,priority:2"`
-	Title                         string                      `json:"title"                               gorm:"column:title;type:varchar(200);not null"`
-	Category                      string                      `json:"category"                            gorm:"column:category;type:varchar(100);not null;index"`
-	NodeKind                      string                      `json:"node_kind"                           gorm:"column:node_kind;type:varchar(32);not null;index"`
-	Ports                         []WorkflowPortDefinition    `json:"ports"                               gorm:"-"`
-	PortsJSON                     string                      `json:"-"                                   gorm:"column:ports_json;type:text;not null"`
-	ConfigSchema                  map[string]any              `json:"config_schema"                       gorm:"-"`
-	ConfigSchemaJSON              string                      `json:"-"                                   gorm:"column:config_schema_json;type:text;not null"`
-	ControllerStateSchema         map[string]any              `json:"controller_state_schema,omitempty"   gorm:"-"`
-	ControllerStateSchemaJSON     *string                     `json:"-"                                   gorm:"column:controller_state_schema_json;type:text"`
-	ControllerSchemaVersion       *string                     `json:"controller_schema_version,omitempty" gorm:"column:controller_schema_version;type:varchar(64)"`
-	ExecutionMode                 string                      `json:"-"                                   gorm:"column:execution_mode;type:varchar(16);not null"`
+	imachinery.ObjectMeta     `json:"-"`
+	NodeType                  string                   `json:"node_type"                           gorm:"column:node_type;type:varchar(200);not null;uniqueIndex:idx_workflow_node_definition_version,priority:1"`
+	DefinitionVersion         string                   `json:"definition_version"                  gorm:"column:definition_version;type:varchar(64);not null;uniqueIndex:idx_workflow_node_definition_version,priority:2"`
+	Title                     string                   `json:"title"                               gorm:"column:title;type:varchar(200);not null"`
+	Category                  string                   `json:"category"                            gorm:"column:category;type:varchar(100);not null;index"`
+	NodeKind                  string                   `json:"node_kind"                           gorm:"column:node_kind;type:varchar(32);not null;index"`
+	Ports                     []WorkflowPortDefinition `json:"ports"                               gorm:"-"`
+	PortsJSON                 string                   `json:"-"                                   gorm:"column:ports_json;type:text;not null"`
+	ConfigSchema              map[string]any           `json:"config_schema"                       gorm:"-"`
+	ConfigSchemaJSON          string                   `json:"-"                                   gorm:"column:config_schema_json;type:text;not null"`
+	ControllerStateSchema     map[string]any           `json:"controller_state_schema,omitempty"   gorm:"-"`
+	ControllerStateSchemaJSON *string                  `json:"-"                                   gorm:"column:controller_state_schema_json;type:text"`
+	ControllerSchemaVersion   *string                  `json:"controller_schema_version,omitempty" gorm:"column:controller_schema_version;type:varchar(64)"`
+	ExecutionMode             string                   `json:"-"                                   gorm:"column:execution_mode;type:varchar(16);not null"`
+	// CompilerKey 固定 compile_time 定义使用的内置编译器，其他执行模式必须为空。
+	CompilerKey                   *string                     `json:"-"                                   gorm:"column:compiler_key;type:varchar(64)"`
 	FunctionRef                   *string                     `json:"-"                                   gorm:"column:function_ref;type:varchar(256)"`
 	ApplicationVersionID          *string                     `json:"-"                                   gorm:"column:application_version_id;type:varchar(64)"`
 	BindingVersion                string                      `json:"-"                                   gorm:"column:binding_version;type:varchar(64);not null"`
@@ -108,6 +112,7 @@ func (d *WorkflowNodeDefinition) AfterFind(tx *gorm.DB) error {
 func (d *WorkflowNodeDefinition) marshal() error {
 	d.ExecutionMode = d.ExecutionBinding.Mode
 	d.BindingVersion = d.ExecutionBinding.BindingVersion
+	d.CompilerKey = d.ExecutionBinding.CompilerKey
 	d.FunctionRef = d.ExecutionBinding.FunctionRef
 	d.ApplicationVersionID = d.ExecutionBinding.ApplicationVersionID
 	d.MaxDynamicTasks = d.ExecutionBinding.MaxDynamicTasks
@@ -134,6 +139,7 @@ func (d *WorkflowNodeDefinition) hydrate() {
 	d.ExecutionBinding = WorkflowExecutionBinding{
 		Mode:                 d.ExecutionMode,
 		BindingVersion:       d.BindingVersion,
+		CompilerKey:          d.CompilerKey,
 		FunctionRef:          d.FunctionRef,
 		ApplicationVersionID: d.ApplicationVersionID,
 		MaxDynamicTasks:      d.MaxDynamicTasks,

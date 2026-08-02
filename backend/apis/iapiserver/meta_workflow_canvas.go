@@ -14,9 +14,16 @@ const (
 	CanvasAvailabilitySystem  = "SYSTEM"
 	CanvasAvailabilityProject = "PROJECT"
 
-	CanvasExecutionPassive  = "passive"
-	CanvasExecutionAtomic   = "atomic"
-	CanvasExecutionExpanded = "expanded"
+	CanvasExecutionPassive     = "passive"
+	CanvasExecutionCompileTime = "compile_time"
+	CanvasExecutionAtomic      = "atomic"
+	CanvasExecutionExpanded    = "expanded"
+
+	CanvasCompilerMediaInput  = "builtin.media_input"
+	CanvasCompilerPrompt      = "builtin.prompt"
+	CanvasCompilerLoop        = "builtin.loop"
+	CanvasCompilerPromptGroup = "builtin.prompt_group"
+	CanvasCompilerOutput      = "builtin.output"
 
 	CanvasRunScopeAll        = "all"
 	CanvasRunScopeFlows      = "flows"

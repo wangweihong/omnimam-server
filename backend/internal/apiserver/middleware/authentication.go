@@ -19,7 +19,7 @@ import (
 func Authentication(authOptions *options.AuthOptions, mode string, userStore store.UserStore) gin.HandlerFunc {
 	allowAnonymous := authOptions != nil && authOptions.AllowAnonymousDevelopment && mode != "release"
 	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") || strings.HasPrefix(c.Request.URL.Path, "/api/v1/iam/") || strings.HasPrefix(c.Request.URL.Path, "/api/v1/platform/") {
 			c.Next()
 			return
 		}

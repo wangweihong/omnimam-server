@@ -1,4 +1,4 @@
-package platform
+package applicationplatform
 
 import (
 	"bytes"
@@ -38,7 +38,7 @@ func TestGetProviderModelRefSummariesBatchesAndScopesByOwner(t *testing.T) {
 		"model-a": {ObjectMeta: imachinery.ObjectMeta{ID: "model-a"}, OwnerUserID: "user-a", ProviderID: "provider-a", Model: "gpt-a", DisplayName: "GPT A", HealthStatus: iapiserver.ProviderModelHealthHealthy, Enabled: true},
 		"model-b": {ObjectMeta: imachinery.ObjectMeta{ID: "model-b"}, OwnerUserID: "user-b", ProviderID: "provider-b", Model: "gpt-b", DisplayName: "GPT B", HealthStatus: iapiserver.ProviderModelHealthHealthy, Enabled: true},
 	}}
-	service := NewService(&testFactory{providers: providerStore, models: modelStore})
+	service := NewLegacyService(&testFactory{providers: providerStore, models: modelStore})
 
 	summaries, err := service.GetProviderModelRefSummaries(context.Background(), "user-a", []string{"model-a", "model-a", "model-b", "missing"})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestProviderModelListAddsProviderNamesInOneBatch(t *testing.T) {
 		id := fmt.Sprintf("model-%02d", i)
 		modelStore.items[id] = &iapiserver.ProviderModel{ObjectMeta: imachinery.ObjectMeta{ID: id}, OwnerUserID: "system-admin", ProviderID: "provider-a", Model: id, DisplayName: id, Enabled: true}
 	}
-	service := NewService(&testFactory{providers: providerStore, models: modelStore})
+	service := NewLegacyService(&testFactory{providers: providerStore, models: modelStore})
 
 	response, err := service.ProviderModelList(context.Background(), &iapiserver.ProviderModelListRequest{})
 	if err != nil {

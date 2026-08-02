@@ -13,14 +13,16 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
+	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	mcpsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/mcp"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
-	platformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platform"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
@@ -127,7 +129,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	}
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
 	taskCenterService := taskcentersvc.NewServiceWithDependencies(storeIns, workflowRuntime, reconcileRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
-		platformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
+		appplatformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
@@ -218,6 +220,21 @@ func (c *CompletedExtraConfig) New() error {
 
 		// identity
 		&iapiserver.User{},
+		&iapiserver.IdentityUser{},
+		&iapiserver.IdentityRole{},
+		&iapiserver.IdentityPermissionDefinition{},
+		&iapiserver.IdentityGroup{},
+		&iapiserver.IdentityResourceAccessGrant{},
+		&iapiserver.IdentityAuthSession{},
+		&iapiserver.IdentityTokenCredential{},
+		&iapiserver.IdentityRefreshToken{},
+		&iapiserver.IdentityServiceAccount{},
+		&iapiserver.IdentityServiceAccountCredential{},
+		&iapiserver.IdentityRolePermissionGrant{},
+		&iapiserver.IdentityUserRoleGrant{},
+		&iapiserver.IdentityGroupMember{},
+		&iapiserver.IdentityGroupRoleGrant{},
+		&iapiserver.IdentityOutboxEvent{},
 		&iapiserver.OneTimeToken{},
 		&iapiserver.UserOTP{},
 
@@ -246,6 +263,9 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.WorkflowCanvasReconcileCursor{},
 
 		// platform contracts
+		&iapiserver.PlatformSystemAuthConfig{},
+		&iapiserver.PlatformAuditLog{},
+		&iapiserver.PlatformOutboxEvent{},
 		&iapiserver.Provider{},
 		&iapiserver.ProviderModel{},
 		&iapiserver.ProviderCapability{},
@@ -321,11 +341,21 @@ func (c *CompletedExtraConfig) New() error {
 	); err != nil {
 		return errors.Wrap(err, "EnsureScheme fail")
 	}
+	identityFactory, ok := storeIns.(store.IdentityV11Factory)
+	if !ok || identityFactory.IdentityV11() == nil {
+		return errors.New("spec-v1.11 Identity store is unavailable")
+	}
+	if err := identityFactory.IdentityV11().EnsureDefaultPermissions(context.Background(), identitysvc.DefaultPermissions()); err != nil {
+		return errors.Wrap(err, "initialize spec-v1.11 Identity permissions")
+	}
+	if err := workflowcanvassvc.ReconcileBuiltInNodeDefinitions(context.Background(), storeIns.WorkflowCanvases()); err != nil {
+		return errors.Wrap(err, "reconcile built-in workflow canvas node definitions")
+	}
 	store.SetClient(storeIns)
 	return nil
 }
 
-// InitializeStore initializes the shared PostgreSQL store and spec-v1.0.0 schema for non-HTTP processes.
+// InitializeStore initializes the shared PostgreSQL store and reconciles shared system catalogs for non-HTTP processes.
 func InitializeStore(cfg *config.Config) error {
 	extraConfig, err := buildExtraConfig(cfg)
 	if err != nil {
@@ -393,10 +423,10 @@ func (s preparedServer) Run(stopCh <-chan struct{}) error {
 	startUserEventCleanup(s.userEventCleanupCtx)
 	startMCPTaskBindingCleanup(s.userEventCleanupCtx)
 	if s.assetUpload != nil {
-		platformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
-		platformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)
+		appplatformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
+		appplatformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)
 	}
-	platformsvc.StartProviderModelHealthCheck(stopCh, store.Client(), 30*time.Second)
+	appplatformsvc.StartProviderModelHealthCheck(stopCh, store.Client(), 30*time.Second)
 	// start shutdown managers
 	if err := s.gracefulShutdown.Start(); err != nil {
 		log.Fatalf("start shutdown manager failed: %s", err.Error())
