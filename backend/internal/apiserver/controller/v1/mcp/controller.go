@@ -21,17 +21,18 @@ import (
 // Controller implements the released MCP 2026-07-28 Streamable HTTP endpoint.
 type Controller struct {
 	processor *protocol.Processor
-	users     store.UserStore
+	identity  store.IdentityStore
+	secret    []byte
 	options   *options.MCPOptions
 }
 
-func New(processor *protocol.Processor, users store.UserStore, opts *options.MCPOptions) *Controller {
-	return &Controller{processor: processor, users: users, options: opts}
+func New(processor *protocol.Processor, identity store.IdentityStore, secret []byte, opts *options.MCPOptions) *Controller {
+	return &Controller{processor: processor, identity: identity, secret: secret, options: opts}
 }
 
 // Handle validates transport security, independently authenticates the Bearer JWT, and dispatches one JSON-RPC request.
 func (c *Controller) Handle(ctx *gin.Context) {
-	if c == nil || c.processor == nil || c.users == nil || c.options == nil || !c.options.Enabled {
+	if c == nil || c.processor == nil || c.identity == nil || len(c.secret) < 32 || c.options == nil || !c.options.Enabled {
 		ctx.Status(http.StatusNotFound)
 		return
 	}
@@ -62,13 +63,18 @@ func (c *Controller) Handle(ctx *gin.Context) {
 		return
 	}
 	id := protocol.RequestIDOrNull(body)
-	user, err := authmiddleware.ResolveBearerUser(ctx.Request.Context(), ctx.GetHeader("Authorization"), c.users)
-	if err != nil {
+	principal, user, err := authmiddleware.ResolveIdentityBearer(
+		ctx.Request.Context(),
+		ctx.GetHeader("Authorization"),
+		c.identity,
+		c.secret,
+	)
+	if err != nil || principal.PrincipalType != "USER" || user == nil {
 		failure := protocolFailure(190800, "ERR_MCP_AUTHENTICATION_REQUIRED", "当前请求缺少有效 Identity JWT。", "The request does not contain a valid Identity JWT.")
 		c.write(ctx, transportResponse(id, protocol.JSONRPCBusinessError, failure.Message, failure), http.StatusOK, headers.Accept)
 		return
 	}
-	authmiddleware.SetUserContext(ctx, user)
+	authmiddleware.SetIdentityContext(ctx, principal, user)
 	requestID := ctx.GetString("X-Request-ID")
 	ctx.Request = ctx.Request.WithContext(mcpsvc.WithRequestMetadata(ctx.Request.Context(), mcpsvc.RequestMetadata{
 		RequestID: requestID,

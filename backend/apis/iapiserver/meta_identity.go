@@ -1,11 +1,6 @@
 package iapiserver
 
-import (
-	"github.com/wangweihong/gotoolbox/pkg/randutil"
-	"gorm.io/gorm"
-
-	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-)
+import "github.com/wangweihong/omnimam/backend/apis/imachinery"
 
 const (
 	UserTypeLocal = "local"
@@ -35,19 +30,4 @@ type UserToken struct {
 	Token    string `json:"token"`
 	ClientIP string `json:"client_ip"`
 	UserID   string `json:"user_id"`
-}
-
-type UserOTP struct {
-	imachinery.ObjectMeta
-
-	Secret string `json:"secret"  gorm:"not null"`
-	UserID string `json:"user_id"`
-}
-
-// gorm数据库钩子
-// BeforeCreate run before create database record.
-func (obj *UserOTP) BeforeCreate(tx *gorm.DB) error {
-	// 生成10组重置otp密码
-	obj.Extend = obj.Extend.Set("reset_password", randutil.RandStringSlice(nil, 10, 10))
-	return obj.BeforeCreate(tx)
 }

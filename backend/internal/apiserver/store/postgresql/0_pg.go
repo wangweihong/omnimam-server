@@ -520,8 +520,8 @@ func (ds *datastore) Users() store.UserStore {
 	return newUser(ds)
 }
 
-func (ds *datastore) IdentityV11() store.IdentityV11Store {
-	return newIdentityV11Store(ds)
+func (ds *datastore) Identities() store.IdentityStore {
+	return newIdentityStore(ds)
 }
 
 func (ds *datastore) PlatformManagement() store.PlatformManagementStore {
@@ -529,26 +529,6 @@ func (ds *datastore) PlatformManagement() store.PlatformManagementStore {
 }
 
 /* ------ setting ------- */
-func (ds *datastore) IdentityProviders() store.IdentityProviderStore {
-	return newIdentityProvider(ds)
-}
-
-func (ds *datastore) ServiceProviders() store.ServiceProviderStore {
-	return newServiceProvider(ds)
-}
-
-func (ds *datastore) Settings() store.SettingStore {
-	return newSetting(ds)
-}
-
-func (ds *datastore) OneTimeTokens() store.OneTimeTokenStore {
-	return newOneTimeToken(ds)
-}
-
-func (ds *datastore) UserOTPs() store.UserOTPStore {
-	return newUserOTP(ds)
-}
-
 /* ------ asset ------- */
 func (ds *datastore) AssetLibraries() store.AssetLibraryStore {
 	return newAssetLibrary(ds)

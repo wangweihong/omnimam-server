@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	IdentityPrincipalContextKey   = "identity.principal"
-	IdentityTokenClaimsContextKey = "identity.token_claims"
-	IdentityAuditSourceDomain     = "identity"
+	IdentityPrincipalContextKey = "identity.principal"
+	IdentityAuditSourceDomain   = "identity"
 )
 
 // IdentityPrincipal is the verified one-hop context passed from middleware to handlers and services.
@@ -44,13 +43,9 @@ type IdentityTokenClaims struct {
 	CredentialVersion int64  `json:"credential_version"`
 }
 
-// IdentityAuthentication validates the v1.11 JWT, JTI credential, session and current user state on every request.
-func IdentityAuthentication(authOptions *options.AuthOptions, mode string, identity store.IdentityV11Store) gin.HandlerFunc {
-	_ = mode
-	secret := []byte("dfVpOK8LZeJLZHYmHdb1VdyRrACKpqoo")
-	if authOptions != nil && authOptions.JWTSecret != "" {
-		secret = []byte(authOptions.JWTSecret)
-	}
+// IdentityAuthentication 在每个请求中校验 JWT、JTI 凭据、会话和当前用户状态。
+func IdentityAuthentication(authOptions *options.AuthOptions, identity store.IdentityStore) gin.HandlerFunc {
+	secret := IdentityJWTSecret(authOptions)
 	return func(c *gin.Context) {
 		if isIdentityPublicPath(c.Request.URL.Path) {
 			c.Next()
@@ -61,20 +56,35 @@ func IdentityAuthentication(authOptions *options.AuthOptions, mode string, ident
 			c.Abort()
 			return
 		}
-		principal, user, err := resolveIdentityPrincipal(c.Request.Context(), c, identity, secret)
+		principal, user, err := ResolveIdentityBearer(c.Request.Context(), bearerAuthorization(c), identity, secret)
 		if err != nil {
 			core.WriteResponse(c, err, nil)
 			c.Abort()
 			return
 		}
-		c.Set(IdentityPrincipalContextKey, principal)
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), IdentityPrincipalContextKey, principal))
-		if user != nil {
-			legacy := &iapiserver.User{}
-			legacy.ID, legacy.Name, legacy.Mail, legacy.Phone = user.ID, user.Username, valueOrEmpty(user.Email), user.Phone
-			SetUserContext(c, legacy)
-		}
+		SetIdentityContext(c, principal, user)
 		c.Next()
+	}
+}
+
+// IdentityJWTSecret 返回 Identity JWT 的当前签名密钥，并保持与 service 默认配置一致。
+func IdentityJWTSecret(authOptions *options.AuthOptions) []byte {
+	if authOptions == nil {
+		return nil
+	}
+	return []byte(authOptions.JWTSecret)
+}
+
+// IdentityAuthenticationForAPIs 为旧业务路径启用新 Identity 认证，并让 IAM/Platform 路径保留审计优先的局部 middleware 链。
+func IdentityAuthenticationForAPIs(authOptions *options.AuthOptions, identity store.IdentityStore) gin.HandlerFunc {
+	authenticate := IdentityAuthentication(authOptions, identity)
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/api/v1/iam/") || strings.HasPrefix(path, "/api/v1/platform/") {
+			c.Next()
+			return
+		}
+		authenticate(c)
 	}
 }
 
@@ -94,13 +104,12 @@ func isIdentityPublicPath(path string) bool {
 	}
 }
 
-func resolveIdentityPrincipal(ctx context.Context, c *gin.Context, identity store.IdentityV11Store, secret []byte) (IdentityPrincipal, *iapiserver.IdentityUser, error) {
-	raw := strings.TrimSpace(c.GetHeader("Authorization"))
-	if raw == "" {
-		if token, err := c.Cookie(iapiserver.CookieKeyToken); err == nil {
-			raw = "Bearer " + token
-		}
+// ResolveIdentityBearer 校验 Bearer JWT 及其 credential、session、用户状态和动态权限投影。
+func ResolveIdentityBearer(ctx context.Context, raw string, identity store.IdentityStore, secret []byte) (IdentityPrincipal, *iapiserver.IdentityUser, error) {
+	if len(secret) < 32 {
+		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrIdentityAuthzContextInvalid, "identity JWT secret is not configured")
 	}
+	raw = strings.TrimSpace(raw)
 	parts := strings.Fields(raw)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
 		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrMissingHeader, "a Bearer Identity JWT is required")
@@ -152,8 +161,36 @@ func resolveIdentityPrincipal(ctx context.Context, c *gin.Context, identity stor
 	for _, permission := range permissionCodes {
 		principal.Permissions[permission] = struct{}{}
 	}
-	c.Set(IdentityTokenClaimsContextKey, claims)
 	return principal, user, nil
+}
+
+func bearerAuthorization(c *gin.Context) string {
+	raw := strings.TrimSpace(c.GetHeader("Authorization"))
+	if raw == "" {
+		if token, err := c.Cookie(iapiserver.CookieKeyToken); err == nil {
+			return "Bearer " + token
+		}
+	}
+	return raw
+}
+
+// SetIdentityContext 将已校验的主体写入 Gin 和 request context，并提供旧业务 service 仍消费的用户摘要。
+func SetIdentityContext(c *gin.Context, principal IdentityPrincipal, user *iapiserver.IdentityUser) {
+	c.Set(IdentityPrincipalContextKey, principal)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), IdentityPrincipalContextKey, principal))
+	if user == nil {
+		return
+	}
+	legacy := &iapiserver.User{}
+	legacy.ID, legacy.Name, legacy.Mail, legacy.Phone = user.ID, user.Username, valueOrEmpty(user.Email), user.Phone
+	SetUserContext(c, legacy)
+}
+
+// SetUserContext 注入已校验用户摘要，兼容尚未迁移到 PrincipalContext 的业务 service。
+func SetUserContext(c *gin.Context, user *iapiserver.User) {
+	c.Set(iapiserver.GinContextKeyUser, user)
+	ctx := context.WithValue(c.Request.Context(), iapiserver.GinContextKeyUser, user)
+	c.Request = c.Request.WithContext(ctx)
 }
 
 // RequireIdentityPermission enforces a stable v1.11 permission code after authentication middleware.
@@ -251,6 +288,9 @@ func valueOrEmpty(value *string) string {
 
 // IssueIdentityAccessToken signs an access token whose JTI is checked against the credential store by middleware.
 func IssueIdentityAccessToken(secret []byte, principalType, principalID, sessionID string, securityVersion, credentialVersion int64, lifetime time.Duration) (string, string, error) {
+	if len(secret) < 32 {
+		return "", "", errors.New("identity JWT secret must be at least 32 bytes")
+	}
 	jti := uuid.NewString()
 	now := time.Now()
 	claims := IdentityTokenClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: principalID, ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(lifetime))}, PrincipalType: principalType, SessionID: sessionID, SecurityVersion: securityVersion, CredentialVersion: credentialVersion}

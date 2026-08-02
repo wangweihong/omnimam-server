@@ -4,15 +4,8 @@ var client Factory
 
 // Factory defines the iam platform storage interface.
 type Factory interface {
-	// settings
-	IdentityProviders() IdentityProviderStore
-	ServiceProviders() ServiceProviderStore
-	Settings() SettingStore
-
-	// identitys
+	// legacy users retained as compatibility projections for services not yet migrated to PrincipalContext.
 	Users() UserStore
-	OneTimeTokens() OneTimeTokenStore
-	UserOTPs() UserOTPStore
 
 	// assets
 	AssetLibraries() AssetLibraryStore
@@ -51,6 +44,10 @@ type Factory interface {
 	Permissions() PermissionStore
 	UserRoles() UserRoleStore
 
+	// Identity 认证、会话和授权事实。
+	Identities() IdentityStore
+	// Platform Management 系统认证配置与审计事实。
+	PlatformManagement() PlatformManagementStore
 	// ai chat
 	AIChat() AIChatStore
 

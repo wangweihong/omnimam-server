@@ -93,8 +93,7 @@ workflow-runtime:
   reconcile-interval: 15s
 
 auth:
-  # 用户与权限系统完成前的开发兼容开关；release 模式下即使误配也不会启用匿名管理员。
-  allow-anonymous-development: true
+  jwt-secret: ${APISERVER_AUTH_JWT_SECRET}
 
 # MCP 2026-07-28 Streamable HTTP 配置
 mcp:

@@ -50,6 +50,10 @@ const (
 	// @EN The user state does not allow this operation.
 	ErrIdentityUserStateInvalid int = 220403
 	// @HTTP 200
+	// @CN 用户不能删除自己。
+	// @EN A user cannot delete itself.
+	ErrIdentitySelfDeleteForbidden int = 220405
+	// @HTTP 200
 	// @CN 角色不存在或当前主体不可见。
 	// @EN The role does not exist or is not visible to the current principal.
 	ErrIdentityRoleNotVisible int = 220600

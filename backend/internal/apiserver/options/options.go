@@ -40,14 +40,13 @@ type Options struct {
 	MCPOptions                 *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
 }
 
-// AuthOptions 控制用户系统完成前的开发态认证兼容路径。
+// AuthOptions 配置 Identity Access Token 的签名参数。
 type AuthOptions struct {
-	AllowAnonymousDevelopment bool   `json:"allow-anonymous-development" mapstructure:"allow-anonymous-development"`
-	JWTSecret                 string `json:"jwt-secret" mapstructure:"jwt-secret"`
+	JWTSecret string `json:"jwt-secret" mapstructure:"jwt-secret"`
 }
 
 func NewAuthOptions() *AuthOptions {
-	return &AuthOptions{JWTSecret: "dfVpOK8LZeJLZHYmHdb1VdyRrACKpqoo"}
+	return &AuthOptions{}
 }
 
 // MCPOptions 控制已发布 MCP 传输限制、Origin、协议缓存和短期 Task/Upload 映射策略。
@@ -216,8 +215,6 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.SSEOptions.AddFlags(fss.FlagSet("sse"))
 	o.MCPOptions.AddFlags(fss.FlagSet("mcp"))
 	fs := fss.FlagSet("authentication")
-	fs.BoolVar(&o.AuthOptions.AllowAnonymousDevelopment, "auth.allow-anonymous-development", o.AuthOptions.AllowAnonymousDevelopment,
-		"allow anonymous development authentication for unfinished user management")
 	fs.StringVar(&o.AuthOptions.JWTSecret, "auth.jwt-secret", o.AuthOptions.JWTSecret, "signing secret for Identity access tokens")
 
 	fs = fss.FlagSet("misc")
@@ -251,6 +248,9 @@ func (o *Options) Complete() error {
 	}
 	if o.AuthOptions == nil {
 		o.AuthOptions = NewAuthOptions()
+	}
+	if len([]byte(o.AuthOptions.JWTSecret)) < 32 {
+		return fmt.Errorf("auth JWT secret must be at least 32 bytes")
 	}
 	if o.WorkflowRuntimeOptions == nil {
 		o.WorkflowRuntimeOptions = NewWorkflowRuntimeOptions()

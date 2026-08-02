@@ -8,14 +8,12 @@ import (
 	aiappctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/authentication"
 	identityctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/identity"
 	mcpctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/mcp"
 	notificationctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/notification"
 	platformctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platform"
 	platformmanagementctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/platformmanagement"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/setting"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
 	workflowcanvasctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/workflowcanvas"
@@ -44,10 +42,9 @@ func initRouter(
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
 	mcpOptions *options.MCPOptions,
-	mode string,
 ) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mcpProcessor, mcpOptions, mode)
+	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mcpProcessor, mcpOptions)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -61,7 +58,7 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions(), "release")
+	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
 }
 
 func installApis(
@@ -72,7 +69,6 @@ func installApis(
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
 	mcpOptions *options.MCPOptions,
-	mode string,
 ) *gin.Engine {
 	g.NoRoute(func(c *gin.Context) {
 		core.WriteResponse(c, errors.NewStatusF(code.ErrPageNotFound, "Page not found."), nil)
@@ -80,18 +76,21 @@ func installApis(
 	storeIns := store.Client()
 	if storeIns != nil {
 		if mcpProcessor != nil && mcpOptions != nil && mcpOptions.Enabled {
-			g.POST("/mcp", mcpctrl.New(mcpProcessor, storeIns.Users(), mcpOptions).Handle)
+			g.POST("/mcp", mcpctrl.New(
+				mcpProcessor,
+				storeIns.Identities(),
+				authmiddleware.IdentityJWTSecret(authOptions),
+				mcpOptions,
+			).Handle)
 		}
 		v1 := g.Group("/api/v1")
 		{
-			v1.Use(authmiddleware.Authentication(authOptions, mode, storeIns.Users()))
-			installV11IdentityPlatformApis(v1, storeIns, authOptions, mode)
+			v1.Use(authmiddleware.IdentityAuthenticationForAPIs(authOptions, storeIns.Identities()))
+			installIdentityPlatformApis(v1, storeIns, authOptions)
 			installSSEApis(v1, storeIns, sseOptions)
 			installNotificationApis(v1, storeIns)
 			installPlatformApis(v1, storeIns, nil)
 			installAssetLibraryContractApis(v1, storeIns, taskCenter, applicationPlatform)
-			installAuthApis(v1, storeIns)
-			InstallSettingApis(v1, storeIns)
 			installAssetApis(v1, storeIns)
 			installPromptApis(v1, storeIns)
 			if taskCenter != nil {
@@ -108,24 +107,26 @@ func installApis(
 	return g
 }
 
-// installV11IdentityPlatformApis installs the released v1.11 contracts behind one JWT, permission and audit chain.
-func installV11IdentityPlatformApis(rg *gin.RouterGroup, factory store.Factory, authOptions *options.AuthOptions, mode string) {
+// installIdentityPlatformApis 在统一 JWT、权限和审计链后安装已发布的 Identity 与 Platform Management API。
+func installIdentityPlatformApis(rg *gin.RouterGroup, factory store.Factory, authOptions *options.AuthOptions) {
 	if authOptions == nil {
 		authOptions = options.NewAuthOptions()
 	}
-	identityFactory, identityOK := factory.(store.IdentityV11Factory)
-	platformFactory, platformOK := factory.(store.PlatformManagementFactory)
-	if !identityOK || !platformOK {
+	if len(authmiddleware.IdentityJWTSecret(authOptions)) < 32 {
 		return
 	}
-	identityStore := identityFactory.IdentityV11()
-	platformStore := platformFactory.PlatformManagement()
-	identityService := identitysvc.NewV11Service(identityStore, platformStore, authOptions.JWTSecret)
+	identityStore := factory.Identities()
+	platformStore := factory.PlatformManagement()
+	if identityStore == nil || platformStore == nil {
+		return
+	}
+
+	identityService := identitysvc.NewService(factory, authOptions.JWTSecret)
 	identityController := identityctrl.NewController(identityService)
 
 	iam := rg.Group("/iam")
 	iam.Use(authmiddleware.Audit(platformStore, "identity"))
-	iam.Use(authmiddleware.IdentityAuthentication(authOptions, mode, identityStore))
+	iam.Use(authmiddleware.IdentityAuthentication(authOptions, identityStore))
 	auth := iam.Group("/auth")
 	{
 		auth.POST("/register", identityController.Register)
@@ -193,7 +194,7 @@ func installV11IdentityPlatformApis(rg *gin.RouterGroup, factory store.Factory, 
 	platformController := platformmanagementctrl.NewController(platformService)
 	platform := rg.Group("/platform")
 	platform.Use(authmiddleware.Audit(platformStore, "platform-management"))
-	platform.Use(authmiddleware.IdentityAuthentication(authOptions, mode, identityStore))
+	platform.Use(authmiddleware.IdentityAuthentication(authOptions, identityStore))
 	platform.GET("/overview", authmiddleware.RequireIdentityPermission("platform.overview.read"), platformController.Overview)
 	platform.GET("/auth-config", authmiddleware.RequireIdentityPermission("platform.auth_config.read"), platformController.GetAuthConfig)
 	platform.PUT("/auth-config", authmiddleware.RequireIdentityPermission("platform.auth_config.manage"), platformController.ReplaceAuthConfig)
@@ -571,79 +572,6 @@ func optionalAssetV1Store(factory store.Factory) (assetStore store.AssetV1Store)
 		}
 	}()
 	return factory.AssetsV1()
-}
-
-func installAuthApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	authv1 := rg.Group("/auth")
-	{
-		authController := authentication.NewController(storeIns)
-		otp := authv1.Group("/otp")
-		{
-			otp.GET("qrcode", authController.OTPGenerateOrGet)
-			otp.POST("validate", authController.OTPValidate)
-		}
-		// 修改以下路由需要同步修改iapiserver.SsoURL相关的常量
-		sso := authv1.Group("/sso")
-		{
-			sp := sso.Group("/sp")
-			{
-				sp.GET("/saml/metadata", authController.SpSsoSamlInitiator)
-				sp.POST("/saml/initiator", authController.SpSsoSamlInitiator)
-				sp.POST("/saml/acs", authController.SpSsoSamlAcs)
-				sp.POST("/saml/slo", authController.SpSsoSamlSLO)
-				//oauth2
-				// sp.POST("/oauth2/initiator", authController.SpSsoInitiator)
-				// sp.POST("/oauth2/acs", authController.SpSsoInitiator)
-
-			}
-
-			idp := sso.Group("/idp")
-			{
-				// //saml
-				idp.POST("/saml/answer", authController.IdpServeSAMLProtocolSSO)
-				// sp.GET("/saml/metadata", authController.SpSsoInitiator)
-				// //oauth2
-				// idp.POST("/oauth2/answer", authController.SpSsoInitiator)
-			}
-		}
-	}
-}
-
-func InstallSettingApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	settingv1 := rg.Group("/setting")
-	{
-		settingController := setting.NewController(storeIns)
-		sso := settingv1.Group("/sso")
-		{
-			saml := sso.Group("/saml")
-			{
-				saml.POST("/idp/metadata/upsert", settingController.IdentityProviderSAMLMetadataUpsert)
-				saml.GET("/idp/metadata/get", settingController.IdentityProviderSAMLMetadataGet)
-				saml.GET("/idp/metadata/download", settingController.IdentityProviderSAMLMetadataDownload)
-
-				saml.POST("/sp/metadata/upsert", settingController.ServiceProviderSAMLMetadataUpsert)
-				saml.GET("/sp/metadata/get", settingController.ServiceProviderSAMLMetadataGet)
-				saml.GET("/sp/metadata/download", settingController.ServiceProviderSAMLMetadataDownload)
-
-			}
-
-			ssoapp := sso.Group("/app")
-			{
-				ssoapp.POST("/idp/add", settingController.IdentityProviderAdd)
-				ssoapp.POST("/idp/delete", settingController.IdentityProviderDelete)
-				ssoapp.POST("/idp/update", settingController.IdentityProviderUpdate)
-				ssoapp.GET("/idp/get", settingController.IdentityProviderGet)
-				ssoapp.GET("/idp/list", settingController.IdentityProviderList)
-
-				ssoapp.POST("/sp/add", settingController.ServiceProviderAdd)
-				ssoapp.POST("/sp/delete", settingController.ServiceProviderDelete)
-				ssoapp.POST("/sp/update", settingController.ServiceProviderUpdate)
-				ssoapp.GET("/sp/get", settingController.ServiceProviderGet)
-				ssoapp.GET("/sp/redirect_url", settingController.ServiceProviderRedirectURL)
-				ssoapp.GET("/sp/list", settingController.ServiceProviderList)
-			}
-		}
-	}
 }
 
 func installAssetApis(rg *gin.RouterGroup, storeIns store.Factory) {

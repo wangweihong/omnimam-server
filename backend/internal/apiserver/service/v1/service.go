@@ -5,17 +5,13 @@ import (
 	appplatform "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/asset"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/canvas"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/prompt"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/setting"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
 // Service defines functions used to return resource interface.
 type Service interface {
-	Settings() setting.SettingSrv
-	Identities() identity.IdentitySrv
 	Assets() asset.AssetSrv
 	Prompts() prompt.PromptSrv
 	Canvases() canvas.CanvasSrv
@@ -36,14 +32,6 @@ func NewService(store store.Factory, dispatcher ...appplatform.TaskDispatcher) S
 		service.platformDispatcher = dispatcher[0]
 	}
 	return service
-}
-
-func (s *service) Settings() setting.SettingSrv {
-	return setting.NewService(s.store)
-}
-
-func (s *service) Identities() identity.IdentitySrv {
-	return identity.NewService(s.store)
 }
 
 func (s *service) Assets() asset.AssetSrv {

@@ -287,6 +287,7 @@ func init() {
 	register(ErrIdentityUsernameAlreadyExists, 200, map[string]string{"CN": "用户名已存在。", "EN": "The username already exists."})
 	register(ErrIdentityEmailAlreadyExists, 200, map[string]string{"CN": "邮箱已存在。", "EN": "The email already exists."})
 	register(ErrIdentityUserStateInvalid, 200, map[string]string{"CN": "用户当前状态不允许该操作。", "EN": "The user state does not allow this operation."})
+	register(ErrIdentitySelfDeleteForbidden, 200, map[string]string{"CN": "用户不能删除自己。", "EN": "A user cannot delete itself."})
 	register(ErrIdentityRoleNotVisible, 200, map[string]string{"CN": "角色不存在或当前主体不可见。", "EN": "The role does not exist or is not visible to the current principal."})
 	register(ErrIdentityAuthzContextInvalid, 200, map[string]string{"CN": "当前主体授权上下文无效。", "EN": "The authorization context is invalid."})
 	register(ErrIdentityAuthzDenied, 200, map[string]string{"CN": "当前主体无权执行该操作。", "EN": "The current principal is not authorized for the operation."})

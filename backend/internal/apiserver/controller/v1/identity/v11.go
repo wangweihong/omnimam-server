@@ -8,10 +8,10 @@ import (
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
-// Controller exposes the released v1.11 Identity auth/session endpoints.
-type Controller struct{ service *identitysvc.V11Service }
+// Controller 暴露已发布 Identity 契约中的认证、用户和授权管理接口。
+type Controller struct{ service *identitysvc.Service }
 
-func NewController(service *identitysvc.V11Service) *Controller { return &Controller{service: service} }
+func NewController(service *identitysvc.Service) *Controller { return &Controller{service: service} }
 
 func (c *Controller) Register(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.IdentityRegisterRequest{}, func(req *iapiserver.IdentityRegisterRequest) (any, error) { return c.service.Register(ctx, req) })

@@ -14,24 +14,24 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
-type identityV11Store struct{ ds *datastore }
+type identityStore struct{ ds *datastore }
 
-func newIdentityV11Store(ds *datastore) *identityV11Store { return &identityV11Store{ds: ds} }
+func newIdentityStore(ds *datastore) *identityStore { return &identityStore{ds: ds} }
 
-func (s *identityV11Store) GetUser(ctx context.Context, id string) (*iapiserver.IdentityUser, error) {
+func (s *identityStore) GetUser(ctx context.Context, id string) (*iapiserver.IdentityUser, error) {
 	var user iapiserver.IdentityUser
 	err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&user).Error
 	return &user, err
 }
 
-func (s *identityV11Store) GetUserByLogin(ctx context.Context, login string) (*iapiserver.IdentityUser, error) {
+func (s *identityStore) GetUserByLogin(ctx context.Context, login string) (*iapiserver.IdentityUser, error) {
 	var user iapiserver.IdentityUser
 	normalized := strings.ToLower(strings.TrimSpace(login))
 	err := s.ds.db.WithContext(ctx).Where("normalized_username = ? OR normalized_email = ?", normalized, normalized).First(&user).Error
 	return &user, err
 }
 
-func (s *identityV11Store) ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) ([]*iapiserver.IdentityUser, int64, error) {
+func (s *identityStore) ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) ([]*iapiserver.IdentityUser, int64, error) {
 	var users []*iapiserver.IdentityUser
 	query := req.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.IdentityUser{}), func(q *gorm.DB) *gorm.DB {
 		if req.Statuses == "" {
@@ -43,14 +43,14 @@ func (s *identityV11Store) ListUsers(ctx context.Context, req *iapiserver.Identi
 	return users, total, err
 }
 
-func (s *identityV11Store) ListPermissionDefinitions(ctx context.Context, req *iapiserver.IdentityPermissionListRequest) ([]*iapiserver.IdentityPermissionDefinition, int64, error) {
+func (s *identityStore) ListPermissionDefinitions(ctx context.Context, req *iapiserver.IdentityPermissionListRequest) ([]*iapiserver.IdentityPermissionDefinition, int64, error) {
 	var items []*iapiserver.IdentityPermissionDefinition
 	query := req.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.IdentityPermissionDefinition{}), nil)
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
 
-func (s *identityV11Store) CreateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error) {
+func (s *identityStore) CreateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&iapiserver.IdentityUser{}).Where("status <> ?", iapiserver.IdentityUserDeleted).Count(&count).Error; err != nil {
@@ -74,7 +74,7 @@ func (s *identityV11Store) CreateUser(ctx context.Context, user *iapiserver.Iden
 	return user, err
 }
 
-func (s *identityV11Store) UpdateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error) {
+func (s *identityStore) UpdateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error) {
 	var current iapiserver.IdentityUser
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", user.ID).First(&current).Error; err != nil {
@@ -105,20 +105,20 @@ func (s *identityV11Store) UpdateUser(ctx context.Context, user *iapiserver.Iden
 	return &current, err
 }
 
-func (s *identityV11Store) GetSession(ctx context.Context, id string) (*iapiserver.IdentityAuthSession, error) {
+func (s *identityStore) GetSession(ctx context.Context, id string) (*iapiserver.IdentityAuthSession, error) {
 	var session iapiserver.IdentityAuthSession
 	err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&session).Error
 	return &session, err
 }
 
-func (s *identityV11Store) ListSessions(ctx context.Context, userID string, req *iapiserver.IdentitySessionListRequest) ([]*iapiserver.IdentityAuthSession, int64, error) {
+func (s *identityStore) ListSessions(ctx context.Context, userID string, req *iapiserver.IdentitySessionListRequest) ([]*iapiserver.IdentityAuthSession, int64, error) {
 	var sessions []*iapiserver.IdentityAuthSession
 	query := req.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.IdentityAuthSession{}), func(q *gorm.DB) *gorm.DB { return q.Where("user_id = ?", userID) })
 	total, err := CountAndFindPage(query, req.PagingParams, &sessions)
 	return sessions, total, err
 }
 
-func (s *identityV11Store) CreateSession(ctx context.Context, session *iapiserver.IdentityAuthSession) (*iapiserver.IdentityAuthSession, error) {
+func (s *identityStore) CreateSession(ctx context.Context, session *iapiserver.IdentityAuthSession) (*iapiserver.IdentityAuthSession, error) {
 	if session.ID == "" {
 		session.ID = uuid.NewString()
 	}
@@ -126,49 +126,49 @@ func (s *identityV11Store) CreateSession(ctx context.Context, session *iapiserve
 	return session, err
 }
 
-func (s *identityV11Store) TouchSession(ctx context.Context, id string, at imachinery.Time) (*iapiserver.IdentityAuthSession, error) {
+func (s *identityStore) TouchSession(ctx context.Context, id string, at imachinery.Time) (*iapiserver.IdentityAuthSession, error) {
 	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityAuthSession{}).Where("id = ? AND status = ?", id, "ACTIVE").Updates(map[string]any{"last_active_at": at, "updated_at": at}).Error; err != nil {
 		return nil, err
 	}
 	return s.GetSession(ctx, id)
 }
 
-func (s *identityV11Store) RevokeSession(ctx context.Context, id, reason string) error {
+func (s *identityStore) RevokeSession(ctx context.Context, id, reason string) error {
 	now := imachinery.Now()
 	return s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityAuthSession{}).Where("id = ? AND status = ?", id, "ACTIVE").Updates(map[string]any{"status": "REVOKED", "revoked_at": now, "revoke_reason": reason, "updated_at": now}).Error
 }
 
-func (s *identityV11Store) RevokeUserSessions(ctx context.Context, userID, reason string) error {
+func (s *identityStore) RevokeUserSessions(ctx context.Context, userID, reason string) error {
 	now := imachinery.Now()
 	return s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityAuthSession{}).Where("user_id = ? AND status = ?", userID, "ACTIVE").Updates(map[string]any{"status": "REVOKED", "revoked_at": now, "revoke_reason": reason, "updated_at": now}).Error
 }
 
-func (s *identityV11Store) CreateTokenCredential(ctx context.Context, token *iapiserver.IdentityTokenCredential) error {
+func (s *identityStore) CreateTokenCredential(ctx context.Context, token *iapiserver.IdentityTokenCredential) error {
 	return s.ds.db.WithContext(ctx).Create(token).Error
 }
 
-func (s *identityV11Store) GetTokenCredentialByJTI(ctx context.Context, jti string) (*iapiserver.IdentityTokenCredential, error) {
+func (s *identityStore) GetTokenCredentialByJTI(ctx context.Context, jti string) (*iapiserver.IdentityTokenCredential, error) {
 	var token iapiserver.IdentityTokenCredential
 	err := s.ds.db.WithContext(ctx).Where("access_token_jti = ?", jti).First(&token).Error
 	return &token, err
 }
 
-func (s *identityV11Store) RevokeTokenCredential(ctx context.Context, jti string) error {
+func (s *identityStore) RevokeTokenCredential(ctx context.Context, jti string) error {
 	now := imachinery.Now()
 	return s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityTokenCredential{}).Where("access_token_jti = ? AND status = ?", jti, "ACTIVE").Updates(map[string]any{"status": "REVOKED", "revoked_at": now, "updated_at": now}).Error
 }
 
-func (s *identityV11Store) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iapiserver.IdentityRefreshToken, error) {
+func (s *identityStore) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iapiserver.IdentityRefreshToken, error) {
 	var token iapiserver.IdentityRefreshToken
 	err := s.ds.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&token).Error
 	return &token, err
 }
 
-func (s *identityV11Store) CreateRefreshToken(ctx context.Context, token *iapiserver.IdentityRefreshToken) error {
+func (s *identityStore) CreateRefreshToken(ctx context.Context, token *iapiserver.IdentityRefreshToken) error {
 	return s.ds.db.WithContext(ctx).Create(token).Error
 }
 
-func (s *identityV11Store) MarkRefreshTokenUsed(ctx context.Context, id string) error {
+func (s *identityStore) MarkRefreshTokenUsed(ctx context.Context, id string) error {
 	now := imachinery.Now()
 	result := s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityRefreshToken{}).Where("id = ? AND status = ?", id, "ACTIVE").Updates(map[string]any{"status": "USED", "used_at": now, "updated_at": now})
 	if result.Error != nil {
@@ -180,12 +180,12 @@ func (s *identityV11Store) MarkRefreshTokenUsed(ctx context.Context, id string) 
 	return nil
 }
 
-func (s *identityV11Store) RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error {
+func (s *identityStore) RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error {
 	now := imachinery.Now()
 	return s.ds.db.WithContext(ctx).Model(&iapiserver.IdentityRefreshToken{}).Where("session_id = ? AND status IN ?", sessionID, []string{"ACTIVE", "USED"}).Updates(map[string]any{"status": "REVOKED", "revoked_at": now, "updated_at": now, "description": reason}).Error
 }
 
-func (s *identityV11Store) PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error) {
+func (s *identityStore) PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error) {
 	if principalType != "USER" {
 		return nil, 0, nil
 	}
@@ -201,7 +201,7 @@ func (s *identityV11Store) PermissionCodes(ctx context.Context, principalType, p
 	return codes, user.AuthorizationVersion, nil
 }
 
-func (s *identityV11Store) EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition) error {
+func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition) error {
 	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, permission := range permissions {
 			var existing iapiserver.IdentityPermissionDefinition
@@ -233,4 +233,4 @@ func (s *identityV11Store) EnsureDefaultPermissions(ctx context.Context, permiss
 	})
 }
 
-var _ store.IdentityV11Store = (*identityV11Store)(nil)
+var _ store.IdentityStore = (*identityStore)(nil)

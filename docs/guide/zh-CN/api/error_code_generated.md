@@ -293,3 +293,26 @@
 | ErrCanvasResourceReferenceDenied | 160801 | 200 | Caller cannot reference the requested node, application, function, input, or output. | 当前调用方无权引用节点、应用版本、函数、输入或输出资源。 |
 | ErrCanvasQuotaExceeded | 160802 | 200 | Canvas run quota is exhausted for the current project, namespace, or user. | 当前 project、namespace 或用户的画布运行配额不足。 |
 | ErrUserNotFound | 110001 | 500 | Unset error message | 错误信息未设置 |
+| ErrIdentityInvalidCredentials | 220200 | 200 | The username or password is invalid. | 用户名或密码错误。 |
+| ErrIdentityAccountDisabled | 220202 | 200 | The account is disabled. | 账号已禁用。 |
+| ErrIdentityAccountLocked | 220203 | 200 | The account is temporarily locked. | 账号已临时锁定。 |
+| ErrIdentityTokenExpired | 220205 | 200 | The access token has expired. | Access Token 已过期。 |
+| ErrIdentityTokenRevoked | 220206 | 200 | The token or session has been revoked. | Token 或会话已撤销。 |
+| ErrIdentityRefreshTokenInvalid | 220207 | 200 | The refresh token is invalid. | Refresh Token 无效。 |
+| ErrIdentityRefreshTokenReused | 220208 | 200 | Refresh token reuse was detected and the session was revoked. | 检测到 Refresh Token 重用，会话已撤销。 |
+| ErrIdentityPasswordPolicyFailed | 220209 | 200 | The password does not satisfy the active security policy. | 密码不符合当前安全策略。 |
+| ErrIdentityUserNotVisible | 220400 | 200 | The user does not exist or is not visible to the current principal. | 用户不存在或当前主体不可见。 |
+| ErrIdentityUsernameAlreadyExists | 220401 | 200 | The username already exists. | 用户名已存在。 |
+| ErrIdentityEmailAlreadyExists | 220402 | 200 | The email already exists. | 邮箱已存在。 |
+| ErrIdentityUserStateInvalid | 220403 | 200 | The user state does not allow this operation. | 用户当前状态不允许该操作。 |
+| ErrIdentitySelfDeleteForbidden | 220405 | 200 | A user cannot delete itself. | 用户不能删除自己。 |
+| ErrIdentityRoleNotVisible | 220600 | 200 | The role does not exist or is not visible to the current principal. | 角色不存在或当前主体不可见。 |
+| ErrIdentityAuthzContextInvalid | 220607 | 200 | The authorization context is invalid. | 当前主体授权上下文无效。 |
+| ErrIdentityAuthzDenied | 220606 | 200 | The current principal is not authorized for the operation. | 当前主体无权执行该操作。 |
+| ErrIdentityServiceAccountNotVisible | 221000 | 200 | The service account does not exist or is not visible to the current principal. | 服务主体不存在或当前主体不可见。 |
+| ErrIdentityPrincipalContextInvalid | 221205 | 200 | The principal context is invalid. | 当前主体上下文无效。 |
+| ErrPlatformAuthConfigInvalid | 230200 | 200 | The system authentication configuration is invalid. | 平台认证配置无效。 |
+| ErrPlatformAuthConfigVersionConflict | 230202 | 200 | The system authentication configuration version conflicts with the current version. | 系统认证配置版本冲突。 |
+| ErrPlatformOverviewUnavailable | 230601 | 200 | The platform overview is temporarily unavailable. | 平台系统概览暂不可用。 |
+| ErrPlatformAuditRecordInvalid | 230402 | 200 | The audit record is invalid or contains prohibited fields. | 审计记录无效或包含禁止字段。 |
+| ErrPlatformAuditWriteUnavailable | 230403 | 200 | The platform audit boundary is unavailable and the controlled operation was not executed. | 平台审计边界不可用，受控操作未执行。 |

@@ -20,40 +20,6 @@ var (
 	ErrNotificationStateConflict = errors.New("notification state conflict")
 )
 
-type IdentityProviderStore interface {
-	List(
-		ctx context.Context,
-		req *iapiserver.IdentityProviderListRequest,
-	) ([]*iapiserver.IdentityProvider, int64, error)
-	Get(ctx context.Context, id string) (*iapiserver.IdentityProvider, error)
-	GetByName(ctx context.Context, name string) (*iapiserver.IdentityProvider, error)
-	Delete(ctx context.Context, id string) error
-	Update(ctx context.Context, data *iapiserver.IdentityProvider) (*iapiserver.IdentityProvider, error)
-	Sync(ctx context.Context, datas []*iapiserver.IdentityProvider) error
-	Add(ctx context.Context, data *iapiserver.IdentityProvider) (*iapiserver.IdentityProvider, error)
-}
-
-type ServiceProviderStore interface {
-	List(ctx context.Context, req *iapiserver.ServiceProviderListRequest) ([]*iapiserver.ServiceProvider, int64, error)
-	Add(ctx context.Context, data *iapiserver.ServiceProvider) (*iapiserver.ServiceProvider, error)
-	Delete(ctx context.Context, id string) error
-	Get(ctx context.Context, id string) (*iapiserver.ServiceProvider, error)
-	GetByKey(ctx context.Context, protocol, key string) (*iapiserver.ServiceProvider, error)
-	GetByName(ctx context.Context, name string) (*iapiserver.ServiceProvider, error)
-	Update(ctx context.Context, data *iapiserver.ServiceProvider) (*iapiserver.ServiceProvider, error)
-	Sync(ctx context.Context, datas []*iapiserver.ServiceProvider) error
-}
-
-type SettingStore interface {
-	List(ctx context.Context) ([]*iapiserver.Setting, error)
-	Delete(ctx context.Context, id string) error
-	Get(ctx context.Context, id string) (*iapiserver.Setting, error)
-	GetByName(ctx context.Context, name string) (*iapiserver.Setting, error)
-	GetMultiByNames(ctx context.Context, names ...string) ([]*iapiserver.Setting, error)
-	Upsert(ctx context.Context, data *iapiserver.Setting) (*iapiserver.Setting, error)
-	FirstOrCreate(ctx context.Context, data *iapiserver.Setting) (*iapiserver.Setting, error)
-}
-
 type UserStore interface {
 	List(ctx context.Context, req *iapiserver.UserListRequest) ([]*iapiserver.User, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.User, error)
@@ -64,9 +30,8 @@ type UserStore interface {
 	Add(ctx context.Context, data *iapiserver.User) (*iapiserver.User, error)
 }
 
-// IdentityV11Store is the consumer-side boundary for spec-v1.11 authentication and authorization.
-// It owns password/session/token state and returns only redacted identity facts to callers.
-type IdentityV11Store interface {
+// IdentityStore 是认证和授权的消费方持久化边界，维护密码、会话和 Token 状态。
+type IdentityStore interface {
 	GetUser(ctx context.Context, id string) (*iapiserver.IdentityUser, error)
 	GetUserByLogin(ctx context.Context, login string) (*iapiserver.IdentityUser, error)
 	ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) ([]*iapiserver.IdentityUser, int64, error)
@@ -99,10 +64,7 @@ type PlatformManagementStore interface {
 	ListAuditLogs(ctx context.Context, req *iapiserver.PlatformAuditLogListRequest) ([]*iapiserver.PlatformAuditLog, int64, error)
 }
 
-// IdentityV11Factory is an optional capability implemented by stores that have the released Identity schema.
-type IdentityV11Factory interface{ IdentityV11() IdentityV11Store }
-
-// IdentityAdminStore is the optional v1.11 RBAC, resource-grant, and service-account capability.
+// IdentityAdminStore 是 Identity RBAC、资源授权和服务账号的管理能力边界。
 type IdentityAdminStore interface {
 	ListRoles(ctx context.Context, req *iapiserver.IdentityRoleListRequest) ([]*iapiserver.IdentityRole, int64, error)
 	GetRole(ctx context.Context, id string) (*iapiserver.IdentityRole, error)
@@ -130,22 +92,6 @@ type IdentityAdminStore interface {
 // PlatformManagementFactory is an optional capability implemented by stores that have the released Platform schema.
 type PlatformManagementFactory interface {
 	PlatformManagement() PlatformManagementStore
-}
-
-type OneTimeTokenStore interface {
-	GetByHash(ctx context.Context, hash string) (*iapiserver.OneTimeToken, error)
-	Delete(ctx context.Context, id string) error
-	Add(ctx context.Context, data *iapiserver.OneTimeToken) (*iapiserver.OneTimeToken, error)
-	CleanupExpiredTokens(ctx context.Context) error
-}
-
-type UserOTPStore interface {
-	List(ctx context.Context) ([]*iapiserver.UserOTP, error)
-	Delete(ctx context.Context, id string) error
-	GetByUser(ctx context.Context, uid string) (*iapiserver.UserOTP, error)
-	Upsert(ctx context.Context, data *iapiserver.UserOTP) (*iapiserver.UserOTP, error)
-	FirstOrCreate(ctx context.Context, data *iapiserver.UserOTP) (*iapiserver.UserOTP, error)
-	Add(ctx context.Context, data *iapiserver.UserOTP) (*iapiserver.UserOTP, error)
 }
 
 type AssetLibraryStore interface {

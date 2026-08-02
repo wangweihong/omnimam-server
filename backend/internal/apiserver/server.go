@@ -45,7 +45,6 @@ type server struct {
 	sseOptions             *options.SSEOptions
 	mcpOptions             *options.MCPOptions
 	mcpProcessor           *mcpprotocol.Processor
-	serverMode             string
 	userEventCleanupCtx    context.Context
 	userEventCleanupCancel context.CancelFunc
 }
@@ -190,7 +189,6 @@ func createServer(cfg *config.Config) (*server, error) {
 		sseOptions:          cfg.SSEOptions,
 		mcpOptions:          cfg.MCPOptions,
 		mcpProcessor:        mcpProcessor,
-		serverMode:          cfg.GenericServerRunOptions.Mode,
 	}
 
 	return server, nil
@@ -213,11 +211,6 @@ func (c *CompletedExtraConfig) New() error {
 
 	// 新建数据库表
 	if err := storeIns.EnsureScheme(
-		//setting
-		&iapiserver.Setting{},
-		&iapiserver.ServiceProvider{},
-		&iapiserver.IdentityProvider{},
-
 		// identity
 		&iapiserver.User{},
 		&iapiserver.IdentityUser{},
@@ -235,9 +228,6 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.IdentityGroupMember{},
 		&iapiserver.IdentityGroupRoleGrant{},
 		&iapiserver.IdentityOutboxEvent{},
-		&iapiserver.OneTimeToken{},
-		&iapiserver.UserOTP{},
-
 		// assets
 		&iapiserver.AssetLibrary{},
 		&iapiserver.AssetCategory{},
@@ -341,12 +331,12 @@ func (c *CompletedExtraConfig) New() error {
 	); err != nil {
 		return errors.Wrap(err, "EnsureScheme fail")
 	}
-	identityFactory, ok := storeIns.(store.IdentityV11Factory)
-	if !ok || identityFactory.IdentityV11() == nil {
-		return errors.New("spec-v1.11 Identity store is unavailable")
+	identityStore := storeIns.Identities()
+	if identityStore == nil {
+		return errors.New("Identity store is unavailable")
 	}
-	if err := identityFactory.IdentityV11().EnsureDefaultPermissions(context.Background(), identitysvc.DefaultPermissions()); err != nil {
-		return errors.Wrap(err, "initialize spec-v1.11 Identity permissions")
+	if err := identityStore.EnsureDefaultPermissions(context.Background(), identitysvc.DefaultPermissions()); err != nil {
+		return errors.Wrap(err, "initialize Identity permissions")
 	}
 	if err := workflowcanvassvc.ReconcileBuiltInNodeDefinitions(context.Background(), storeIns.WorkflowCanvases()); err != nil {
 		return errors.Wrap(err, "reconcile built-in workflow canvas node definitions")
@@ -400,7 +390,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
 	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions, s.serverMode)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		ssectrl.BeginDraining()
