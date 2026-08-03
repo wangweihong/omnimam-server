@@ -49,6 +49,10 @@ type IdentityStore interface {
 	ListRegistrationApplications(ctx context.Context, req *iapiserver.IdentityRegistrationApplicationListRequest) ([]*IdentityRegistrationApplicationView, int64, error)
 	GetRegistrationApplication(ctx context.Context, id string) (*IdentityRegistrationApplicationView, error)
 	ReviewRegistrationApplication(ctx context.Context, id, decision, reason, actorPrincipalType, actorPrincipalID, actorUserID string) (*IdentityRegistrationApplicationView, error)
+	CreateOpaqueExchange(ctx context.Context, exchange *iapiserver.IdentityOpaqueExchange) error
+	GetOpaqueExchange(ctx context.Context, id string) (*iapiserver.IdentityOpaqueExchange, error)
+	ConsumeOpaqueExchange(ctx context.Context, id string) (*iapiserver.IdentityOpaqueExchange, error)
+	FinalizeOpaqueRegistration(ctx context.Context, user *iapiserver.IdentityUser, active bool) (*iapiserver.IdentityUser, error)
 	GetSession(ctx context.Context, id string) (*iapiserver.IdentityAuthSession, error)
 	ListSessions(ctx context.Context, userID string, req *iapiserver.IdentitySessionListRequest) ([]*iapiserver.IdentityAuthSession, int64, error)
 	CreateSession(ctx context.Context, session *iapiserver.IdentityAuthSession) (*iapiserver.IdentityAuthSession, error)

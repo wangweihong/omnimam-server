@@ -242,6 +242,7 @@ func (c *CompletedExtraConfig) New() error {
 		// identity
 		&iapiserver.User{},
 		&iapiserver.IdentityUser{},
+		&iapiserver.IdentityOpaqueExchange{},
 		&iapiserver.IdentityRegistrationApplication{},
 		&iapiserver.IdentityRole{},
 		&iapiserver.IdentityPermissionDefinition{},

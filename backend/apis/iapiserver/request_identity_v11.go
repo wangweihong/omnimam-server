@@ -7,27 +7,41 @@ import (
 )
 
 // IdentityRegisterRequest 是公开注册入口；注册策略由 Platform Management 决定。
-type IdentityRegisterRequest struct {
-	Username    string `json:"username" binding:"required,min=3,max=128"`
-	Email       string `json:"email" binding:"required,email,max=320"`
-	Password    string `json:"password" binding:"required,min=8,max=256"`
-	DisplayName string `json:"display_name" binding:"max=256"`
+type IdentityRegisterStartRequest struct {
+	Username            string `json:"username" binding:"required,min=3,max=128"`
+	Email               string `json:"email" binding:"required,email,max=320"`
+	DisplayName         string `json:"display_name" binding:"max=256"`
+	RegistrationRequest string `json:"registration_request" binding:"required,max=16384"`
 }
 
-type IdentityLoginRequest struct {
+type IdentityRegisterFinishRequest struct {
+	ExchangeID         string `json:"exchange_id" binding:"required,max=128"`
+	RegistrationRecord string `json:"registration_record" binding:"required,max=16384"`
+}
+
+type IdentityLoginStartRequest struct {
 	Login      string `json:"login" binding:"required,max=320"`
-	Password   string `json:"password" binding:"required,max=256"`
+	KE1        string `json:"ke1" binding:"required,max=16384"`
 	ClientID   string `json:"client_id" binding:"max=128"`
 	DeviceInfo string `json:"device_info" binding:"max=512"`
+}
+
+type IdentityLoginFinishRequest struct {
+	ExchangeID string `json:"exchange_id" binding:"required,max=128"`
+	KE3        string `json:"ke3" binding:"required,max=16384"`
 }
 
 type IdentityRefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 type IdentityChangePasswordRequest struct {
-	OldPassword     string `json:"old_password" binding:"required"`
-	NewPassword     string `json:"new_password" binding:"required,min=8,max=256"`
-	ConfirmPassword string `json:"confirm_password" binding:"required,min=8,max=256"`
+	ExchangeID         string `json:"exchange_id" binding:"required,max=128"`
+	KE3                string `json:"ke3" binding:"required,max=16384"`
+	RegistrationRecord string `json:"registration_record" binding:"required,max=16384"`
+}
+type IdentityChangePasswordStartRequest struct {
+	KE1                 string `json:"ke1" binding:"required,max=16384"`
+	RegistrationRequest string `json:"registration_request" binding:"required,max=16384"`
 }
 type IdentitySelfUpdateRequest struct {
 	DisplayName *string `json:"display_name" binding:"omitempty,max=256"`
@@ -36,13 +50,24 @@ type IdentitySelfUpdateRequest struct {
 	Phone       *string `json:"phone" binding:"omitempty,max=64"`
 }
 type IdentityAdminUserCreateRequest struct {
-	Username        string                  `json:"username" binding:"required,min=3,max=128"`
-	Email           string                  `json:"email" binding:"required,email,max=320"`
-	DisplayName     string                  `json:"display_name" binding:"required,max=256"`
-	RoleGrants      []IdentityRoleGrantItem `json:"role_grants,omitempty" binding:"max=64,dive"`
-	InitialPassword string                  `json:"-"`
-	Status          string                  `json:"-"`
-	RoleIDs         []string                `json:"-"`
+	Username           string                  `json:"username" binding:"required,min=3,max=128"`
+	Email              string                  `json:"email" binding:"required,email,max=320"`
+	DisplayName        string                  `json:"display_name" binding:"required,max=256"`
+	RoleGrants         []IdentityRoleGrantItem `json:"role_grants,omitempty" binding:"max=64,dive"`
+	Status             string                  `json:"-"`
+	RoleIDs            []string                `json:"-"`
+	RegistrationRecord string                  `json:"registration_record" binding:"required,max=16384"`
+}
+type IdentityAdminUserRegisterStartRequest struct {
+	Username            string                  `json:"username" binding:"required,min=3,max=128"`
+	Email               string                  `json:"email" binding:"required,email,max=320"`
+	DisplayName         string                  `json:"display_name" binding:"required,max=256"`
+	RegistrationRequest string                  `json:"registration_request" binding:"required,max=16384"`
+	RoleGrants          []IdentityRoleGrantItem `json:"role_grants,omitempty" binding:"max=64,dive"`
+}
+type IdentityAdminUserRegisterFinishRequest struct {
+	ExchangeID         string `json:"exchange_id" binding:"required,max=128"`
+	RegistrationRecord string `json:"registration_record" binding:"required,max=16384"`
 }
 type IdentityAdminUserUpdateRequest struct {
 	DisplayName *string  `json:"display_name" binding:"omitempty,max=256"`
@@ -153,15 +178,9 @@ type IdentityAuthUserResponse struct {
 	Authorization      *IdentityPermissionProjection `json:"authorization"`
 }
 
-type IdentityInitialPasswordResponse struct {
-	UserID             string `json:"user_id"`
-	InitialPassword    string `json:"initial_password"`
-	FirstLoginRequired bool   `json:"first_login_required"`
-}
-
 type IdentityAdminUserCreatedResponse struct {
-	User            *IdentityUser `json:"user"`
-	InitialPassword string        `json:"initial_password"`
+	User               *IdentityUser `json:"user"`
+	FirstLoginRequired bool          `json:"first_login_required"`
 }
 
 type IdentityPendingRegistrationResponse struct {
@@ -169,6 +188,12 @@ type IdentityPendingRegistrationResponse struct {
 	UserID                    string          `json:"user_id"`
 	Status                    string          `json:"status"`
 	SubmittedAt               imachinery.Time `json:"submitted_at"`
+}
+
+type IdentityOpaqueStartResponse struct {
+	ExchangeID           string `json:"exchange_id"`
+	RegistrationResponse string `json:"registration_response,omitempty"`
+	KE2                  string `json:"ke2,omitempty"`
 }
 
 type IdentityRegistrationApplicationSummary struct {

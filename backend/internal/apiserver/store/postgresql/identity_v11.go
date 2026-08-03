@@ -137,8 +137,8 @@ func (s *identityStore) UpdateUser(ctx context.Context, user *iapiserver.Identit
 			normalized := strings.ToLower(strings.TrimSpace(*user.Email))
 			updates["normalized_email"] = normalized
 		}
-		if user.PasswordHash != "" {
-			updates["password_hash"] = user.PasswordHash
+		if user.OpaqueRegistrationRecord != "" {
+			updates["opaque_registration_record"] = user.OpaqueRegistrationRecord
 			updates["password_changed_at"] = user.PasswordChangedAt
 		}
 		if user.LastLoginAt != nil {

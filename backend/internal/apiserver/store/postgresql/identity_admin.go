@@ -82,7 +82,6 @@ func (s *identityStore) registrationViews(ctx context.Context, applications []*i
 	}
 	byID := make(map[string]*iapiserver.IdentityUser, len(users))
 	for _, user := range users {
-		user.PasswordHash = ""
 		user.NormalizedEmail = nil
 		byID[user.ID] = user
 	}
@@ -115,7 +114,7 @@ func (s *identityStore) CreatePendingRegistration(ctx context.Context, user *iap
 			}
 			now := imachinery.Now()
 			if err := tx.Model(&iapiserver.IdentityUser{}).Where("id = ?", existing.ID).Updates(map[string]any{
-				"password_hash": user.PasswordHash, "password_changed_at": user.PasswordChangedAt,
+				"opaque_registration_record": user.OpaqueRegistrationRecord, "password_changed_at": user.PasswordChangedAt,
 				"display_name": user.DisplayName, "email": user.Email, "normalized_email": user.NormalizedEmail,
 				"status": iapiserver.IdentityUserPending, "updated_at": now, "resource_version": existing.ResourceVersion + 1,
 			}).Error; err != nil {
@@ -158,7 +157,6 @@ func (s *identityStore) CreatePendingRegistration(ctx context.Context, user *iap
 		return nil, err
 	}
 	user.Status = iapiserver.IdentityUserPending
-	user.PasswordHash = ""
 	user.NormalizedEmail = nil
 	return &store.IdentityRegistrationApplicationView{Application: &application, User: user}, nil
 }
@@ -269,7 +267,6 @@ func (s *identityStore) ReviewRegistrationApplication(ctx context.Context, id, d
 		user.AuthorizationVersion = updatedAuthorizationVersion
 		user.ResourceVersion = updatedUserVersion
 	}
-	user.PasswordHash = ""
 	user.NormalizedEmail = nil
 	return &store.IdentityRegistrationApplicationView{Application: &application, User: &user}, nil
 }

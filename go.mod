@@ -5,6 +5,8 @@ go 1.26
 require (
 	github.com/ThreeDotsLabs/watermill v1.5.1
 	github.com/ThreeDotsLabs/watermill-sql/v4 v4.1.5
+	github.com/bytemare/ksf v0.5.0
+	github.com/bytemare/opaque v0.18.0
 	github.com/conductor-sdk/conductor-go v1.10.1
 	github.com/fatih/color v1.19.0
 	github.com/gin-contrib/cors v1.3.1
@@ -27,7 +29,6 @@ require (
 	github.com/tpkeeper/gin-dump v1.0.1
 	github.com/wangweihong/gotoolbox v0.0.0
 	github.com/zsais/go-gin-prometheus v0.1.0
-	golang.org/x/crypto v0.50.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/tools v0.44.0
 	google.golang.org/grpc v1.72.1
@@ -44,11 +45,16 @@ replace github.com/wangweihong/gotoolbox => ./third_party/gotoolbox
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/nistec v0.0.4 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/antihax/optional v1.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
+	github.com/bytemare/ecc v0.9.0 // indirect
+	github.com/bytemare/hash v0.6.2 // indirect
+	github.com/bytemare/hash2curve v0.5.4 // indirect
+	github.com/bytemare/secp256k1 v0.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
@@ -67,6 +73,7 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
+	github.com/gtank/ristretto255 v0.2.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -119,6 +126,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
+	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect

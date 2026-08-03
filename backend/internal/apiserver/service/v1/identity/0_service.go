@@ -8,13 +8,19 @@ import (
 type Service struct {
 	store  store.Factory
 	secret []byte
+	opaque OpaqueAdapter
 }
 
-// NewService 创建 Identity service；可选 jwtSecret 用于签发与 middleware 验签一致的 Access Token。
-func NewService(str store.Factory, jwtSecret ...string) *Service {
+// NewService 创建 Identity service；参数依次为 JWT secret 和稳定 OPAQUE setup hex。
+func NewService(str store.Factory, secrets ...string) *Service {
 	secret := ""
-	if len(jwtSecret) > 0 && jwtSecret[0] != "" {
-		secret = jwtSecret[0]
+	setup := ""
+	if len(secrets) > 0 && secrets[0] != "" {
+		secret = secrets[0]
 	}
-	return &Service{store: str, secret: []byte(secret)}
+	if len(secrets) > 1 {
+		setup = secrets[1]
+	}
+	adapter, _ := newOpaqueAdapter(setup)
+	return &Service{store: str, secret: []byte(secret), opaque: adapter}
 }

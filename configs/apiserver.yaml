@@ -98,6 +98,7 @@ infrastructure-client:
 
 auth:
   jwt-secret: ${APISERVER_AUTH_JWT_SECRET}
+  opaque-server-setup: ${APISERVER_OPAQUE_SERVER_SETUP}
 
 # MCP 2026-07-28 Streamable HTTP 配置
 mcp:

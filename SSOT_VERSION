@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 56907857c38992c16ae272b20aff957aae366490
-contract_version: spec-v1.13.0
+commit: 102a4477672f05b223e3bcff19b7df61e9cdc8e8
+contract_version: spec-v1.14.2
 updated_at: 2026-08-03
 status: released
 note: Released Identity and Platform Manager contract update.

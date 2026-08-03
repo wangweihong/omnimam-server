@@ -34,27 +34,27 @@ const (
 	IdentityDeletionCheckConsumed   = "CONSUMED"
 )
 
-// IdentityUser 是 v1.11 Identity 的本地用户事实；password_hash 只保存 Argon2id PHC 字符串。
+// IdentityUser 是 Identity 的本地用户事实；服务端只保存 OPAQUE registration record，不保存原始密码或密码哈希。
 type IdentityUser struct {
 	imachinery.ObjectMeta
-	Username             string           `json:"username" gorm:"column:username;type:text;not null"`
-	NormalizedUsername   string           `json:"-" gorm:"column:normalized_username;type:text;not null;uniqueIndex"`
-	DisplayName          string           `json:"display_name" gorm:"column:display_name;type:text;not null;default:''"`
-	Alias                string           `json:"alias,omitempty" gorm:"column:alias;type:text;not null;default:''"`
-	Email                *string          `json:"email,omitempty" gorm:"column:email;type:text"`
-	NormalizedEmail      *string          `json:"-" gorm:"column:normalized_email;type:text;uniqueIndex"`
-	Phone                string           `json:"phone,omitempty" gorm:"column:phone;type:text;not null;default:''"`
-	PasswordHash         string           `json:"-" gorm:"column:password_hash;type:text;not null"`
-	Status               string           `json:"status" gorm:"column:status;type:text;not null;index"`
-	FirstLoginRequired   bool             `json:"first_login_required" gorm:"column:first_login_required;not null;default:false"`
-	FailedLoginCount     int              `json:"-" gorm:"column:failed_login_count;not null;default:0"`
-	LockedUntil          *imachinery.Time `json:"-" gorm:"column:locked_until"`
-	SecurityVersion      int64            `json:"security_version" gorm:"column:security_version;not null;default:0"`
-	AuthorizationVersion int64            `json:"authorization_version" gorm:"column:authorization_version;not null;default:0"`
-	PasswordChangedAt    *imachinery.Time `json:"-" gorm:"column:password_changed_at"`
-	LastLoginAt          *imachinery.Time `json:"last_login_at,omitempty" gorm:"column:last_login_at"`
-	CreatedBy            string           `json:"-" gorm:"column:created_by;type:text"`
-	DeletedAt            *imachinery.Time `json:"-" gorm:"column:deleted_at"`
+	Username                 string           `json:"username" gorm:"column:username;type:text;not null"`
+	NormalizedUsername       string           `json:"-" gorm:"column:normalized_username;type:text;not null;uniqueIndex"`
+	DisplayName              string           `json:"display_name" gorm:"column:display_name;type:text;not null;default:''"`
+	Alias                    string           `json:"alias,omitempty" gorm:"column:alias;type:text;not null;default:''"`
+	Email                    *string          `json:"email,omitempty" gorm:"column:email;type:text"`
+	NormalizedEmail          *string          `json:"-" gorm:"column:normalized_email;type:text;uniqueIndex"`
+	Phone                    string           `json:"phone,omitempty" gorm:"column:phone;type:text;not null;default:''"`
+	OpaqueRegistrationRecord string           `json:"-" gorm:"column:opaque_registration_record;type:text;not null"`
+	Status                   string           `json:"status" gorm:"column:status;type:text;not null;index"`
+	FirstLoginRequired       bool             `json:"first_login_required" gorm:"column:first_login_required;not null;default:false"`
+	FailedLoginCount         int              `json:"-" gorm:"column:failed_login_count;not null;default:0"`
+	LockedUntil              *imachinery.Time `json:"-" gorm:"column:locked_until"`
+	SecurityVersion          int64            `json:"security_version" gorm:"column:security_version;not null;default:0"`
+	AuthorizationVersion     int64            `json:"authorization_version" gorm:"column:authorization_version;not null;default:0"`
+	PasswordChangedAt        *imachinery.Time `json:"-" gorm:"column:password_changed_at"`
+	LastLoginAt              *imachinery.Time `json:"last_login_at,omitempty" gorm:"column:last_login_at"`
+	CreatedBy                string           `json:"-" gorm:"column:created_by;type:text"`
+	DeletedAt                *imachinery.Time `json:"-" gorm:"column:deleted_at"`
 }
 
 func (IdentityUser) TableName() string                 { return "identity_users" }
@@ -63,6 +63,28 @@ func (m *IdentityUser) BeforeUpdate(tx *gorm.DB) error { return m.ObjectMeta.Bef
 func (m *IdentityUser) AfterCreate(*gorm.DB) error     { return nil }
 func (m *IdentityUser) AfterUpdate(*gorm.DB) error     { return nil }
 func (m *IdentityUser) AfterFind(tx *gorm.DB) error    { return m.ObjectMeta.AfterFind(tx) }
+
+// IdentityOpaqueExchange 保存短期 OPAQUE 服务端状态；server_output 只包含完成校验所需的服务端 MAC。
+type IdentityOpaqueExchange struct {
+	imachinery.ObjectMeta
+	ExchangeType   string           `json:"exchange_type" gorm:"column:exchange_type;type:text;not null"`
+	UserID         *string          `json:"user_id,omitempty" gorm:"column:user_id;type:text"`
+	UserIdentifier string           `json:"-" gorm:"column:user_identifier;type:text;not null"`
+	ServerOutput   string           `json:"-" gorm:"column:server_output;type:text;not null"`
+	ExpiresAt      imachinery.Time  `json:"expires_at" gorm:"column:expires_at;not null"`
+	ConsumedAt     *imachinery.Time `json:"consumed_at,omitempty" gorm:"column:consumed_at"`
+}
+
+func (IdentityOpaqueExchange) TableName() string { return "identity_opaque_exchanges" }
+func (m *IdentityOpaqueExchange) BeforeCreate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeCreate(tx)
+}
+func (m *IdentityOpaqueExchange) BeforeUpdate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeUpdate(tx)
+}
+func (m *IdentityOpaqueExchange) AfterCreate(*gorm.DB) error  { return nil }
+func (m *IdentityOpaqueExchange) AfterUpdate(*gorm.DB) error  { return nil }
+func (m *IdentityOpaqueExchange) AfterFind(tx *gorm.DB) error { return m.ObjectMeta.AfterFind(tx) }
 
 // IdentityRegistrationApplication records one immutable registration decision attempt.
 type IdentityRegistrationApplication struct {

@@ -99,7 +99,7 @@ func PrincipalFromContext(ctx context.Context) (IdentityPrincipal, bool) {
 
 func isIdentityPublicPath(path string) bool {
 	switch path {
-	case "/api/v1/iam/auth/register", "/api/v1/iam/auth/login", "/api/v1/iam/auth/refresh":
+	case "/api/v1/iam/auth/register/start", "/api/v1/iam/auth/register/finish", "/api/v1/iam/auth/login/start", "/api/v1/iam/auth/login/finish", "/api/v1/iam/auth/refresh":
 		return true
 	default:
 		return false

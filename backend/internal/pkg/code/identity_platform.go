@@ -42,6 +42,10 @@ const (
 	// @EN The password does not satisfy the active security policy.
 	ErrIdentityPasswordPolicyFailed int = 220209
 	// @HTTP 200
+	// @CN 原密码错误。
+	// @EN The current password is invalid.
+	ErrIdentityOldPasswordInvalid int = 220210
+	// @HTTP 200
 	// @CN 最近一次注册申请已被拒绝，可以重新提交申请。
 	// @EN The latest registration application was rejected and may be resubmitted.
 	ErrIdentityAccountRejected int = 220213
@@ -49,6 +53,22 @@ const (
 	// @CN 当前注册模式或账号申请状态不允许提交注册。
 	// @EN The active registration mode or account application state does not allow registration.
 	ErrIdentityRegistrationStateInvalid int = 220214
+	// @HTTP 200
+	// @CN 不支持旧的单阶段密码协议，请使用 OPAQUE 二阶段接口。
+	// @EN The legacy single-stage password protocol is unsupported; use the OPAQUE two-step API.
+	ErrIdentityPasswordProtocolUnsupported int = 220215
+	// @HTTP 200
+	// @CN OPAQUE 消息或交换状态无效。
+	// @EN The OPAQUE message or exchange state is invalid.
+	ErrIdentityPasswordProtocolInvalid int = 220216
+	// @HTTP 200
+	// @CN OPAQUE 交换已过期。
+	// @EN The OPAQUE exchange has expired.
+	ErrIdentityPasswordExchangeExpired int = 220217
+	// @HTTP 200
+	// @CN OPAQUE 交换已被提交，不能重复使用。
+	// @EN The OPAQUE exchange has already been consumed.
+	ErrIdentityPasswordExchangeReplayed int = 220218
 	// @HTTP 200
 	// @CN 用户不存在或当前主体不可见。
 	// @EN The user does not exist or is not visible to the current principal.

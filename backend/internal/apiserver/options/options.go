@@ -41,9 +41,10 @@ type Options struct {
 	MCPOptions                  *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
 }
 
-// AuthOptions 配置 Identity Access Token 的签名参数。
+// AuthOptions 配置 Identity Access Token 签名和 OPAQUE 稳定部署密钥。
 type AuthOptions struct {
-	JWTSecret string `json:"jwt-secret" mapstructure:"jwt-secret"`
+	JWTSecret         string `json:"jwt-secret" mapstructure:"jwt-secret"`
+	OpaqueServerSetup string `json:"opaque-server-setup" mapstructure:"opaque-server-setup"`
 }
 
 func NewAuthOptions() *AuthOptions {
@@ -234,6 +235,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.MCPOptions.AddFlags(fss.FlagSet("mcp"))
 	fs := fss.FlagSet("authentication")
 	fs.StringVar(&o.AuthOptions.JWTSecret, "auth.jwt-secret", o.AuthOptions.JWTSecret, "signing secret for Identity access tokens")
+	fs.StringVar(&o.AuthOptions.OpaqueServerSetup, "auth.opaque-server-setup", o.AuthOptions.OpaqueServerSetup, "stable OPAQUE server key material encoded as hex")
 
 	fs = fss.FlagSet("misc")
 	fs.StringVar(&o.Name, "misc.name", o.Name, "name of server")

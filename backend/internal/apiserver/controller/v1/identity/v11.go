@@ -13,12 +13,22 @@ type Controller struct{ service *identitysvc.Service }
 
 func NewController(service *identitysvc.Service) *Controller { return &Controller{service: service} }
 
-func (c *Controller) Register(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.IdentityRegisterRequest{}, func(req *iapiserver.IdentityRegisterRequest) (any, error) { return c.service.Register(ctx, req) })
+func (c *Controller) RegisterStart(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityRegisterStartRequest{}, func(req *iapiserver.IdentityRegisterStartRequest) (any, error) {
+		return c.service.RegisterStart(ctx, req)
+	})
 }
-func (c *Controller) Login(ctx *gin.Context) {
-	core.Run(ctx, &iapiserver.IdentityLoginRequest{}, func(req *iapiserver.IdentityLoginRequest) (any, error) {
-		return c.service.Login(ctx, req, ctx.ClientIP(), ctx.Request.UserAgent())
+func (c *Controller) RegisterFinish(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityRegisterFinishRequest{}, func(req *iapiserver.IdentityRegisterFinishRequest) (any, error) {
+		return c.service.RegisterFinish(ctx, req)
+	})
+}
+func (c *Controller) LoginStart(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityLoginStartRequest{}, func(req *iapiserver.IdentityLoginStartRequest) (any, error) { return c.service.LoginStart(ctx, req) })
+}
+func (c *Controller) LoginFinish(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityLoginFinishRequest{}, func(req *iapiserver.IdentityLoginFinishRequest) (any, error) {
+		return c.service.LoginFinish(ctx, req, ctx.ClientIP(), ctx.Request.UserAgent())
 	})
 }
 func (c *Controller) Refresh(ctx *gin.Context) {
@@ -36,9 +46,14 @@ func (c *Controller) Logout(ctx *gin.Context) {
 func (c *Controller) LogoutAll(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.LogoutAll(ctx) })
 }
-func (c *Controller) ChangePassword(ctx *gin.Context) {
+func (c *Controller) ChangePasswordStart(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityChangePasswordStartRequest{}, func(req *iapiserver.IdentityChangePasswordStartRequest) (any, error) {
+		return c.service.ChangePasswordStart(ctx, req)
+	})
+}
+func (c *Controller) ChangePasswordFinish(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.IdentityChangePasswordRequest{}, func(req *iapiserver.IdentityChangePasswordRequest) (any, error) {
-		return c.service.ChangePassword(ctx, req)
+		return c.service.ChangePasswordFinish(ctx, req)
 	})
 }
 func (c *Controller) Sessions(ctx *gin.Context) {
@@ -58,6 +73,29 @@ func (c *Controller) ListUsers(ctx *gin.Context) {
 func (c *Controller) AdminCreateUser(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.IdentityAdminUserCreateRequest{}, func(r *iapiserver.IdentityAdminUserCreateRequest) (any, error) {
 		return c.service.AdminCreateUser(ctx, r)
+	})
+}
+func (c *Controller) AdminRegisterStart(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityAdminUserRegisterStartRequest{}, func(r *iapiserver.IdentityAdminUserRegisterStartRequest) (any, error) {
+		return c.service.AdminRegisterStart(ctx, r)
+	})
+}
+func (c *Controller) AdminRegisterFinish(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityAdminUserRegisterFinishRequest{}, func(r *iapiserver.IdentityAdminUserRegisterFinishRequest) (any, error) {
+		return c.service.AdminRegisterFinish(ctx, r)
+	})
+}
+func (c *Controller) AdminResetInitialPasswordStart(ctx *gin.Context) {
+	var request struct {
+		RegistrationRequest string `json:"registration_request" binding:"required,max=16384"`
+	}
+	core.Run(ctx, &request, func(r *struct {
+		RegistrationRequest string `json:"registration_request" binding:"required,max=16384"`
+	}) (any, error) { return c.service.AdminResetInitialPasswordStart(ctx, ctx.Param("user_id"), r.RegistrationRequest) })
+}
+func (c *Controller) AdminResetInitialPasswordFinish(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityAdminUserRegisterFinishRequest{}, func(r *iapiserver.IdentityAdminUserRegisterFinishRequest) (any, error) {
+		return c.service.AdminResetInitialPasswordFinish(ctx, ctx.Param("user_id"), r)
 	})
 }
 func (c *Controller) GetUser(ctx *gin.Context) {

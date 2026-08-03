@@ -2,29 +2,16 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"golang.org/x/crypto/argon2"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	identitymiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
-)
-
-const (
-	argonMemory     = uint32(64 * 1024)
-	argonTime       = uint32(3)
-	argonThreads    = uint8(1)
-	argonKeyLength  = uint32(32)
-	argonSaltLength = 16
 )
 
 // DefaultPermissions 返回当前发布版本需要由系统登记的 Identity 与 Platform 权限定义。
@@ -113,85 +100,6 @@ func DefaultRolePermissions() map[string][]string {
 	}
 }
 
-func (s *Service) Register(ctx context.Context, req *iapiserver.IdentityRegisterRequest) (any, error) {
-	config, err := s.store.PlatformManagement().GetSystemAuthConfig(ctx)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrPlatformAuthConfigInvalid, "system auth config is unavailable")
-	}
-	if err := validatePassword(req.Password, req.Username, config.PasswordPolicy); err != nil {
-		return nil, err
-	}
-	normalizedUsername := normalize(req.Username)
-	normalizedEmail := normalize(req.Email)
-	hash, err := hashPassword(req.Password)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password hashing failed")
-	}
-	email := strings.TrimSpace(req.Email)
-	user := &iapiserver.IdentityUser{ObjectMeta: imachinery.ObjectMeta{Name: req.Username}, Username: strings.TrimSpace(req.Username), NormalizedUsername: normalizedUsername, DisplayName: strings.TrimSpace(req.DisplayName), Email: &email, NormalizedEmail: &normalizedEmail, PasswordHash: hash, Status: iapiserver.IdentityUserActive, SecurityVersion: 1, AuthorizationVersion: 1, PasswordChangedAt: pointerTime(imachinery.Now())}
-	if config.RegistrationMode == "ADMIN_APPROVAL" {
-		created, createErr := s.store.Identities().CreatePendingRegistration(ctx, user)
-		if createErr != nil {
-			if strings.Contains(strings.ToLower(createErr.Error()), "unique") {
-				return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username or email already exists")
-			}
-			return nil, createErr
-		}
-		return &iapiserver.IdentityPendingRegistrationResponse{RegistrationApplicationID: created.Application.ID, UserID: created.User.ID, Status: created.Application.Status, SubmittedAt: created.Application.SubmittedAt}, nil
-	}
-	if config.RegistrationMode != "OPEN" {
-		return nil, errors.NewStatus(code.ErrIdentityRegistrationStateInvalid, "registration mode is invalid")
-	}
-	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedUsername); lookupErr == nil && existing != nil && existing.ID != "" {
-		return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username already exists")
-	}
-	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedEmail); lookupErr == nil && existing != nil && existing.ID != "" {
-		return nil, errors.NewStatus(code.ErrIdentityEmailAlreadyExists, "email already exists")
-	}
-	created, err := s.store.Identities().CreateOpenRegistration(ctx, user)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username or email already exists")
-		}
-		return nil, err
-	}
-	return s.issueSession(ctx, created, "register", "", "")
-}
-
-func (s *Service) Login(ctx context.Context, req *iapiserver.IdentityLoginRequest, ip, userAgent string) (*iapiserver.IdentityAuthUserResponse, error) {
-	user, err := s.store.Identities().GetUserByLogin(ctx, normalize(req.Login))
-	if err != nil || user == nil {
-		return nil, errors.NewStatus(code.ErrIdentityInvalidCredentials, "invalid credentials")
-	}
-	valid, verifyErr := verifyPassword(user.PasswordHash, req.Password)
-	if verifyErr != nil || !valid {
-		return nil, errors.NewStatus(code.ErrIdentityInvalidCredentials, "invalid credentials")
-	}
-	switch user.Status {
-	case iapiserver.IdentityUserPending:
-		return nil, errors.NewStatus(code.ErrIdentityAccountPending, "account is pending approval")
-	case iapiserver.IdentityUserRejected:
-		return nil, errors.NewStatus(code.ErrIdentityAccountRejected, "account registration was rejected")
-	case iapiserver.IdentityUserDisabled, iapiserver.IdentityUserDeleted:
-		return nil, errors.NewStatus(code.ErrIdentityAccountDisabled, "account is disabled")
-	case iapiserver.IdentityUserLocked:
-		if user.LockedUntil != nil && user.LockedUntil.Time.After(time.Now()) {
-			return nil, errors.NewStatus(code.ErrIdentityAccountLocked, "account is locked")
-		}
-	case iapiserver.IdentityUserActive:
-	default:
-		return nil, errors.NewStatus(code.ErrIdentityUserStateInvalid, "account state is invalid")
-	}
-	user.FailedLoginCount = 0
-	user.LastLoginAt = pointerTime(imachinery.Now())
-	user.Status = iapiserver.IdentityUserActive
-	updated, err := s.store.Identities().UpdateUser(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-	return s.issueSession(ctx, updated, "login", ip, userAgent)
-}
-
 func (s *Service) Refresh(ctx context.Context, req *iapiserver.IdentityRefreshRequest) (*iapiserver.IdentityAuthUserResponse, error) {
 	refresh, err := s.store.Identities().GetRefreshTokenByHash(ctx, identitymiddleware.HashRefreshToken(req.RefreshToken))
 	if err != nil || refresh == nil {
@@ -230,7 +138,6 @@ func (s *Service) Me(ctx context.Context) (*iapiserver.IdentityUser, error) {
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrIdentityUserNotVisible, "user is not visible")
 	}
-	user.PasswordHash = ""
 	user.NormalizedEmail = nil
 	user.Email = redactEmail(user.Email)
 	return user, nil
@@ -294,7 +201,6 @@ func (s *Service) ListUsers(ctx context.Context, req *iapiserver.IdentityUserLis
 		return nil, err
 	}
 	for _, item := range items {
-		item.PasswordHash = ""
 		item.NormalizedEmail = nil
 	}
 	return &iapiserver.IdentityUserListResponse{Total: total, Items: items}, nil
@@ -305,7 +211,6 @@ func (s *Service) GetUser(ctx context.Context, id string) (*iapiserver.IdentityU
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrIdentityUserNotVisible, "user is not visible")
 	}
-	user.PasswordHash = ""
 	user.NormalizedEmail = nil
 	return user, nil
 }
@@ -354,35 +259,7 @@ func registrationApplicationResponse(item *store.IdentityRegistrationApplication
 }
 
 func (s *Service) AdminCreateUser(ctx context.Context, req *iapiserver.IdentityAdminUserCreateRequest) (*iapiserver.IdentityUser, error) {
-	config, err := s.store.PlatformManagement().GetSystemAuthConfig(ctx)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrPlatformAuthConfigInvalid, "system auth config is unavailable")
-	}
-	password := req.InitialPassword
-	if password == "" {
-		password = "ChangeMe!123"
-	}
-	if err := validatePassword(password, req.Username, config.PasswordPolicy); err != nil {
-		return nil, err
-	}
-	hash, err := hashPassword(password)
-	if err != nil {
-		return nil, err
-	}
-	email := strings.TrimSpace(req.Email)
-	normalizedEmail := normalize(email)
-	status := req.Status
-	if status == "" {
-		status = iapiserver.IdentityUserActive
-	}
-	user := &iapiserver.IdentityUser{ObjectMeta: imachinery.ObjectMeta{Name: req.Username}, Username: strings.TrimSpace(req.Username), NormalizedUsername: normalize(req.Username), DisplayName: strings.TrimSpace(req.DisplayName), Email: &email, NormalizedEmail: &normalizedEmail, PasswordHash: hash, Status: status, FirstLoginRequired: req.InitialPassword == "", SecurityVersion: 1, AuthorizationVersion: 1, PasswordChangedAt: pointerTime(imachinery.Now())}
-	created, err := s.store.Identities().CreateUser(ctx, user)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username or email already exists")
-	}
-	created.PasswordHash = ""
-	created.NormalizedEmail = nil
-	return created, nil
+	return nil, errors.NewStatus(code.ErrIdentityPasswordProtocolUnsupported, "use the OPAQUE admin registration flow")
 }
 
 // UpdateUser 更新管理员可修改的用户资料和状态；停用或删除用户时同步提升安全版本并撤销全部会话。
@@ -427,7 +304,6 @@ func (s *Service) UpdateUser(ctx context.Context, id string, req *iapiserver.Ide
 			return nil, err
 		}
 	}
-	updated.PasswordHash = ""
 	updated.NormalizedEmail = nil
 	return updated, nil
 }
@@ -459,7 +335,6 @@ func (s *Service) SetUserStatus(ctx context.Context, id, status string) (*iapise
 			return nil, err
 		}
 	}
-	updated.PasswordHash = ""
 	updated.NormalizedEmail = nil
 	return updated, nil
 }
@@ -710,44 +585,9 @@ func (s *Service) LogoutAll(ctx context.Context) (*iapiserver.IdentityActionResu
 	return &iapiserver.IdentityActionResult{Success: true, Message: "all sessions logged out"}, nil
 }
 
-// ChangePassword verifies the current password, writes a new Argon2id hash, and revokes all old sessions.
+// ChangePassword rejects the legacy single-stage password endpoint.
 func (s *Service) ChangePassword(ctx context.Context, req *iapiserver.IdentityChangePasswordRequest) (*iapiserver.IdentityActionResult, error) {
-	p, ok := identitymiddleware.PrincipalFromContext(ctx)
-	if !ok || p.PrincipalType != "USER" {
-		return nil, errors.NewStatus(code.ErrIdentityAuthzContextInvalid, "user principal context is missing")
-	}
-	if req.NewPassword != req.ConfirmPassword {
-		return nil, errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password confirmation does not match")
-	}
-	user, err := s.store.Identities().GetUser(ctx, p.PrincipalID)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrIdentityUserNotVisible, "user is not visible")
-	}
-	valid, verifyErr := verifyPassword(user.PasswordHash, req.OldPassword)
-	if verifyErr != nil || !valid {
-		return nil, errors.NewStatus(code.ErrIdentityInvalidCredentials, "current password is invalid")
-	}
-	config, err := s.store.PlatformManagement().GetSystemAuthConfig(ctx)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrPlatformAuthConfigInvalid, "system auth config is unavailable")
-	}
-	if err := validatePassword(req.NewPassword, user.Username, config.PasswordPolicy); err != nil {
-		return nil, err
-	}
-	hash, err := hashPassword(req.NewPassword)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password hashing failed")
-	}
-	user.PasswordHash = hash
-	user.PasswordChangedAt = pointerTime(imachinery.Now())
-	user.SecurityVersion++
-	if _, err := s.store.Identities().UpdateUser(ctx, user); err != nil {
-		return nil, err
-	}
-	if err := s.store.Identities().RevokeUserSessions(ctx, p.PrincipalID, "PASSWORD_CHANGED"); err != nil {
-		return nil, err
-	}
-	return &iapiserver.IdentityActionResult{Success: true, Message: "password changed"}, nil
+	return nil, errors.NewStatus(code.ErrIdentityPasswordProtocolUnsupported, "use the OPAQUE change-password flow")
 }
 
 func (s *Service) issueSession(ctx context.Context, user *iapiserver.IdentityUser, clientID, ip, userAgent string) (*iapiserver.IdentityAuthUserResponse, error) {
@@ -781,7 +621,6 @@ func (s *Service) issueSessionOnExisting(ctx context.Context, user *iapiserver.I
 	if err := s.store.Identities().CreateRefreshToken(ctx, refreshRecord); err != nil {
 		return nil, err
 	}
-	user.PasswordHash = ""
 	user.NormalizedEmail = nil
 	return &iapiserver.IdentityAuthUserResponse{User: user, AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: config.AccessTokenLifetimeSeconds, FirstLoginRequired: user.FirstLoginRequired}, nil
 }
@@ -799,69 +638,4 @@ func redactEmail(email *string) *string {
 	}
 	masked := value[:1] + "***" + value[at:]
 	return &masked
-}
-
-func validatePassword(password, username string, policy iapiserver.PlatformPasswordPolicy) error {
-	minLength := policy.MinLength
-	if minLength == 0 {
-		minLength = 8
-	}
-	if len(password) < minLength || policy.MaxLength > 0 && len(password) > policy.MaxLength {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	if policy.RequireLowercase && !strings.ContainsAny(password, "abcdefghijklmnopqrstuvwxyz") {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	if policy.RequireUppercase && !strings.ContainsAny(password, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	if policy.RequireDigit && !strings.ContainsAny(password, "0123456789") {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	if policy.RequireSpecialCharacter && !strings.ContainsAny(password, "!@#$%^&*()-_=+[]{};:,.?/") {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	if policy.DisallowUsername && username != "" && strings.Contains(strings.ToLower(password), strings.ToLower(username)) {
-		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
-	}
-	return nil
-}
-
-func hashPassword(password string) (string, error) {
-	salt := make([]byte, argonSaltLength)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
-	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLength)
-	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argonMemory, argonTime, argonThreads, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(hash)), nil
-}
-
-func verifyPassword(encoded, password string) (bool, error) {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" {
-		return false, nil
-	}
-	var memory, iterations, parallelism uint32
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
-		return false, err
-	}
-	if memory < 8*1024 || memory > 256*1024 || iterations == 0 || iterations > 10 || parallelism == 0 || parallelism > 16 {
-		return false, errors.New("argon2id parameters are outside supported bounds")
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil {
-		return false, err
-	}
-	if len(salt) < 8 || len(salt) > 64 {
-		return false, errors.New("argon2id salt length is outside supported bounds")
-	}
-	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil {
-		return false, err
-	}
-	if len(expected) < 16 || len(expected) > 64 {
-		return false, errors.New("argon2id key length is outside supported bounds")
-	}
-	actual := argon2.IDKey([]byte(password), salt, iterations, memory, uint8(parallelism), uint32(len(expected)))
-	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
 }
