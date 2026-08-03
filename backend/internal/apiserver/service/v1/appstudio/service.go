@@ -77,7 +77,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		return nil, err
 	}
 	appID, repoID, workspaceID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description}, OwnerUserID: owner, Status: "READY", TemplateID: req.TemplateID, TechnologyStack: req.TechnologyStack, DefaultWorkspaceID: workspaceID}
+	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description}, OwnerUserID: owner, Status: "READY", DefaultWorkspaceID: workspaceID}
 	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: "BUILT_IN", Status: "READY"}
 	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: "main"}, StudioApplicationID: appID, RepositoryID: repoID, Status: "READY", CurrentRevisionDigest: emptyTreeDigest()}
 	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: emptyTreeDigest(), CreatedBy: owner}

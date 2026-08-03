@@ -12,8 +12,6 @@ type StudioApplication struct {
 	imachinery.ObjectMeta
 	OwnerUserID        string `json:"-" gorm:"column:owner_user_id;type:text;not null"`
 	Status             string `json:"status" gorm:"column:status;type:text;not null"`
-	TemplateID         string `json:"template_id,omitempty" gorm:"column:template_id;type:text"`
-	TechnologyStack    string `json:"technology_stack,omitempty" gorm:"column:technology_stack;type:text"`
 	DefaultWorkspaceID string `json:"workspace_id" gorm:"column:default_workspace_id;type:text"`
 	CurrentVersionID   string `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text"`
 }

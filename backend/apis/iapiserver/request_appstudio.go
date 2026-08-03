@@ -17,10 +17,8 @@ type StudioApplicationListRequest struct {
 
 // +k8s:deepcopy-gen=true
 type StudioApplicationCreateRequest struct {
-	Name            string `json:"name" binding:"required,min=1,max=200"`
-	Description     string `json:"description,omitempty" binding:"omitempty,max=2000"`
-	TemplateID      string `json:"template_id,omitempty" binding:"omitempty,max=200"`
-	TechnologyStack string `json:"technology_stack,omitempty" binding:"omitempty,max=200"`
+	Name        string `json:"name" binding:"required,min=1,max=200"`
+	Description string `json:"description,omitempty" binding:"omitempty,max=2000"`
 }
 
 // +k8s:deepcopy-gen=true
