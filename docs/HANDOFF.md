@@ -2,7 +2,7 @@
 
 ## Current goal and status
 
-继续实现 released `spec-v1.12.1` 中继承自 v1.12.0 的 Agent、AppStudio、Infrastructure 和 Task Center Function Registry。当前任务已完成：5 个 AppStudio registry executor 已注册；4 个 runtime executor 可执行，`appstudio.build.execute` 在 Artifact 注册边界缺失时保持 fail closed。
+继续实现 released `spec-v1.12.1` 中继承自 v1.12.0 的 Agent、AppStudio、Infrastructure 和 Task Center Function Registry。当前任务已完成：5 个 AppStudio registry executor 已注册；4 个 runtime executor 可执行，`appstudio.build.execute` 在 Artifact 注册边界缺失时保持 fail closed。实现已提交为 `fdf2cbe`（`feat: implement spec-v1.12.1`）。
 
 ## Work completed in this session
 
@@ -67,6 +67,7 @@
 - 已通过：`go test ./backend/internal/apiserver/options ./backend/internal/taskworker`（options 无测试文件，taskworker `ok`）。
 - 已通过：实现 5 个 AppStudio handler 后执行 `go test ./backend/internal/taskworker`。
 - 已通过：`go run ./backend/internal/taskfunctionregistry/internal/verify`，验证 7 个 ACTIVE contracts，SSOT commit 为 `23cadc158af8e3ec3a6debaa07f44dbd292f0265`。
+- 已创建实现提交 `fdf2cbe`；提交后仅剩本交接记录更新待提交。
 - `gofmt`、`go test ./backend/internal/taskworker` 和 registry verifier 已在补测试后重新执行并通过。
 - `git diff --check` 仅报告既有 `AGENTS.md:184` 空白行，未修改该无关文件。
 - 未运行全仓库测试，符合当前限定验证范围。
@@ -79,6 +80,11 @@
 - AppStudio Build Artifact 经 Asset Library 注册，Build/Runtime logs 接真实脱敏日志，显式 schema constraints。
 - Agent RuntimeAdapter/CHAT 实际执行和流式事件；非 CHAT Invocation 因 SSOT 无 canonical functionRef 保持 fail closed。
 - 补足允许范围内的验证、启动检查和发布文档。
+
+## Submission status
+
+- `fdf2cbe` contains the staged `spec-v1.12.1` implementation (61 files); the follow-up handoff-only commit records this checkpoint.
+- Worktree was clean immediately after `fdf2cbe`; no generated or secret files were added outside the listed changes.
 
 ## Known issues and risks
 
