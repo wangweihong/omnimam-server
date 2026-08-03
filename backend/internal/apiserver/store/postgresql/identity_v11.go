@@ -248,7 +248,7 @@ func (s *identityStore) PermissionCodes(ctx context.Context, principalType, prin
 	return codes, user.AuthorizationVersion, nil
 }
 
-func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition) error {
+func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition, rolePermissions map[string][]string) error {
 	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, permission := range permissions {
 			var existing iapiserver.IdentityPermissionDefinition
@@ -274,14 +274,32 @@ func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permission
 				return err
 			}
 		}
-		// 清空复用模型，避免 GORM 将上一轮角色主键叠加到本次按编码查询中。
+		grantPermissions := func(roleID string, permissionCodes []string) error {
+			for _, permissionCode := range permissionCodes {
+				grant := &iapiserver.IdentityRolePermissionGrant{RoleID: roleID, PermissionCode: permissionCode, CreatedAt: imachinery.Now()}
+				if err := tx.Where("role_id = ? AND permission_code = ?", roleID, permissionCode).FirstOrCreate(grant).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		// 保留历史 bootstrap 角色的全量权限；新角色按显式默认集合授予，内部权限不进入用户角色。
 		role = iapiserver.IdentityRole{}
 		if err := tx.Where("code = ?", "super_admin").First(&role).Error; err != nil {
 			return err
 		}
 		for _, permission := range permissions {
-			grant := &iapiserver.IdentityRolePermissionGrant{RoleID: role.ID, PermissionCode: permission.Code, CreatedAt: imachinery.Now()}
-			if err := tx.Where("role_id = ? AND permission_code = ?", role.ID, permission.Code).FirstOrCreate(grant).Error; err != nil {
+			if err := grantPermissions(role.ID, []string{permission.Code}); err != nil {
+				return err
+			}
+		}
+		for roleCode, permissionCodes := range rolePermissions {
+			role = iapiserver.IdentityRole{}
+			if err := tx.Where("code = ?", roleCode).First(&role).Error; err != nil {
+				return err
+			}
+			if err := grantPermissions(role.ID, permissionCodes); err != nil {
 				return err
 			}
 		}

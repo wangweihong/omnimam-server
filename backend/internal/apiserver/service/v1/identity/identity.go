@@ -50,12 +50,67 @@ func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 		{"appstudio.snapshot.manage", "appstudio", "snapshot", "manage"}, {"appstudio.build.manage", "appstudio", "build", "manage"},
 		{"appstudio.preview.operate", "appstudio", "preview", "operate"}, {"appstudio.runtime_config.manage", "appstudio", "runtime_config", "manage"},
 		{"appstudio.release.manage", "appstudio", "release", "manage"},
+		{"asset.read", "asset-library", "asset", "read"}, {"asset.artifact.read", "asset-library", "artifact", "read"},
+		{"asset.create", "asset-library", "asset", "create"}, {"asset.update", "asset-library", "asset", "update"},
+		{"asset.delete", "asset-library", "asset", "delete"}, {"asset.upload", "asset-library", "asset_upload", "manage"},
+		{"asset.content.read", "asset-library", "asset_content", "read"}, {"asset.collection.read", "asset-library", "collection", "read"},
+		{"asset.collection.manage", "asset-library", "collection", "manage"}, {"asset.label.manage", "asset-library", "asset_label", "manage"},
+		{"asset.reference.read", "asset-library", "asset_reference", "read"}, {"asset.representation.read", "asset-library", "asset_representation", "read"},
+		{"asset.artifact.register", "asset-library", "artifact_registration", "create"}, {"asset.artifact.delete", "asset-library", "artifact", "delete"},
+		{"asset.storage.read", "asset-library", "asset_storage", "read"}, {"asset.storage.manage", "asset-library", "asset_storage", "manage"},
+		{"asset.artifact.create", "asset-library", "artifact", "create"}, {"asset.representation.write", "asset-library", "asset_representation", "create"},
+		{"aiapp.application.read", "application-platform", "application", "read"}, {"aiapp.application.manage", "application-platform", "application", "manage"},
+		{"aiapp.application.run", "application-platform", "application_run", "run"},
+		{"aiapp.comfyui_workflow.read", "application-platform", "comfyui_workflow", "read"},
+		{"aiapp.comfyui_workflow.manage", "application-platform", "comfyui_workflow", "manage"},
+		{"aiapp.comfyui_workflow.validate", "application-platform", "comfyui_workflow_validation", "validate"},
+		{"aiapp.comfyui_workflow.convert", "application-platform", "comfyui_workflow", "convert"},
+		{"aiapp.comfyui_workflow.test", "application-platform", "comfyui_workflow_test_run", "test"},
+		{"aiapp.engine_instance.read", "modelgateway", "application_engine_instance", "read"},
+		{"aiapp.engine_instance.manage", "modelgateway", "application_engine_instance", "manage"},
+		{"aiapp.engine_binding.manage", "modelgateway", "engine_capability_binding", "manage"},
+		{"aiapp.provider_capability.read", "modelgateway", "provider_capability", "read"},
+		{"task.atomic.operate", "task-center", "atomic_task, task_attempt", "create, read, cancel, retry"},
+		{"task.group.operate", "task-center", "task_group, dag_task_group", "create, read, cancel, retry"},
+		{"task.schedule.manage", "task-center", "task_schedule, task_schedule_execution", "create, read, update, pause, resume, run, delete"},
+		{"task.operation.admin", "task-center", "atomic_task, task_group, dag_task_group, task_schedule, runtime_projection", "inspect_all, reconcile, read_health"},
+		{"task.runtime.internal", "task-center", "workflow_runtime, runtime_projection_event, task_log", "register_definition, start, query, append_task_log, read_task_log, cancel, reconcile, project_event"},
+		{"workflow.canvas.read", "workflow-canvas", "canvas, canvas_version", "read"}, {"workflow.canvas.edit", "workflow-canvas", "canvas", "create, update, validate"},
+		{"workflow.canvas.publish", "workflow-canvas", "canvas_version", "publish"}, {"workflow.canvas.delete", "workflow-canvas", "canvas", "delete"},
+		{"workflow.run.create", "workflow-canvas", "canvas_run, canvas_flow_run, canvas_node_run", "validate, create"},
+		{"workflow.run.read", "workflow-canvas", "canvas_run, canvas_flow_run, canvas_node_run, task_binding, output_binding", "read"},
+		{"workflow.run.cancel", "workflow-canvas", "canvas_run", "cancel"}, {"workflow.run.retry", "workflow-canvas", "canvas_run", "retry"},
+		{"workflow.node_definition.read", "workflow-canvas", "node_definition", "read"}, {"workflow.node_definition.manage", "workflow-canvas", "node_definition", "register, deprecate"},
+		{"workflow.projection.internal", "workflow-canvas", "canvas_run, canvas_flow_run, canvas_node_run, task_binding, output_binding, outbox, reconcile_cursor", "bind_task, project_task, project_artifact, publish_event, reconcile"},
 	}
 	result := make([]*iapiserver.IdentityPermissionDefinition, 0, len(items))
 	for _, item := range items {
 		result = append(result, &iapiserver.IdentityPermissionDefinition{ObjectMeta: imachinery.ObjectMeta{Name: item.code}, Code: item.code, Domain: item.domain, Resource: item.resource, Action: item.action, RiskLevel: "NORMAL", Status: "ACTIVE"})
 	}
 	return result
+}
+
+// DefaultRolePermissions 返回管理员和超级管理员可用于前端入口及业务操作的默认权限。
+// artifact/representation/task/workflow 的内部权限仅登记到权限目录，不授予用户角色。
+func DefaultRolePermissions() map[string][]string {
+	permissions := []string{
+		"identity.auth.session", "identity.user.read", "identity.permission.read",
+		"asset.read", "asset.artifact.read", "asset.create", "asset.update", "asset.delete", "asset.upload",
+		"asset.content.read", "asset.collection.read", "asset.collection.manage", "asset.label.manage", "asset.reference.read",
+		"asset.representation.read", "asset.artifact.register", "asset.artifact.delete", "asset.storage.read", "asset.storage.manage",
+		"aiapp.application.read", "aiapp.application.manage", "aiapp.application.run",
+		"aiapp.comfyui_workflow.read", "aiapp.comfyui_workflow.manage", "aiapp.comfyui_workflow.validate",
+		"aiapp.comfyui_workflow.convert", "aiapp.comfyui_workflow.test",
+		"aiapp.engine_instance.read", "aiapp.engine_instance.manage", "aiapp.engine_binding.manage", "aiapp.provider_capability.read",
+		"task.atomic.operate", "task.group.operate", "task.schedule.manage", "task.operation.admin",
+		"workflow.canvas.read", "workflow.canvas.edit", "workflow.canvas.publish", "workflow.canvas.delete",
+		"workflow.run.create", "workflow.run.read", "workflow.run.cancel", "workflow.run.retry",
+		"workflow.node_definition.read", "workflow.node_definition.manage",
+	}
+	return map[string][]string{
+		"ADMIN":       append([]string(nil), permissions...),
+		"SUPER_ADMIN": append([]string(nil), permissions...),
+	}
 }
 
 func (s *Service) Register(ctx context.Context, req *iapiserver.IdentityRegisterRequest) (any, error) {

@@ -63,7 +63,7 @@ type IdentityStore interface {
 	MarkRefreshTokenUsed(ctx context.Context, id string) error
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error
 	PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error)
-	EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition) error
+	EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition, rolePermissions map[string][]string) error
 }
 
 // PlatformManagementStore is the persistence boundary for SystemAuthConfig and append-only AuditLog.

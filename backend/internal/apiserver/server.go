@@ -407,7 +407,7 @@ func (c *CompletedExtraConfig) New() error {
 	if identityStore == nil {
 		return errors.New("Identity store is unavailable")
 	}
-	if err := identityStore.EnsureDefaultPermissions(context.Background(), identitysvc.DefaultPermissions()); err != nil {
+	if err := identityStore.EnsureDefaultPermissions(context.Background(), identitysvc.DefaultPermissions(), identitysvc.DefaultRolePermissions()); err != nil {
 		return errors.Wrap(err, "initialize Identity permissions")
 	}
 	if err := workflowcanvassvc.ReconcileBuiltInNodeDefinitions(context.Background(), storeIns.WorkflowCanvases()); err != nil {
