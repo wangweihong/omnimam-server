@@ -814,6 +814,22 @@ const (
 	// @CN functionRef 未注册或当前调用方不可使用。
 	// @EN functionRef is not registered or is unavailable to the caller.
 	ErrTaskFunctionRefNotRegistered int = 140204
+	// @HTTP 200
+	// @CN AtomicTask arguments 不符合已注册 functionRef 的精确输入合同。
+	// @EN AtomicTask arguments do not satisfy the registered functionRef input contract.
+	ErrTaskFunctionInputInvalid int = 140205
+	// @HTTP 200
+	// @CN Task Worker 结果不符合固定 functionRef 输出合同。
+	// @EN The Task Worker result does not satisfy the pinned functionRef output contract.
+	ErrTaskFunctionOutputInvalid int = 140206
+	// @HTTP 200
+	// @CN AtomicTask 固定的 function contract 版本或摘要当前不可加载。
+	// @EN The function contract version or digest pinned by the AtomicTask cannot currently be loaded.
+	ErrTaskFunctionContractUnavailable int = 140207
+	// @HTTP 200
+	// @CN 当前没有满足固定函数合同所需能力的 Task Worker。
+	// @EN No Task Worker currently satisfies the capabilities required by the pinned function contract.
+	ErrTaskFunctionCapabilityUnavailable int = 140208
 
 	// @HTTP 200
 	// @CN 任务运行不存在或当前用户不可见。

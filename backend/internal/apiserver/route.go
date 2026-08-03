@@ -4,8 +4,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
+	agentctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/agent"
 	aichatctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/aichat"
 	aiappctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/applicationplatform"
+	appstudioctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/appstudio"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
 	identityctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/identity"
@@ -19,8 +21,10 @@ import (
 	workflowcanvasctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/workflowcanvas"
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
+	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	legacyappsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	notificationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/notification"
@@ -38,13 +42,15 @@ func initRouter(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
+	agent *agentsvc.Service,
+	appStudio *appstudiosvc.Service,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
 	mcpOptions *options.MCPOptions,
 ) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, authOptions, sseOptions, mcpProcessor, mcpOptions)
+	installApis(g, applicationPlatform, taskCenter, agent, appStudio, authOptions, sseOptions, mcpProcessor, mcpOptions)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -58,13 +64,15 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
+	return installApis(g, applicationPlatform, taskCenter, nil, nil, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
 }
 
 func installApis(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
+	agent *agentsvc.Service,
+	appStudio *appstudiosvc.Service,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
@@ -93,6 +101,12 @@ func installApis(
 			installAssetLibraryContractApis(v1, storeIns, taskCenter, applicationPlatform)
 			installAssetApis(v1, storeIns)
 			installPromptApis(v1, storeIns)
+			if agent != nil {
+				installAgentApis(v1, agent)
+			}
+			if appStudio != nil {
+				installAppStudioApis(v1, appStudio)
+			}
 			if taskCenter != nil {
 				installTaskCenterApis(v1, taskCenter)
 				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter, applicationPlatform))
@@ -105,6 +119,135 @@ func installApis(
 	}
 
 	return g
+}
+
+func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
+	c := appstudioctrl.NewController(service)
+	applicationRead := rg.Group("/studio-applications")
+	applicationRead.Use(authmiddleware.RequireIdentityPermission("appstudio.application.read"))
+	applicationRead.GET("", c.ListApplications)
+	applicationRead.GET("/:studio_application_id", c.GetApplication)
+	applicationManage := rg.Group("/studio-applications")
+	applicationManage.Use(authmiddleware.RequireIdentityPermission("appstudio.application.manage"))
+	applicationManage.POST("", c.CreateApplication)
+	applicationManage.PATCH("/:studio_application_id", c.UpdateApplication)
+	applicationManage.POST("/:studio_application_id/archive", c.ArchiveApplication)
+
+	workspaceRead := rg.Group("")
+	workspaceRead.Use(authmiddleware.RequireIdentityPermission("appstudio.workspace.read"))
+	workspaceRead.GET("/studio-applications/:studio_application_id/workspaces", c.GetApplicationWorkspace)
+	workspaceRead.GET("/studio-workspaces/:workspace_id", c.GetWorkspace)
+	workspaceRead.GET("/studio-workspaces/:workspace_id/files", c.ListFiles)
+	workspaceRead.GET("/studio-workspaces/:workspace_id/file-content", c.GetFileContent)
+	workspaceRead.GET("/studio-workspaces/:workspace_id/search", c.SearchWorkspace)
+	workspaceWrite := rg.Group("/studio-workspaces/:workspace_id")
+	workspaceWrite.Use(authmiddleware.RequireIdentityPermission("appstudio.workspace.write"))
+	workspaceWrite.POST("/change-sets", c.ApplyChangeSet)
+	workspaceWrite.POST("/restore", c.RestoreRevision)
+
+	snapshots := rg.Group("")
+	snapshots.Use(authmiddleware.RequireIdentityPermission("appstudio.snapshot.manage"))
+	snapshots.POST("/studio-workspaces/:workspace_id/source-snapshots", c.CreateSnapshot)
+	snapshots.GET("/studio-source-snapshots/:source_snapshot_id", c.GetSnapshot)
+	snapshots.POST("/studio-applications/:studio_application_id/versions", c.CreateVersion)
+	snapshots.GET("/studio-applications/:studio_application_id/versions", c.ListVersions)
+
+	builds := rg.Group("")
+	builds.Use(authmiddleware.RequireIdentityPermission("appstudio.build.manage"))
+	builds.GET("/studio-applications/:studio_application_id/builds", c.ListBuilds)
+	builds.POST("/studio-applications/:studio_application_id/builds", c.CreateBuild)
+	builds.GET("/studio-builds/:studio_build_id", c.GetBuild)
+	builds.POST("/studio-builds/:studio_build_id/cancel", c.CancelBuild)
+	builds.GET("/studio-builds/:studio_build_id/logs", c.BuildLogs)
+
+	preview := rg.Group("/studio-workspaces/:workspace_id")
+	preview.Use(authmiddleware.RequireIdentityPermission("appstudio.preview.operate"))
+	preview.GET("/preview-runtime", c.GetPreview)
+	preview.POST("/preview-checks", c.RefreshPreview)
+	preview.POST("/preview-runtime/stop", c.StopPreview)
+
+	runtimeConfigs := rg.Group("/studio-application-versions/:studio_application_version_id/runtime-configs/:environment")
+	runtimeConfigs.Use(authmiddleware.RequireIdentityPermission("appstudio.runtime_config.manage"))
+	runtimeConfigs.GET("", c.GetRuntimeConfig)
+	runtimeConfigs.PUT("", c.ReplaceRuntimeConfig)
+
+	releases := rg.Group("")
+	releases.Use(authmiddleware.RequireIdentityPermission("appstudio.release.manage"))
+	releases.GET("/studio-applications/:studio_application_id/releases", c.ListReleases)
+	releases.POST("/studio-applications/:studio_application_id/releases", c.CreateRelease)
+	releases.GET("/studio-releases/:studio_release_id", c.GetRelease)
+	releases.POST("/studio-releases/:studio_release_id/rollback", c.RollbackRelease)
+	releases.GET("/studio-applications/:studio_application_id/runtime-instances", c.ListRuntimeInstances)
+	releases.GET("/studio-runtime-instances/:studio_runtime_instance_id", c.GetRuntimeInstance)
+	releases.POST("/studio-runtime-instances/:studio_runtime_instance_id/stop", c.StopRuntimeInstance)
+	releases.GET("/studio-runtime-instances/:studio_runtime_instance_id/logs", c.RuntimeLogs)
+}
+
+func installAgentApis(rg *gin.RouterGroup, service *agentsvc.Service) {
+	controller := agentctrl.NewController(service)
+	profiles := rg.Group("/agent-profiles")
+	profiles.Use(authmiddleware.RequireIdentityPermission("agent.profile.read"))
+	profiles.GET("", controller.ListProfiles)
+
+	agentsRead := rg.Group("/agents")
+	agentsRead.Use(authmiddleware.RequireIdentityPermission("agent.read"))
+	agentsRead.GET("", controller.ListAgents)
+	agentsRead.GET("/:agent_id", controller.GetAgent)
+
+	agentsManage := rg.Group("/agents")
+	agentsManage.Use(authmiddleware.RequireIdentityPermission("agent.manage"))
+	agentsManage.POST("", controller.CreateAgent)
+	agentsManage.PATCH("/:agent_id", controller.UpdateAgent)
+	agentsManage.DELETE("/:agent_id", controller.DeleteAgent)
+	agentsManage.POST("/:agent_id/enable", controller.EnableAgent)
+	agentsManage.POST("/:agent_id/disable", controller.DisableAgent)
+	agentsManage.GET("/:agent_id/model-bindings", controller.ListModelBindings)
+	agentsManage.PUT("/:agent_id/model-bindings", controller.ReplaceModelBinding)
+	agentsManage.GET("/:agent_id/skill-bindings", controller.ListSkillBindings)
+	agentsManage.GET("/:agent_id/mcp-bindings", controller.ListMCPBindings)
+	agentsManage.POST("/:agent_id/mcp-bindings", controller.CreateMCPBinding)
+
+	runtimes := rg.Group("/agents/:agent_id/runtime")
+	runtimes.Use(authmiddleware.RequireIdentityPermission("agent.runtime.operate"))
+	runtimes.POST("/start", controller.StartRuntime)
+	runtimes.POST("/suspend", controller.SuspendRuntime)
+	runtimes.POST("/recover", controller.RecoverRuntime)
+	runtimes.POST("/stop", controller.StopRuntime)
+
+	sessionRead := rg.Group("")
+	sessionRead.Use(authmiddleware.RequireIdentityPermission("agent.session.read"))
+	sessionRead.GET("/agents/:agent_id/sessions", controller.ListSessions)
+	sessionRead.GET("/agent-sessions/:session_id", controller.GetSession)
+	sessionRead.GET("/agent-sessions/:session_id/messages", controller.ListMessages)
+
+	sessionManage := rg.Group("")
+	sessionManage.Use(authmiddleware.RequireIdentityPermission("agent.session.manage"))
+	sessionManage.POST("/agents/:agent_id/sessions", controller.CreateSession)
+	sessionManage.PATCH("/agent-sessions/:session_id", controller.UpdateSession)
+	sessionManage.POST("/agent-sessions/:session_id/close", controller.CloseSession)
+	sessionManage.POST("/agent-sessions/:session_id/archive", controller.ArchiveSession)
+
+	invocations := rg.Group("")
+	invocations.Use(authmiddleware.RequireIdentityPermission("agent.invoke"))
+	invocations.POST("/agent-sessions/:session_id/messages", controller.SendMessage)
+	invocations.GET("/agent-sessions/:session_id/operations", controller.ListInvocations)
+	invocations.GET("/agent-invocations/:invocation_id", controller.GetInvocation)
+	invocations.POST("/agent-invocations/:invocation_id/cancel", controller.CancelInvocation)
+	invocations.GET("/agent-invocations/:invocation_id/events", controller.StreamInvocationEvents)
+
+	memoryRead := rg.Group("")
+	memoryRead.Use(authmiddleware.RequireIdentityPermission("agent.memory.read"))
+	memoryRead.GET("/agents/:agent_id/memories", controller.ListMemories)
+	memoryRead.GET("/agent-memories/:memory_id", controller.GetMemory)
+	memoryManage := rg.Group("")
+	memoryManage.Use(authmiddleware.RequireIdentityPermission("agent.memory.manage"))
+	memoryManage.POST("/agents/:agent_id/memories", controller.CreateMemory)
+	memoryManage.PATCH("/agent-memories/:memory_id", controller.UpdateMemory)
+	memoryManage.DELETE("/agent-memories/:memory_id", controller.DeleteMemory)
+
+	workspace := rg.Group("/agents/:agent_id/workspace-binding")
+	workspace.Use(authmiddleware.RequireIdentityPermission("agent.workspace.read"))
+	workspace.GET("", controller.GetWorkspaceBinding)
 }
 
 // installIdentityPlatformApis 在统一 JWT、权限和审计链后安装已发布的 Identity 与 Platform Management API。

@@ -50,6 +50,10 @@ type Factory interface {
 	PlatformManagement() PlatformManagementStore
 	// ai chat
 	AIChat() AIChatStore
+	// Agents 返回 released Agent domain 的持久化边界。
+	Agents() AgentStore
+	AppStudio() AppStudioStore
+	Infrastructure() InfrastructureStore
 
 	EnsureScheme(metaTypes ...any) error
 	Close() error

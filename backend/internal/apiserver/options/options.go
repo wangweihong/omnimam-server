@@ -31,13 +31,14 @@ type Options struct {
 	InsecureServing         *genericoptions.InsecureServingOptions `json:"insecure"     mapstructure:"insecure"`
 	SecureServing           *genericoptions.SecureServingOptions   `json:"secure"       mapstructure:"secure"`
 	//PostgresSQLOptions      *genericoptions.PostgresSQLOptions     `json:"postgres" mapstructure:"postgres"`
-	DatabaseOptions            *genericoptions.DatabaseOptions `json:"database"     mapstructure:"database"`
-	AssetUploadOptions         *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
-	ApplicationPlatformOptions *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
-	AuthOptions                *AuthOptions                    `json:"auth"             mapstructure:"auth"`
-	WorkflowRuntimeOptions     *WorkflowRuntimeOptions         `json:"workflow-runtime" mapstructure:"workflow-runtime"`
-	SSEOptions                 *SSEOptions                     `json:"sse" mapstructure:"sse"`
-	MCPOptions                 *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
+	DatabaseOptions             *genericoptions.DatabaseOptions `json:"database"     mapstructure:"database"`
+	AssetUploadOptions          *AssetUploadOptions             `json:"asset-upload" mapstructure:"asset-upload"`
+	ApplicationPlatformOptions  *ApplicationPlatformOptions     `json:"application-platform" mapstructure:"application-platform"`
+	AuthOptions                 *AuthOptions                    `json:"auth"             mapstructure:"auth"`
+	WorkflowRuntimeOptions      *WorkflowRuntimeOptions         `json:"workflow-runtime" mapstructure:"workflow-runtime"`
+	InfrastructureClientOptions *InfrastructureClientOptions    `json:"infrastructure-client" mapstructure:"infrastructure-client"`
+	SSEOptions                  *SSEOptions                     `json:"sse" mapstructure:"sse"`
+	MCPOptions                  *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
 }
 
 // AuthOptions 配置 Identity Access Token 的签名参数。
@@ -162,6 +163,21 @@ func (o *WorkflowRuntimeOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.ReconcileInterval, "workflow-runtime.reconcile-interval", o.ReconcileInterval, "runtime projection reconcile interval")
 }
 
+// InfrastructureClientOptions configures Task Worker access to the Infrastructure service.
+type InfrastructureClientOptions struct {
+	BaseURL string `json:"base-url" mapstructure:"base-url"`
+	Token   string `json:"token" mapstructure:"token"`
+}
+
+func NewInfrastructureClientOptions() *InfrastructureClientOptions {
+	return &InfrastructureClientOptions{}
+}
+
+func (o *InfrastructureClientOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVar(&o.BaseURL, "infrastructure-client.base-url", o.BaseURL, "Infrastructure service base URL")
+	fs.StringVar(&o.Token, "infrastructure-client.token", o.Token, "Infrastructure service token")
+}
+
 func NewAssetUploadOptions() *AssetUploadOptions {
 	return &AssetUploadOptions{ChunkCleanupHours: 24}
 }
@@ -187,13 +203,14 @@ func NewOptions() *Options {
 		FeatureOptions:          genericoptions.NewFeatureOptions(),
 		GenericServerRunOptions: genericoptions.NewServerRunOptions(),
 		//PostgresSQLOptions:      genericoptions.NewPostgresSQLOptions(),
-		DatabaseOptions:            genericoptions.NewDatabaseOptions(),
-		AssetUploadOptions:         NewAssetUploadOptions(),
-		ApplicationPlatformOptions: NewApplicationPlatformOptions(),
-		AuthOptions:                NewAuthOptions(),
-		WorkflowRuntimeOptions:     NewWorkflowRuntimeOptions(),
-		SSEOptions:                 NewSSEOptions(),
-		MCPOptions:                 NewMCPOptions(),
+		DatabaseOptions:             genericoptions.NewDatabaseOptions(),
+		AssetUploadOptions:          NewAssetUploadOptions(),
+		ApplicationPlatformOptions:  NewApplicationPlatformOptions(),
+		AuthOptions:                 NewAuthOptions(),
+		WorkflowRuntimeOptions:      NewWorkflowRuntimeOptions(),
+		InfrastructureClientOptions: NewInfrastructureClientOptions(),
+		SSEOptions:                  NewSSEOptions(),
+		MCPOptions:                  NewMCPOptions(),
 	}
 
 	return &s
@@ -212,6 +229,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.AssetUploadOptions.AddFlags(fss.FlagSet("asset upload"))
 	o.ApplicationPlatformOptions.AddFlags(fss.FlagSet("application platform"))
 	o.WorkflowRuntimeOptions.AddFlags(fss.FlagSet("workflow runtime"))
+	o.InfrastructureClientOptions.AddFlags(fss.FlagSet("infrastructure client"))
 	o.SSEOptions.AddFlags(fss.FlagSet("sse"))
 	o.MCPOptions.AddFlags(fss.FlagSet("mcp"))
 	fs := fss.FlagSet("authentication")
@@ -254,6 +272,17 @@ func (o *Options) Complete() error {
 	}
 	if o.WorkflowRuntimeOptions == nil {
 		o.WorkflowRuntimeOptions = NewWorkflowRuntimeOptions()
+	}
+	if o.InfrastructureClientOptions == nil {
+		o.InfrastructureClientOptions = NewInfrastructureClientOptions()
+	}
+	if o.WorkflowRuntimeOptions.Enabled {
+		if strings.TrimSpace(o.InfrastructureClientOptions.BaseURL) == "" {
+			return fmt.Errorf("infrastructure base url is required")
+		}
+		if len(o.InfrastructureClientOptions.Token) < 32 {
+			return fmt.Errorf("infrastructure service token must be at least 32 bytes")
+		}
 	}
 	if o.SSEOptions == nil {
 		o.SSEOptions = NewSSEOptions()

@@ -1,0 +1,238 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://omnimam.local/schemas/task-center/function-registry.schema.yaml
+title: OmniMAM Task Center Infra-backed Function Registry
+x-s1-refs:
+  user_stories: [US-TASK-026]
+  business_rules: [BR-TASK-148, BR-TASK-153]
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - registry_id
+  - scope
+  - description
+  - contract_digest
+  - x-s1-refs
+  - schemas
+  - functions
+properties:
+  schema_version:
+    type: string
+    pattern: '^[0-9]+\.[0-9]+$'
+  registry_id:
+    const: task-center.infra-backed
+  scope:
+    const: INFRA_BACKED_V1
+  description:
+    type: string
+    minLength: 1
+  contract_digest:
+    type: object
+    additionalProperties: false
+    required: [algorithm, canonicalization, payload]
+    properties:
+      algorithm: {const: SHA-256}
+      canonicalization: {const: RFC8785}
+      payload: {const: function_entry_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas}
+  x-s1-refs:
+    $ref: '#/$defs/s1Refs'
+  schemas:
+    type: object
+    minProperties: 1
+    additionalProperties:
+      $ref: '#/$defs/ioSchema'
+  functions:
+    type: array
+    minItems: 1
+    items:
+      $ref: '#/$defs/functionContract'
+$defs:
+  s1Refs:
+    type: object
+    additionalProperties: false
+    required: [user_stories, business_rules]
+    properties:
+      user_stories:
+        type: array
+        minItems: 1
+        items: {type: string, minLength: 1}
+      business_rules:
+        type: array
+        minItems: 1
+        items: {type: string, minLength: 1}
+  ioSchema:
+    type: object
+    required: [type, additionalProperties, properties]
+    properties:
+      type: {const: object}
+      additionalProperties: {const: false}
+      required:
+        type: array
+        uniqueItems: true
+        items: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+      properties:
+        type: object
+        minProperties: 1
+      allOf: {type: array}
+  taskIdempotency:
+    type: object
+    additionalProperties: false
+    required: [scope_template, key_template, manual_retry_uses_new_key]
+    properties:
+      scope_template: {type: string, minLength: 1}
+      key_template: {type: string, minLength: 1}
+      manual_retry_uses_new_key: {const: true}
+  retryPolicy:
+    type: object
+    additionalProperties: false
+    required: [max_attempts, backoff, initial_delay_seconds, max_delay_seconds, retryable_error_codes]
+    properties:
+      max_attempts: {type: integer, minimum: 1, maximum: 10}
+      backoff: {enum: [FIXED, LINEAR, EXPONENTIAL]}
+      initial_delay_seconds: {type: integer, minimum: 0}
+      max_delay_seconds: {type: integer, minimum: 0}
+      retryable_error_codes:
+        type: array
+        uniqueItems: true
+        items: {type: string, pattern: '^(ERR_[A-Z0-9_]+|[a-z][a-z0-9_]+)$'}
+  cancelPolicy:
+    type: object
+    additionalProperties: false
+    required: [mode, grace_period_seconds, terminal_result]
+    properties:
+      mode: {enum: [COOPERATIVE_THEN_INFRA_STOP, COOPERATIVE_THEN_INFRA_CANCEL, NOT_INTERRUPTIBLE_AFTER_READY]}
+      grace_period_seconds: {type: integer, minimum: 0, maximum: 300}
+      terminal_result: {const: CANCELED}
+  timeoutPolicy:
+    type: object
+    additionalProperties: false
+    required: [startup_timeout_seconds, per_attempt_timeout_seconds, overall_timeout_seconds]
+    properties:
+      startup_timeout_seconds: {type: integer, minimum: 1}
+      per_attempt_timeout_seconds: {type: integer, minimum: 1}
+      overall_timeout_seconds: {type: integer, minimum: 1}
+  infraAdapter:
+    type: object
+    additionalProperties: false
+    required:
+      - operation
+      - runtime_mode
+      - requesting_service
+      - request_id_template
+      - owner_domain
+      - owner_reference_path
+      - authorization_ref_path
+      - constants
+    properties:
+      operation: {enum: [ENSURE_RUNTIME, STOP_RUNTIME, CREATE_JOB]}
+      runtime_mode: {enum: [JOB, SERVICE]}
+      requesting_service: {const: task-center}
+      request_id_template: {const: '{atomic_task_id}:{attempt_no}'}
+      owner_domain: {enum: [agent, appstudio]}
+      owner_reference_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      authorization_ref_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      existing_runtime_id_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      runtime_profile_id_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      runtime_profile_revision_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      source_ref_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      source_policy: {enum: [NONE, AGENT_KIND_CONDITIONAL, STUDIO_WORKSPACE_REVISION_READ_ONLY, STUDIO_SNAPSHOT_READ_ONLY, ARTIFACT_DIGEST_READ_ONLY]}
+      constants:
+        type: object
+        additionalProperties: true
+  artifactRegistration:
+    type: object
+    additionalProperties: false
+    required: [enabled, producer_type, producer_id_path, producer_idempotency_key_template, output_key, digest_source]
+    properties:
+      enabled: {const: true}
+      producer_type: {const: studio_build}
+      producer_id_path: {const: arguments.studio_build_id}
+      producer_idempotency_key_template: {const: 'studio-build:{arguments.studio_build_id}:bundle'}
+      output_key: {const: bundle}
+      digest_source: {const: infra_output_descriptor}
+  resultProjection:
+    type: object
+    additionalProperties: false
+    required: [consumer_domain, aggregate_type, aggregate_id_path, update_mode, field_mappings]
+    properties:
+      consumer_domain: {enum: [agent, appstudio]}
+      aggregate_type: {enum: [AgentRuntime, StudioPreviewRuntime, StudioBuild, StudioRuntimeInstance]}
+      aggregate_id_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
+      update_mode: {const: SOURCE_DOMAIN_CONSUMES_TASK_RESULT}
+      field_mappings:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [from, to]
+          properties:
+            from: {type: string, minLength: 1}
+            to: {type: string, minLength: 1}
+            transform: {type: string, pattern: '^[A-Z][A-Z0-9_]*$'}
+  security:
+    type: object
+    additionalProperties: false
+    required: [allowed_callers, forbidden_argument_fields, forbidden_output_fields]
+    properties:
+      allowed_callers:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {enum: [agent, appstudio]}
+      forbidden_argument_fields:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string}
+      forbidden_output_fields:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string}
+  functionContract:
+    type: object
+    additionalProperties: false
+    required:
+      - function_ref
+      - contract_version
+      - contract_digest
+      - status
+      - owning_domain
+      - handler
+      - execution_mode
+      - required_capabilities
+      - input_schema_ref
+      - output_schema_ref
+      - task_idempotency
+      - retry_policy
+      - cancel_policy
+      - timeout_policy
+      - infra_adapter
+      - result_projection
+      - security
+      - x-s1-refs
+    properties:
+      function_ref: {type: string, pattern: '^(agent|appstudio)\.[a-z0-9_.]+$'}
+      contract_version: {type: string, pattern: '^[0-9]+\.[0-9]+$'}
+      contract_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+      status: {enum: [ACTIVE, RETAINED, DISABLED]}
+      owning_domain: {enum: [agent, appstudio]}
+      handler: {const: task-center.infra-adapter}
+      execution_mode: {enum: [JOB, SERVICE]}
+      required_capabilities:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string, pattern: '^[a-z][a-z0-9_.]*$'}
+      input_schema_ref: {type: string, pattern: '^#/schemas/[a-z][a-z0-9_]*$'}
+      output_schema_ref: {type: string, pattern: '^#/schemas/[a-z][a-z0-9_]*$'}
+      task_idempotency: {$ref: '#/$defs/taskIdempotency'}
+      retry_policy: {$ref: '#/$defs/retryPolicy'}
+      cancel_policy: {$ref: '#/$defs/cancelPolicy'}
+      timeout_policy: {$ref: '#/$defs/timeoutPolicy'}
+      infra_adapter: {$ref: '#/$defs/infraAdapter'}
+      artifact_registration: {$ref: '#/$defs/artifactRegistration'}
+      result_projection: {$ref: '#/$defs/resultProjection'}
+      security: {$ref: '#/$defs/security'}
+      x-s1-refs: {$ref: '#/$defs/s1Refs'}

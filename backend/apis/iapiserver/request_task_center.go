@@ -20,25 +20,28 @@ type AtomicTaskListRequest struct {
 }
 
 type AtomicTaskCreateRequest struct {
-	Key                  string         `json:"key" binding:"required,max=128"`
-	Name                 string         `json:"name" binding:"omitempty,max=256"`
-	Description          string         `json:"description" binding:"omitempty,max=2048"`
-	FunctionRef          string         `json:"function_ref" binding:"required,max=256"`
-	Arguments            map[string]any `json:"arguments"`
-	RequiredCapabilities string         `json:"required_capabilities" binding:"omitempty,max=2048"`
-	RetryPolicy          RetryPolicy    `json:"retry_policy"`
-	TimeoutPolicy        TimeoutPolicy  `json:"timeout_policy"`
-	ProjectID            string         `json:"project_id" binding:"required,max=128"`
-	Namespace            string         `json:"namespace" binding:"required,max=128"`
-	IdempotencyScope     string         `json:"idempotency_scope" binding:"omitempty,max=256"`
-	IdempotencyKey       string         `json:"idempotency_key" binding:"omitempty,max=256"`
-	ApplicationRunID     string         `json:"application_run_id" binding:"omitempty,max=64"`
-	CanvasRunID          string         `json:"canvas_run_id" binding:"omitempty,max=64"`
-	CanvasNodeRunID      string         `json:"canvas_node_run_id" binding:"omitempty,max=64"`
-	CreatedBy            string         `json:"-"` // 内部调度触发时显式传递的计划创建者。
-	OwnerType            string         `json:"-"` // 内部调度目标的归属类型，HTTP 客户端不可设置。
-	OwnerID              string         `json:"-"` // 内部调度目标的来源计划 ID。
-	SystemName           SystemNameSpec `json:"-"` // 仅内部创建路径可设置的系统名称 key 与参数。
+	Key                     string           `json:"key" binding:"required,max=128"`
+	Name                    string           `json:"name" binding:"omitempty,max=256"`
+	Description             string           `json:"description" binding:"omitempty,max=2048"`
+	FunctionRef             string           `json:"function_ref" binding:"required,max=256"`
+	Arguments               map[string]any   `json:"arguments"`
+	RequiredCapabilities    string           `json:"required_capabilities" binding:"omitempty,max=2048"`
+	RetryPolicy             RetryPolicy      `json:"retry_policy"`
+	TimeoutPolicy           TimeoutPolicy    `json:"timeout_policy"`
+	ProjectID               string           `json:"project_id" binding:"required,max=128"`
+	Namespace               string           `json:"namespace" binding:"required,max=128"`
+	IdempotencyScope        string           `json:"idempotency_scope" binding:"omitempty,max=256"`
+	IdempotencyKey          string           `json:"idempotency_key" binding:"omitempty,max=256"`
+	ApplicationRunID        string           `json:"application_run_id" binding:"omitempty,max=64"`
+	CanvasRunID             string           `json:"canvas_run_id" binding:"omitempty,max=64"`
+	CanvasNodeRunID         string           `json:"canvas_node_run_id" binding:"omitempty,max=64"`
+	CreatedBy               string           `json:"-"` // 内部调度触发时显式传递的计划创建者。
+	OwnerType               string           `json:"-"` // 内部调度目标的归属类型，HTTP 客户端不可设置。
+	OwnerID                 string           `json:"-"` // 内部调度目标的来源计划 ID。
+	SystemName              SystemNameSpec   `json:"-"` // 仅内部创建路径可设置的系统名称 key 与参数。
+	FunctionContractVersion string           `json:"-"` // 由 Task Center registry 固定，调用方不可设置。
+	FunctionContractDigest  string           `json:"-"` // 由 Task Center registry 复算并固定，调用方不可设置。
+	CancelPolicy            TaskCancelPolicy `json:"-"` // 由固定合同派生的取消和启动超时快照。
 }
 
 type TaskAttemptListRequest struct {

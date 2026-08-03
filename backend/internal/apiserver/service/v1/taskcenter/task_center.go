@@ -22,11 +22,14 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
+	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 )
 
 type TaskCenterSrv interface {
 	ListAtomicTasks(context.Context, *iapiserver.AtomicTaskListRequest) (*iapiserver.AtomicTaskListResponse, error)
 	CreateAtomicTask(context.Context, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
+	// CreateDomainAtomicTask 只供来源领域以固定 caller domain 创建 Infra-backed AtomicTask。
+	CreateDomainAtomicTask(context.Context, string, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
 	BindApplicationRun(context.Context, string, string, string, string, string, map[string]any) (*iapiserver.AtomicTask, error)
 	GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error)
 	// GetAtomicTaskSummaries 批量返回当前主体可见的 AtomicTask 一跳摘要，供跨领域只读组合响应。
@@ -82,6 +85,7 @@ type taskCenterService struct {
 	runtime    workflowruntime.WorkflowRuntime
 	artifacts  ArtifactSummaryReader
 	functions  map[string]struct{}
+	registry   *taskfunctionregistry.Registry
 	reconciles *ReconcileRegistry
 }
 
@@ -110,6 +114,20 @@ func NewServiceWithDependencies(factory store.Factory, runtime workflowruntime.W
 		service.reconciles = reconciles
 	}
 	service.artifacts = artifacts
+	return service
+}
+
+// NewServiceWithFunctionRegistry 注入已启动校验的版本化 Function Registry。
+func NewServiceWithFunctionRegistry(
+	factory store.Factory,
+	runtime workflowruntime.WorkflowRuntime,
+	reconciles *ReconcileRegistry,
+	registry *taskfunctionregistry.Registry,
+	artifacts ArtifactSummaryReader,
+	functionRefs ...string,
+) TaskCenterSrv {
+	service := NewServiceWithDependencies(factory, runtime, reconciles, artifacts, functionRefs...).(*taskCenterService)
+	service.registry = registry
 	return service
 }
 
@@ -199,7 +217,15 @@ func (s *taskCenterService) ListAttempts(ctx context.Context, req *iapiserver.Ta
 }
 
 func (s *taskCenterService) CreateAtomicTask(ctx context.Context, req *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error) {
-	if err := s.validateFunctionRef(req.FunctionRef); err != nil {
+	return s.createAtomicTask(ctx, "", req, 0)
+}
+
+func (s *taskCenterService) CreateDomainAtomicTask(ctx context.Context, caller string, req *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error) {
+	return s.createAtomicTask(ctx, caller, req, 0)
+}
+
+func (s *taskCenterService) createAtomicTask(ctx context.Context, caller string, req *iapiserver.AtomicTaskCreateRequest, retryGeneration int) (*iapiserver.AtomicTask, error) {
+	if err := s.prepareFunctionRequest(caller, req, retryGeneration); err != nil {
 		return nil, err
 	}
 	if (req.IdempotencyScope == "") != (req.IdempotencyKey == "") {
@@ -277,8 +303,16 @@ func (s *taskCenterService) RetryAtomicTask(ctx context.Context, id string, _ *i
 	if source.Status != iapiserver.AtomicTaskStatusFailed && source.Status != iapiserver.AtomicTaskStatusTimeout && source.Status != iapiserver.AtomicTaskStatusCanceled {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "atomic task cannot be manually retried")
 	}
-	req := &iapiserver.AtomicTaskCreateRequest{Key: source.ChildKey, Name: source.Name, Description: source.Description, FunctionRef: source.FunctionRef, Arguments: source.Arguments, RequiredCapabilities: source.RequiredCapabilities, RetryPolicy: source.RetryPolicy, TimeoutPolicy: source.TimeoutPolicy, ProjectID: source.ProjectID, Namespace: source.Namespace, SystemName: systemNameSpec(source.TaskNameMeta)}
-	retried, err := s.CreateAtomicTask(ctx, req)
+	req := &iapiserver.AtomicTaskCreateRequest{Key: source.ChildKey, Name: source.Name, Description: source.Description, FunctionRef: source.FunctionRef, Arguments: source.Arguments, RetryPolicy: source.RetryPolicy, TimeoutPolicy: source.TimeoutPolicy, ProjectID: source.ProjectID, Namespace: source.Namespace, SystemName: systemNameSpec(source.TaskNameMeta)}
+	caller, generation := "", 0
+	if s.registry != nil && s.registry.IsManaged(source.FunctionRef) {
+		contract, resolveErr := s.registry.Resolve(source.FunctionRef, source.FunctionContractVersion, source.FunctionContractDigest)
+		if resolveErr != nil {
+			return nil, errors.NewStatus(code.ErrTaskFunctionContractUnavailable, resolveErr.Error())
+		}
+		caller, generation = contract.OwningDomain, 1
+	}
+	retried, err := s.createAtomicTask(ctx, caller, req, generation)
 	if err != nil {
 		return retried, err
 	}
@@ -1047,6 +1081,48 @@ func (s *taskCenterService) createScheduleTarget(
 	}
 }
 
+func (s *taskCenterService) prepareFunctionRequest(caller string, req *iapiserver.AtomicTaskCreateRequest, retryGeneration int) error {
+	if req == nil {
+		return errors.NewStatus(code.ErrTaskFunctionInputInvalid, "atomic task request is required")
+	}
+	if s.registry == nil || !s.registry.IsManaged(req.FunctionRef) {
+		return s.validateFunctionRef(req.FunctionRef)
+	}
+	contract, err := s.registry.Active(req.FunctionRef, caller, req.Arguments)
+	if err != nil {
+		switch {
+		case stderrors.Is(err, taskfunctionregistry.ErrInputInvalid):
+			return errors.NewStatus(code.ErrTaskFunctionInputInvalid, err.Error())
+		default:
+			return errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, err.Error())
+		}
+	}
+	snapshot, err := s.registry.PrepareTask(
+		contract, req.Arguments, retryGeneration,
+		req.RetryPolicy.MaxAttempts, req.RetryPolicy.RetryDelaySeconds, req.RetryPolicy.BackoffType,
+		req.RetryPolicy.MaxRetryDelaySeconds, req.TimeoutPolicy.PerAttemptTimeoutSeconds,
+		req.TimeoutPolicy.OverallTimeoutSeconds,
+	)
+	if err != nil {
+		return errors.NewStatus(code.ErrTaskFunctionInputInvalid, err.Error())
+	}
+	req.FunctionContractVersion, req.FunctionContractDigest = snapshot.ContractVersion, snapshot.ContractDigest
+	req.RequiredCapabilities = snapshot.RequiredCapabilities
+	req.IdempotencyScope, req.IdempotencyKey = snapshot.IdempotencyScope, snapshot.IdempotencyKey
+	req.RetryPolicy = iapiserver.RetryPolicy{
+		MaxAttempts: snapshot.MaxAttempts, RetryDelaySeconds: snapshot.RetryDelaySeconds,
+		BackoffType: snapshot.BackoffType, MaxRetryDelaySeconds: snapshot.MaxRetryDelaySeconds,
+	}
+	req.TimeoutPolicy = iapiserver.TimeoutPolicy{
+		PerAttemptTimeoutSeconds: snapshot.PerAttemptTimeout, OverallTimeoutSeconds: snapshot.OverallTimeout,
+	}
+	req.CancelPolicy = iapiserver.TaskCancelPolicy{
+		Mode: snapshot.CancelMode, GracePeriodSeconds: snapshot.CancelGraceSeconds,
+		TerminalResult: snapshot.CancelTerminalResult, StartupTimeoutSeconds: snapshot.StartupTimeout,
+	}
+	return nil
+}
+
 func (s *taskCenterService) validateFunctionRef(ref string) error {
 	if ref == "" {
 		return errors.NewStatusF(code.ErrTaskFunctionRefNotRegistered, "function ref is required")
@@ -1143,7 +1219,7 @@ func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapi
 }
 
 func atomicTaskFromRequest(req *iapiserver.AtomicTaskCreateRequest, createdBy string) (*iapiserver.AtomicTask, error) {
-	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, OwnerType: req.OwnerType, OwnerID: req.OwnerID, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
+	task := &iapiserver.AtomicTask{FunctionRef: req.FunctionRef, FunctionContractVersion: req.FunctionContractVersion, FunctionContractDigest: req.FunctionContractDigest, Arguments: req.Arguments, RequiredCapabilities: req.RequiredCapabilities, RetryPolicy: req.RetryPolicy, TimeoutPolicy: req.TimeoutPolicy, CancelPolicy: req.CancelPolicy, OwnerType: req.OwnerType, OwnerID: req.OwnerID, ChildKey: req.Key, ApplicationRunID: req.ApplicationRunID, CanvasRunID: req.CanvasRunID, CanvasNodeRunID: req.CanvasNodeRunID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
 	task.Name = req.Name
 	if task.Name == "" {
 		task.Name = req.Key

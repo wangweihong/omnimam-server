@@ -14,7 +14,77 @@ import (
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
+	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
+	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 )
+
+type recordingInfrastructureExecutor struct {
+	requests []*infrastructure.CommandRequest
+	response *infrastructure.CommandResponse
+	err      error
+}
+
+func (f *recordingInfrastructureExecutor) Execute(_ context.Context, request *infrastructure.CommandRequest) (*infrastructure.CommandResponse, error) {
+	f.requests = append(f.requests, request)
+	return f.response, f.err
+}
+
+func appStudioReadyResponse(runtimeID, endpointID string) *infrastructure.CommandResponse {
+	runtime := &iapiserver.InfraRuntime{}
+	runtime.ID = runtimeID
+	runtime.Status = "RUNNING"
+	runtime.EndpointRef = endpointID
+	endpoint := &iapiserver.InfraRuntimeEndpoint{}
+	endpoint.ID = endpointID
+	endpoint.RuntimeID = runtimeID
+	endpoint.Status = "READY"
+	return &infrastructure.CommandResponse{Result: &iapiserver.InfraOperationResult{Runtime: runtime, Endpoint: endpoint}}
+}
+
+func appStudioStopResponse(runtimeID, status string) *infrastructure.CommandResponse {
+	runtime := &iapiserver.InfraRuntime{}
+	runtime.ID = runtimeID
+	runtime.Status = status
+	return &infrastructure.CommandResponse{Result: &iapiserver.InfraOperationResult{Runtime: runtime}}
+}
+
+func appStudioTask(t *testing.T, functionRef string, arguments map[string]any) (*taskfunctionregistry.Registry, workflowruntime.WorkerTask, *iapiserver.AtomicTask) {
+	t.Helper()
+	registry, err := taskfunctionregistry.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := registry.Active(functionRef, "appstudio", arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atomic := &iapiserver.AtomicTask{FunctionRef: functionRef, FunctionContractVersion: contract.ContractVersion, FunctionContractDigest: contract.ContractDigest, Arguments: arguments, CreatedBy: "user-1"}
+	atomic.ID = "atomic-1"
+	worker := workflowruntime.WorkerTask{AtomicTaskID: atomic.ID, FunctionRef: functionRef, RetryCount: 1, Arguments: arguments}
+	return registry, worker, atomic
+}
+
+func appStudioPreviewEnsureTestArguments(existing any) map[string]any {
+	return map[string]any{
+		"studio_application_id": "application-1", "preview_runtime_id": "preview-1", "existing_infra_runtime_id": existing,
+		"workspace_id": "workspace-1", "workspace_revision": 7, "workspace_revision_source_ref": "studio-workspace-revision://workspace-1/7",
+		"runtime_profile_id": "appstudio.preview.static-web", "runtime_profile_revision": "profile-rev-1", "endpoint_visibility": "USER_ACCESSIBLE",
+		"authorization_ref": "appstudio-preview-grant://grant-1", "expected_resource_version": 3,
+		"resource_requirement": map[string]any{"cpu_cores": 1.5, "memory_mb": 512, "disk_mb": 1024},
+	}
+}
+
+func appStudioProductionReconcileTestArguments(existing any) map[string]any {
+	return map[string]any{
+		"studio_application_id": "application-1", "studio_release_id": "release-1", "studio_runtime_instance_id": "runtime-1", "existing_infra_runtime_id": existing,
+		"studio_application_version_id": "version-1", "runtime_config_id": "config-1", "artifact_id": "artifact-1", "artifact_digest": "sha256:artifact",
+		"artifact_source_ref": "artifact://artifact-1@sha256:artifact", "environment": "production", "deployment_reason": "DEPLOY",
+		"runtime_profile_id": "studioapp.runtime.web-backend", "runtime_profile_revision": "profile-rev-2", "health_check_ref": "appstudio-health-check://check-1",
+		"endpoint_visibility": "INTERNAL", "authorization_ref": "appstudio-release-grant://grant-1", "expected_resource_version": 4,
+		"resource_requirement": map[string]any{"cpu_cores": 2, "memory_mb": 1024, "disk_mb": 2048, "gpu_count": 0, "gpu_memory_mb": 0},
+	}
+}
 
 type recordingRepresentationTaskCreator struct {
 	request *iapiserver.DAGTaskGroupCreateRequest
@@ -421,5 +491,142 @@ func TestReconcilePublishedApplicationCatalogRepairsConvertibleVersions(t *testi
 	}
 	if target.calls != 1 {
 		t.Fatalf("catalog repair calls = %d, want 1", target.calls)
+	}
+}
+
+func TestExecuteAppStudioPreviewEnsureCreatesRuntime(t *testing.T) {
+	arguments := appStudioPreviewEnsureTestArguments(nil)
+	registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-preview-1", "endpoint-1")}
+	result, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("infrastructure calls = %d, want 1", len(executor.requests))
+	}
+	request := executor.requests[0]
+	if request.Operation != "create" || request.Create == nil {
+		t.Fatalf("request = %#v, want create request", request)
+	}
+	if request.Create.RequestID != "atomic-1:2" || request.Create.OwnerReference != "preview-1" || request.Create.RuntimeMode != "SERVICE" || request.Create.SourceRef != arguments["workspace_revision_source_ref"] {
+		t.Fatalf("create request identity/source = %#v", request.Create)
+	}
+	if request.Create.RuntimeProfileID != "appstudio.preview.static-web" || request.Create.EndpointVisibility != "USER_ACCESSIBLE" || request.Create.AuthorizationRef != "appstudio-preview-grant://grant-1" {
+		t.Fatalf("create request profile/security = %#v", request.Create)
+	}
+	if result["infra_runtime_id"] != "infra-preview-1" || result["runtime_status"] != "RUNNING" || result["health_status"] != "HEALTHY" || result["endpoint_ref"] != "endpoint-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecuteAppStudioPreviewEnsureStartsExistingRuntime(t *testing.T) {
+	arguments := appStudioPreviewEnsureTestArguments("infra-preview-existing")
+	registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-preview-existing", "endpoint-2")}
+	if _, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.requests) != 1 || executor.requests[0].Operation != "start" || executor.requests[0].RuntimeID != "infra-preview-existing" || executor.requests[0].Create != nil {
+		t.Fatalf("request = %#v, want start existing runtime", executor.requests[0])
+	}
+}
+
+func TestExecuteAppStudioPreviewStopDelete(t *testing.T) {
+	arguments := map[string]any{
+		"studio_application_id": "application-1", "preview_runtime_id": "preview-1", "infra_runtime_id": "infra-preview-1",
+		"action": "DELETE", "authorization_ref": "appstudio-preview-grant://grant-1", "expected_resource_version": 5,
+	}
+	registry, worker, atomic := appStudioTask(t, "appstudio.preview.stop", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioStopResponse("infra-preview-1", "DELETED")}
+	result, err := executeAppStudioPreviewStop(t.Context(), executor, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := executor.requests[0]
+	if request.Operation != "stop" || request.RuntimeID != "infra-preview-1" || !request.Delete {
+		t.Fatalf("request = %#v, want delete stop", request)
+	}
+	if result["runtime_status"] != "DELETED" || result["completed_action"] != "DELETE" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecuteAppStudioBuildFailsClosedBeforeInfrastructure(t *testing.T) {
+	arguments := map[string]any{
+		"studio_application_id": "application-1", "studio_build_id": "build-1", "source_snapshot_id": "snapshot-1", "source_snapshot_digest": "sha256:snapshot",
+		"source_snapshot_source_ref": "studio-snapshot://snapshot-1", "runtime_profile_id": "appstudio.build.static-web", "runtime_profile_revision": "profile-rev-1",
+		"build_config_ref": "appstudio-build-config://config-1", "dependency_lock_digest": "sha256:lock", "authorization_ref": "appstudio-build-grant://grant-1", "expected_resource_version": 1,
+	}
+	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("unused", "unused")}
+	if _, err := executeAppStudioBuild(t.Context(), executor, registry, worker, atomic); err == nil || !strings.Contains(err.Error(), "artifact registration is unavailable") {
+		t.Fatalf("error = %v, want artifact registration failure", err)
+	}
+	if len(executor.requests) != 0 {
+		t.Fatalf("infrastructure calls = %d, want 0", len(executor.requests))
+	}
+}
+
+func TestExecuteAppStudioProductionReconcileCreatesArtifactRuntime(t *testing.T) {
+	arguments := appStudioProductionReconcileTestArguments(nil)
+	registry, worker, atomic := appStudioTask(t, "appstudio.production.reconcile", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-production-1", "endpoint-production-1")}
+	result, err := executeAppStudioProductionReconcile(t.Context(), executor, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := executor.requests[0]
+	if request.Operation != "create" || request.Create == nil || request.Create.SourceRef != "artifact://artifact-1@sha256:artifact" || request.Create.OwnerReference != "runtime-1" {
+		t.Fatalf("request = %#v, want artifact create", request)
+	}
+	if request.Create.RuntimeProfileID != "studioapp.runtime.web-backend" || request.Create.EndpointVisibility != "INTERNAL" {
+		t.Fatalf("request profile/visibility = %#v", request.Create)
+	}
+	if result["infra_runtime_id"] != "infra-production-1" || result["endpoint_ref"] != "endpoint-production-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecuteAppStudioProductionStopUsesStopWithoutDelete(t *testing.T) {
+	arguments := map[string]any{
+		"studio_application_id": "application-1", "studio_release_id": "release-1", "studio_runtime_instance_id": "runtime-1", "infra_runtime_id": "infra-production-1",
+		"authorization_ref": "appstudio-release-grant://grant-1", "expected_resource_version": 6,
+	}
+	registry, worker, atomic := appStudioTask(t, "appstudio.production.stop", arguments)
+	executor := &recordingInfrastructureExecutor{response: appStudioStopResponse("infra-production-1", "STOPPED")}
+	result, err := executeAppStudioProductionStop(t.Context(), executor, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := executor.requests[0]
+	if request.Operation != "stop" || request.RuntimeID != "infra-production-1" || request.Delete {
+		t.Fatalf("request = %#v, want non-delete stop", request)
+	}
+	if result["runtime_status"] != "STOPPED" || result["completed_action"] != "STOP" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecuteAppStudioRejectsIncorrectContractPinBeforeInfrastructure(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*iapiserver.AtomicTask)
+	}{
+		{name: "digest", mutate: func(task *iapiserver.AtomicTask) { task.FunctionContractDigest = "sha256:wrong" }},
+		{name: "version", mutate: func(task *iapiserver.AtomicTask) { task.FunctionContractVersion = "9.9" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			arguments := appStudioPreviewEnsureTestArguments(nil)
+			registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+			test.mutate(atomic)
+			executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("unused", "unused")}
+			if _, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic); err == nil || !strings.Contains(err.Error(), "contract") {
+				t.Fatalf("error = %v, want contract pin error", err)
+			}
+			if len(executor.requests) != 0 {
+				t.Fatalf("infrastructure calls = %d, want 0", len(executor.requests))
+			}
+		})
 	}
 }

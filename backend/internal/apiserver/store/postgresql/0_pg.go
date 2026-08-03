@@ -88,6 +88,152 @@ SET logs_ref = 'task-attempt-log:' || id
 WHERE COALESCE(logs_ref, '') = '' AND id <> '';
 `
 
+const taskCenterFunctionContractSQL = `
+CREATE INDEX IF NOT EXISTS idx_atomic_tasks_function_contract
+ON atomic_tasks(function_ref, function_contract_version);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_atomic_tasks_function_contract') THEN
+    ALTER TABLE atomic_tasks ADD CONSTRAINT ck_atomic_tasks_function_contract CHECK (
+      function_ref NOT IN (
+        'agent.runtime.ensure',
+        'agent.runtime.stop',
+        'appstudio.preview.ensure',
+        'appstudio.preview.stop',
+        'appstudio.build.execute',
+        'appstudio.production.reconcile',
+        'appstudio.production.stop'
+      ) OR (
+        function_contract_version <> '' AND
+        function_contract_digest ~ '^sha256:[0-9a-f]{64}$'
+      )
+    );
+  END IF;
+END $$;
+`
+
+const agentConstraintsSQL = `
+DROP INDEX IF EXISTS idx_agent_model_binding;
+CREATE INDEX IF NOT EXISTS idx_agents_owner_status ON agents(owner_user_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_type, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions(agent_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created ON agent_messages(session_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_invocations_idempotency ON agent_invocations(agent_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_session_status ON agent_invocations(session_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_task ON agent_invocations(atomic_task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_memories_scope ON agent_memories(agent_id, scope, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_model_bindings_identity ON agent_model_bindings(agent_id, purpose, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_workspace_binding_agent ON agent_workspace_bindings(agent_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skill_binding_agent_skill ON agent_skill_bindings(agent_id, skill_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runtime_current ON agent_runtime_bindings(agent_id)
+WHERE state NOT IN ('DELETED', 'STOPPED', 'FAILED');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_operation_event_sequence ON agent_operation_events(invocation_id, sequence_no);
+CREATE INDEX IF NOT EXISTS idx_agent_outbox_delivery ON agent_outbox(delivery_status, next_attempt_at);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agents_kind') THEN
+    ALTER TABLE agents ADD CONSTRAINT ck_agents_kind CHECK (kind IN ('platform','coding'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agents_workspace_kind') THEN
+    ALTER TABLE agents ADD CONSTRAINT ck_agents_workspace_kind CHECK ((kind='platform' AND workspace_type='agent') OR (kind='coding' AND workspace_type='studio'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agents_status') THEN
+    ALTER TABLE agents ADD CONSTRAINT ck_agents_status CHECK (status IN ('CREATING','READY','STARTING','RUNNING','IDLE','SUSPENDED','ERROR','DISABLED','DELETING'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_sessions_status') THEN
+    ALTER TABLE agent_sessions ADD CONSTRAINT ck_agent_sessions_status CHECK (status IN ('OPEN','CLOSED','ARCHIVED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_messages_role') THEN
+    ALTER TABLE agent_messages ADD CONSTRAINT ck_agent_messages_role CHECK (role IN ('USER','ASSISTANT','SYSTEM','TOOL'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_type') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_type CHECK (type IN ('CHAT','CODING','TOOL_OPERATION','BACKGROUND_OPERATION'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_status') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_status CHECK (status IN ('QUEUED','STARTING','RUNNING','WAITING_FOR_TOOL','WAITING_FOR_USER','SUCCEEDED','FAILED','CANCELING','CANCELED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_task CHECK (type='CHAT' OR atomic_task_id IS NOT NULL);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_memories_scope') THEN
+    ALTER TABLE agent_memories ADD CONSTRAINT ck_agent_memories_scope CHECK (scope IN ('AGENT','SESSION'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_memories_type') THEN
+    ALTER TABLE agent_memories ADD CONSTRAINT ck_agent_memories_type CHECK (type IN ('FACT','PREFERENCE','SUMMARY','INSTRUCTION','CONTEXT'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_memories_session') THEN
+    ALTER TABLE agent_memories ADD CONSTRAINT ck_agent_memories_session CHECK ((scope='AGENT' AND session_id IS NULL) OR (scope='SESSION' AND session_id IS NOT NULL));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_model_bindings_source') THEN
+    ALTER TABLE agent_model_bindings ADD CONSTRAINT ck_agent_model_bindings_source CHECK (source_type IN ('USER_DEFAULT_MODEL','USER_PROVIDER_MODEL','PLATFORM_MODEL'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_model_bindings_purpose') THEN
+    ALTER TABLE agent_model_bindings ADD CONSTRAINT ck_agent_model_bindings_purpose CHECK (purpose IN ('CHAT','CODING','VISION','EMBEDDING'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_model_bindings_status') THEN
+    ALTER TABLE agent_model_bindings ADD CONSTRAINT ck_agent_model_bindings_status CHECK (status IN ('ACTIVE','INVALID','DISABLED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_workspace_bindings_type') THEN
+    ALTER TABLE agent_workspace_bindings ADD CONSTRAINT ck_agent_workspace_bindings_type CHECK (workspace_type IN ('agent','studio'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_workspace_bindings_access') THEN
+    ALTER TABLE agent_workspace_bindings ADD CONSTRAINT ck_agent_workspace_bindings_access CHECK (access_mode IN ('READ_ONLY','READ_WRITE'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_mcp_bindings_type') THEN
+    ALTER TABLE agent_mcp_bindings ADD CONSTRAINT ck_agent_mcp_bindings_type CHECK (server_type IN ('PLATFORM','REMOTE','RUNTIME_LOCAL'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_runtime_bindings_state') THEN
+    ALTER TABLE agent_runtime_bindings ADD CONSTRAINT ck_agent_runtime_bindings_state CHECK (state IN ('CREATING','STARTING','READY','RUNNING','STOPPING','STOPPED','FAILED','DELETED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_runtime_bindings_activity') THEN
+    ALTER TABLE agent_runtime_bindings ADD CONSTRAINT ck_agent_runtime_bindings_activity CHECK (activity_state IN ('IDLE','ACTIVE','SUSPENDED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_runtime_bindings_health') THEN
+    ALTER TABLE agent_runtime_bindings ADD CONSTRAINT ck_agent_runtime_bindings_health CHECK (health_status IN ('UNKNOWN','HEALTHY','UNHEALTHY'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_outbox_delivery') THEN
+    ALTER TABLE agent_outbox ADD CONSTRAINT ck_agent_outbox_delivery CHECK (delivery_status IN ('PENDING','DELIVERED','FAILED'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_sessions_agent') THEN
+    ALTER TABLE agent_sessions ADD CONSTRAINT fk_agent_sessions_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_messages_session') THEN
+    ALTER TABLE agent_messages ADD CONSTRAINT fk_agent_messages_session FOREIGN KEY (session_id) REFERENCES agent_sessions(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_messages_agent') THEN
+    ALTER TABLE agent_messages ADD CONSTRAINT fk_agent_messages_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_invocations_agent') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT fk_agent_invocations_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_invocations_session') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT fk_agent_invocations_session FOREIGN KEY (session_id) REFERENCES agent_sessions(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_memories_agent') THEN
+    ALTER TABLE agent_memories ADD CONSTRAINT fk_agent_memories_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_memories_session') THEN
+    ALTER TABLE agent_memories ADD CONSTRAINT fk_agent_memories_session FOREIGN KEY (session_id) REFERENCES agent_sessions(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_model_bindings_agent') THEN
+    ALTER TABLE agent_model_bindings ADD CONSTRAINT fk_agent_model_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_workspace_bindings_agent') THEN
+    ALTER TABLE agent_workspace_bindings ADD CONSTRAINT fk_agent_workspace_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_skill_bindings_agent') THEN
+    ALTER TABLE agent_skill_bindings ADD CONSTRAINT fk_agent_skill_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_mcp_bindings_agent') THEN
+    ALTER TABLE agent_mcp_bindings ADD CONSTRAINT fk_agent_mcp_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_runtime_bindings_agent') THEN
+    ALTER TABLE agent_runtime_bindings ADD CONSTRAINT fk_agent_runtime_bindings_agent FOREIGN KEY (agent_id) REFERENCES agents(id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_agent_operation_events_invocation') THEN
+    ALTER TABLE agent_operation_events ADD CONSTRAINT fk_agent_operation_events_invocation FOREIGN KEY (invocation_id) REFERENCES agent_invocations(id);
+  END IF;
+END $$;
+`
+
 const mcpTaskBindingConstraintsSQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_binding_principal_run
 ON mcp_task_bindings(principal_id, application_run_id);
@@ -456,6 +602,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureTaskCenterScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureAgentScheme(); err != nil {
+		return err
+	}
 	if err := ds.ensureApplicationPlatformScheme(); err != nil {
 		return err
 	}
@@ -474,6 +623,10 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	return nil
 }
 
+func (ds *datastore) ensureAgentScheme() error {
+	return ds.db.Exec(agentConstraintsSQL).Error
+}
+
 func (ds *datastore) ensureMCPScheme() error {
 	return ds.db.Exec(mcpTaskBindingConstraintsSQL).Error
 }
@@ -487,6 +640,9 @@ WHERE deleted_at IS NULL;
 }
 
 func (ds *datastore) ensureTaskCenterScheme() error {
+	if err := ds.db.Exec(taskCenterFunctionContractSQL).Error; err != nil {
+		return err
+	}
 	if err := ds.db.Exec(taskCenterActiveScheduleIndexSQL).Error; err != nil {
 		return err
 	}
@@ -622,6 +778,10 @@ func (ds *datastore) AssetsV1() store.AssetV1Store { return newAssetV1Store(ds) 
 func (ds *datastore) TaskCenters() store.TaskCenterStore {
 	return newTaskCenterStore(ds)
 }
+
+func (ds *datastore) Agents() store.AgentStore                  { return newAgentStore(ds) }
+func (ds *datastore) AppStudio() store.AppStudioStore           { return newAppStudioStore(ds) }
+func (ds *datastore) Infrastructure() store.InfrastructureStore { return newInfrastructureStore(ds) }
 
 func (ds *datastore) UserEvents() store.UserEventStore { return newUserEventStore(ds) }
 

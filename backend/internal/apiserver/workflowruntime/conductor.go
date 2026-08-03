@@ -483,6 +483,9 @@ func conductorTask(task Task) model.WorkflowTask {
 		if backoff == "" {
 			backoff = "FIXED"
 		}
+		if backoff == "EXPONENTIAL" {
+			backoff = "EXPONENTIAL_BACKOFF"
+		}
 		definition := &model.TaskDef{Name: task.Name, RetryCount: int32(task.Retry.MaxAttempts - 1), RetryDelaySeconds: int32(task.Retry.RetryDelaySeconds), RetryLogic: backoff}
 		if backoff == "EXPONENTIAL_BACKOFF" {
 			definition.BackoffScaleFactor = 2

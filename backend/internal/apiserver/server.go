@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -13,8 +14,10 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
+	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	mcpsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/mcp"
@@ -27,6 +30,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
+	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
 	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
@@ -39,6 +43,8 @@ type server struct {
 	gracefulShutdown       *shutdown.GracefulShutdown
 	assetUpload            *options.AssetUploadOptions
 	applicationPlatform    appsvc.ApplicationPlatformSrv
+	agent                  *agentsvc.Service
+	appStudio              *appstudiosvc.Service
 	taskCenter             taskcentersvc.TaskCenterSrv
 	workflowRuntime        workflowruntime.WorkflowRuntime
 	authOptions            *options.AuthOptions
@@ -127,7 +133,11 @@ func createServer(cfg *config.Config) (*server, error) {
 		}
 	}
 	reconcileRegistry := taskcentersvc.NewReconcileRegistry()
-	taskCenterService := taskcentersvc.NewServiceWithDependencies(storeIns, workflowRuntime, reconcileRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
+	functionRegistry, err := taskfunctionregistry.New()
+	if err != nil {
+		return nil, errors.Wrap(err, "load task center function registry")
+	}
+	taskCenterService := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, workflowRuntime, reconcileRegistry, functionRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
 		appplatformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
@@ -146,6 +156,22 @@ func createServer(cfg *config.Config) (*server, error) {
 	}
 	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
+	}
+	sourceDir := os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_DIR")
+	if sourceDir == "" {
+		sourceDir = "data/appstudio/source"
+	}
+	sourceStore, err := appstudiosvc.NewLocalSourceContentStore(sourceDir)
+	if err != nil {
+		return nil, errors.Wrap(err, "construct appstudio source content store")
+	}
+	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, Sources: sourceStore, Artifacts: storeIns.AssetsV1()})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct appstudio service")
+	}
+	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct agent service")
 	}
 	var mcpProcessor *mcpprotocol.Processor
 	if cfg.MCPOptions != nil && cfg.MCPOptions.Enabled {
@@ -183,6 +209,8 @@ func createServer(cfg *config.Config) (*server, error) {
 		gracefulShutdown:    gs,
 		assetUpload:         cfg.AssetUploadOptions,
 		applicationPlatform: applicationPlatformService,
+		agent:               agentService,
+		appStudio:           appStudioService,
 		taskCenter:          taskCenterService,
 		workflowRuntime:     workflowRuntime,
 		authOptions:         cfg.AuthOptions,
@@ -293,6 +321,46 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.Permission{},
 		&iapiserver.UserRole{},
 
+		// agent
+		&iapiserver.Agent{},
+		&iapiserver.AgentSession{},
+		&iapiserver.AgentMessage{},
+		&iapiserver.AgentInvocation{},
+		&iapiserver.AgentMemory{},
+		&iapiserver.AgentModelBinding{},
+		&iapiserver.AgentWorkspaceBinding{},
+		&iapiserver.AgentSkillBinding{},
+		&iapiserver.AgentMCPBinding{},
+		&iapiserver.AgentRuntimeBinding{},
+		&iapiserver.AgentOperationEvent{},
+		&iapiserver.AgentOutbox{},
+
+		// appstudio
+		&iapiserver.StudioApplication{},
+		&iapiserver.StudioSourceRepository{},
+		&iapiserver.StudioWorkspace{},
+		&iapiserver.StudioSourceFile{},
+		&iapiserver.StudioWorkspaceRevision{},
+		&iapiserver.StudioChangeSet{},
+		&iapiserver.StudioSourceSnapshot{},
+		&iapiserver.StudioApplicationVersion{},
+		&iapiserver.StudioPreviewRuntime{},
+		&iapiserver.StudioRuntimeConfig{},
+		&iapiserver.StudioBuild{},
+		&iapiserver.StudioRelease{},
+		&iapiserver.StudioRuntimeInstance{},
+		&iapiserver.AppStudioOutbox{},
+
+		// infrastructure
+		&iapiserver.InfraRuntimeProfile{},
+		&iapiserver.InfraNode{},
+		&iapiserver.InfraRuntime{},
+		&iapiserver.InfraRuntimeEndpoint{},
+		&iapiserver.InfraRuntimeMount{},
+		&iapiserver.InfraRuntimeConfigBinding{},
+		&iapiserver.InfraRuntimeOutput{},
+		&iapiserver.InfraRuntimeEvent{},
+
 		// application platform
 		&iapiserver.EngineInstance{},
 		&iapiserver.ComfyUIEngineObjectInfo{},
@@ -390,7 +458,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
 	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.agent, s.appStudio, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		ssectrl.BeginDraining()

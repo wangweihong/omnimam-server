@@ -64,6 +64,90 @@ type PlatformManagementStore interface {
 	ListAuditLogs(ctx context.Context, req *iapiserver.PlatformAuditLogListRequest) ([]*iapiserver.PlatformAuditLog, int64, error)
 }
 
+// AgentStore 是 Agent、Session、Invocation、Memory、Binding、Runtime 和事件的持久化边界。
+type AgentStore interface {
+	CreateAgentAggregate(context.Context, *iapiserver.Agent, *iapiserver.AgentSession, *iapiserver.AgentWorkspaceBinding, *iapiserver.AgentModelBinding) error
+	ListAgents(context.Context, *iapiserver.AgentListRequest) ([]*iapiserver.Agent, int64, error)
+	GetAgent(context.Context, string, string) (*iapiserver.Agent, error)
+	UpdateAgent(context.Context, *iapiserver.Agent, int64) (*iapiserver.Agent, error)
+	ListAgentSessions(context.Context, *iapiserver.AgentSessionListRequest) ([]*iapiserver.AgentSession, int64, error)
+	CreateAgentSession(context.Context, *iapiserver.AgentSession) (*iapiserver.AgentSession, error)
+	GetAgentSession(context.Context, string, string) (*iapiserver.AgentSession, error)
+	UpdateAgentSession(context.Context, *iapiserver.AgentSession, int64) (*iapiserver.AgentSession, error)
+	CreateAgentInvocation(context.Context, *iapiserver.AgentMessage, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	ListAgentMessages(context.Context, *iapiserver.AgentMessageListRequest, string) ([]*iapiserver.AgentMessage, int64, error)
+	ListAgentInvocations(context.Context, *iapiserver.AgentInvocationListRequest, string) ([]*iapiserver.AgentInvocation, int64, error)
+	GetAgentInvocation(context.Context, string, string) (*iapiserver.AgentInvocation, error)
+	UpdateAgentInvocation(context.Context, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	ListAgentMemories(context.Context, *iapiserver.AgentMemoryListRequest, string) ([]*iapiserver.AgentMemory, int64, error)
+	CreateAgentMemory(context.Context, *iapiserver.AgentMemory) (*iapiserver.AgentMemory, error)
+	GetAgentMemory(context.Context, string, string) (*iapiserver.AgentMemory, error)
+	UpdateAgentMemory(context.Context, *iapiserver.AgentMemory, int64) (*iapiserver.AgentMemory, error)
+	DeleteAgentMemory(context.Context, string, string) error
+	GetAgentWorkspaceBinding(context.Context, string, string) (*iapiserver.AgentWorkspaceBinding, error)
+	ListAgentModelBindings(context.Context, string, string) ([]*iapiserver.AgentModelBinding, error)
+	ReplaceAgentModelBinding(context.Context, string, string, *iapiserver.AgentModelBinding) (*iapiserver.AgentModelBinding, error)
+	ListAgentSkillBindings(context.Context, string, string) ([]*iapiserver.AgentSkillBinding, error)
+	ListAgentMCPBindings(context.Context, string, string) ([]*iapiserver.AgentMCPBinding, error)
+	CreateAgentMCPBinding(context.Context, string, *iapiserver.AgentMCPBinding) (*iapiserver.AgentMCPBinding, error)
+	GetCurrentAgentRuntime(context.Context, string, string) (*iapiserver.AgentRuntimeBinding, error)
+	GetAgentRuntimeByID(context.Context, string) (*iapiserver.AgentRuntimeBinding, error)
+	CreateAgentRuntime(context.Context, string, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
+	UpdateAgentRuntime(context.Context, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
+	ProjectAgentRuntime(context.Context, *iapiserver.AgentRuntimeBinding, string) (*iapiserver.AgentRuntimeBinding, error)
+	AppendAgentOperationEvent(context.Context, *iapiserver.AgentOperationEvent) (*iapiserver.AgentOperationEvent, error)
+	ListAgentOperationEvents(context.Context, string, int) ([]*iapiserver.AgentOperationEvent, error)
+}
+
+// AppStudioStore 是 StudioApplication 源码谱系、构建、发布和 Runtime 投影的事实边界。
+type AppStudioStore interface {
+	CreateStudioApplicationAggregate(context.Context, *iapiserver.StudioApplication, *iapiserver.StudioSourceRepository, *iapiserver.StudioWorkspace, *iapiserver.StudioWorkspaceRevision) error
+	ListStudioApplications(context.Context, *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error)
+	GetStudioApplication(context.Context, string, string) (*iapiserver.StudioApplication, error)
+	UpdateStudioApplication(context.Context, *iapiserver.StudioApplication, int64) (*iapiserver.StudioApplication, error)
+	GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
+	GetStudioWorkspace(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
+	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)
+	GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error)
+	ApplyStudioChangeSet(context.Context, string, *iapiserver.StudioChangeSet, *iapiserver.StudioWorkspaceRevision, []*iapiserver.StudioSourceFile) (*iapiserver.StudioChangeSet, error)
+	CreateStudioSourceSnapshot(context.Context, string, *iapiserver.StudioSourceSnapshot) (*iapiserver.StudioSourceSnapshot, error)
+	GetStudioSourceSnapshot(context.Context, string, string) (*iapiserver.StudioSourceSnapshot, error)
+	CreateStudioApplicationVersion(context.Context, string, *iapiserver.StudioApplicationVersion) (*iapiserver.StudioApplicationVersion, error)
+	ListStudioApplicationVersions(context.Context, string, string, *iapiserver.StudioApplicationVersionListRequest) ([]*iapiserver.StudioApplicationVersion, int64, error)
+	GetStudioApplicationVersion(context.Context, string, string) (*iapiserver.StudioApplicationVersion, error)
+	CreateStudioBuild(context.Context, string, *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error)
+	ListStudioBuilds(context.Context, string, string, *iapiserver.StudioBuildListRequest) ([]*iapiserver.StudioBuild, int64, error)
+	GetStudioBuild(context.Context, string, string) (*iapiserver.StudioBuild, error)
+	UpdateStudioBuild(context.Context, *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error)
+	GetStudioPreviewRuntime(context.Context, string, string) (*iapiserver.StudioPreviewRuntime, error)
+	CreateStudioPreviewRuntime(context.Context, string, *iapiserver.StudioPreviewRuntime) (*iapiserver.StudioPreviewRuntime, error)
+	UpdateStudioPreviewRuntime(context.Context, *iapiserver.StudioPreviewRuntime) (*iapiserver.StudioPreviewRuntime, error)
+	GetStudioRuntimeConfig(context.Context, string, string, string) (*iapiserver.StudioRuntimeConfig, error)
+	ReplaceStudioRuntimeConfig(context.Context, string, *iapiserver.StudioRuntimeConfig, int64) (*iapiserver.StudioRuntimeConfig, error)
+	CreateStudioReleaseAggregate(context.Context, string, *iapiserver.StudioRelease, *iapiserver.StudioRuntimeInstance) (*iapiserver.StudioRelease, error)
+	ListStudioReleases(context.Context, string, string, *iapiserver.StudioReleaseListRequest) ([]*iapiserver.StudioRelease, int64, error)
+	GetStudioRelease(context.Context, string, string) (*iapiserver.StudioRelease, error)
+	UpdateStudioRelease(context.Context, *iapiserver.StudioRelease) (*iapiserver.StudioRelease, error)
+	ListStudioRuntimeInstances(context.Context, string, string, *iapiserver.StudioRuntimeInstanceListRequest) ([]*iapiserver.StudioRuntimeInstance, int64, error)
+	GetStudioRuntimeInstance(context.Context, string, string) (*iapiserver.StudioRuntimeInstance, error)
+	UpdateStudioRuntimeInstance(context.Context, *iapiserver.StudioRuntimeInstance) (*iapiserver.StudioRuntimeInstance, error)
+	ProjectStudioTaskTerminal(context.Context, *iapiserver.AtomicTask) error
+}
+
+type InfrastructureStore interface {
+	ReconcileInfraCatalog(context.Context, []*iapiserver.InfraRuntimeProfile, *iapiserver.InfraNode) error
+	ListInfraRuntimeProfiles(context.Context, *iapiserver.InfraBasicListRequest) ([]*iapiserver.InfraRuntimeProfile, int64, error)
+	GetInfraRuntimeProfile(context.Context, string) (*iapiserver.InfraRuntimeProfile, error)
+	ListInfraNodes(context.Context, *iapiserver.InfraBasicListRequest) ([]*iapiserver.InfraNode, int64, error)
+	GetInfraNode(context.Context, string) (*iapiserver.InfraNode, error)
+	CreateInfraRuntimeAggregate(context.Context, *iapiserver.InfraRuntime, []*iapiserver.InfraRuntimeMount, []*iapiserver.InfraRuntimeConfigBinding) (*iapiserver.InfraRuntime, error)
+	ListInfraRuntimes(context.Context, *iapiserver.InfraRuntimeListRequest) ([]*iapiserver.InfraRuntime, int64, error)
+	GetInfraRuntime(context.Context, string) (*iapiserver.InfraRuntime, error)
+	UpdateInfraRuntime(context.Context, *iapiserver.InfraRuntime, *iapiserver.InfraRuntimeEndpoint, []*iapiserver.InfraRuntimeOutput, string) (*iapiserver.InfraRuntime, error)
+	GetInfraRuntimeEndpoint(context.Context, string) (*iapiserver.InfraRuntimeEndpoint, error)
+	ListInfraRuntimeOutputs(context.Context, string) ([]*iapiserver.InfraRuntimeOutput, error)
+}
+
 // IdentityAdminStore 是 Identity RBAC、资源授权和服务账号的管理能力边界。
 type IdentityAdminStore interface {
 	ListRoles(ctx context.Context, req *iapiserver.IdentityRoleListRequest) ([]*iapiserver.IdentityRole, int64, error)

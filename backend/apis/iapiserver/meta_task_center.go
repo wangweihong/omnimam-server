@@ -128,6 +128,15 @@ type TimeoutPolicy struct {
 	OverallTimeoutSeconds    int `json:"overall_timeout_seconds,omitempty"`
 }
 
+// TaskCancelPolicy 是固定函数合同派生的取消方式和启动超时快照。
+// +k8s:deepcopy-gen=true
+type TaskCancelPolicy struct {
+	Mode                  string `json:"mode,omitempty"`
+	GracePeriodSeconds    int    `json:"grace_period_seconds,omitempty"`
+	TerminalResult        string `json:"terminal_result,omitempty"`
+	StartupTimeoutSeconds int    `json:"startup_timeout_seconds,omitempty"`
+}
+
 // TaskError is a stable, user-safe execution failure summary.
 // +k8s:deepcopy-gen=true
 type TaskError struct {
@@ -179,31 +188,35 @@ func (m *TaskNameMeta) unmarshal() {
 type AtomicTask struct {
 	imachinery.ObjectMeta
 	TaskNameMeta
-	FunctionRef          string             `json:"function_ref" gorm:"column:function_ref;type:varchar(256);not null;index"`
-	Arguments            map[string]any     `json:"arguments,omitempty" gorm:"-"`
-	ArgumentsShadow      string             `json:"-" gorm:"column:arguments_json;type:text;not null;default:'{}'"`
-	RequiredCapabilities string             `json:"required_capabilities,omitempty" gorm:"column:required_capabilities;type:text"`
-	RetryPolicy          RetryPolicy        `json:"retry_policy,omitempty" gorm:"-"`
-	RetryPolicyShadow    string             `json:"-" gorm:"column:retry_policy_json;type:text;not null;default:'{}'"`
-	TimeoutPolicy        TimeoutPolicy      `json:"timeout_policy,omitempty" gorm:"-"`
-	TimeoutPolicyShadow  string             `json:"-" gorm:"column:timeout_policy_json;type:text;not null;default:'{}'"`
-	CancelPolicy         map[string]any     `json:"cancel_policy,omitempty" gorm:"-"`
-	CancelPolicyShadow   string             `json:"-" gorm:"column:cancel_policy_json;type:text;not null;default:'{}'"`
-	Status               string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_atomic_tasks_status_schedule,priority:1"`
-	Progress             float64            `json:"progress" gorm:"column:progress;not null;default:0"`
-	CurrentAttempt       int                `json:"current_attempt" gorm:"column:current_attempt;not null;default:0"`
-	Output               map[string]any     `json:"output,omitempty" gorm:"-"`
-	OutputShadow         string             `json:"-" gorm:"column:output_json;type:text;not null;default:'{}'"`
-	LastError            TaskError          `json:"last_error,omitempty" gorm:"-"`
-	LastErrorShadow      string             `json:"-" gorm:"column:last_error_json;type:text;not null;default:'{}'"`
-	RetryOfTaskID        string             `json:"retry_of_task_id,omitempty" gorm:"column:retry_of_task_id;type:varchar(64);index"`
-	RetryOfTask          *AtomicTaskSummary `json:"retry_of_task,omitempty" gorm:"-"`
-	RootTaskID           string             `json:"root_task_id,omitempty" gorm:"column:root_task_id;type:varchar(64);index"`
-	RootTask             *AtomicTaskSummary `json:"root_task,omitempty" gorm:"-"`
-	OwnerType            string             `json:"owner_type,omitempty" gorm:"column:owner_type;type:varchar(32)"`
-	OwnerID              string             `json:"owner_id,omitempty" gorm:"column:owner_id;type:varchar(64);index"`
-	Owner                *TaskOwnerSummary  `json:"owner,omitempty" gorm:"-"`
-	ChildKey             string             `json:"child_key,omitempty" gorm:"column:child_key;type:varchar(128)"`
+	FunctionRef string `json:"function_ref" gorm:"column:function_ref;type:varchar(256);not null;index"`
+	// FunctionContractVersion 固定 Infra-backed AtomicTask 创建时选择的 registry 合同版本。
+	FunctionContractVersion string `json:"function_contract_version,omitempty" gorm:"column:function_contract_version;type:varchar(32);not null;default:'';index:idx_atomic_tasks_function_contract,priority:2"`
+	// FunctionContractDigest 固定已解析 I/O schema 与函数条目的 RFC8785 SHA-256 摘要。
+	FunctionContractDigest string             `json:"function_contract_digest,omitempty" gorm:"column:function_contract_digest;type:varchar(72);not null;default:''"`
+	Arguments              map[string]any     `json:"arguments,omitempty" gorm:"-"`
+	ArgumentsShadow        string             `json:"-" gorm:"column:arguments_json;type:text;not null;default:'{}'"`
+	RequiredCapabilities   string             `json:"required_capabilities,omitempty" gorm:"column:required_capabilities;type:text"`
+	RetryPolicy            RetryPolicy        `json:"retry_policy,omitempty" gorm:"-"`
+	RetryPolicyShadow      string             `json:"-" gorm:"column:retry_policy_json;type:text;not null;default:'{}'"`
+	TimeoutPolicy          TimeoutPolicy      `json:"timeout_policy,omitempty" gorm:"-"`
+	TimeoutPolicyShadow    string             `json:"-" gorm:"column:timeout_policy_json;type:text;not null;default:'{}'"`
+	CancelPolicy           TaskCancelPolicy   `json:"cancel_policy,omitempty" gorm:"-"`
+	CancelPolicyShadow     string             `json:"-" gorm:"column:cancel_policy_json;type:text;not null;default:'{}'"`
+	Status                 string             `json:"status" gorm:"column:status;type:varchar(32);not null;index:idx_atomic_tasks_status_schedule,priority:1"`
+	Progress               float64            `json:"progress" gorm:"column:progress;not null;default:0"`
+	CurrentAttempt         int                `json:"current_attempt" gorm:"column:current_attempt;not null;default:0"`
+	Output                 map[string]any     `json:"output,omitempty" gorm:"-"`
+	OutputShadow           string             `json:"-" gorm:"column:output_json;type:text;not null;default:'{}'"`
+	LastError              TaskError          `json:"last_error,omitempty" gorm:"-"`
+	LastErrorShadow        string             `json:"-" gorm:"column:last_error_json;type:text;not null;default:'{}'"`
+	RetryOfTaskID          string             `json:"retry_of_task_id,omitempty" gorm:"column:retry_of_task_id;type:varchar(64);index"`
+	RetryOfTask            *AtomicTaskSummary `json:"retry_of_task,omitempty" gorm:"-"`
+	RootTaskID             string             `json:"root_task_id,omitempty" gorm:"column:root_task_id;type:varchar(64);index"`
+	RootTask               *AtomicTaskSummary `json:"root_task,omitempty" gorm:"-"`
+	OwnerType              string             `json:"owner_type,omitempty" gorm:"column:owner_type;type:varchar(32)"`
+	OwnerID                string             `json:"owner_id,omitempty" gorm:"column:owner_id;type:varchar(64);index"`
+	Owner                  *TaskOwnerSummary  `json:"owner,omitempty" gorm:"-"`
+	ChildKey               string             `json:"child_key,omitempty" gorm:"column:child_key;type:varchar(128)"`
 	// DAGNodeKey 保存声明 DAG 节点 key；动态 fan-out 的实际任务共享该值。
 	DAGNodeKey         string                 `json:"node_key,omitempty" gorm:"column:dag_node_key;type:varchar(128)"`
 	ChildOrder         int                    `json:"child_order,omitempty" gorm:"column:child_order;not null;default:0"`

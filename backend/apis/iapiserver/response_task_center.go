@@ -21,6 +21,10 @@ type AtomicTaskResponse struct {
 	AtomicTaskTemplate
 	// ID 是 AtomicTask 的稳定资源标识。
 	ID string `json:"id"`
+	// FunctionContractVersion 是 Infra-backed 任务创建时固定的合同版本。
+	FunctionContractVersion string `json:"function_contract_version,omitempty"`
+	// FunctionContractDigest 是 Infra-backed 任务创建时固定的规范化合同摘要。
+	FunctionContractDigest string `json:"function_contract_digest,omitempty"`
 	// Status 是 Task Center 投影的当前任务状态。
 	Status string `json:"status"`
 	// Progress 是 0 到 1 的任务进度。

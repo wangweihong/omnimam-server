@@ -1,0 +1,685 @@
+schema_version: "1.0"
+registry_id: task-center.infra-backed
+scope: INFRA_BACKED_V1
+description: >-
+  Task Center 第一阶段只读 Infra-backed Function Registry。该文件是 S2 实现合同，
+  不是运行时配置或用户可写目录；input_schema 校验 AtomicTask arguments，
+  output_schema 校验 TaskOutput.result。TaskOutput.artifact_refs 仍使用 Task Center OpenAPI 通用结构。
+contract_digest:
+  algorithm: SHA-256
+  canonicalization: RFC8785
+  payload: function_entry_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas
+x-s1-refs:
+  user_stories: [US-TASK-026, US-AGENT-001, US-APPSTUDIO-001, US-INFRA-001]
+  business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-150, BR-TASK-151, BR-TASK-152, BR-TASK-153]
+
+schemas:
+  agent_runtime_ensure_input:
+    type: object
+    additionalProperties: false
+    required:
+      - agent_id
+      - agent_runtime_id
+      - operation
+      - agent_kind
+      - workspace_type
+      - workspace_id
+      - workspace_source_ref
+      - runtime_profile_id
+      - runtime_profile_revision
+      - model_access_spec_ref
+      - runtime_configuration_ref
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      agent_id: {type: string, minLength: 1}
+      agent_runtime_id: {type: string, minLength: 1}
+      existing_infra_runtime_id: {type: [string, 'null'], minLength: 1}
+      operation: {type: string, enum: [START, RECOVER]}
+      agent_kind: {type: string, enum: [platform, coding]}
+      workspace_type: {type: string, enum: [agent, studio]}
+      workspace_id: {type: string, minLength: 1}
+      workspace_source_ref: {type: [string, 'null'], pattern: '^agent-workspace://'}
+      runtime_profile_id: {type: string, enum: [agent.hermes, agent.coding]}
+      runtime_profile_revision: {type: string, minLength: 1}
+      model_access_spec_ref: {type: string, pattern: '^model-access://'}
+      runtime_configuration_ref: {type: string, pattern: '^agent-runtime-config://'}
+      authorization_ref: {type: string, pattern: '^agent-runtime-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resource_requirement:
+        type: object
+        additionalProperties: false
+        properties:
+          cpu_cores: {type: number, minimum: 0}
+          memory_mb: {type: integer, minimum: 0}
+          disk_mb: {type: integer, minimum: 0}
+          gpu_count: {type: integer, minimum: 0}
+          gpu_memory_mb: {type: integer, minimum: 0}
+      lifecycle_policy:
+        type: object
+        additionalProperties: false
+        properties:
+          restart_policy: {type: string, enum: [NEVER, ON_FAILURE, ALWAYS]}
+          idle_timeout_seconds: {type: integer, minimum: 0}
+          maximum_lifetime_seconds: {type: integer, minimum: 1}
+      skill_package_refs:
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [skill_id, skill_version, source_ref]
+          properties:
+            skill_id: {type: string, minLength: 1}
+            skill_version: {type: string, minLength: 1}
+            source_ref: {type: string, pattern: '^skill-package://'}
+      mcp_binding_refs:
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [binding_id, binding_revision]
+          properties:
+            binding_id: {type: string, minLength: 1}
+            binding_revision: {type: string, minLength: 1}
+    allOf:
+      - if: {properties: {agent_kind: {const: platform}}}
+        then:
+          properties:
+            workspace_type: {const: agent}
+            workspace_source_ref: {type: string, pattern: '^agent-workspace://'}
+      - if: {properties: {agent_kind: {const: coding}}}
+        then:
+          properties:
+            workspace_type: {const: studio}
+            workspace_source_ref: {type: 'null'}
+
+  agent_runtime_stop_input:
+    type: object
+    additionalProperties: false
+    required: [agent_id, agent_runtime_id, infra_runtime_id, action, authorization_ref, expected_resource_version]
+    properties:
+      agent_id: {type: string, minLength: 1}
+      agent_runtime_id: {type: string, minLength: 1}
+      infra_runtime_id: {type: string, minLength: 1}
+      action: {type: string, enum: [SUSPEND, STOP, DELETE]}
+      reason: {type: string, maxLength: 1000}
+      authorization_ref: {type: string, pattern: '^agent-runtime-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+
+  appstudio_preview_ensure_input:
+    type: object
+    additionalProperties: false
+    required:
+      - studio_application_id
+      - preview_runtime_id
+      - workspace_id
+      - workspace_revision
+      - workspace_revision_source_ref
+      - runtime_profile_id
+      - runtime_profile_revision
+      - endpoint_visibility
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      studio_application_id: {type: string, minLength: 1}
+      preview_runtime_id: {type: string, minLength: 1}
+      existing_infra_runtime_id: {type: [string, 'null'], minLength: 1}
+      workspace_id: {type: string, minLength: 1}
+      workspace_revision: {type: integer, minimum: 0}
+      workspace_revision_source_ref: {type: string, pattern: '^studio-workspace-revision://'}
+      runtime_profile_id: {type: string, enum: [appstudio.preview.static-web, appstudio.preview.web-backend]}
+      runtime_profile_revision: {type: string, minLength: 1}
+      endpoint_visibility: {const: USER_ACCESSIBLE}
+      authorization_ref: {type: string, pattern: '^appstudio-preview-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resource_requirement:
+        type: object
+        additionalProperties: false
+        properties:
+          cpu_cores: {type: number, minimum: 0}
+          memory_mb: {type: integer, minimum: 0}
+          disk_mb: {type: integer, minimum: 0}
+
+  appstudio_preview_stop_input:
+    type: object
+    additionalProperties: false
+    required: [studio_application_id, preview_runtime_id, infra_runtime_id, action, authorization_ref, expected_resource_version]
+    properties:
+      studio_application_id: {type: string, minLength: 1}
+      preview_runtime_id: {type: string, minLength: 1}
+      infra_runtime_id: {type: string, minLength: 1}
+      action: {type: string, enum: [STOP, DELETE]}
+      reason: {type: string, maxLength: 1000}
+      authorization_ref: {type: string, pattern: '^appstudio-preview-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+
+  appstudio_build_execute_input:
+    type: object
+    additionalProperties: false
+    required:
+      - studio_application_id
+      - studio_build_id
+      - source_snapshot_id
+      - source_snapshot_digest
+      - source_snapshot_source_ref
+      - runtime_profile_id
+      - runtime_profile_revision
+      - build_config_ref
+      - dependency_lock_digest
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      studio_application_id: {type: string, minLength: 1}
+      studio_build_id: {type: string, minLength: 1}
+      source_snapshot_id: {type: string, minLength: 1}
+      source_snapshot_digest: {type: string, minLength: 1}
+      source_snapshot_source_ref: {type: string, pattern: '^studio-snapshot://'}
+      studio_application_version_id: {type: [string, 'null'], minLength: 1}
+      runtime_profile_id: {type: string, enum: [appstudio.build.static-web, appstudio.build.web-backend]}
+      runtime_profile_revision: {type: string, minLength: 1}
+      build_config_ref: {type: string, pattern: '^appstudio-build-config://'}
+      dependency_lock_digest: {type: string, minLength: 1}
+      authorization_ref: {type: string, pattern: '^appstudio-build-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resource_requirement:
+        type: object
+        additionalProperties: false
+        properties:
+          cpu_cores: {type: number, minimum: 0}
+          memory_mb: {type: integer, minimum: 0}
+          disk_mb: {type: integer, minimum: 0}
+
+  appstudio_production_reconcile_input:
+    type: object
+    additionalProperties: false
+    required:
+      - studio_application_id
+      - studio_release_id
+      - studio_runtime_instance_id
+      - studio_application_version_id
+      - runtime_config_id
+      - artifact_id
+      - artifact_digest
+      - artifact_source_ref
+      - environment
+      - deployment_reason
+      - runtime_profile_id
+      - runtime_profile_revision
+      - health_check_ref
+      - endpoint_visibility
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      studio_application_id: {type: string, minLength: 1}
+      studio_release_id: {type: string, minLength: 1}
+      studio_runtime_instance_id: {type: string, minLength: 1}
+      existing_infra_runtime_id: {type: [string, 'null'], minLength: 1}
+      studio_application_version_id: {type: string, minLength: 1}
+      runtime_config_id: {type: string, minLength: 1}
+      artifact_id: {type: string, minLength: 1}
+      artifact_digest: {type: string, minLength: 1}
+      artifact_source_ref: {type: string, pattern: '^artifact://'}
+      environment: {type: string, enum: [preview, production]}
+      deployment_reason: {type: string, enum: [DEPLOY, UPGRADE, ROLLBACK]}
+      runtime_profile_id: {type: string, enum: [studioapp.runtime.static-web, studioapp.runtime.web-backend]}
+      runtime_profile_revision: {type: string, minLength: 1}
+      health_check_ref: {type: string, pattern: '^appstudio-health-check://'}
+      endpoint_visibility: {type: string, enum: [INTERNAL, USER_ACCESSIBLE]}
+      authorization_ref: {type: string, pattern: '^appstudio-release-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resource_requirement:
+        type: object
+        additionalProperties: false
+        properties:
+          cpu_cores: {type: number, minimum: 0}
+          memory_mb: {type: integer, minimum: 0}
+          disk_mb: {type: integer, minimum: 0}
+          gpu_count: {type: integer, minimum: 0}
+          gpu_memory_mb: {type: integer, minimum: 0}
+
+  appstudio_production_stop_input:
+    type: object
+    additionalProperties: false
+    required:
+      - studio_application_id
+      - studio_release_id
+      - studio_runtime_instance_id
+      - infra_runtime_id
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      studio_application_id: {type: string, minLength: 1}
+      studio_release_id: {type: string, minLength: 1}
+      studio_runtime_instance_id: {type: string, minLength: 1}
+      infra_runtime_id: {type: string, minLength: 1}
+      reason: {type: string, maxLength: 1000}
+      authorization_ref: {type: string, pattern: '^appstudio-release-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+
+  runtime_ready_output:
+    type: object
+    additionalProperties: false
+    required: [infra_runtime_id, runtime_status, health_status, endpoint_ref, diagnostics_summary]
+    properties:
+      infra_runtime_id: {type: string, minLength: 1}
+      runtime_status: {const: RUNNING}
+      health_status: {const: HEALTHY}
+      endpoint_ref: {type: string, minLength: 1}
+      diagnostics_summary:
+        type: object
+        additionalProperties: false
+        properties:
+          summary_code: {type: string, minLength: 1, maxLength: 100}
+          message: {type: string, maxLength: 1000}
+          checks:
+            type: array
+            maxItems: 50
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, status]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                status: {type: string, enum: [PASS, WARN]}
+                message: {type: string, maxLength: 500}
+
+  agent_runtime_stop_output:
+    type: object
+    additionalProperties: false
+    required: [infra_runtime_id, runtime_status, completed_action]
+    properties:
+      infra_runtime_id: {type: string, minLength: 1}
+      runtime_status: {type: string, enum: [STOPPED, DELETED]}
+      completed_action: {type: string, enum: [SUSPEND, STOP, DELETE]}
+
+  appstudio_preview_stop_output:
+    type: object
+    additionalProperties: false
+    required: [infra_runtime_id, runtime_status, completed_action]
+    properties:
+      infra_runtime_id: {type: string, minLength: 1}
+      runtime_status: {type: string, enum: [STOPPED, DELETED]}
+      completed_action: {type: string, enum: [STOP, DELETE]}
+
+  appstudio_production_stop_output:
+    type: object
+    additionalProperties: false
+    required: [infra_runtime_id, runtime_status, completed_action]
+    properties:
+      infra_runtime_id: {type: string, minLength: 1}
+      runtime_status: {const: STOPPED}
+      completed_action: {const: STOP}
+
+  build_execute_output:
+    type: object
+    additionalProperties: false
+    required: [artifact_id, artifact_digest, processing_status, validation_status, logs_ref]
+    properties:
+      artifact_id: {type: string, minLength: 1}
+      artifact_digest: {type: string, minLength: 1}
+      processing_status: {type: string, enum: [created, transferring, processing, ready]}
+      validation_status: {type: string, enum: [PASSED, PASSED_WITH_WARNINGS]}
+      logs_ref: {type: string, pattern: '^task-attempt-log:'}
+      diagnostics_summary:
+        type: object
+        additionalProperties: false
+        properties:
+          summary_code: {type: string, minLength: 1, maxLength: 100}
+          message: {type: string, maxLength: 1000}
+          warnings: {type: array, maxItems: 100, items: {type: string, maxLength: 500}}
+
+functions:
+  - function_ref: agent.runtime.ensure
+    contract_version: "1.0"
+    contract_digest: sha256:33f2f7c3f865d348cb06e97c03f36471db620cd55f61343fc036c7dfdc61e3ad
+    status: ACTIVE
+    owning_domain: agent
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.service, infra.runtime.health, secret.reference.resolve, model.access.resolve]
+    input_schema_ref: '#/schemas/agent_runtime_ensure_input'
+    output_schema_ref: '#/schemas/runtime_ready_output'
+    task_idempotency:
+      scope_template: 'agent-runtime:{arguments.agent_runtime_id}'
+      key_template: '{arguments.operation}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 3
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 5
+      max_delay_seconds: 60
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, ERR_INFRA_SECRET_RESOLUTION_FAILED, ERR_INFRA_ENDPOINT_ALLOCATION_FAILED]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_STOP, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 300, per_attempt_timeout_seconds: 600, overall_timeout_seconds: 1800}
+    infra_adapter:
+      operation: ENSURE_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: agent
+      owner_reference_path: arguments.agent_runtime_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.existing_infra_runtime_id
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.workspace_source_ref
+      source_policy: AGENT_KIND_CONDITIONAL
+      constants: {provider_type: docker, endpoint_visibility: INTERNAL}
+    result_projection:
+      consumer_domain: agent
+      aggregate_type: AgentRuntime
+      aggregate_id_path: arguments.agent_runtime_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.infra_runtime_id, to: infra_runtime_id}
+        - {from: result.endpoint_ref, to: endpoint_ref}
+        - {from: result.health_status, to: health_status}
+        - {from: result.runtime_status, to: state, transform: RUNNING_TO_READY}
+    security:
+      allowed_callers: [agent]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-AGENT-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-AGENT-003, R-AGENT-004, R-AGENT-010, R-AGENT-018, R-INFRA-016]
+
+  - function_ref: agent.runtime.stop
+    contract_version: "1.0"
+    contract_digest: sha256:3de8cd94db1a67c0a56d36da1907141d03956eb08b1f9b2fcdfab002c70f22d9
+    status: ACTIVE
+    owning_domain: agent
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.stop]
+    input_schema_ref: '#/schemas/agent_runtime_stop_input'
+    output_schema_ref: '#/schemas/agent_runtime_stop_output'
+    task_idempotency:
+      scope_template: 'agent-runtime:{arguments.agent_runtime_id}'
+      key_template: '{arguments.action}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy: {max_attempts: 3, backoff: EXPONENTIAL, initial_delay_seconds: 5, max_delay_seconds: 60, retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED]}
+    cancel_policy: {mode: NOT_INTERRUPTIBLE_AFTER_READY, grace_period_seconds: 0, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 30, per_attempt_timeout_seconds: 300, overall_timeout_seconds: 900}
+    infra_adapter:
+      operation: STOP_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: agent
+      owner_reference_path: arguments.agent_runtime_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.infra_runtime_id
+      source_policy: NONE
+      constants: {provider_type: docker}
+    result_projection:
+      consumer_domain: agent
+      aggregate_type: AgentRuntime
+      aggregate_id_path: arguments.agent_runtime_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.runtime_status, to: state, transform: AGENT_STOP_RESULT_TO_STATE}
+        - {from: result.completed_action, to: activity_state, transform: AGENT_STOP_ACTION_TO_ACTIVITY_STATE}
+    security:
+      allowed_callers: [agent]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-AGENT-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-152, BR-TASK-153, R-AGENT-003, R-AGENT-018, R-INFRA-016]
+
+  - function_ref: appstudio.preview.ensure
+    contract_version: "1.0"
+    contract_digest: sha256:594239ce70d4c4cc947860896a87e8c3b7186cc96d1cbadc530ed3353bfa8f6c
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.service, infra.runtime.health, infra.endpoint.user_accessible, source.studio_workspace_revision.read]
+    input_schema_ref: '#/schemas/appstudio_preview_ensure_input'
+    output_schema_ref: '#/schemas/runtime_ready_output'
+    task_idempotency:
+      scope_template: 'appstudio-preview:{arguments.preview_runtime_id}'
+      key_template: '{arguments.workspace_revision}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 3
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 5
+      max_delay_seconds: 60
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, ERR_INFRA_ENDPOINT_ALLOCATION_FAILED]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_STOP, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 300, per_attempt_timeout_seconds: 600, overall_timeout_seconds: 1800}
+    infra_adapter:
+      operation: ENSURE_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.preview_runtime_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.existing_infra_runtime_id
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.workspace_revision_source_ref
+      source_policy: STUDIO_WORKSPACE_REVISION_READ_ONLY
+      constants: {provider_type: docker, endpoint_visibility: USER_ACCESSIBLE, mount_read_only: true}
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioPreviewRuntime
+      aggregate_id_path: arguments.preview_runtime_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.infra_runtime_id, to: infra_runtime_id}
+        - {from: result.endpoint_ref, to: endpoint_ref}
+        - {from: result.health_status, to: diagnostics_summary.health_status}
+        - {from: result.runtime_status, to: status}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-STUDIO-009, R-STUDIO-010, R-STUDIO-023, R-STUDIO-024, R-INFRA-009, R-INFRA-016]
+
+  - function_ref: appstudio.preview.stop
+    contract_version: "1.0"
+    contract_digest: sha256:9e69b93d7fca30ba8a5a66bc8b9f701cb3b8cbefed4433ff01450676de270b10
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.stop]
+    input_schema_ref: '#/schemas/appstudio_preview_stop_input'
+    output_schema_ref: '#/schemas/appstudio_preview_stop_output'
+    task_idempotency:
+      scope_template: 'appstudio-preview:{arguments.preview_runtime_id}'
+      key_template: '{arguments.action}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy: {max_attempts: 3, backoff: EXPONENTIAL, initial_delay_seconds: 5, max_delay_seconds: 60, retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED]}
+    cancel_policy: {mode: NOT_INTERRUPTIBLE_AFTER_READY, grace_period_seconds: 0, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 30, per_attempt_timeout_seconds: 300, overall_timeout_seconds: 900}
+    infra_adapter:
+      operation: STOP_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.preview_runtime_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.infra_runtime_id
+      source_policy: NONE
+      constants: {provider_type: docker}
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioPreviewRuntime
+      aggregate_id_path: arguments.preview_runtime_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.runtime_status, to: status, transform: DELETED_TO_STOPPED}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-152, BR-TASK-153, R-STUDIO-009, R-STUDIO-023, R-STUDIO-024, R-INFRA-016]
+
+  - function_ref: appstudio.build.execute
+    contract_version: "1.0"
+    contract_digest: sha256:7f8bcae550794c5274802ba90973dd3e97c7da5a21fe1df344a7ce29c85bd1f2
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: JOB
+    required_capabilities: [infra.runtime.job, source.studio_snapshot.read, asset.artifact.register]
+    input_schema_ref: '#/schemas/appstudio_build_execute_input'
+    output_schema_ref: '#/schemas/build_execute_output'
+    task_idempotency:
+      scope_template: 'appstudio-build:{arguments.studio_build_id}'
+      key_template: '{arguments.source_snapshot_digest}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 2
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 10
+      max_delay_seconds: 120
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, artifact_content_unavailable]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_CANCEL, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 300, per_attempt_timeout_seconds: 3600, overall_timeout_seconds: 7200}
+    infra_adapter:
+      operation: CREATE_JOB
+      runtime_mode: JOB
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.studio_build_id
+      authorization_ref_path: arguments.authorization_ref
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.source_snapshot_source_ref
+      source_policy: STUDIO_SNAPSHOT_READ_ONLY
+      constants: {provider_type: docker, mount_read_only: true, expose_endpoint: false}
+    artifact_registration:
+      enabled: true
+      producer_type: studio_build
+      producer_id_path: arguments.studio_build_id
+      producer_idempotency_key_template: 'studio-build:{arguments.studio_build_id}:bundle'
+      output_key: bundle
+      digest_source: infra_output_descriptor
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioBuild
+      aggregate_id_path: arguments.studio_build_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.artifact_id, to: artifact_id}
+        - {from: result.artifact_digest, to: artifact_digest}
+        - {from: result.processing_status, to: diagnostics_summary.artifact_processing_status}
+        - {from: result.validation_status, to: diagnostics_summary.validation_status}
+        - {from: result.logs_ref, to: diagnostics_summary.logs_ref}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-STUDIO-011, R-STUDIO-017, R-STUDIO-018, R-INFRA-008, R-INFRA-016]
+
+  - function_ref: appstudio.production.reconcile
+    contract_version: "1.0"
+    contract_digest: sha256:9bd62363f1608a0f2ede0c3df588054ed6270f68281d81d9a362fd84b5c3f0a3
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.service, infra.runtime.health, infra.endpoint.user_accessible, source.artifact_digest.read, secret.reference.resolve]
+    input_schema_ref: '#/schemas/appstudio_production_reconcile_input'
+    output_schema_ref: '#/schemas/runtime_ready_output'
+    task_idempotency:
+      scope_template: 'appstudio-production:{arguments.studio_runtime_instance_id}'
+      key_template: '{arguments.deployment_reason}:{arguments.artifact_digest}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 3
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 10
+      max_delay_seconds: 120
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, ERR_INFRA_SECRET_RESOLUTION_FAILED, ERR_INFRA_ENDPOINT_ALLOCATION_FAILED]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_STOP, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 600, per_attempt_timeout_seconds: 900, overall_timeout_seconds: 2700}
+    infra_adapter:
+      operation: ENSURE_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.studio_runtime_instance_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.existing_infra_runtime_id
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.artifact_source_ref
+      source_policy: ARTIFACT_DIGEST_READ_ONLY
+      constants: {provider_type: docker, mount_read_only: true, reject_workspace_sources: true}
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioRuntimeInstance
+      aggregate_id_path: arguments.studio_runtime_instance_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.infra_runtime_id, to: infra_runtime_id}
+        - {from: result.endpoint_ref, to: endpoint_ref}
+        - {from: result.health_status, to: health_status}
+        - {from: result.runtime_status, to: status, transform: RUNNING_HEALTHY_TO_READY}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, workspace_id, workspace_revision, source_snapshot_id, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-STUDIO-013, R-STUDIO-015, R-STUDIO-016, R-STUDIO-018, R-STUDIO-023, R-STUDIO-024, R-INFRA-009, R-INFRA-016]
+
+  - function_ref: appstudio.production.stop
+    contract_version: "1.0"
+    contract_digest: sha256:e89a195300299a98807d178ec8d63633246274c64e5fb345c09505c0ca3ce455
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.stop, infra.endpoint.revoke]
+    input_schema_ref: '#/schemas/appstudio_production_stop_input'
+    output_schema_ref: '#/schemas/appstudio_production_stop_output'
+    task_idempotency:
+      scope_template: 'appstudio-production:{arguments.studio_runtime_instance_id}'
+      key_template: 'STOP:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy: {max_attempts: 3, backoff: EXPONENTIAL, initial_delay_seconds: 5, max_delay_seconds: 60, retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED]}
+    cancel_policy: {mode: NOT_INTERRUPTIBLE_AFTER_READY, grace_period_seconds: 0, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 30, per_attempt_timeout_seconds: 300, overall_timeout_seconds: 900}
+    infra_adapter:
+      operation: STOP_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.studio_runtime_instance_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.infra_runtime_id
+      source_policy: NONE
+      constants: {provider_type: docker, revoke_endpoint: true}
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioRuntimeInstance
+      aggregate_id_path: arguments.studio_runtime_instance_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.runtime_status, to: status, transform: STOP_RESULT_TO_STOPPED}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-152, BR-TASK-153, R-STUDIO-016, R-STUDIO-023, R-STUDIO-024, R-INFRA-016]

@@ -40,6 +40,17 @@ func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 		{"platform.auth_config.read", "platform-management", "auth_config", "read"}, {"platform.auth_config.manage", "platform-management", "auth_config", "manage"},
 		{"platform.auth_config.read_internal", "platform-management", "auth_config", "read_internal"}, {"platform.audit.read", "platform-management", "audit", "read"},
 		{"platform.audit.record", "platform-management", "audit", "record"},
+		{"agent.profile.read", "agent", "profile", "read"}, {"agent.read", "agent", "agent", "read"},
+		{"agent.manage", "agent", "agent", "manage"}, {"agent.invoke", "agent", "invocation", "invoke"},
+		{"agent.session.read", "agent", "session", "read"}, {"agent.session.manage", "agent", "session", "manage"},
+		{"agent.workspace.read", "agent", "workspace", "read"}, {"agent.memory.read", "agent", "memory", "read"},
+		{"agent.memory.manage", "agent", "memory", "manage"}, {"agent.runtime.operate", "agent", "runtime", "operate"},
+		{"agent.runtime.logs.read", "agent", "runtime_logs", "read"},
+		{"appstudio.application.read", "appstudio", "application", "read"}, {"appstudio.application.manage", "appstudio", "application", "manage"},
+		{"appstudio.workspace.read", "appstudio", "workspace", "read"}, {"appstudio.workspace.write", "appstudio", "workspace", "write"},
+		{"appstudio.snapshot.manage", "appstudio", "snapshot", "manage"}, {"appstudio.build.manage", "appstudio", "build", "manage"},
+		{"appstudio.preview.operate", "appstudio", "preview", "operate"}, {"appstudio.runtime_config.manage", "appstudio", "runtime_config", "manage"},
+		{"appstudio.release.manage", "appstudio", "release", "manage"},
 	}
 	result := make([]*iapiserver.IdentityPermissionDefinition, 0, len(items))
 	for _, item := range items {

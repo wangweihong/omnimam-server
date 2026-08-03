@@ -140,6 +140,9 @@ func (obj *ObjectMeta) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// AfterCreate 为嵌入 ObjectMeta 的持久化资源提供统一无副作用创建后 hook。
+func (*ObjectMeta) AfterCreate(*gorm.DB) error { return nil }
+
 // BeforeUpdate run before update database record.
 func (obj *ObjectMeta) BeforeUpdate(tx *gorm.DB) error {
 	if obj.Extend == nil {
@@ -151,6 +154,9 @@ func (obj *ObjectMeta) BeforeUpdate(tx *gorm.DB) error {
 
 	return nil
 }
+
+// AfterUpdate 为嵌入 ObjectMeta 的持久化资源提供统一无副作用更新后 hook。
+func (*ObjectMeta) AfterUpdate(*gorm.DB) error { return nil }
 
 // AfterFind run after find to unmarshal an extend shadow string into mExtend struct.
 func (obj *ObjectMeta) AfterFind(tx *gorm.DB) error {

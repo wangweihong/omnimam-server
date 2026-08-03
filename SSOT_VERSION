@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 926813505ce320f1450db2caf1e8f1ba3e258118
-contract_version: spec-v1.11.0
-updated_at: 2026-08-02
+commit: 23cadc158af8e3ec3a6debaa07f44dbd292f0265
+contract_version: spec-v1.12.1
+updated_at: 2026-08-03
 status: released
-note: Released Identity and Platform Management contracts.
+note: Released Workflow Canvas compile-time built-ins on the current Task Center function registry baseline.

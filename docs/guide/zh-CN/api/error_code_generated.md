@@ -193,6 +193,10 @@
 | ErrTaskGroupInvalid | 140202 | 200 | TaskGroup template or execution policy is invalid. | TaskGroup 模板或执行策略不合法。 |
 | ErrDAGTaskGroupInvalid | 140203 | 200 | DAGTaskGroup nodes, edges, or input references are invalid. | DAGTaskGroup 节点、边或输入引用不合法。 |
 | ErrTaskFunctionRefNotRegistered | 140204 | 200 | functionRef is not registered or is unavailable to the caller. | functionRef 未注册或当前调用方不可使用。 |
+| ErrTaskFunctionInputInvalid | 140205 | 200 | AtomicTask arguments do not satisfy the registered functionRef input contract. | AtomicTask arguments 不符合已注册 functionRef 的精确输入合同。 |
+| ErrTaskFunctionOutputInvalid | 140206 | 200 | The Task Worker result does not satisfy the pinned functionRef output contract. | Task Worker 结果不符合固定 functionRef 输出合同。 |
+| ErrTaskFunctionContractUnavailable | 140207 | 200 | The function contract version or digest pinned by the AtomicTask cannot currently be loaded. | AtomicTask 固定的 function contract 版本或摘要当前不可加载。 |
+| ErrTaskFunctionCapabilityUnavailable | 140208 | 200 | No Task Worker currently satisfies the capabilities required by the pinned function contract. | 当前没有满足固定函数合同所需能力的 Task Worker。 |
 | ErrTaskRunNotFound | 140400 | 200 | Task run does not exist or is not visible to the current user. | 任务运行不存在或当前用户不可见。 |
 | ErrTaskRunStateBlocked | 140401 | 200 | Current task run status does not allow this operation. | 任务当前状态不允许执行该操作。 |
 | ErrTaskRetryPolicyInvalid | 140402 | 200 | Task retry policy is invalid. | 任务重试策略不合法。 |
@@ -316,3 +320,47 @@
 | ErrPlatformOverviewUnavailable | 230601 | 200 | The platform overview is temporarily unavailable. | 平台系统概览暂不可用。 |
 | ErrPlatformAuditRecordInvalid | 230402 | 200 | The audit record is invalid or contains prohibited fields. | 审计记录无效或包含禁止字段。 |
 | ErrPlatformAuditWriteUnavailable | 230403 | 200 | The platform audit boundary is unavailable and the controlled operation was not executed. | 平台审计边界不可用，受控操作未执行。 |
+| ErrAgentNotVisible | 200200 | 200 | The Agent does not exist or is not visible to the current principal. | Agent 不存在或当前主体不可见。 |
+| ErrAgentProfileInvalid | 200201 | 200 | The AgentProfile is missing, disabled, or unavailable at the requested revision. | AgentProfile 不存在、禁用或版本不可用。 |
+| ErrAgentStateInvalid | 200202 | 200 | The Agent is not in a state that permits this operation. | Agent 当前状态不允许该操作。 |
+| ErrAgentWorkspaceBindingInvalid | 200203 | 200 | The Agent workspace binding violates workspace type or authorization rules. | Agent Workspace 绑定不符合类型或授权规则。 |
+| ErrAgentAccessDenied | 201000 | 200 | The current principal is not authorized to access the Agent resource. | 无权访问 Agent 资源。 |
+| ErrAgentSessionNotVisible | 200400 | 200 | The Session does not exist or is not visible to the current principal. | Session 不存在或当前主体不可见。 |
+| ErrAgentSessionClosed | 200401 | 200 | The Session is closed or archived and cannot accept new messages. | Session 已关闭或归档，不能接收新消息。 |
+| ErrAgentInvocationConflict | 200402 | 200 | The Session has a conflicting active Invocation. | 当前 Session 存在不允许并发的 Invocation。 |
+| ErrAgentInvocationTaskUnavailable | 200403 | 200 | The AtomicTask bound to the Invocation is unavailable. | Invocation 关联的 AtomicTask 不可用。 |
+| ErrAgentModelBindingInvalid | 200204 | 200 | The Agent model binding is invalid or unsupported for the requested purpose. | Agent 模型绑定无效或不支持当前用途。 |
+| ErrAgentMemoryInvalid | 200205 | 200 | The memory scope, type, or source reference is invalid. | Memory scope、类型或来源引用无效。 |
+| ErrAgentRuntimeNotVisible | 200800 | 200 | The AgentRuntime does not exist or is not visible to the current principal. | AgentRuntime 不存在或当前主体不可见。 |
+| ErrAgentRuntimeOperationFailed | 200801 | 200 | The AgentRuntime operation failed. | AgentRuntime 操作失败。 |
+| ErrAgentRuntimeUnhealthy | 200802 | 200 | The AgentRuntime health check failed. | AgentRuntime 健康检查失败。 |
+| ErrAppStudioApplicationNotVisible | 210200 | 200 | The StudioApplication does not exist or is not visible to the current principal. | StudioApplication 不存在或当前主体不可见。 |
+| ErrAppStudioApplicationInvalidState | 210201 | 200 | The StudioApplication is not in a state that permits this operation. | StudioApplication 当前状态不允许该操作。 |
+| ErrAppStudioWorkspaceNotVisible | 210400 | 200 | The StudioWorkspace does not exist or is not visible to the current principal. | StudioWorkspace 不存在或当前主体不可见。 |
+| ErrAppStudioWorkspaceRevisionConflict | 210401 | 200 | The Workspace current Revision conflicts with base_revision. | Workspace 当前 Revision 与 base_revision 冲突。 |
+| ErrAppStudioWorkspaceChangeRejected | 210402 | 200 | The ChangeSet failed path, dependency, or security validation. | ChangeSet 未通过路径、依赖或安全校验。 |
+| ErrAppStudioWorkspaceToolGrantInvalid | 210403 | 200 | The Workspace Tool grant is expired, scope-mismatched, or does not allow the operation. | Workspace Tool 授权已过期、范围不匹配或不允许当前操作。 |
+| ErrAppStudioSnapshotNotVisible | 210600 | 200 | The Source Snapshot does not exist or is not visible to the current principal. | Source Snapshot 不存在或当前主体不可见。 |
+| ErrAppStudioSnapshotInvalid | 210601 | 200 | The Source Snapshot is incomplete or its digest validation failed. | Source Snapshot 未完成或 digest 校验失败。 |
+| ErrAppStudioBuildNotVisible | 210800 | 200 | The StudioBuild does not exist or is not visible to the current principal. | StudioBuild 不存在或当前主体不可见。 |
+| ErrAppStudioBuildFailed | 210801 | 200 | The Build execution or Artifact delivery failed. | Build 执行或 Artifact 交付失败。 |
+| ErrAppStudioBuildCanceled | 210802 | 200 | The Build was canceled. | Build 已取消。 |
+| ErrAppStudioBuildArtifactNotReady | 210803 | 200 | The Build task completed, but the Artifact is not READY or registration failed. | Build 任务已完成，但 Artifact 尚未 READY 或登记失败。 |
+| ErrAppStudioBuildArtifactDigestMismatch | 210804 | 200 | The Asset Library Artifact digest does not match the Build output. | Asset Library Artifact digest 与 Build 输出不一致。 |
+| ErrAppStudioReleaseInvalid | 211000 | 200 | The Release Build, Artifact, configuration, or environment is invalid. | Release 的 Build、Artifact、配置或环境无效。 |
+| ErrAppStudioRuntimeDeployFailed | 211001 | 200 | StudioRuntimeInstance deployment or health checking failed. | StudioRuntimeInstance 部署或健康检查失败。 |
+| ErrAppStudioReleaseImmutable | 211002 | 200 | An immutable Release cannot be modified. | 不允许修改不可变 Release。 |
+| ErrAppStudioAccessDenied | 211200 | 200 | The current principal is not authorized to access the AppStudio resource. | 无权访问 AppStudio 资源。 |
+| ErrInfraRequestInvalid | 240200 | 200 | The Infra request lacks a trusted identity, ownership, or runtime parameter. | Infra 请求缺少受控身份、归属或运行参数。 |
+| ErrInfraRuntimeProfileNotFound | 240201 | 200 | The RuntimeProfile does not exist or its revision is unavailable. | RuntimeProfile 不存在或版本不可用。 |
+| ErrInfraUnsupportedRuntimeMode | 240202 | 200 | The requested runtime mode is not supported in the first phase. | 当前第一阶段不支持该运行模式。 |
+| ErrInfraIdempotencyConflict | 240203 | 200 | The request fingerprint differs for the same requestingService/requestId scope. | 相同 requestingService/requestId 对应的请求摘要不一致。 |
+| ErrInfraNoEligibleNode | 240400 | 200 | No node satisfies the requested resource and status requirements. | 没有满足资源和状态要求的节点。 |
+| ErrInfraResourceInsufficient | 240401 | 200 | Available CPU, memory, disk, or GPU resources are insufficient. | 可用 CPU、内存、磁盘或 GPU 资源不足。 |
+| ErrInfraRuntimeNotFound | 240600 | 200 | The InfraRuntime does not exist or is not visible. | InfraRuntime 不存在或不可见。 |
+| ErrInfraRuntimeOperationFailed | 240601 | 200 | The Runtime Provider operation failed. | Runtime Provider 操作失败。 |
+| ErrInfraRuntimeStateConflict | 240602 | 200 | The InfraRuntime state conflicts with the requested operation. | InfraRuntime 当前状态与操作不一致。 |
+| ErrInfraMountNotAllowed | 240800 | 200 | The mount reference, target path, or read-only policy violates security rules. | 挂载引用、目标路径或只读策略不符合安全规则。 |
+| ErrInfraSecretResolutionFailed | 240801 | 200 | SecretRef or ModelAccessSpec resolution failed. | SecretRef 或 ModelAccessSpec 解析失败。 |
+| ErrInfraEndpointAllocationFailed | 240802 | 200 | Endpoint allocation or refresh failed. | Endpoint 分配或刷新失败。 |
+| ErrInfraEndpointAccessDenied | 240803 | 200 | The current principal, owner, or short-lived grant cannot resolve the endpoint. | 当前主体、owner 或短期授权不允许解析该 Endpoint。 |
