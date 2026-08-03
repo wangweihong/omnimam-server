@@ -36,20 +36,21 @@ type IdentitySelfUpdateRequest struct {
 	Phone       *string `json:"phone" binding:"omitempty,max=64"`
 }
 type IdentityAdminUserCreateRequest struct {
-	Username        string   `json:"username" binding:"required,min=3,max=128"`
-	Email           string   `json:"email" binding:"required,email,max=320"`
-	DisplayName     string   `json:"display_name" binding:"max=256"`
-	InitialPassword string   `json:"initial_password" binding:"omitempty,min=8,max=256"`
-	Status          string   `json:"status" binding:"omitempty,oneof=ACTIVE PENDING"`
-	RoleIDs         []string `json:"role_ids" binding:"max=64,dive,max=128"`
+	Username        string                  `json:"username" binding:"required,min=3,max=128"`
+	Email           string                  `json:"email" binding:"required,email,max=320"`
+	DisplayName     string                  `json:"display_name" binding:"required,max=256"`
+	RoleGrants      []IdentityRoleGrantItem `json:"role_grants,omitempty" binding:"max=64,dive"`
+	InitialPassword string                  `json:"-"`
+	Status          string                  `json:"-"`
+	RoleIDs         []string                `json:"-"`
 }
 type IdentityAdminUserUpdateRequest struct {
 	DisplayName *string  `json:"display_name" binding:"omitempty,max=256"`
 	Alias       *string  `json:"alias" binding:"omitempty,max=128"`
 	Email       *string  `json:"email" binding:"omitempty,email,max=320"`
 	Phone       *string  `json:"phone" binding:"omitempty,max=64"`
-	Status      *string  `json:"status" binding:"omitempty,oneof=ACTIVE PENDING DISABLED LOCKED DELETED"`
-	RoleIDs     []string `json:"role_ids" binding:"max=64,dive,max=128"`
+	Status      *string  `json:"-"`
+	RoleIDs     []string `json:"-"`
 }
 type IdentityActionReasonRequest struct {
 	Reason string `json:"reason" binding:"max=512"`
@@ -87,17 +88,53 @@ type IdentityResourceGrantUpdateRequest struct {
 	ExpiresAt   *imachinery.Time `json:"expires_at"`
 }
 type IdentityServiceAccountCreateRequest struct {
-	Code            string   `json:"code" binding:"required,min=1,max=128"`
-	Name            string   `json:"name" binding:"required,min=1,max=256"`
-	Description     string   `json:"description" binding:"max=1024"`
-	OwnerType       string   `json:"owner_type" binding:"required,oneof=SYSTEM WORKER AGENT APPLICATION EXTERNAL"`
-	OwnerID         string   `json:"owner_id" binding:"max=128"`
-	PermissionCodes []string `json:"permission_codes" binding:"max=256,dive,max=256"`
+	Code                string                  `json:"code" binding:"required,min=1,max=128"`
+	Name                string                  `json:"name" binding:"required,min=1,max=256"`
+	Description         string                  `json:"description" binding:"max=1024"`
+	OwnerType           string                  `json:"owner_type" binding:"required,oneof=SYSTEM WORKER AGENT APPLICATION EXTERNAL"`
+	OwnerID             string                  `json:"owner_id" binding:"max=128"`
+	RoleGrants          []IdentityRoleGrantItem `json:"role_grants,omitempty" binding:"max=64,dive"`
+	CredentialExpiresAt *imachinery.Time        `json:"credential_expires_at"`
+	PermissionCodes     []string                `json:"-"`
 }
 type IdentityServiceAccountUpdateRequest struct {
 	Name            string   `json:"name" binding:"required,min=1,max=256"`
 	Description     *string  `json:"description" binding:"omitempty,max=1024"`
-	PermissionCodes []string `json:"permission_codes" binding:"max=256,dive,max=256"`
+	PermissionCodes []string `json:"-"`
+}
+
+type IdentityRoleGrantItem struct {
+	RoleID        string           `json:"role_id" binding:"required,max=128"`
+	EffectiveFrom *imachinery.Time `json:"effective_from"`
+	EffectiveTo   *imachinery.Time `json:"effective_to"`
+}
+
+type IdentityRoleGrantReplaceRequest struct {
+	Items []IdentityRoleGrantItem `json:"items" binding:"required,max=64,dive"`
+}
+
+type IdentityEffectiveRole struct {
+	ID       string  `json:"id"`
+	Code     string  `json:"code"`
+	Name     string  `json:"name"`
+	Source   string  `json:"source"`
+	SourceID *string `json:"source_id,omitempty"`
+}
+
+type IdentityRoleSummary struct {
+	ID     string `json:"id"`
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type IdentityRoleGrantSummary struct {
+	ID            string               `json:"id"`
+	RoleID        string               `json:"role_id"`
+	Role          *IdentityRoleSummary `json:"role"`
+	EffectiveFrom *imachinery.Time     `json:"effective_from,omitempty"`
+	EffectiveTo   *imachinery.Time     `json:"effective_to,omitempty"`
+	Effective     bool                 `json:"effective"`
 }
 type IdentityPrincipalCheckRequest struct {
 	PermissionCodes []string `json:"permission_codes" binding:"required,max=256,dive,max=256"`
@@ -107,12 +144,67 @@ type IdentityPrincipalCheckRequest struct {
 }
 
 type IdentityAuthUserResponse struct {
-	User               *IdentityUser `json:"user"`
-	AccessToken        string        `json:"access_token"`
-	RefreshToken       string        `json:"refresh_token"`
-	TokenType          string        `json:"token_type"`
-	ExpiresIn          int           `json:"expires_in"`
-	FirstLoginRequired bool          `json:"first_login_required"`
+	User               *IdentityUser                 `json:"user"`
+	AccessToken        string                        `json:"access_token"`
+	RefreshToken       string                        `json:"refresh_token"`
+	TokenType          string                        `json:"token_type"`
+	ExpiresIn          int                           `json:"expires_in"`
+	FirstLoginRequired bool                          `json:"first_login_required"`
+	Authorization      *IdentityPermissionProjection `json:"authorization"`
+}
+
+type IdentityInitialPasswordResponse struct {
+	UserID             string `json:"user_id"`
+	InitialPassword    string `json:"initial_password"`
+	FirstLoginRequired bool   `json:"first_login_required"`
+}
+
+type IdentityAdminUserCreatedResponse struct {
+	User            *IdentityUser `json:"user"`
+	InitialPassword string        `json:"initial_password"`
+}
+
+type IdentityPendingRegistrationResponse struct {
+	RegistrationApplicationID string          `json:"registration_application_id"`
+	UserID                    string          `json:"user_id"`
+	Status                    string          `json:"status"`
+	SubmittedAt               imachinery.Time `json:"submitted_at"`
+}
+
+type IdentityRegistrationApplicationSummary struct {
+	ID             string           `json:"id"`
+	AttemptNo      int              `json:"attempt_no"`
+	Status         string           `json:"status"`
+	SubmittedAt    imachinery.Time  `json:"submitted_at"`
+	DecidedAt      *imachinery.Time `json:"decided_at,omitempty"`
+	DecisionReason *string          `json:"decision_reason,omitempty"`
+}
+
+type IdentityRegistrationApplicationResponse struct {
+	ID             string           `json:"id"`
+	User           *IdentityUser    `json:"user"`
+	AttemptNo      int              `json:"attempt_no"`
+	Status         string           `json:"status"`
+	SubmittedAt    imachinery.Time  `json:"submitted_at"`
+	DecidedAt      *imachinery.Time `json:"decided_at,omitempty"`
+	DecidedBy      *string          `json:"decided_by,omitempty"`
+	DecisionReason *string          `json:"decision_reason,omitempty"`
+	CreatedAt      imachinery.Time  `json:"created_at"`
+	UpdatedAt      imachinery.Time  `json:"updated_at"`
+}
+
+type IdentityRegistrationApplicationListResponse struct {
+	Total int64                                      `json:"total"`
+	Items []*IdentityRegistrationApplicationResponse `json:"items"`
+}
+
+type IdentityRegistrationRejectRequest struct {
+	Reason string `json:"reason" binding:"required,min=1,max=512"`
+}
+
+type IdentityRegistrationDecisionResponse struct {
+	Application *IdentityRegistrationApplicationResponse `json:"application"`
+	User        *IdentityUser                            `json:"user"`
 }
 type IdentityActionResult struct {
 	Success bool   `json:"success"`
@@ -151,11 +243,14 @@ type IdentityServiceAccountListResponse struct {
 	Items []*IdentityServiceAccount `json:"items"`
 }
 type IdentityPermissionProjection struct {
-	PrincipalType        string   `json:"principal_type"`
-	PrincipalID          string   `json:"principal_id"`
-	ActorUserID          string   `json:"actor_user_id,omitempty"`
-	AuthorizationVersion int64    `json:"authorization_version"`
-	PermissionCodes      []string `json:"permission_codes"`
+	PrincipalType        string                  `json:"principal_type"`
+	PrincipalID          string                  `json:"principal_id"`
+	ActorUserID          string                  `json:"actor_user_id,omitempty"`
+	AuthorizationVersion int64                   `json:"authorization_version"`
+	EffectiveRoles       []IdentityEffectiveRole `json:"effective_roles"`
+	PermissionCodes      []string                `json:"permission_codes"`
+	SessionMode          string                  `json:"session_mode"`
+	AllowedActions       []string                `json:"allowed_actions"`
 }
 type IdentityPrincipalCheckResult struct {
 	PermissionCode string `json:"permission_code"`
@@ -169,9 +264,41 @@ type IdentityPrincipalCheckResponse struct {
 	Results              []IdentityPrincipalCheckResult `json:"results"`
 }
 type IdentityServiceAccountCredentialResponse struct {
-	ServiceAccount *IdentityServiceAccount `json:"service_account"`
-	Credential     string                  `json:"credential"`
-	ExpiresAt      *imachinery.Time        `json:"expires_at,omitempty"`
+	ServiceAccount *IdentityServiceAccount           `json:"service_account"`
+	Credential     *IdentityServiceAccountCredential `json:"credential"`
+	ClientSecret   string                            `json:"client_secret"`
+}
+
+type IdentityServiceAccountCredentialRotateRequest struct {
+	ExpiresAt *imachinery.Time `json:"expires_at"`
+	Reason    string           `json:"reason" binding:"max=512"`
+}
+
+type IdentityServiceAccountCredentialListResponse struct {
+	Total int64                               `json:"total"`
+	Items []*IdentityServiceAccountCredential `json:"items"`
+}
+
+type IdentityServiceAccountTokenRequest struct {
+	ClientID     string `json:"client_id" binding:"required,max=128"`
+	ClientSecret string `json:"client_secret" binding:"required,max=512"`
+}
+
+type IdentityServiceAccountTokenResponse struct {
+	AccessToken   string                        `json:"access_token"`
+	TokenType     string                        `json:"token_type"`
+	ExpiresIn     int                           `json:"expires_in"`
+	Authorization *IdentityPermissionProjection `json:"authorization"`
+}
+
+type IdentityUserDeletionCheckResponse struct {
+	ID            string                           `json:"id"`
+	UserID        string                           `json:"user_id"`
+	Status        string                           `json:"status"`
+	CheckedAt     imachinery.Time                  `json:"checked_at"`
+	ExpiresAt     imachinery.Time                  `json:"expires_at"`
+	BlockingCount int                              `json:"blocking_count"`
+	Items         []*IdentityUserDeletionCheckItem `json:"items"`
 }
 
 type IdentityUserListRequest struct {
@@ -185,6 +312,10 @@ type IdentityPermissionListRequest struct{ imachinery.BasicQueryParam }
 type IdentityGroupListRequest struct{ imachinery.BasicQueryParam }
 type IdentityResourceGrantListRequest struct{ imachinery.BasicQueryParam }
 type IdentityServiceAccountListRequest struct{ imachinery.BasicQueryParam }
+type IdentityRegistrationApplicationListRequest struct {
+	imachinery.BasicQueryParam
+	Statuses string `form:"statuses"`
+}
 
 // IdentityActionRequestBody is used only for binding endpoints whose body is optional.
 type IdentityActionRequestBody struct {

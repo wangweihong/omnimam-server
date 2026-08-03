@@ -8,7 +8,9 @@
 #
 # The Makefile image rule tags host-arch images as <version>-<arch>.
 # Override OMNIMAM_IMAGE_TAG when needed, for example latest-arm64.
-# Set OMNIMAM_AUTH_JWT_SECRET to a stable random value of at least 32 bytes before startup.
+# `make compose` supplies local development defaults for JWT and Infrastructure credentials;
+# override OMNIMAM_AUTH_JWT_SECRET, OMNIMAM_INFRA_SERVICE_TOKEN, and
+# OMNIMAM_INFRA_PROFILE_IMAGES for non-local deployments.
 
 services:
   conductor:
@@ -106,6 +108,8 @@ services:
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
       APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
+      APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
+      APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:?OMNIMAM_INFRA_SERVICE_TOKEN must be at least 32 bytes}
       OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
     ports:
       - "${OMNIMAM_APISERVER_PORT:-8080}:8080"
@@ -136,6 +140,8 @@ services:
             APISERVER_CONDUCTOR_BASE_URL \
             APISERVER_CONDUCTOR_AUTH_KEY \
             APISERVER_CONDUCTOR_AUTH_SECRET \
+            APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL \
+            APISERVER_INFRASTRUCTURE_CLIENT_TOKEN \
             APISERVER_DATABASE_TYPE \
             APISERVER_DATABASE_NAME \
             APISERVER_POSTGRES_HOST \
@@ -158,6 +164,108 @@ services:
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
 
+  infraserver:
+    image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/infraserver:${OMNIMAM_IMAGE_TAG:-latest-amd64}
+    container_name: omnimam-infraserver
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # API Server 先完成 schema 与 Identity/Platform 初始化，Infrastructure 再初始化同一数据库。
+      apiserver:
+        condition: service_started
+    environment:
+      omnimam_LOG_DIR: /var/log/omnimam
+      APISERVER_RUNTIME_DEBUG_OUTPUT_DIR: /var/lib/omnimam/debug/infraserver
+      APISERVER_INSECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_INSECURE_BIND_PORT: 8080
+      APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
+      APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_TLS_CERT_FILE: ""
+      APISERVER_SECURE_TLS_CERT_KEY: ""
+      APISERVER_DATABASE_TYPE: postgresql
+      APISERVER_DATABASE_NAME: ${OMNIMAM_POSTGRES_DB:-omnimam}
+      APISERVER_POSTGRES_HOST: postgres
+      APISERVER_POSTGRES_PORT: 5432
+      APISERVER_POSTGRES_USER: ${OMNIMAM_POSTGRES_USER:-omnimam}
+      APISERVER_POSTGRES_PASSWORD: ${OMNIMAM_POSTGRES_PASSWORD:-omnimam}
+      APISERVER_MYSQL_HOST: mysql
+      APISERVER_MYSQL_USER: omnimam
+      APISERVER_MYSQL_PASSWORD: omnimam
+      APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR: /var/lib/omnimam/upload-parts
+      APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS: ${OMNIMAM_UPLOAD_CHUNK_CLEANUP_HOURS:-24}
+      APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
+      APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:?OMNIMAM_AUTH_JWT_SECRET must be at least 32 bytes}
+      APISERVER_MCP_PUBLIC_BASE_URL: http://127.0.0.1:8080
+      APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
+      APISERVER_CONDUCTOR_BASE_URL: ""
+      APISERVER_CONDUCTOR_AUTH_KEY: ""
+      APISERVER_CONDUCTOR_AUTH_SECRET: ""
+      APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
+      APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:?OMNIMAM_INFRA_SERVICE_TOKEN must be at least 32 bytes}
+      OMNIMAM_DOCKER_SOCKET: /var/run/docker.sock
+      OMNIMAM_DOCKER_API_VERSION: ${OMNIMAM_DOCKER_API_VERSION:-v1.44}
+      OMNIMAM_INFRA_LISTEN_ADDRESS: 0.0.0.0:8082
+      OMNIMAM_INFRA_SERVICE_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:?OMNIMAM_INFRA_SERVICE_TOKEN must be at least 32 bytes}
+      OMNIMAM_INFRA_PROFILE_IMAGES: ${OMNIMAM_INFRA_PROFILE_IMAGES:?OMNIMAM_INFRA_PROFILE_IMAGES must be a JSON object}
+    ports:
+      - "${OMNIMAM_INFRA_PORT:-8082}:8082"
+    healthcheck:
+      test: [CMD-SHELL, "/bin/bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8082'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
+      - omnimam_logs:/var/log/omnimam
+      - omnimam_debug:/var/lib/omnimam/debug
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        wait_for_apiserver() {
+          while ! /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080; printf "GET /healthz HTTP/1.1\r\nHost: apiserver\r\nConnection: close\r\n\r\n" >&3; IFS= read -r -t 2 status <&3; case "$$status" in HTTP/1.1\ 200\ *|HTTP/1.0\ 200\ *) exit 0;; *) exit 1;; esac'; do
+            sleep 1
+          done
+        }
+        wait_for_apiserver
+        cp /etc/omnimam-template/apiserver.yaml /tmp/infraserver.yaml
+        for name in \
+          omnimam_LOG_DIR \
+          APISERVER_RUNTIME_DEBUG_OUTPUT_DIR \
+          APISERVER_INSECURE_BIND_ADDRESS \
+          APISERVER_INSECURE_BIND_PORT \
+          APISERVER_SECURE_BIND_ADDRESS \
+          APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_TLS_CERT_FILE \
+          APISERVER_SECURE_TLS_CERT_KEY \
+          APISERVER_DATABASE_TYPE \
+          APISERVER_DATABASE_NAME \
+          APISERVER_POSTGRES_HOST \
+          APISERVER_POSTGRES_PORT \
+          APISERVER_POSTGRES_USER \
+          APISERVER_POSTGRES_PASSWORD \
+          APISERVER_MYSQL_HOST \
+          APISERVER_MYSQL_USER \
+          APISERVER_MYSQL_PASSWORD \
+          APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR \
+          APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS \
+          APISERVER_ENGINE_HEALTH_INTERVAL \
+          APISERVER_AUTH_JWT_SECRET \
+          APISERVER_MCP_PUBLIC_BASE_URL \
+          APISERVER_WORKFLOW_RUNTIME_ENABLED \
+          APISERVER_CONDUCTOR_BASE_URL \
+          APISERVER_CONDUCTOR_AUTH_KEY \
+          APISERVER_CONDUCTOR_AUTH_SECRET \
+          APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL \
+          APISERVER_INFRASTRUCTURE_CLIENT_TOKEN; do
+          value="$$(printenv "$$name" || true)"
+          escaped="$$(printf '%s' "$$value" | sed 's/[\/&]/\\&/g')"
+          sed -i "s/\$${$$name}/$$escaped/g" /tmp/infraserver.yaml
+        done
+        exec /opt/omnimam/bin/infraserver -c /tmp/infraserver.yaml
+
   taskworker:
     image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/taskworker:${OMNIMAM_IMAGE_TAG:-latest-amd64}
     container_name: omnimam-taskworker
@@ -170,6 +278,8 @@ services:
       # API Server 先完成 schema 初始化；Worker 随后再连接同一业务数据库，避免并发 AutoMigrate。
       apiserver:
         condition: service_started
+      infraserver:
+        condition: service_healthy
     environment:
       omnimam_LOG_DIR: /var/log/omnimam
       APISERVER_RUNTIME_DEBUG_OUTPUT_DIR: /var/lib/omnimam/debug/taskworker
@@ -198,6 +308,8 @@ services:
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
       APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
+      APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
+      APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:?OMNIMAM_INFRA_SERVICE_TOKEN must be at least 32 bytes}
       # 缩略图 Worker 必须与 API Server 读取同一素材根目录。
       OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
     volumes:
@@ -206,9 +318,12 @@ services:
     entrypoint: [/bin/sh, -ec]
     command:
       - |
-        until /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080'; do
-          sleep 1
-        done
+        wait_for_apiserver() {
+          while ! /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080; printf "GET /healthz HTTP/1.1\r\nHost: apiserver\r\nConnection: close\r\n\r\n" >&3; IFS= read -r -t 2 status <&3; case "$$status" in HTTP/1.1\ 200\ *|HTTP/1.0\ 200\ *) exit 0;; *) exit 1;; esac'; do
+            sleep 1
+          done
+        }
+        wait_for_apiserver
         cp /etc/omnimam-template/apiserver.yaml /tmp/taskworker.yaml
         for name in \
           omnimam_LOG_DIR \
@@ -236,7 +351,9 @@ services:
           APISERVER_WORKFLOW_RUNTIME_ENABLED \
           APISERVER_CONDUCTOR_BASE_URL \
           APISERVER_CONDUCTOR_AUTH_KEY \
-          APISERVER_CONDUCTOR_AUTH_SECRET; do
+          APISERVER_CONDUCTOR_AUTH_SECRET \
+          APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL \
+          APISERVER_INFRASTRUCTURE_CLIENT_TOKEN; do
           value="$$(printenv "$$name" || true)"
           escaped="$$(printf '%s' "$$value" | sed 's/[\/&]/\\&/g')"
           sed -i "s/\$${$$name}/$$escaped/g" /tmp/taskworker.yaml
@@ -281,14 +398,19 @@ services:
       APISERVER_CONDUCTOR_BASE_URL: ""
       APISERVER_CONDUCTOR_AUTH_KEY: ""
       APISERVER_CONDUCTOR_AUTH_SECRET: ""
+      APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
+      APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:?OMNIMAM_INFRA_SERVICE_TOKEN must be at least 32 bytes}
     volumes:
       - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
     entrypoint: [/bin/sh, -ec]
     command:
       - |
-        until /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080'; do
-          sleep 1
-        done
+        wait_for_apiserver() {
+          while ! /bin/bash -ec 'exec 3<>/dev/tcp/apiserver/8080; printf "GET /healthz HTTP/1.1\r\nHost: apiserver\r\nConnection: close\r\n\r\n" >&3; IFS= read -r -t 2 status <&3; case "$$status" in HTTP/1.1\ 200\ *|HTTP/1.0\ 200\ *) exit 0;; *) exit 1;; esac'; do
+            sleep 1
+          done
+        }
+        wait_for_apiserver
         cp /etc/omnimam-template/apiserver.yaml /tmp/notificationworker.yaml
         for name in \
           omnimam_LOG_DIR \
@@ -316,7 +438,9 @@ services:
           APISERVER_WORKFLOW_RUNTIME_ENABLED \
           APISERVER_CONDUCTOR_BASE_URL \
           APISERVER_CONDUCTOR_AUTH_KEY \
-          APISERVER_CONDUCTOR_AUTH_SECRET; do
+          APISERVER_CONDUCTOR_AUTH_SECRET \
+          APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL \
+          APISERVER_INFRASTRUCTURE_CLIENT_TOKEN; do
           value="$$(printenv "$$name" || true)"
           escaped="$$(printf '%s' "$$value" | sed 's/[\/&]/\\&/g')"
           sed -i "s/\$${$$name}/$$escaped/g" /tmp/notificationworker.yaml

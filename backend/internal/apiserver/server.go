@@ -242,6 +242,7 @@ func (c *CompletedExtraConfig) New() error {
 		// identity
 		&iapiserver.User{},
 		&iapiserver.IdentityUser{},
+		&iapiserver.IdentityRegistrationApplication{},
 		&iapiserver.IdentityRole{},
 		&iapiserver.IdentityPermissionDefinition{},
 		&iapiserver.IdentityGroup{},
@@ -253,6 +254,9 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.IdentityServiceAccountCredential{},
 		&iapiserver.IdentityRolePermissionGrant{},
 		&iapiserver.IdentityUserRoleGrant{},
+		&iapiserver.IdentityServiceAccountRoleGrant{},
+		&iapiserver.IdentityUserDeletionCheck{},
+		&iapiserver.IdentityUserDeletionCheckItem{},
 		&iapiserver.IdentityGroupMember{},
 		&iapiserver.IdentityGroupRoleGrant{},
 		&iapiserver.IdentityOutboxEvent{},

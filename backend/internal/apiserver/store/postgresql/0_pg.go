@@ -82,6 +82,14 @@ DO $$ BEGIN
 END $$
 `
 
+const identityRegistrationConstraintsSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identity_registration_pending_user
+ON identity_registration_applications(user_id)
+WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_identity_registration_applications_status
+ON identity_registration_applications(status, submitted_at DESC);
+`
+
 const taskCenterAttemptLogsRefBackfillSQL = `
 UPDATE task_attempts
 SET logs_ref = 'task-attempt-log:' || id
@@ -596,6 +604,12 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
+	if err := ds.db.Exec(identityRegistrationConstraintsSQL).Error; err != nil {
+		return err
+	}
+	if err := ds.ensurePlatformManagementScheme(); err != nil {
+		return err
+	}
 	if err := ds.ensureAssetLibraryScheme(); err != nil {
 		return err
 	}
@@ -621,6 +635,10 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 		return err
 	}
 	return nil
+}
+
+func (ds *datastore) ensurePlatformManagementScheme() error {
+	return ds.db.Exec(`DROP INDEX IF EXISTS idx_platform_audit_logs_idempotency_key;`).Error
 }
 
 func (ds *datastore) ensureAgentScheme() error {

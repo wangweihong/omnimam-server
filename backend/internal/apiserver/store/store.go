@@ -20,6 +20,12 @@ var (
 	ErrNotificationStateConflict = errors.New("notification state conflict")
 )
 
+// IdentityRegistrationApplicationView 是注册申请及对应用户的最小管理视图。
+type IdentityRegistrationApplicationView struct {
+	Application *iapiserver.IdentityRegistrationApplication
+	User        *iapiserver.IdentityUser
+}
+
 type UserStore interface {
 	List(ctx context.Context, req *iapiserver.UserListRequest) ([]*iapiserver.User, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.User, error)
@@ -37,7 +43,12 @@ type IdentityStore interface {
 	ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) ([]*iapiserver.IdentityUser, int64, error)
 	ListPermissionDefinitions(ctx context.Context, req *iapiserver.IdentityPermissionListRequest) ([]*iapiserver.IdentityPermissionDefinition, int64, error)
 	CreateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error)
+	CreateOpenRegistration(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error)
+	CreatePendingRegistration(ctx context.Context, user *iapiserver.IdentityUser) (*IdentityRegistrationApplicationView, error)
 	UpdateUser(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error)
+	ListRegistrationApplications(ctx context.Context, req *iapiserver.IdentityRegistrationApplicationListRequest) ([]*IdentityRegistrationApplicationView, int64, error)
+	GetRegistrationApplication(ctx context.Context, id string) (*IdentityRegistrationApplicationView, error)
+	ReviewRegistrationApplication(ctx context.Context, id, decision, reason, actorPrincipalType, actorPrincipalID, actorUserID string) (*IdentityRegistrationApplicationView, error)
 	GetSession(ctx context.Context, id string) (*iapiserver.IdentityAuthSession, error)
 	ListSessions(ctx context.Context, userID string, req *iapiserver.IdentitySessionListRequest) ([]*iapiserver.IdentityAuthSession, int64, error)
 	CreateSession(ctx context.Context, session *iapiserver.IdentityAuthSession) (*iapiserver.IdentityAuthSession, error)

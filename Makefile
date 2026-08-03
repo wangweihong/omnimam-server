@@ -69,13 +69,24 @@ build.multiarch:
 image: configs
 	@$(MAKE) image.build
 
+# 本地 compose 的开发默认值；生产环境应通过环境变量或 make 参数覆盖。
+OMNIMAM_AUTH_JWT_SECRET ?= omnimam-local-development-jwt-secret-change-me
+OMNIMAM_INFRA_SERVICE_TOKEN ?= omnimam-local-development-infrastructure-service-token-change-me
+OMNIMAM_INFRA_PROFILE_IMAGES ?= {"agent.hermes@1.0":"nginx:1.27-alpine","agent.coding@1.0":"nginx:1.27-alpine","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}
+
 .PHONY: compose
 compose: image
-	@OMNIMAM_IMAGE_TAG=$(VERSION)-$(shell $(GO) env GOHOSTARCH) \
+	@OMNIMAM_AUTH_JWT_SECRET="$(OMNIMAM_AUTH_JWT_SECRET)" \
+		OMNIMAM_INFRA_SERVICE_TOKEN="$(OMNIMAM_INFRA_SERVICE_TOKEN)" \
+		OMNIMAM_INFRA_PROFILE_IMAGES='$(OMNIMAM_INFRA_PROFILE_IMAGES)' \
+		OMNIMAM_IMAGE_TAG=$(VERSION)-$(shell $(GO) env GOHOSTARCH) \
 		OMNIMAM_FRONTEND_IMAGE_TAG=$(FRONTEND_VERSION) \
 		OMNIMAM_REGISTRY_PREFIX=$(REGISTRY_PREFIX) \
 		docker compose -f deployments/docker-compose.yaml down
-	@OMNIMAM_IMAGE_TAG=$(VERSION)-$(shell $(GO) env GOHOSTARCH) \
+	@OMNIMAM_AUTH_JWT_SECRET="$(OMNIMAM_AUTH_JWT_SECRET)" \
+		OMNIMAM_INFRA_SERVICE_TOKEN="$(OMNIMAM_INFRA_SERVICE_TOKEN)" \
+		OMNIMAM_INFRA_PROFILE_IMAGES='$(OMNIMAM_INFRA_PROFILE_IMAGES)' \
+		OMNIMAM_IMAGE_TAG=$(VERSION)-$(shell $(GO) env GOHOSTARCH) \
 		OMNIMAM_FRONTEND_IMAGE_TAG=$(FRONTEND_VERSION) \
 		OMNIMAM_REGISTRY_PREFIX=$(REGISTRY_PREFIX) \
 		docker compose -f deployments/docker-compose.yaml up -d

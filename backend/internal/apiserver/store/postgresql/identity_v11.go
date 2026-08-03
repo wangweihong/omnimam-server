@@ -3,15 +3,18 @@ package postgresql
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type identityStore struct{ ds *datastore }
@@ -70,6 +73,50 @@ func (s *identityStore) CreateUser(ctx context.Context, user *iapiserver.Identit
 			}
 		}
 		return nil
+	})
+	return user, err
+}
+
+// CreateOpenRegistration 原子创建 OPEN 注册用户、默认 USER 授权、可靠事件和脱敏审计。
+func (s *identityStore) CreateOpenRegistration(ctx context.Context, user *iapiserver.IdentityUser) (*iapiserver.IdentityUser, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var activeCount int64
+		if err := tx.Model(&iapiserver.IdentityUser{}).Where("status <> ?", iapiserver.IdentityUserDeleted).Count(&activeCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		if activeCount == 0 {
+			var bootstrapRole iapiserver.IdentityRole
+			if err := tx.Where("code = ?", "super_admin").First(&bootstrapRole).Error; err != nil {
+				return errors.NewStatus(code.ErrIdentityUserCreateInvalid, "bootstrap role is unavailable")
+			}
+			if err := tx.Create(&iapiserver.IdentityUserRoleGrant{ID: uuid.NewString(), UserID: user.ID, RoleID: bootstrapRole.ID, CreatedAt: imachinery.Now()}).Error; err != nil {
+				return err
+			}
+		}
+		var role iapiserver.IdentityRole
+		if err := tx.Where("code = ? AND builtin = ? AND status = ?", "USER", true, "ACTIVE").First(&role).Error; err != nil {
+			return errors.NewStatus(code.ErrIdentityUserCreateInvalid, "active builtin USER role is unavailable")
+		}
+		now := imachinery.Now()
+		if err := tx.Create(&iapiserver.IdentityUserRoleGrant{ID: uuid.NewString(), UserID: user.ID, RoleID: role.ID, CreatedAt: now}).Error; err != nil {
+			return err
+		}
+		if err := createIdentityOutbox(tx, "identity.user.created", "user", user.ID, user.ResourceVersion, map[string]any{
+			"user_id": user.ID, "status": iapiserver.IdentityUserActive, "source": "LOCAL", "actor_principal_type": "USER", "actor_principal_id": user.ID,
+		}, fmt.Sprintf("identity.user.created:%s:%d", user.ID, user.ResourceVersion)); err != nil {
+			return err
+		}
+		if err := createIdentityOutbox(tx, "identity.authorization.changed", "user", user.ID, user.AuthorizationVersion, map[string]any{
+			"principal_type": "USER", "principal_id": user.ID, "authorization_version": user.AuthorizationVersion,
+			"change_source_type": "USER_ROLE", "change_source_id": role.ID, "changed_permission_codes": []string{},
+			"actor_principal_type": "USER", "actor_principal_id": user.ID,
+		}, fmt.Sprintf("identity.authorization.changed:USER:%s:%d", user.ID, user.AuthorizationVersion)); err != nil {
+			return err
+		}
+		return appendIdentityOpenRegistrationAudit(tx, user, now)
 	})
 	return user, err
 }
@@ -213,14 +260,23 @@ func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permission
 				return err
 			}
 		}
+		builtinRoles := []struct{ code, name string }{{"super_admin", "Super Administrator"}, {"USER", "User"}, {"ADMIN", "Administrator"}, {"SUPER_ADMIN", "Super Administrator"}}
 		var role iapiserver.IdentityRole
-		if err := tx.Where("code = ?", "super_admin").First(&role).Error; stderrors.Is(err, gorm.ErrRecordNotFound) {
-			role = iapiserver.IdentityRole{Code: "super_admin", Builtin: true, Status: "ACTIVE"}
-			role.Name = "Super Administrator"
-			if err := tx.Create(&role).Error; err != nil {
+		for _, builtin := range builtinRoles {
+			role = iapiserver.IdentityRole{}
+			if err := tx.Where("code = ?", builtin.code).First(&role).Error; stderrors.Is(err, gorm.ErrRecordNotFound) {
+				role = iapiserver.IdentityRole{Code: builtin.code, Builtin: true, Status: "ACTIVE"}
+				role.Name = builtin.name
+				if err := tx.Create(&role).Error; err != nil {
+					return err
+				}
+			} else if err != nil {
 				return err
 			}
-		} else if err != nil {
+		}
+		// 清空复用模型，避免 GORM 将上一轮角色主键叠加到本次按编码查询中。
+		role = iapiserver.IdentityRole{}
+		if err := tx.Where("code = ?", "super_admin").First(&role).Error; err != nil {
 			return err
 		}
 		for _, permission := range permissions {

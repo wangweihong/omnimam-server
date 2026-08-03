@@ -11,6 +11,7 @@ import (
 const (
 	IdentityUserActive   = "ACTIVE"
 	IdentityUserPending  = "PENDING"
+	IdentityUserRejected = "REJECTED"
 	IdentityUserDisabled = "DISABLED"
 	IdentityUserLocked   = "LOCKED"
 	IdentityUserDeleted  = "DELETED"
@@ -20,6 +21,17 @@ const (
 	IdentityAccessUse    = "USE"
 	IdentityAccessEdit   = "EDIT"
 	IdentityAccessManage = "MANAGE"
+)
+
+const (
+	IdentityRegistrationPending  = "PENDING"
+	IdentityRegistrationApproved = "APPROVED"
+	IdentityRegistrationRejected = "REJECTED"
+
+	IdentityDeletionCheckComplete   = "COMPLETE"
+	IdentityDeletionCheckIncomplete = "INCOMPLETE"
+	IdentityDeletionCheckStale      = "STALE"
+	IdentityDeletionCheckConsumed   = "CONSUMED"
 )
 
 // IdentityUser 是 v1.11 Identity 的本地用户事实；password_hash 只保存 Argon2id PHC 字符串。
@@ -51,6 +63,33 @@ func (m *IdentityUser) BeforeUpdate(tx *gorm.DB) error { return m.ObjectMeta.Bef
 func (m *IdentityUser) AfterCreate(*gorm.DB) error     { return nil }
 func (m *IdentityUser) AfterUpdate(*gorm.DB) error     { return nil }
 func (m *IdentityUser) AfterFind(tx *gorm.DB) error    { return m.ObjectMeta.AfterFind(tx) }
+
+// IdentityRegistrationApplication records one immutable registration decision attempt.
+type IdentityRegistrationApplication struct {
+	imachinery.ObjectMeta
+	UserID         string           `json:"user_id" gorm:"column:user_id;type:text;not null;uniqueIndex:idx_identity_registration_attempt,priority:1;index"`
+	AttemptNo      int              `json:"attempt_no" gorm:"column:attempt_no;not null;uniqueIndex:idx_identity_registration_attempt,priority:2"`
+	Status         string           `json:"status" gorm:"column:status;type:text;not null;index"`
+	SubmittedAt    imachinery.Time  `json:"submitted_at" gorm:"column:submitted_at;not null"`
+	DecidedAt      *imachinery.Time `json:"decided_at,omitempty" gorm:"column:decided_at"`
+	DecidedBy      *string          `json:"decided_by,omitempty" gorm:"column:decided_by;type:text"`
+	DecisionReason *string          `json:"decision_reason,omitempty" gorm:"column:decision_reason;type:text"`
+}
+
+func (IdentityRegistrationApplication) TableName() string {
+	return "identity_registration_applications"
+}
+func (m *IdentityRegistrationApplication) BeforeCreate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeCreate(tx)
+}
+func (m *IdentityRegistrationApplication) BeforeUpdate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeUpdate(tx)
+}
+func (m *IdentityRegistrationApplication) AfterCreate(*gorm.DB) error { return nil }
+func (m *IdentityRegistrationApplication) AfterUpdate(*gorm.DB) error { return nil }
+func (m *IdentityRegistrationApplication) AfterFind(tx *gorm.DB) error {
+	return m.ObjectMeta.AfterFind(tx)
+}
 
 // IdentityRole 是平台 RBAC 角色；builtin 角色只能由系统初始化或受控变更维护。
 type IdentityRole struct {
@@ -254,12 +293,15 @@ type IdentityServiceAccountCredential struct {
 	imachinery.ObjectMeta
 	ServiceAccountID string           `json:"service_account_id" gorm:"column:service_account_id;type:text;not null;index"`
 	CredentialHash   string           `json:"-" gorm:"column:credential_hash;type:text;not null;uniqueIndex"`
-	Prefix           string           `json:"-" gorm:"column:prefix;type:text;not null"`
+	Prefix           string           `json:"prefix" gorm:"column:prefix;type:text;not null"`
 	Status           string           `json:"status" gorm:"column:status;type:text;not null;index"`
-	IssuedAt         imachinery.Time  `json:"-" gorm:"column:issued_at;not null"`
+	IssuedAt         imachinery.Time  `json:"issued_at" gorm:"column:issued_at;not null"`
 	ExpiresAt        *imachinery.Time `json:"expires_at,omitempty" gorm:"column:expires_at"`
-	RevokedAt        *imachinery.Time `json:"-" gorm:"column:revoked_at"`
-	LastUsedAt       *imachinery.Time `json:"-" gorm:"column:last_used_at"`
+	RevokedAt        *imachinery.Time `json:"revoked_at,omitempty" gorm:"column:revoked_at"`
+	LastUsedAt       *imachinery.Time `json:"last_used_at,omitempty" gorm:"column:last_used_at"`
+	RotatedFromID    *string          `json:"rotated_from_id,omitempty" gorm:"column:rotated_from_id;type:text"`
+	RevokedReason    *string          `json:"revoked_reason,omitempty" gorm:"column:revoked_reason;type:text"`
+	CreatedBy        string           `json:"-" gorm:"column:created_by;type:text"`
 }
 
 func (IdentityServiceAccountCredential) TableName() string {
@@ -287,14 +329,73 @@ type IdentityRolePermissionGrant struct {
 func (IdentityRolePermissionGrant) TableName() string { return "identity_role_permission_grants" }
 
 type IdentityUserRoleGrant struct {
-	ID        string          `gorm:"column:id;type:text;primaryKey"`
-	UserID    string          `gorm:"column:user_id;type:text;index;not null"`
-	RoleID    string          `gorm:"column:role_id;type:text;index;not null"`
-	CreatedBy string          `gorm:"column:created_by;type:text"`
-	CreatedAt imachinery.Time `gorm:"column:created_at;not null"`
+	ID            string           `gorm:"column:id;type:text;primaryKey"`
+	UserID        string           `gorm:"column:user_id;type:text;index;not null"`
+	RoleID        string           `gorm:"column:role_id;type:text;index;not null"`
+	EffectiveFrom *imachinery.Time `gorm:"column:effective_from"`
+	EffectiveTo   *imachinery.Time `gorm:"column:effective_to"`
+	CreatedBy     string           `gorm:"column:created_by;type:text"`
+	CreatedAt     imachinery.Time  `gorm:"column:created_at;not null"`
 }
 
 func (IdentityUserRoleGrant) TableName() string { return "identity_user_role_grants" }
+
+type IdentityServiceAccountRoleGrant struct {
+	ID               string           `gorm:"column:id;type:text;primaryKey"`
+	ServiceAccountID string           `gorm:"column:service_account_id;type:text;not null;uniqueIndex:idx_identity_service_account_role,priority:1"`
+	RoleID           string           `gorm:"column:role_id;type:text;not null;uniqueIndex:idx_identity_service_account_role,priority:2"`
+	EffectiveFrom    *imachinery.Time `gorm:"column:effective_from"`
+	EffectiveTo      *imachinery.Time `gorm:"column:effective_to"`
+	CreatedBy        string           `gorm:"column:created_by;type:text"`
+	CreatedAt        imachinery.Time  `gorm:"column:created_at;not null"`
+}
+
+func (IdentityServiceAccountRoleGrant) TableName() string {
+	return "identity_service_account_role_grants"
+}
+
+// IdentityUserDeletionCheck is a short-lived snapshot of cross-domain dependencies.
+type IdentityUserDeletionCheck struct {
+	imachinery.ObjectMeta
+	UserID           string          `json:"user_id" gorm:"column:user_id;type:text;not null;index"`
+	Status           string          `json:"status" gorm:"column:status;type:text;not null"`
+	RequestedBy      string          `json:"-" gorm:"column:requested_by;type:text;not null"`
+	CheckedAt        imachinery.Time `json:"checked_at" gorm:"column:checked_at;not null"`
+	ExpiresAt        imachinery.Time `json:"expires_at" gorm:"column:expires_at;not null"`
+	SourceSetVersion string          `json:"-" gorm:"column:source_set_version;type:text;not null"`
+}
+
+func (IdentityUserDeletionCheck) TableName() string { return "identity_user_deletion_checks" }
+func (m *IdentityUserDeletionCheck) BeforeCreate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeCreate(tx)
+}
+func (m *IdentityUserDeletionCheck) BeforeUpdate(tx *gorm.DB) error {
+	return m.ObjectMeta.BeforeUpdate(tx)
+}
+func (m *IdentityUserDeletionCheck) AfterCreate(*gorm.DB) error { return nil }
+func (m *IdentityUserDeletionCheck) AfterUpdate(*gorm.DB) error { return nil }
+func (m *IdentityUserDeletionCheck) AfterFind(tx *gorm.DB) error {
+	return m.ObjectMeta.AfterFind(tx)
+}
+
+type IdentityUserDeletionCheckItem struct {
+	ID              string          `json:"id,omitempty" gorm:"column:id;type:text;primaryKey"`
+	CheckID         string          `json:"-" gorm:"column:check_id;type:text;not null;index"`
+	SourceDomain    string          `json:"source_domain" gorm:"column:source_domain;type:text;not null"`
+	Category        string          `json:"category" gorm:"column:category;type:text;not null"`
+	ObjectType      string          `json:"object_type" gorm:"column:object_type;type:text;not null"`
+	ItemCount       int             `json:"count" gorm:"column:item_count;not null;default:0"`
+	Blocking        bool            `json:"blocking" gorm:"column:blocking;not null"`
+	SourceStatus    string          `json:"source_status" gorm:"column:source_status;type:text;not null"`
+	HandlingMode    string          `json:"handling_mode" gorm:"column:handling_mode;type:text;not null"`
+	ManagementEntry *string         `json:"management_entry,omitempty" gorm:"column:management_entry;type:text"`
+	SourceVersion   *string         `json:"source_version,omitempty" gorm:"column:source_version;type:text"`
+	CreatedAt       imachinery.Time `json:"-" gorm:"column:created_at;not null"`
+}
+
+func (IdentityUserDeletionCheckItem) TableName() string {
+	return "identity_user_deletion_check_items"
+}
 
 type IdentityGroupMember struct {
 	GroupID   string          `gorm:"column:group_id;type:text;primaryKey"`

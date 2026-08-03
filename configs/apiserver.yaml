@@ -92,6 +92,10 @@ workflow-runtime:
   poll-interval: 250ms
   reconcile-interval: 15s
 
+infrastructure-client:
+  base-url: ${APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL}
+  token: ${APISERVER_INFRASTRUCTURE_CLIENT_TOKEN}
+
 auth:
   jwt-secret: ${APISERVER_AUTH_JWT_SECRET}
 

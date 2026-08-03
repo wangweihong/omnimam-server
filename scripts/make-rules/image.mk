@@ -85,7 +85,7 @@ image.push.%: image.build.%
 .PHONY: image.build.%
 image.build.%: go.build.%
 	$(eval IMAGE := $(word 2,$(subst ., ,$*)))
-	$(eval CONFIG_COMPONENT := $(if $(filter taskworker notificationworker,$(IMAGE)),apiserver,$(IMAGE)))
+	$(eval CONFIG_COMPONENT := $(if $(filter taskworker notificationworker infraserver,$(IMAGE)),apiserver,$(IMAGE)))
 	$(eval RULEPLATFORM := $(word 1,$(subst ., ,$*)))
 	$(eval IMAGE_PLAT := $(subst _,/,$(RULEPLATFORM)))
 	$(eval OS := $(word 1,$(subst _, ,$(RULEPLATFORM))))
@@ -120,7 +120,7 @@ image.build.multiarch: image.dockerbuildx.prerequisite go.build.verify  \
 .PHONY: image.build.multiarch.%
 image.build.multiarch.%: image.dockerbuildx.prerequisite
 	$(eval IMAGE := $(word 1,$(subst ., ,$*)))
-	$(eval CONFIG_COMPONENT := $(if $(filter taskworker notificationworker,$(IMAGE)),apiserver,$(IMAGE)))
+	$(eval CONFIG_COMPONENT := $(if $(filter taskworker notificationworker infraserver,$(IMAGE)),apiserver,$(IMAGE)))
 	$(eval BUILDPLTFORM := $(word 1,$(subst $(SPACE),$(COMMA),$(PLATFORMS))))
 	$(eval IMAGETAG := $(REGISTRY_PREFIX)/$(IMAGE):$(VERSION))
 	@echo "===========> Building docker image $(IMAGETAG) for command $(IMAGE) $(VERSION) in platforms $(BUILDPLTFORM)"

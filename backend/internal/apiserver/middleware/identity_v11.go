@@ -13,9 +13,11 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/platformaudit"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
@@ -241,10 +243,7 @@ func Audit(platform store.PlatformManagementStore, sourceDomain string) gin.Hand
 				principal = p
 			}
 		}
-		action := c.Request.Method + " " + c.FullPath()
-		if strings.HasSuffix(action, " ") {
-			action = c.Request.Method + " " + c.Request.URL.Path
-		}
+		action := sourceDomain + ".http." + strings.ToLower(c.Request.Method)
 		if isSensitiveRequest(c.Request.Method, c.Request.URL.Path) {
 			if platform == nil {
 				core.WriteResponse(c, errors.NewStatus(code.ErrPlatformAuditWriteUnavailable, "audit boundary is unavailable"), nil)
@@ -275,7 +274,16 @@ func isSensitiveRequest(method, path string) bool {
 
 func appendMiddlewareAudit(c *gin.Context, platform store.PlatformManagementStore, sourceDomain, action, result, reason, requestID string, principal IdentityPrincipal) (*iapiserver.PlatformAuditLog, error) {
 	idempotency := sha256.Sum256([]byte(requestID + ":" + action + ":" + result))
-	record := &iapiserver.PlatformAuditLog{SourceDomain: sourceDomain, SourceModule: "middleware", PrincipalType: principal.PrincipalType, PrincipalID: principal.PrincipalID, ActorUserID: principal.ActorUserID, Action: action, Result: result, ReasonCode: reason, RequestID: requestID, IPAddress: c.ClientIP(), UserAgent: c.Request.UserAgent(), IdempotencyKey: hex.EncodeToString(idempotency[:]), Detail: []byte(`{}`)}
+	route := c.FullPath()
+	if route == "" {
+		route = c.Request.URL.Path
+	}
+	record := &iapiserver.PlatformAuditLog{SourceDomain: sourceDomain, SourceModule: "middleware", PrincipalType: principal.PrincipalType, PrincipalID: principal.PrincipalID, ActorUserID: principal.ActorUserID, Action: action, TargetType: "http_route", TargetID: route, Result: result, ReasonCode: reason, RequestID: requestID, IPAddress: c.ClientIP(), UserAgent: c.Request.UserAgent(), OccurredAt: imachinery.Now(), IdempotencyKey: hex.EncodeToString(idempotency[:]), Detail: []byte(`{}`)}
+	fingerprint, err := platformaudit.CanonicalJSONDigest(iapiserver.PlatformAuditRecordRequest{SourceDomain: record.SourceDomain, SourceModule: record.SourceModule, PrincipalType: record.PrincipalType, PrincipalID: record.PrincipalID, ActorUserID: record.ActorUserID, Action: record.Action, TargetType: record.TargetType, TargetID: record.TargetID, Result: record.Result, ReasonCode: record.ReasonCode, RequestID: record.RequestID, IPAddress: record.IPAddress, UserAgent: record.UserAgent, OccurredAt: record.OccurredAt, Detail: record.Detail, IdempotencyKey: record.IdempotencyKey})
+	if err != nil {
+		return nil, err
+	}
+	record.ContentFingerprint = fingerprint
 	return platform.AppendAuditLog(c.Request.Context(), record)
 }
 

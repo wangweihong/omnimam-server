@@ -88,6 +88,36 @@ func (c *Controller) DeleteUser(ctx *gin.Context) {
 		return c.service.SetUserStatus(ctx, ctx.Param("user_id"), iapiserver.IdentityUserDeleted)
 	})
 }
+
+// ListRegistrationApplications 查询管理员可见的自主注册申请。
+func (c *Controller) ListRegistrationApplications(ctx *gin.Context) {
+	req := &iapiserver.IdentityRegistrationApplicationListRequest{Statuses: iapiserver.IdentityRegistrationPending}
+	core.Run(ctx, req, func(r *iapiserver.IdentityRegistrationApplicationListRequest) (any, error) {
+		return c.service.ListRegistrationApplications(ctx, r)
+	})
+}
+
+// GetRegistrationApplication 返回注册申请详情和关联用户管理摘要。
+func (c *Controller) GetRegistrationApplication(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) {
+		return c.service.GetRegistrationApplication(ctx, ctx.Param("registration_application_id"))
+	})
+}
+
+// ApproveRegistrationApplication 批准注册申请并激活用户。
+func (c *Controller) ApproveRegistrationApplication(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) {
+		return c.service.ReviewRegistrationApplication(ctx, ctx.Param("registration_application_id"), iapiserver.IdentityRegistrationApproved, "")
+	})
+}
+
+// RejectRegistrationApplication 按必填原因拒绝注册申请。
+func (c *Controller) RejectRegistrationApplication(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.IdentityRegistrationRejectRequest{}, func(req *iapiserver.IdentityRegistrationRejectRequest) (any, error) {
+		return c.service.ReviewRegistrationApplication(ctx, ctx.Param("registration_application_id"), iapiserver.IdentityRegistrationRejected, req.Reason)
+	})
+}
+
 func (c *Controller) ListPermissionDefinitions(ctx *gin.Context) {
 	req := &iapiserver.IdentityPermissionListRequest{}
 	core.Run(ctx, req, func(r *iapiserver.IdentityPermissionListRequest) (any, error) {

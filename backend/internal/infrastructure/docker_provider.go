@@ -39,7 +39,7 @@ func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolve
 		socketPath = "/var/run/docker.sock"
 	}
 	if apiVersion == "" {
-		apiVersion = "v1.43"
+		apiVersion = "v1.44"
 	}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socketPath)

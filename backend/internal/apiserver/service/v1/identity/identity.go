@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -31,7 +30,7 @@ const (
 // DefaultPermissions 返回当前发布版本需要由系统登记的 Identity 与 Platform 权限定义。
 func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 	items := []struct{ code, domain, resource, action string }{
-		{"identity.user.read", "identity", "user", "read"}, {"identity.user.manage", "identity", "user", "manage"},
+		{"identity.user.read", "identity", "user", "read"}, {"identity.user.manage", "identity", "user", "manage"}, {"identity.registration.review", "identity", "registration_application", "review"},
 		{"identity.auth.session", "identity", "auth", "session"}, {"identity.permission.read", "identity", "permission", "read"},
 		{"identity.role.manage", "identity", "role", "manage"}, {"identity.group.manage", "identity", "group", "manage"},
 		{"identity.resource_grant.read", "identity", "resource_grant", "read"}, {"identity.resource_grant.manage", "identity", "resource_grant", "manage"},
@@ -59,32 +58,42 @@ func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 	return result
 }
 
-func (s *Service) Register(ctx context.Context, req *iapiserver.IdentityRegisterRequest) (*iapiserver.IdentityAuthUserResponse, error) {
+func (s *Service) Register(ctx context.Context, req *iapiserver.IdentityRegisterRequest) (any, error) {
 	config, err := s.store.PlatformManagement().GetSystemAuthConfig(ctx)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrPlatformAuthConfigInvalid, "system auth config is unavailable")
 	}
-	if config.RegistrationMode != "OPEN" {
-		return nil, errors.NewStatus(code.ErrIdentityUserStateInvalid, "registration is not open")
-	}
-	if err := validatePassword(req.Password, config.PasswordPolicy); err != nil {
+	if err := validatePassword(req.Password, req.Username, config.PasswordPolicy); err != nil {
 		return nil, err
 	}
 	normalizedUsername := normalize(req.Username)
 	normalizedEmail := normalize(req.Email)
-	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedUsername); lookupErr == nil && existing != nil && existing.ID != "" {
-		return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username already exists")
-	}
-	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedEmail); lookupErr == nil && existing != nil && existing.ID != "" {
-		return nil, errors.NewStatus(code.ErrIdentityEmailAlreadyExists, "email already exists")
-	}
 	hash, err := hashPassword(req.Password)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password hashing failed")
 	}
 	email := strings.TrimSpace(req.Email)
 	user := &iapiserver.IdentityUser{ObjectMeta: imachinery.ObjectMeta{Name: req.Username}, Username: strings.TrimSpace(req.Username), NormalizedUsername: normalizedUsername, DisplayName: strings.TrimSpace(req.DisplayName), Email: &email, NormalizedEmail: &normalizedEmail, PasswordHash: hash, Status: iapiserver.IdentityUserActive, SecurityVersion: 1, AuthorizationVersion: 1, PasswordChangedAt: pointerTime(imachinery.Now())}
-	created, err := s.store.Identities().CreateUser(ctx, user)
+	if config.RegistrationMode == "ADMIN_APPROVAL" {
+		created, createErr := s.store.Identities().CreatePendingRegistration(ctx, user)
+		if createErr != nil {
+			if strings.Contains(strings.ToLower(createErr.Error()), "unique") {
+				return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username or email already exists")
+			}
+			return nil, createErr
+		}
+		return &iapiserver.IdentityPendingRegistrationResponse{RegistrationApplicationID: created.Application.ID, UserID: created.User.ID, Status: created.Application.Status, SubmittedAt: created.Application.SubmittedAt}, nil
+	}
+	if config.RegistrationMode != "OPEN" {
+		return nil, errors.NewStatus(code.ErrIdentityRegistrationStateInvalid, "registration mode is invalid")
+	}
+	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedUsername); lookupErr == nil && existing != nil && existing.ID != "" {
+		return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username already exists")
+	}
+	if existing, lookupErr := s.store.Identities().GetUserByLogin(ctx, normalizedEmail); lookupErr == nil && existing != nil && existing.ID != "" {
+		return nil, errors.NewStatus(code.ErrIdentityEmailAlreadyExists, "email already exists")
+	}
+	created, err := s.store.Identities().CreateOpenRegistration(ctx, user)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return nil, errors.NewStatus(code.ErrIdentityUsernameAlreadyExists, "username or email already exists")
@@ -99,15 +108,24 @@ func (s *Service) Login(ctx context.Context, req *iapiserver.IdentityLoginReques
 	if err != nil || user == nil {
 		return nil, errors.NewStatus(code.ErrIdentityInvalidCredentials, "invalid credentials")
 	}
-	if user.Status == iapiserver.IdentityUserDisabled || user.Status == iapiserver.IdentityUserDeleted {
-		return nil, errors.NewStatus(code.ErrIdentityAccountDisabled, "account is disabled")
-	}
-	if user.Status == iapiserver.IdentityUserLocked && user.LockedUntil != nil && user.LockedUntil.Time.After(time.Now()) {
-		return nil, errors.NewStatus(code.ErrIdentityAccountLocked, "account is locked")
-	}
 	valid, verifyErr := verifyPassword(user.PasswordHash, req.Password)
 	if verifyErr != nil || !valid {
 		return nil, errors.NewStatus(code.ErrIdentityInvalidCredentials, "invalid credentials")
+	}
+	switch user.Status {
+	case iapiserver.IdentityUserPending:
+		return nil, errors.NewStatus(code.ErrIdentityAccountPending, "account is pending approval")
+	case iapiserver.IdentityUserRejected:
+		return nil, errors.NewStatus(code.ErrIdentityAccountRejected, "account registration was rejected")
+	case iapiserver.IdentityUserDisabled, iapiserver.IdentityUserDeleted:
+		return nil, errors.NewStatus(code.ErrIdentityAccountDisabled, "account is disabled")
+	case iapiserver.IdentityUserLocked:
+		if user.LockedUntil != nil && user.LockedUntil.Time.After(time.Now()) {
+			return nil, errors.NewStatus(code.ErrIdentityAccountLocked, "account is locked")
+		}
+	case iapiserver.IdentityUserActive:
+	default:
+		return nil, errors.NewStatus(code.ErrIdentityUserStateInvalid, "account state is invalid")
 	}
 	user.FailedLoginCount = 0
 	user.LastLoginAt = pointerTime(imachinery.Now())
@@ -237,6 +255,49 @@ func (s *Service) GetUser(ctx context.Context, id string) (*iapiserver.IdentityU
 	return user, nil
 }
 
+// ListRegistrationApplications 查询管理员可见的自主注册申请及最小用户摘要。
+func (s *Service) ListRegistrationApplications(ctx context.Context, req *iapiserver.IdentityRegistrationApplicationListRequest) (any, error) {
+	items, total, err := s.store.Identities().ListRegistrationApplications(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	result := &iapiserver.IdentityRegistrationApplicationListResponse{Total: total, Items: make([]*iapiserver.IdentityRegistrationApplicationResponse, 0, len(items))}
+	for _, item := range items {
+		result.Items = append(result.Items, registrationApplicationResponse(item))
+	}
+	return result, nil
+}
+
+// GetRegistrationApplication 返回单个注册申请详情；不可见申请统一返回稳定业务错误。
+func (s *Service) GetRegistrationApplication(ctx context.Context, id string) (*iapiserver.IdentityRegistrationApplicationResponse, error) {
+	item, err := s.store.Identities().GetRegistrationApplication(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return registrationApplicationResponse(item), nil
+}
+
+// ReviewRegistrationApplication 原子批准或拒绝注册申请，并保留审批审计与可靠事件。
+func (s *Service) ReviewRegistrationApplication(ctx context.Context, id, decision, reason string) (*iapiserver.IdentityRegistrationDecisionResponse, error) {
+	principal, ok := identitymiddleware.PrincipalFromContext(ctx)
+	if !ok || principal.PrincipalID == "" {
+		return nil, errors.NewStatus(code.ErrIdentityAuthzContextInvalid, "principal context is missing")
+	}
+	item, err := s.store.Identities().ReviewRegistrationApplication(ctx, id, decision, reason, principal.PrincipalType, principal.PrincipalID, principal.ActorUserID)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.IdentityRegistrationDecisionResponse{Application: registrationApplicationResponse(item), User: item.User}, nil
+}
+
+func registrationApplicationResponse(item *store.IdentityRegistrationApplicationView) *iapiserver.IdentityRegistrationApplicationResponse {
+	return &iapiserver.IdentityRegistrationApplicationResponse{
+		ID: item.Application.ID, User: item.User, AttemptNo: item.Application.AttemptNo, Status: item.Application.Status,
+		SubmittedAt: item.Application.SubmittedAt, DecidedAt: item.Application.DecidedAt, DecidedBy: item.Application.DecidedBy,
+		DecisionReason: item.Application.DecisionReason, CreatedAt: item.Application.CreatedAt, UpdatedAt: item.Application.UpdatedAt,
+	}
+}
+
 func (s *Service) AdminCreateUser(ctx context.Context, req *iapiserver.IdentityAdminUserCreateRequest) (*iapiserver.IdentityUser, error) {
 	config, err := s.store.PlatformManagement().GetSystemAuthConfig(ctx)
 	if err != nil {
@@ -246,7 +307,7 @@ func (s *Service) AdminCreateUser(ctx context.Context, req *iapiserver.IdentityA
 	if password == "" {
 		password = "ChangeMe!123"
 	}
-	if err := validatePassword(password, config.PasswordPolicy); err != nil {
+	if err := validatePassword(password, req.Username, config.PasswordPolicy); err != nil {
 		return nil, err
 	}
 	hash, err := hashPassword(password)
@@ -615,7 +676,7 @@ func (s *Service) ChangePassword(ctx context.Context, req *iapiserver.IdentityCh
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrPlatformAuthConfigInvalid, "system auth config is unavailable")
 	}
-	if err := validatePassword(req.NewPassword, config.PasswordPolicy); err != nil {
+	if err := validatePassword(req.NewPassword, user.Username, config.PasswordPolicy); err != nil {
 		return nil, err
 	}
 	hash, err := hashPassword(req.NewPassword)
@@ -685,31 +746,27 @@ func redactEmail(email *string) *string {
 	return &masked
 }
 
-func validatePassword(password string, policy json.RawMessage) error {
-	var values struct {
-		MinLength     int  `json:"min_length"`
-		RequireLower  bool `json:"require_lower"`
-		RequireDigit  bool `json:"require_digit"`
-		RequireUpper  bool `json:"require_upper"`
-		RequireSymbol bool `json:"require_symbol"`
+func validatePassword(password, username string, policy iapiserver.PlatformPasswordPolicy) error {
+	minLength := policy.MinLength
+	if minLength == 0 {
+		minLength = 8
 	}
-	_ = json.Unmarshal(policy, &values)
-	if values.MinLength == 0 {
-		values.MinLength = 8
-	}
-	if len(password) < values.MinLength {
+	if len(password) < minLength || policy.MaxLength > 0 && len(password) > policy.MaxLength {
 		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
 	}
-	if values.RequireLower && !strings.ContainsAny(password, "abcdefghijklmnopqrstuvwxyz") {
+	if policy.RequireLowercase && !strings.ContainsAny(password, "abcdefghijklmnopqrstuvwxyz") {
 		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
 	}
-	if values.RequireUpper && !strings.ContainsAny(password, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+	if policy.RequireUppercase && !strings.ContainsAny(password, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
 	}
-	if values.RequireDigit && !strings.ContainsAny(password, "0123456789") {
+	if policy.RequireDigit && !strings.ContainsAny(password, "0123456789") {
 		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
 	}
-	if values.RequireSymbol && !strings.ContainsAny(password, "!@#$%^&*()-_=+[]{};:,.?/") {
+	if policy.RequireSpecialCharacter && !strings.ContainsAny(password, "!@#$%^&*()-_=+[]{};:,.?/") {
+		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
+	}
+	if policy.DisallowUsername && username != "" && strings.Contains(strings.ToLower(password), strings.ToLower(username)) {
 		return errors.NewStatus(code.ErrIdentityPasswordPolicyFailed, "password policy failed")
 	}
 	return nil
