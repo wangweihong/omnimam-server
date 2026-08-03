@@ -2,8 +2,11 @@
 
 ## Current goal and status
 
-- Goal: 拉取并 pin 已发布的 SSOT `spec-v1.15.1`，按该版本实现后端 AppStudio 合同变更。
-- Status: 已完成并通过目标包验证，尚未提交。
+- Goal: 明确用户登录后前端判定角色/权限的正式契约。
+- Status: 已完成 SSOT 与当前后端路由核查；本次为只读答复，无代码行为变更。
+
+- Goal: 修复首个注册用户登录授权投影中 `effective_roles: null`，按已发布 Identity S2 返回有效角色来源。
+- Status: 已完成实现并通过 Identity 目标包验证，已提交当前 HEAD。
 
 ## Work completed in this session
 
@@ -12,10 +15,18 @@
 - 已同步 `SSOT_VERSION` 的 commit、contract version、日期和 release note。
 - 已从 `StudioApplicationCreateRequest`、`StudioApplication` 和创建服务中移除 `template_id`、`technology_stack`。
 - 已运行 `make gen.deepcopy`；生成文件没有变化。
+- 已新增 Identity Store 有效角色查询，覆盖直接角色与用户组角色，并过滤无效角色/授权期。
+- 登录、Refresh、`GET /api/v1/iam/auth/permissions` 现在统一返回非空 `effective_roles`、`permission_codes`、`allowed_actions` 和 `session_mode`。
 
 ## Current in-progress work
 
 - None.
+
+## This session
+
+- 已核对 `ssot/01_contracts/domains/identity/openapi.yaml` 的 `login_finish`、`refresh_token`、`get_current_permissions`、`get_current_user`。
+- 已核对 `ssot/00_product/domains/identity/product-spec.md` 的授权投影规则：菜单/按钮/动作只使用 `permission_codes` 与 `allowed_actions`，不得按角色名授权；JWT 不包含权限码。
+- 当前后端路由通过 `RequireIdentityPermission("<permission>")` 强制服务端授权，前端判定仅用于 UX，不能替代后端校验。
 
 ## Files added, modified, renamed, or removed
 
@@ -24,6 +35,9 @@
 - Modified: `backend/apis/iapiserver/meta_appstudio.go`。
 - Modified: `backend/internal/apiserver/service/v1/appstudio/service.go`。
 - Modified: `docs/HANDOFF.md`。
+- Modified: `backend/internal/apiserver/store/store.go`。
+- Modified: `backend/internal/apiserver/store/postgresql/identity_v11.go`。
+- Modified: `backend/internal/apiserver/service/v1/identity/identity.go`。
 - Modified: `ssot` submodule pointer。
 
 ## Key architectural or design decisions
@@ -52,11 +66,15 @@
 
 ## Known issues and risks
 
+- 登录实现使用 OPAQUE 两阶段流程；登录完成和 refresh 响应包含完整 `authorization` 投影，不能只解析 token。
+- 授权版本变化后必须整体替换投影并重新请求 `/api/v1/iam/auth/permissions`，不能在客户端增量拼装角色/权限。
+- `effective_roles` 现在由数据库角色授权关系实时构造；若历史数据确实没有任何角色授权，返回空数组而不是 `null`，需通过角色管理/数据修复补齐授权事实。
+
 - 按用户要求，已有数据库中的旧列不会被本次变更主动删除；运行时代码不再读写这些列。
 
 ## Exact recommended next step
 
-检查当前 diff 后提交 `ssot` pin、`SSOT_VERSION` 和 AppStudio 最小实现变更。
+后续如继续 Identity 授权工作，先读取本文件并确认当前 HEAD 已包含本次修复，再处理新的未完成事项。
 
 Next Prompt:
 

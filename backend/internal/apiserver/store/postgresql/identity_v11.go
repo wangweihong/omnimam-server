@@ -248,6 +248,31 @@ func (s *identityStore) PermissionCodes(ctx context.Context, principalType, prin
 	return codes, user.AuthorizationVersion, nil
 }
 
+func (s *identityStore) EffectiveRoles(ctx context.Context, principalType, principalID string) ([]iapiserver.IdentityEffectiveRole, error) {
+	roles := make([]iapiserver.IdentityEffectiveRole, 0)
+	if principalType != "USER" {
+		return roles, nil
+	}
+	const query = `
+		SELECT r.id, r.code, r.name, 'DIRECT' AS source, NULL AS source_id
+		FROM identity_user_role_grants ur
+		JOIN identity_roles r ON r.id = ur.role_id
+		WHERE ur.user_id = ? AND r.status = 'ACTIVE'
+		  AND (ur.effective_from IS NULL OR ur.effective_from <= CURRENT_TIMESTAMP)
+		  AND (ur.effective_to IS NULL OR ur.effective_to > CURRENT_TIMESTAMP)
+		UNION ALL
+		SELECT r.id, r.code, r.name, 'GROUP' AS source, gm.group_id AS source_id
+		FROM identity_group_members gm
+		JOIN identity_group_role_grants gr ON gr.group_id = gm.group_id
+		JOIN identity_roles r ON r.id = gr.role_id
+		WHERE gm.user_id = ? AND r.status = 'ACTIVE'
+		ORDER BY code, source, source_id`
+	if err := s.ds.db.WithContext(ctx).Raw(query, principalID, principalID).Scan(&roles).Error; err != nil {
+		return nil, err
+	}
+	return roles, nil
+}
+
 // UserHasAnyRole 判断用户是否通过直接授权或组授权持有指定 Identity 角色。
 func (s *identityStore) UserHasAnyRole(ctx context.Context, userID string, roleCodes []string) (bool, error) {
 	if len(roleCodes) == 0 {

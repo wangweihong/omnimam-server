@@ -67,6 +67,8 @@ type IdentityStore interface {
 	MarkRefreshTokenUsed(ctx context.Context, id string) error
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error
 	PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error)
+	// EffectiveRoles 返回当前主体的有效角色及其授权来源，供授权投影展示使用。
+	EffectiveRoles(ctx context.Context, principalType, principalID string) ([]iapiserver.IdentityEffectiveRole, error)
 	UserHasAnyRole(ctx context.Context, userID string, roleCodes []string) (bool, error)
 	EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition, rolePermissions map[string][]string) error
 }

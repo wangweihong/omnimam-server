@@ -224,11 +224,36 @@ func (s *Service) Permissions(ctx context.Context) (*iapiserver.IdentityPermissi
 	if !ok {
 		return nil, errors.NewStatus(code.ErrIdentityAuthzContextInvalid, "principal context is missing")
 	}
-	codes, version, err := s.store.Identities().PermissionCodes(ctx, p.PrincipalType, p.PrincipalID)
+	sessionMode := "NORMAL"
+	if p.PrincipalType == "USER" {
+		user, err := s.store.Identities().GetUser(ctx, p.PrincipalID)
+		if err != nil {
+			return nil, err
+		}
+		if user.FirstLoginRequired {
+			sessionMode = "FIRST_LOGIN_RESTRICTED"
+		}
+	}
+	return s.authorizationProjection(ctx, p.PrincipalType, p.PrincipalID, p.ActorUserID, sessionMode)
+}
+
+func (s *Service) authorizationProjection(ctx context.Context, principalType, principalID, actorUserID, sessionMode string) (*iapiserver.IdentityPermissionProjection, error) {
+	codes, version, err := s.store.Identities().PermissionCodes(ctx, principalType, principalID)
 	if err != nil {
 		return nil, err
 	}
-	return &iapiserver.IdentityPermissionProjection{PrincipalType: p.PrincipalType, PrincipalID: p.PrincipalID, ActorUserID: p.ActorUserID, AuthorizationVersion: version, PermissionCodes: codes}, nil
+	roles, err := s.store.Identities().EffectiveRoles(ctx, principalType, principalID)
+	if err != nil {
+		return nil, err
+	}
+	if codes == nil {
+		codes = make([]string, 0)
+	}
+	return &iapiserver.IdentityPermissionProjection{
+		PrincipalType: principalType, PrincipalID: principalID, ActorUserID: actorUserID,
+		AuthorizationVersion: version, EffectiveRoles: roles, PermissionCodes: codes,
+		SessionMode: sessionMode, AllowedActions: make([]string, 0),
+	}, nil
 }
 
 func (s *Service) ListUsers(ctx context.Context, req *iapiserver.IdentityUserListRequest) (any, error) {
@@ -658,7 +683,15 @@ func (s *Service) issueSessionOnExisting(ctx context.Context, user *iapiserver.I
 		return nil, err
 	}
 	user.NormalizedEmail = nil
-	return &iapiserver.IdentityAuthUserResponse{User: user, AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: config.AccessTokenLifetimeSeconds, FirstLoginRequired: user.FirstLoginRequired}, nil
+	sessionMode := "NORMAL"
+	if user.FirstLoginRequired {
+		sessionMode = "FIRST_LOGIN_RESTRICTED"
+	}
+	authorization, err := s.authorizationProjection(ctx, "USER", user.ID, "", sessionMode)
+	if err != nil {
+		return nil, err
+	}
+	return &iapiserver.IdentityAuthUserResponse{User: user, AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: config.AccessTokenLifetimeSeconds, FirstLoginRequired: user.FirstLoginRequired, Authorization: authorization}, nil
 }
 
 func normalize(value string) string                      { return strings.ToLower(strings.TrimSpace(value)) }
