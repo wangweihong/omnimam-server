@@ -2,33 +2,27 @@
 
 ## Current goal and status
 
-- Goal: 提供测试脚本，删除 `deployments_omnimam_postgres_data` 中 OmniMAM PostgreSQL 数据库的所有业务表。
-- Status: 已完成；脚本、使用文档和静态验证均已完成。
-- Current SSOT: released tag `spec-v1.15.0`, gitlink `1445e30d800c7ae4598bed42811c787bf7d39fbd`；`SSOT_VERSION` 与 submodule 一致。
+- Goal: 排查用户注册后登出，再用相同密码登录失败的问题；重点核对 Identity 模块 OPAQUE registration record 的生成/保存，以及登录 challenge 使用的 server setup、user identifier 和前端默认配置是否一致。
+- Status: 排查中，仅分析，不修改业务代码。
 
 ## Work completed in this session
 
-- 已读取 `skills/omnimam-server-backend/SKILL.md`、`backend/AGENTS.md`、相关 Compose 配置和部署文档。
-- 已确认 `deployments_omnimam_postgres_data` 挂载到 `omnimam-postgres:/var/lib/postgresql/data`，默认业务数据库为 `omnimam`。
-- 已新增 `deployments/postgres/drop-all-tables.sh`，要求显式传入 `--force`，并检查目标 volume、容器挂载和运行状态。
-- 脚本只删除 `$POSTGRES_DB` 的 `public` schema 内所有普通表，不删除 volume、数据库或独立 `conductor` 数据库。
-- 已在 `deployments/README.md` 添加测试数据库清理说明。
+- 已读取 `skills/omnimam-server-backend/SKILL.md` 与 `backend/AGENTS.md`。
+- 已沿用既有复现结论：用户为 `ACTIVE`、registration record 存在，`login/start` 返回有效 `ke2`，前端 `finishLogin` 返回空值，因此未调用 `login/finish`。
+- 当前最高可疑点是 Go 后端使用自定义 OPAQUE Context `omnimam/identity/opaque/v1`，而前端 `@serenity-kit/opaque@1.1.0` 调用未显式传递该 Context；仍需读取库默认值和双方 wire/config 以确认。
 
 ## Current in-progress work
 
-- None.
+- 对比 Go OPAQUE configuration、前端 OPAQUE 封装及依赖库默认 suite/context/record 编码。
 
 ## Files added, modified, renamed, or removed
 
-- Added: `deployments/postgres/drop-all-tables.sh`。
-- Modified: `deployments/README.md`、`docs/HANDOFF.md`。
+- Modified: `docs/HANDOFF.md`（仅更新本次排查状态）。
 
 ## Key architectural or design decisions
 
-- 使用现有 PostgreSQL 容器内的 `psql`，不引入本地主机 PostgreSQL client 或新二进制。
-- 删除范围限定为业务数据库 `public` schema 中的表；通过 `CASCADE` 处理外键和依赖关系。
-- 在执行破坏性 SQL 前验证容器的数据目录确实挂载指定 volume，避免误清其他 Compose 实例。
-- 本任务不改变产品语义、API、Schema 定义、migration 或运行时代码，因此不读取 SSOT 业务规范。
+- 本轮只做只读排查与可复现实验，不清理数据库、不旋转 OPAQUE setup、不修改 API 或业务代码。
+- 只读取 Identity 目标模块、其直接相关测试和前端 OPAQUE 封装；不递归扫描整个 SSOT 或无关模块。
 
 ## API, schema, dependency, or configuration changes
 
@@ -36,25 +30,20 @@
 
 ## Verification performed and remaining checks
 
-- 已确认 SSOT gitlink、release 状态与 `SSOT_VERSION.commit` 一致。
-- 已通过 `sh -n deployments/postgres/drop-all-tables.sh`。
-- 已验证未传 `--force` 时脚本返回状态码 `2`，且在调用 Docker 前退出。
-- 已通过 `git diff --check`，并确认脚本具备可执行权限。
-- 当前环境未安装 `shellcheck`，因此未运行该项检查。
-- 不会在未获明确授权时对当前 PostgreSQL 数据执行真实清表测试。
+- 已复现 `login/start` 成功但浏览器端 `finishLogin` 返回 `null`。
+- Remaining: 确认 Go 与 JS 的 OPAQUE context、suite、identifier 字节编码和 registration record 编解码是否完全一致；必要时用相同 record 做最小跨语言验证。
 
 ## Outstanding tasks
 
-- None.
+- 完成配置差异定位并给出证据链与不修改前提下的修复建议。
 
 ## Known issues and risks
 
-- 清表是不可逆操作；脚本要求 `--force`，但执行前仍应确认目标是测试环境。
-- `CASCADE` 可能同时删除依赖这些表的 `public` schema 对象，这是完整删除关联表所必需的 PostgreSQL 行为。
+- 当前不能仅凭 `login/start` 的 HTTP 200 判断密码校验通过；真正失败发生在浏览器端 OPAQUE client 处理 `ke2` 阶段。
 
 ## Exact recommended next step
 
-在确认数据可丢弃的测试环境中执行 `deployments/postgres/drop-all-tables.sh --force`。
+读取 `backend/internal/apiserver/service/v1/identity/opaque.go`、`opaque_service.go` 及前端 `shared/auth/opaque`，再检查 `@serenity-kit/opaque` 1.1.0 的默认配置和测试向量。
 
 Next Prompt:
 

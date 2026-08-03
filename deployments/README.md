@@ -32,6 +32,13 @@ make frontend.image FRONTEND_VERSION=latest FRONTEND_REGISTRY_PREFIX=omnimam FRO
 docker compose -f deployments/docker-compose.yaml up -d
 ```
 
+Compose 提供与 `scripts/install/environment.sh` 一致的本地开发默认值，不使用 `.env`，
+因此直接命令无需预先 source。停止并删除后端 Compose 服务：
+
+```bash
+docker compose -f deployments/docker-compose.yaml down
+```
+
 Conductor 的业务元数据和运行历史保存在独立 PostgreSQL 数据库，延迟任务与 Scheduler
 队列使用开启 AOF 的 Redis。该组合用于保证六段秒级 cron 按期触发，并避免 PostgreSQL
 Queue 的 unack 回收周期放大短周期调度延迟。RedisQueueDAO 使用 Jedis，Redis 可用性由

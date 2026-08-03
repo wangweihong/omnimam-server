@@ -168,6 +168,27 @@ Next Prompt:
 Read docs/HANDOFF.md, verify the current implementation, and continue with the next outstanding task. Do not repeat completed work.
 ```
 
+## 环境变量管理限制
+
+安装脚本环境变量必须统一定义在以下文件；Compose 对应变量按本节的自包含与同步规则维护：
+
+```text
+./scripts/install/environment.sh
+```
+
+要求：
+
+```text
+./scripts/install/environment.sh 是安装脚本环境变量声明及默认值的事实源。
+新增或调整安装、Compose、部署脚本使用的环境变量时，必须先修改该文件。
+需要传递给 Docker Compose 或其他子进程的变量，必须由该文件显式 export。
+标准 docker compose up/down 必须可以直接执行，不得要求用户预先 source 环境脚本。
+Compose 插值所需变量必须提供安全的本地开发默认值；默认值与 ./scripts/install/environment.sh 中的对应定义必须保持一致并同步修改。
+Makefile 和安装脚本应自动 source ./scripts/install/environment.sh，不得把该操作转嫁给用户。
+禁止新增或依赖 .env、.env.*、Compose env_file 或其他平行的部署环境变量文件。
+不得把真实生产密钥写入仓库；非本地部署必须通过进程环境覆盖仓库内的开发默认值。
+```
+
 
 ## 引入新二进制限制
 未经用户许可，禁止自行在backend/cmd/ 目录下引入新的二进制文件。
