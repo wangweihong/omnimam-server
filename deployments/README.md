@@ -47,6 +47,19 @@ source event、执行规则和保留清理，并将 Notification Outbox 投影�
 - Web Console: `http://localhost:9990`
 - API Server: `http://localhost:8080`
 
+## 清空测试数据库
+
+仅在测试环境需要重新执行 migration 时，可删除
+`deployments_omnimam_postgres_data` 中 OmniMAM 数据库 `public` schema 的所有表：
+
+```bash
+deployments/postgres/drop-all-tables.sh --force
+```
+
+脚本要求 `omnimam-postgres` 容器正在运行，并会确认容器实际挂载了目标 volume。
+它不会删除 volume，也不会清理独立的 `conductor` 数据库。可通过
+`OMNIMAM_POSTGRES_CONTAINER` 和 `OMNIMAM_POSTGRES_VOLUME` 覆盖容器名和 volume 名。
+
 如果只需要重建 frontend 镜像：
 
 ```bash
