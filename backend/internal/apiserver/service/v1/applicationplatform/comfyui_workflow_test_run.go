@@ -125,14 +125,14 @@ func (s *applicationPlatformService) CreateComfyUIWorkflowTestRun(ctx context.Co
 }
 
 func (s *applicationPlatformService) GetComfyUIWorkflowTestRun(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
-	run, err := s.visibleComfyTestRun(ctx, id)
+	run, err := s.visibleComfyTestRun(ctx, id, "read_test_run")
 	if err != nil {
 		return nil, err
 	}
 	return s.projectComfyTestRun(ctx, run)
 }
 func (s *applicationPlatformService) CancelComfyUIWorkflowTestRun(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
-	run, err := s.visibleComfyTestRun(ctx, id)
+	run, err := s.visibleComfyTestRun(ctx, id, "cancel_test_run")
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func (s *applicationPlatformService) CancelComfyUIWorkflowTestRun(ctx context.Co
 	return s.projectComfyTestRun(ctx, run)
 }
 func (s *applicationPlatformService) GetComfyUIWorkflowTestOutputContent(ctx context.Context, id, outputID string) ([]byte, string, error) {
-	run, err := s.visibleComfyTestRun(ctx, id)
+	run, err := s.visibleComfyTestRun(ctx, id, "read_test_output")
 	if err != nil {
 		return nil, "", err
 	}
@@ -194,14 +194,19 @@ func (s *applicationPlatformService) GetComfyUIWorkflowTestOutputContent(ctx con
 	}
 	return []byte(response.GetBody()), contentType, nil
 }
-func (s *applicationPlatformService) visibleComfyTestRun(ctx context.Context, id string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
+func (s *applicationPlatformService) visibleComfyTestRun(ctx context.Context, id, action string) (*iapiserver.ComfyUIWorkflowTestRun, error) {
 	p, err := s.principal(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	run, err := s.Store.ApplicationPlatforms().GetComfyUIWorkflowTestRun(ctx, id)
-	if err != nil || (!p.Admin && run.OwnerUserID != p.UserID) {
+	if err != nil || (run.OwnerUserID != p.UserID && (!p.Admin || !p.HasPermission("aiapp.comfyui_workflow.manage_all"))) {
 		return nil, errors.NewStatus(code.ErrAIAppComfyUITestRunNotFound, "test run not found")
+	}
+	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: run.OwnerUserID}
+	workflow.ID = run.WorkflowID
+	if err := s.auditManagedWorkflow(ctx, p, workflow, action); err != nil {
+		return nil, errors.NewStatus(code.ErrAIAppComfyUIWorkflowAccessDenied, "managed workflow access could not be audited")
 	}
 	return run, nil
 }

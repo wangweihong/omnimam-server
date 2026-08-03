@@ -7,19 +7,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
 
-func TestApplicationPlatformLegacyMigrationIsConditional(t *testing.T) {
-	for _, marker := range []string{"pg_advisory_xact_lock", "information_schema.columns", "converted_application_template_id", "aiapp_engine_instances", "DROP TABLE IF EXISTS"} {
-		if !strings.Contains(applicationPlatformLegacySchemaSQL, marker) {
-			t.Fatalf("legacy migration missing %q", marker)
-		}
-	}
-	for _, removed := range []string{"source_engine_instance_id", "converted_application_template_id", "source_workflow_validation_id", "reset_application_runs", "watermill_%"} {
-		if strings.Contains(applicationPlatformConstraintsSQL, removed) || strings.Contains(applicationPlatformLegacySchemaSQL, removed) && removed != "converted_application_template_id" {
-			t.Fatalf("application platform migration still contains removed compatibility marker %q", removed)
-		}
-	}
-}
-
 func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 	markers := []string{
 		"idx_aiapp_engine_instances_name",
@@ -50,10 +37,13 @@ func TestApplicationPlatformConstraintsCoverSSOTResources(t *testing.T) {
 			t.Fatalf("application platform constraints missing %q", marker)
 		}
 	}
-	for _, marker := range []string{"confdeltype <> 'c'", "fk_aiapp_binding_engine", "ON DELETE CASCADE"} {
-		if !strings.Contains(applicationPlatformBindingCascadeSQL, marker) {
-			t.Fatalf("application platform binding cascade migration missing %q", marker)
+	for _, marker := range []string{"IF NOT EXISTS", "fk_aiapp_binding_engine", "ON DELETE CASCADE"} {
+		if !strings.Contains(applicationPlatformBindingConstraintSQL, marker) {
+			t.Fatalf("application platform binding constraint missing %q", marker)
 		}
+	}
+	if strings.Contains(applicationPlatformBindingConstraintSQL, "DROP CONSTRAINT") {
+		t.Fatal("application platform binding constraint contains historical replacement logic")
 	}
 }
 

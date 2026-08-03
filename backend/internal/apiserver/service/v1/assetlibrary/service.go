@@ -122,7 +122,7 @@ func New(factory store.Factory, storage ContentStorage) Service {
 		factory.AssetsV1(),
 		storage,
 		DefaultRepresentationPolicy{},
-		WithStorageInspection(factory.StorageBackends(), NewRoleStorageAdminAuthorizer(factory.Roles(), factory.UserRoles())),
+		WithStorageInspection(factory.StorageBackends(), NewIdentityStorageAdminAuthorizer(factory.Identities())),
 	)
 }
 

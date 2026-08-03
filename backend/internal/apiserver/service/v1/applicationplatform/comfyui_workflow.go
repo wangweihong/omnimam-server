@@ -28,7 +28,7 @@ func (s *applicationPlatformService) ListComfyUIWorkflows(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	if !p.Admin {
+	if !p.Admin || !p.HasPermission("aiapp.comfyui_workflow.manage_all") {
 		req.OwnerUserID = p.UserID
 	}
 	items, total, err := s.Store.ApplicationPlatforms().ListComfyUIWorkflows(ctx, req)
@@ -328,7 +328,7 @@ func (s *applicationPlatformService) visibleComfyUIWorkflow(ctx context.Context,
 	if err != nil {
 		return nil, p, errors.NewStatus(code.ErrAIAppComfyUIWorkflowNotFound, "workflow not found")
 	}
-	if !p.Admin && workflow.OwnerUserID != p.UserID {
+	if workflow.OwnerUserID != p.UserID && (!p.Admin || !p.HasPermission("aiapp.comfyui_workflow.manage_all")) {
 		return nil, p, errors.NewStatus(code.ErrAIAppComfyUIWorkflowNotFound, "workflow not found")
 	}
 	if err := s.auditManagedWorkflow(ctx, p, workflow, action); err != nil {
@@ -337,7 +337,7 @@ func (s *applicationPlatformService) visibleComfyUIWorkflow(ctx context.Context,
 	return workflow, p, nil
 }
 func (s *applicationPlatformService) auditManagedWorkflow(ctx context.Context, p Principal, workflow *iapiserver.ComfyUIWorkflow, action string) error {
-	if !p.Admin || workflow.OwnerUserID == p.UserID {
+	if workflow.OwnerUserID == p.UserID {
 		return nil
 	}
 	auditor := s.WorkflowAudit

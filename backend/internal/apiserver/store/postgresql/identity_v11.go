@@ -65,7 +65,7 @@ func (s *identityStore) CreateUser(ctx context.Context, user *iapiserver.Identit
 		// The first local account receives the bootstrap role; subsequent authorization changes remain explicit RBAC facts.
 		if count == 0 {
 			var role iapiserver.IdentityRole
-			if err := tx.Where("code = ?", "super_admin").First(&role).Error; err == nil {
+			if err := tx.Where("code = ?", "SUPER_ADMIN").First(&role).Error; err == nil {
 				grant := &iapiserver.IdentityUserRoleGrant{ID: uuid.NewString(), UserID: user.ID, RoleID: role.ID, CreatedAt: imachinery.Now()}
 				if err := tx.Create(grant).Error; err != nil {
 					return err
@@ -89,7 +89,7 @@ func (s *identityStore) CreateOpenRegistration(ctx context.Context, user *iapise
 		}
 		if activeCount == 0 {
 			var bootstrapRole iapiserver.IdentityRole
-			if err := tx.Where("code = ?", "super_admin").First(&bootstrapRole).Error; err != nil {
+			if err := tx.Where("code = ?", "SUPER_ADMIN").First(&bootstrapRole).Error; err != nil {
 				return errors.NewStatus(code.ErrIdentityUserCreateInvalid, "bootstrap role is unavailable")
 			}
 			if err := tx.Create(&iapiserver.IdentityUserRoleGrant{ID: uuid.NewString(), UserID: user.ID, RoleID: bootstrapRole.ID, CreatedAt: imachinery.Now()}).Error; err != nil {
@@ -248,6 +248,33 @@ func (s *identityStore) PermissionCodes(ctx context.Context, principalType, prin
 	return codes, user.AuthorizationVersion, nil
 }
 
+// UserHasAnyRole 判断用户是否通过直接授权或组授权持有指定 Identity 角色。
+func (s *identityStore) UserHasAnyRole(ctx context.Context, userID string, roleCodes []string) (bool, error) {
+	if len(roleCodes) == 0 {
+		return false, nil
+	}
+	var count int64
+	if err := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.IdentityUserRoleGrant{}).
+		Joins("JOIN identity_roles ON identity_roles.id = identity_user_role_grants.role_id").
+		Where("identity_user_role_grants.user_id = ? AND identity_roles.code IN ? AND identity_roles.status = ?", userID, roleCodes, "ACTIVE").
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count != 0 {
+		return true, nil
+	}
+	if err := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.IdentityGroupMember{}).
+		Joins("JOIN identity_group_role_grants ON identity_group_role_grants.group_id = identity_group_members.group_id").
+		Joins("JOIN identity_roles ON identity_roles.id = identity_group_role_grants.role_id").
+		Where("identity_group_members.user_id = ? AND identity_roles.code IN ? AND identity_roles.status = ?", userID, roleCodes, "ACTIVE").
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count != 0, nil
+}
+
 func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition, rolePermissions map[string][]string) error {
 	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, permission := range permissions {
@@ -258,9 +285,38 @@ func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permission
 				}
 			} else if err != nil {
 				return err
+			} else if existing.Name != permission.Name || existing.Domain != permission.Domain ||
+				existing.Resource != permission.Resource || existing.Action != permission.Action ||
+				existing.RiskLevel != permission.RiskLevel || existing.Status != permission.Status {
+				updates := map[string]any{
+					"name": permission.Name, "domain": permission.Domain, "resource": permission.Resource,
+					"action": permission.Action, "risk_level": permission.RiskLevel, "status": permission.Status,
+				}
+				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+					return err
+				}
 			}
 		}
-		builtinRoles := []struct{ code, name string }{{"super_admin", "Super Administrator"}, {"USER", "User"}, {"ADMIN", "Administrator"}, {"SUPER_ADMIN", "Super Administrator"}}
+		var legacyRole iapiserver.IdentityRole
+		if err := tx.Where("code = ?", "super_admin").First(&legacyRole).Error; err == nil {
+			for _, grant := range []any{
+				&iapiserver.IdentityRolePermissionGrant{},
+				&iapiserver.IdentityUserRoleGrant{},
+				&iapiserver.IdentityGroupRoleGrant{},
+				&iapiserver.IdentityServiceAccountRoleGrant{},
+			} {
+				if err := tx.Where("role_id = ?", legacyRole.ID).Delete(grant).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Unscoped().Delete(&legacyRole).Error; err != nil {
+				return err
+			}
+		} else if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		builtinRoles := []struct{ code, name string }{{"USER", "User"}, {"ADMIN", "Administrator"}, {"SUPER_ADMIN", "Super Administrator"}}
 		var role iapiserver.IdentityRole
 		for _, builtin := range builtinRoles {
 			role = iapiserver.IdentityRole{}
@@ -272,6 +328,12 @@ func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permission
 				}
 			} else if err != nil {
 				return err
+			} else if role.Name != builtin.name || !role.Builtin || role.Status != "ACTIVE" {
+				if err := tx.Model(&role).Updates(map[string]any{
+					"name": builtin.name, "builtin": true, "status": "ACTIVE",
+				}).Error; err != nil {
+					return err
+				}
 			}
 		}
 		grantPermissions := func(roleID string, permissionCodes []string) error {
@@ -284,19 +346,12 @@ func (s *identityStore) EnsureDefaultPermissions(ctx context.Context, permission
 			return nil
 		}
 
-		// 保留历史 bootstrap 角色的全量权限；新角色按显式默认集合授予，内部权限不进入用户角色。
-		role = iapiserver.IdentityRole{}
-		if err := tx.Where("code = ?", "super_admin").First(&role).Error; err != nil {
-			return err
-		}
-		for _, permission := range permissions {
-			if err := grantPermissions(role.ID, []string{permission.Code}); err != nil {
-				return err
-			}
-		}
 		for roleCode, permissionCodes := range rolePermissions {
 			role = iapiserver.IdentityRole{}
 			if err := tx.Where("code = ?", roleCode).First(&role).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("role_id = ?", role.ID).Delete(&iapiserver.IdentityRolePermissionGrant{}).Error; err != nil {
 				return err
 			}
 			if err := grantPermissions(role.ID, permissionCodes); err != nil {

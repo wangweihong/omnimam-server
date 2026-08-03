@@ -9,6 +9,7 @@ import (
 	toolerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	identitymiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
@@ -20,6 +21,24 @@ type systemBindingFactory struct {
 
 func (f *systemBindingFactory) ApplicationPlatforms() store.ApplicationPlatformStore {
 	return f.applications
+}
+
+type principalResolverFactory struct {
+	store.Factory
+	identity store.IdentityStore
+}
+
+func (f *principalResolverFactory) Identities() store.IdentityStore { return f.identity }
+
+type principalResolverIdentityStore struct {
+	store.IdentityStore
+	hasRole   bool
+	roleCodes []string
+}
+
+func (s *principalResolverIdentityStore) UserHasAnyRole(_ context.Context, _ string, roleCodes []string) (bool, error) {
+	s.roleCodes = append([]string(nil), roleCodes...)
+	return s.hasRole, nil
 }
 
 type systemBindingStore struct {
@@ -77,6 +96,29 @@ func newSystemBindingService(t *testing.T, storage *systemBindingStore) *EngineS
 		t.Fatal(err)
 	}
 	return service
+}
+
+func TestStorePrincipalResolverUsesIdentityRoles(t *testing.T) {
+	identityStore := &principalResolverIdentityStore{hasRole: true}
+	resolver := NewStorePrincipalResolver(&principalResolverFactory{identity: identityStore})
+	user := &iapiserver.User{}
+	user.ID = "admin-1"
+	ctx := context.WithValue(context.Background(), iapiserver.GinContextKeyUser, user)
+	ctx = context.WithValue(ctx, identitymiddleware.IdentityPrincipalContextKey, identitymiddleware.IdentityPrincipal{
+		PrincipalID: "admin-1",
+		Permissions: map[string]struct{}{"aiapp.application.manage_global": {}},
+	})
+	principal, err := resolver.Resolve(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !principal.Admin || !principal.HasPermission("aiapp.application.manage_global") {
+		t.Fatalf("unexpected principal: %#v", principal)
+	}
+	wantRoleCodes := []string{"ADMIN", "SUPER_ADMIN"}
+	if fmt.Sprint(identityStore.roleCodes) != fmt.Sprint(wantRoleCodes) {
+		t.Fatalf("role codes=%v, want %v", identityStore.roleCodes, wantRoleCodes)
+	}
 }
 
 func TestCreateComfyUIEngineIncludesRequiredSystemBinding(t *testing.T) {

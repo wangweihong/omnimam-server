@@ -10,15 +10,13 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 func TestStorageInspectionRejectsNonAdminBeforeRepository(t *testing.T) {
 	repository := &storageInspectionRepositoryFake{}
-	authorizer := NewRoleStorageAdminAuthorizer(
-		roleStoreFake{items: []*iapiserver.Role{{ObjectMeta: objectMeta("role-user", "USER")}}},
-		userRoleStoreFake{items: []*iapiserver.UserRole{{UserID: "user-1", RoleID: "role-user"}}},
-	)
+	authorizer := NewIdentityStorageAdminAuthorizer(&storageAdminIdentityStoreFake{roleCode: "USER"})
 	service := &service{storageInspection: repository, storageAdmin: authorizer}
 	ctx := storageUserContext("user-1")
 
@@ -46,10 +44,7 @@ func TestStorageInspectionAcceptsReleasedAdministratorRoles(t *testing.T) {
 	for _, roleName := range []string{"ADMIN", "SUPER_ADMIN"} {
 		t.Run(roleName, func(t *testing.T) {
 			repository := &storageInspectionRepositoryFake{}
-			authorizer := NewRoleStorageAdminAuthorizer(
-				roleStoreFake{items: []*iapiserver.Role{{ObjectMeta: objectMeta("role-admin", roleName)}}},
-				userRoleStoreFake{items: []*iapiserver.UserRole{{UserID: "admin-1", RoleID: "role-admin"}}},
-			)
+			authorizer := NewIdentityStorageAdminAuthorizer(&storageAdminIdentityStoreFake{roleCode: roleName})
 			service := &service{storageInspection: repository, storageAdmin: authorizer}
 
 			if _, err := service.ListStorageBackends(storageUserContext("admin-1"), &iapiserver.StorageBackendListRequest{}); err != nil {
@@ -72,10 +67,7 @@ func TestStorageInspectionReturnsCompleteAdminProjection(t *testing.T) {
 		ObjectKey: "blobs/aa/content", SHA256: "aabb", SizeBytes: 42, MIMEType: "image/png", Status: "available",
 	}
 	repository := &storageInspectionRepositoryFake{backend: backend, blob: blob}
-	authorizer := NewRoleStorageAdminAuthorizer(
-		roleStoreFake{items: []*iapiserver.Role{{ObjectMeta: objectMeta("role-admin", "ADMIN")}}},
-		userRoleStoreFake{items: []*iapiserver.UserRole{{UserID: "admin-1", RoleID: "role-admin"}}},
-	)
+	authorizer := NewIdentityStorageAdminAuthorizer(&storageAdminIdentityStoreFake{roleCode: "ADMIN"})
 	service := &service{storageInspection: repository, storageAdmin: authorizer}
 	ctx := storageUserContext("admin-1")
 
@@ -116,7 +108,7 @@ func TestStorageInspectionMapsReleasedNotFoundErrors(t *testing.T) {
 	repository := &storageInspectionRepositoryFake{getBlobErr: gorm.ErrRecordNotFound, getBackendErr: gorm.ErrRecordNotFound}
 	service := &service{
 		storageInspection: repository,
-		storageAdmin:      NewRoleStorageAdminAuthorizer(nil, nil),
+		storageAdmin:      NewIdentityStorageAdminAuthorizer(nil),
 	}
 	ctx := storageUserContext("system-admin")
 
@@ -132,7 +124,7 @@ func TestStorageInspectionCreateAndUpdatePreserveReleasedFields(t *testing.T) {
 	repository := &storageInspectionRepositoryFake{}
 	service := &service{
 		storageInspection: repository,
-		storageAdmin:      NewRoleStorageAdminAuthorizer(nil, nil),
+		storageAdmin:      NewIdentityStorageAdminAuthorizer(nil),
 	}
 	ctx := storageUserContext("system-admin")
 
@@ -204,14 +196,18 @@ func (s *storageInspectionRepositoryFake) Update(_ context.Context, backend *iap
 	return backend, nil
 }
 
-type roleStoreFake struct{ items []*iapiserver.Role }
+type storageAdminIdentityStoreFake struct {
+	store.IdentityStore
+	roleCode string
+}
 
-func (s roleStoreFake) List(context.Context) ([]*iapiserver.Role, error) { return s.items, nil }
-
-type userRoleStoreFake struct{ items []*iapiserver.UserRole }
-
-func (s userRoleStoreFake) ListByUser(context.Context, string) ([]*iapiserver.UserRole, error) {
-	return s.items, nil
+func (s *storageAdminIdentityStoreFake) UserHasAnyRole(_ context.Context, _ string, roleCodes []string) (bool, error) {
+	for _, roleCode := range roleCodes {
+		if roleCode == s.roleCode {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func storageUserContext(id string) context.Context {

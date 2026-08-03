@@ -67,6 +67,7 @@ type IdentityStore interface {
 	MarkRefreshTokenUsed(ctx context.Context, id string) error
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID, reason string) error
 	PermissionCodes(ctx context.Context, principalType, principalID string) ([]string, int64, error)
+	UserHasAnyRole(ctx context.Context, userID string, roleCodes []string) (bool, error)
 	EnsureDefaultPermissions(ctx context.Context, permissions []*iapiserver.IdentityPermissionDefinition, rolePermissions map[string][]string) error
 }
 
@@ -938,14 +939,6 @@ type FeatureFlagStore interface {
 	Upsert(ctx context.Context, data *iapiserver.FeatureFlag) (*iapiserver.FeatureFlag, error)
 }
 
-type RoleStore interface {
-	List(ctx context.Context) ([]*iapiserver.Role, error)
-}
-
 type PermissionStore interface {
 	List(ctx context.Context) ([]*iapiserver.Permission, error)
-}
-
-type UserRoleStore interface {
-	ListByUser(ctx context.Context, userID string) ([]*iapiserver.UserRole, error)
 }

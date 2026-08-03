@@ -757,18 +757,6 @@ func (s *featureFlagStore) Upsert(ctx context.Context, data *iapiserver.FeatureF
 	return data, nil
 }
 
-type roleStore struct{ ds *datastore }
-
-func newRole(ds *datastore) *roleStore { return &roleStore{ds: ds} }
-
-func (s *roleStore) List(ctx context.Context) ([]*iapiserver.Role, error) {
-	var items []*iapiserver.Role
-	if err := s.ds.db.WithContext(ctx).Find(&items).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return items, nil
-}
-
 type permissionStore struct{ ds *datastore }
 
 func newPermission(ds *datastore) *permissionStore { return &permissionStore{ds: ds} }
@@ -776,18 +764,6 @@ func newPermission(ds *datastore) *permissionStore { return &permissionStore{ds:
 func (s *permissionStore) List(ctx context.Context) ([]*iapiserver.Permission, error) {
 	var items []*iapiserver.Permission
 	if err := s.ds.db.WithContext(ctx).Find(&items).Error; err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return items, nil
-}
-
-type userRoleStore struct{ ds *datastore }
-
-func newUserRole(ds *datastore) *userRoleStore { return &userRoleStore{ds: ds} }
-
-func (s *userRoleStore) ListByUser(ctx context.Context, userID string) ([]*iapiserver.UserRole, error) {
-	var items []*iapiserver.UserRole
-	if err := s.ds.db.WithContext(ctx).Where("user_id = ?", userID).Find(&items).Error; err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return items, nil

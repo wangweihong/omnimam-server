@@ -2,12 +2,12 @@ package modelgateway
 
 import (
 	"context"
-	"strings"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	identitymiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
@@ -22,8 +22,18 @@ type ProviderCapabilitySrv interface {
 
 // Principal 表示 Model Gateway 与 Application Platform 共享的调用方身份裁剪结果。
 type Principal struct {
-	UserID string
-	Admin  bool
+	UserID      string
+	Admin       bool
+	Permissions map[string]struct{}
+}
+
+// HasPermission 判断当前请求已验证的权限投影，通配权限仅用于受信的全量授权主体。
+func (p Principal) HasPermission(permission string) bool {
+	if _, ok := p.Permissions[permission]; ok {
+		return true
+	}
+	_, ok := p.Permissions["*"]
+	return ok
 }
 
 // PrincipalResolver 从请求上下文解析调用方身份与管理员权限。
@@ -48,26 +58,18 @@ func (r *StorePrincipalResolver) Resolve(ctx context.Context) (Principal, error)
 		return Principal{}, errors.NewStatus(code.ErrAIAppPermissionDenied, "authenticated user is required")
 	}
 	principal := Principal{UserID: user.ID, Admin: user.ID == "system-admin"}
+	if verified, ok := identitymiddleware.PrincipalFromContext(ctx); ok && verified.PrincipalID == user.ID {
+		principal.Permissions = make(map[string]struct{}, len(verified.Permissions))
+		for permission := range verified.Permissions {
+			principal.Permissions[permission] = struct{}{}
+		}
+	}
 	if principal.Admin {
 		return principal, nil
 	}
-	assignments, err := r.store.UserRoles().ListByUser(ctx, user.ID)
+	principal.Admin, err = r.store.Identities().UserHasAnyRole(ctx, user.ID, []string{"ADMIN", "SUPER_ADMIN"})
 	if err != nil {
 		return Principal{}, errors.WithStack(err)
-	}
-	roles, err := r.store.Roles().List(ctx)
-	if err != nil {
-		return Principal{}, errors.WithStack(err)
-	}
-	roleNames := make(map[string]string, len(roles))
-	for _, role := range roles {
-		roleNames[role.ID] = strings.ToUpper(role.Name)
-	}
-	for _, assignment := range assignments {
-		if name := roleNames[assignment.RoleID]; name == "ADMIN" || name == "SUPER_ADMIN" {
-			principal.Admin = true
-			break
-		}
 	}
 	return principal, nil
 }

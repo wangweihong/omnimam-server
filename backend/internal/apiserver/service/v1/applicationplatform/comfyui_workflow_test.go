@@ -93,12 +93,16 @@ func TestManagedWorkflowReadRecordsActorAndOwner(t *testing.T) {
 	workflow := &iapiserver.ComfyUIWorkflow{OwnerUserID: "owner-1"}
 	workflow.ID = "workflow-1"
 	auditor := &recordingWorkflowAuditor{}
-	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: &workflowStore{workflow: workflow}}, Principals: staticPrincipal{principal: Principal{UserID: "admin-1", Admin: true}}, WorkflowAudit: auditor}}
+	service := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: &workflowStore{workflow: workflow}}, Principals: staticPrincipal{principal: Principal{UserID: "admin-1", Admin: true, Permissions: map[string]struct{}{"aiapp.comfyui_workflow.manage_all": {}}}}, WorkflowAudit: auditor}}
 	if _, err := service.GetComfyUIWorkflow(context.Background(), workflow.ID); err != nil {
 		t.Fatal(err)
 	}
 	if len(auditor.records) != 1 || auditor.records[0].Action != "read" || auditor.records[0].ActorUserID != "admin-1" || auditor.records[0].OwnerUserID != "owner-1" {
 		t.Fatalf("unexpected audit records: %#v", auditor.records)
+	}
+	denied := &applicationPlatformService{Dependencies: Dependencies{Store: &executorFactory{applications: &workflowStore{workflow: workflow}}, Principals: staticPrincipal{principal: Principal{UserID: "admin-1", Admin: true}}, WorkflowAudit: auditor}}
+	if _, err := denied.GetComfyUIWorkflow(context.Background(), workflow.ID); errors.ToStatus(err).Code != code.ErrAIAppComfyUIWorkflowNotFound {
+		t.Fatalf("administrator without manage_all should not access another owner's workflow: %v", err)
 	}
 }
 

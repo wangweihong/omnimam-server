@@ -3,8 +3,10 @@ package identity
 import (
 	"crypto"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/bytemare/ksf"
@@ -47,7 +49,7 @@ func newOpaqueAdapter(setupHex string) (OpaqueAdapter, error) {
 		if err != nil {
 			return nil, err
 		}
-		material, err = conf.DecodeServerKeyMaterial(encoded)
+		material, err = decodeOpaqueServerKeyMaterial(conf, encoded)
 		if err != nil {
 			return nil, err
 		}
@@ -59,6 +61,60 @@ func newOpaqueAdapter(setupHex string) (OpaqueAdapter, error) {
 		return nil, err
 	}
 	return &opaqueServerAdapter{conf: conf, server: server}, nil
+}
+
+// decodeOpaqueServerKeyMaterial accepts the library's legal empty identity vector.
+// bytemare/opaque v0.18.0 rejects that vector while decoding, although the server
+// treats an empty identity as the public key according to RFC 9807.
+func decodeOpaqueServerKeyMaterial(conf *opaque.Configuration, data []byte) (*opaque.ServerKeyMaterial, error) {
+	if len(data) < 1 || opaque.Group(data[0]) != conf.AKE {
+		return nil, fmt.Errorf("invalid OPAQUE server key group")
+	}
+	offset := 1
+	readVector := func(allowEmpty bool) ([]byte, error) {
+		if len(data)-offset < 2 {
+			return nil, fmt.Errorf("invalid OPAQUE server key vector header")
+		}
+		length := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+		offset += 2
+		if len(data)-offset < length || (!allowEmpty && length == 0) {
+			return nil, fmt.Errorf("invalid OPAQUE server key vector length")
+		}
+		value := append([]byte(nil), data[offset:offset+length]...)
+		offset += length
+		return value, nil
+	}
+	privateKeyBytes, err := readVector(false)
+	if err != nil {
+		return nil, err
+	}
+	publicKeyBytes, err := readVector(false)
+	if err != nil {
+		return nil, err
+	}
+	seed, err := readVector(true)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := readVector(true)
+	if err != nil || offset != len(data) {
+		return nil, fmt.Errorf("invalid OPAQUE server key encoding")
+	}
+	privateKey, err := opaque.DeserializeScalar(conf.AKE.Group(), privateKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := opaque.DeserializeElement(conf.AKE.Group(), publicKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	if !publicKey.Equal(conf.AKE.Group().Base().Multiply(privateKey)) {
+		return nil, fmt.Errorf("OPAQUE server public key does not match private key")
+	}
+	if len(seed) != 0 && len(seed) != conf.Hash.Size() {
+		return nil, fmt.Errorf("invalid OPAQUE OPRF seed length")
+	}
+	return &opaque.ServerKeyMaterial{PrivateKey: privateKey, PublicKeyBytes: publicKeyBytes, OPRFGlobalSeed: seed, Identity: identity}, nil
 }
 
 func (a *opaqueServerAdapter) RegistrationResponse(request, credentialIdentifier []byte) ([]byte, error) {

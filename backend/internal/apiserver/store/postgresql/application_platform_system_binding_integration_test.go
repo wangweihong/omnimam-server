@@ -43,10 +43,7 @@ func TestPostgresRequiredEngineBindings(t *testing.T) {
 	if err := tx.Exec(`CREATE UNIQUE INDEX idx_aiapp_binding_engine_capability ON aiapp_engine_capability_bindings(engine_instance_id, provider_capability_id)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Exec(`ALTER TABLE aiapp_engine_capability_bindings ADD CONSTRAINT fk_aiapp_binding_engine FOREIGN KEY (engine_instance_id) REFERENCES aiapp_engine_instances(id)`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Exec(applicationPlatformBindingCascadeSQL).Error; err != nil {
+	if err := tx.Exec(applicationPlatformBindingConstraintSQL).Error; err != nil {
 		t.Fatal(err)
 	}
 	var deleteAction string

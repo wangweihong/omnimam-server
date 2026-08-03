@@ -6,7 +6,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/generic"
@@ -35,17 +34,16 @@ type StorageAdminAuthorizer interface {
 	RequireStorageAdmin(context.Context) error
 }
 
-type roleStorageAdminAuthorizer struct {
-	roles     store.RoleStore
-	userRoles store.UserRoleStore
+type identityStorageAdminAuthorizer struct {
+	identities store.IdentityStore
 }
 
-// NewRoleStorageAdminAuthorizer 使用 identity 角色事实源构造管理员鉴权器。
-func NewRoleStorageAdminAuthorizer(roles store.RoleStore, userRoles store.UserRoleStore) StorageAdminAuthorizer {
-	return &roleStorageAdminAuthorizer{roles: roles, userRoles: userRoles}
+// NewIdentityStorageAdminAuthorizer 使用 Identity RBAC 角色事实源构造管理员鉴权器。
+func NewIdentityStorageAdminAuthorizer(identities store.IdentityStore) StorageAdminAuthorizer {
+	return &identityStorageAdminAuthorizer{identities: identities}
 }
 
-func (a *roleStorageAdminAuthorizer) RequireStorageAdmin(ctx context.Context) error {
+func (a *identityStorageAdminAuthorizer) RequireStorageAdmin(ctx context.Context) error {
 	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
 	if err != nil || user == nil || user.ID == "" {
 		return errors.NewStatus(code.ErrAssetStoragePermissionDenied, "authenticated administrator is required")
@@ -53,26 +51,15 @@ func (a *roleStorageAdminAuthorizer) RequireStorageAdmin(ctx context.Context) er
 	if user.ID == "system-admin" {
 		return nil
 	}
-	if a.roles == nil || a.userRoles == nil {
+	if a.identities == nil {
 		return errors.New("storage administrator authorizer is not configured")
 	}
-	assignments, err := a.userRoles.ListByUser(ctx, user.ID)
+	admin, err := a.identities.UserHasAnyRole(ctx, user.ID, []string{"ADMIN", "SUPER_ADMIN"})
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	roles, err := a.roles.List(ctx)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	roleNames := make(map[string]string, len(roles))
-	for _, role := range roles {
-		roleNames[role.ID] = strings.ToUpper(strings.TrimSpace(role.Name))
-	}
-	for _, assignment := range assignments {
-		switch roleNames[assignment.RoleID] {
-		case "ADMIN", "SUPER_ADMIN":
-			return nil
-		}
+	if admin {
+		return nil
 	}
 	return errors.NewStatus(code.ErrAssetStoragePermissionDenied, "administrator permission is required")
 }

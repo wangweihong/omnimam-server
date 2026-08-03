@@ -40,9 +40,7 @@ type Factory interface {
 	UserEvents() UserEventStore
 	ApplicationPlatforms() ApplicationPlatformStore
 	FeatureFlags() FeatureFlagStore
-	Roles() RoleStore
 	Permissions() PermissionStore
-	UserRoles() UserRoleStore
 
 	// Identity 认证、会话和授权事实。
 	Identities() IdentityStore

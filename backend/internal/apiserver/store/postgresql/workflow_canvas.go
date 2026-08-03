@@ -658,41 +658,9 @@ type storeWorkflowCanvasContract interface {
 
 var _ = imachinery.BasicQueryParam{}
 
-// ensureWorkflowCanvasScheme backfills the released v1.0 projection into the v1.7 model before enforcing new unique keys.
+// ensureWorkflowCanvasScheme creates constraints not expressed by the GORM models.
 func (ds *datastore) ensureWorkflowCanvasScheme() error {
 	return ds.db.Exec(`
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_versions' AND column_name='compiled_definition_name') THEN
-    EXECUTE 'UPDATE canvas_versions SET workflow_definition_name = compiled_definition_name WHERE workflow_definition_name = ''''';
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_versions' AND column_name='compiled_definition_version') THEN
-    EXECUTE 'UPDATE canvas_versions SET workflow_definition_version = compiled_definition_version::text WHERE workflow_definition_version = ''''';
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_node_runs' AND column_name='node_key') THEN
-    EXECUTE 'UPDATE canvas_node_runs SET node_id = node_key WHERE node_id = ''''';
-    EXECUTE 'UPDATE canvas_node_runs SET execution_key = node_key WHERE execution_key = ''''';
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='canvas_node_runs' AND column_name='atomic_task_id') THEN
-    EXECUTE $migration$
-      INSERT INTO canvas_node_run_task_bindings
-        (id,name,created_at,updated_at,description,extend_shadow,resource_version,canvas_node_run_id,dag_task_group_id,atomic_task_id,task_child_key,binding_role,shard_key,task_resource_version)
-      SELECT 'legacy-binding:' || n.id, COALESCE(NULLIF(n.node_id,''),n.id), n.created_at, n.updated_at, '', '', 1,
-             n.id, r.dag_task_group_id, n.atomic_task_id, COALESCE(NULLIF(n.execution_key,''),n.id), 'primary', 'root', COALESCE(n.task_resource_version,0)
-      FROM canvas_node_runs n JOIN canvas_runs r ON r.id=n.canvas_run_id
-      WHERE n.atomic_task_id IS NOT NULL AND r.dag_task_group_id IS NOT NULL
-      ON CONFLICT DO NOTHING
-    $migration$;
-  END IF;
-END $$;
-UPDATE canvas_versions SET execution_template_digest=content_digest WHERE execution_template_digest='';
-UPDATE canvas_runs SET scope_json='{"mode":"all"}' WHERE scope_json='{}';
-UPDATE canvas_runs SET run_policy_json='{"reuse_policy":"rerun_all","failure_policy":"continue_independent_flows"}' WHERE run_policy_json='{}';
-UPDATE canvas_runs SET execution_plan_digest=request_digest WHERE execution_plan_digest='';
-UPDATE canvas_runs SET task_creation_status='RETRYABLE_FAILED' WHERE task_creation_status='FAILED';
-UPDATE canvas_node_runs SET execution_fingerprint='legacy:' || id WHERE execution_fingerprint='';
-UPDATE canvas_node_runs SET task_count=1 WHERE task_count=0 AND EXISTS (SELECT 1 FROM canvas_node_run_task_bindings b WHERE b.canvas_node_run_id=canvas_node_runs.id);
-UPDATE canvases c SET latest_published_version_id=(SELECT v.id FROM canvas_versions v WHERE v.canvas_id=c.id ORDER BY v.version DESC LIMIT 1) WHERE c.latest_version>0 AND c.latest_published_version_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_node_run_execution ON canvas_node_runs(canvas_run_id,execution_key);
 `).Error
 }

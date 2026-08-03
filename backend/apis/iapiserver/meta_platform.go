@@ -505,24 +505,9 @@ type FeatureFlag struct {
 
 func (FeatureFlag) TableName() string { return "feature_flags" }
 
-type Role struct {
-	imachinery.ObjectMeta
-	System bool `json:"system" gorm:"column:system;type:boolean;not null;default:false"`
-}
-
-func (Role) TableName() string { return "roles" }
-
 type Permission struct {
 	imachinery.ObjectMeta
 	Key string `json:"key" gorm:"column:key;type:varchar(128);not null;uniqueIndex"`
 }
 
 func (Permission) TableName() string { return "permissions" }
-
-type UserRole struct {
-	imachinery.ObjectMeta
-	UserID string `json:"user_id" gorm:"column:user_id;type:varchar(64);not null;index"`
-	RoleID string `json:"role_id" gorm:"column:role_id;type:varchar(64);not null;index"`
-}
-
-func (UserRole) TableName() string { return "user_roles" }

@@ -377,8 +377,8 @@ func (s *applicationPlatformService) CreateApplication(ctx context.Context, req 
 	if visibility == "" {
 		visibility = iapiserver.ApplicationVisibilityPrivate
 	}
-	if visibility == iapiserver.ApplicationVisibilityGlobal && !p.Admin {
-		return nil, errors.NewStatus(code.ErrAIAppPermissionDenied, "only administrators can create global applications")
+	if visibility == iapiserver.ApplicationVisibilityGlobal && (!p.Admin || !p.HasPermission("aiapp.application.manage_global")) {
+		return nil, errors.NewStatus(code.ErrAIAppPermissionDenied, "global application permission is required")
 	}
 	item := &iapiserver.Application{OwnerUserID: p.UserID, CapabilityDefinitionID: req.CapabilityDefinitionID, Visibility: visibility, RunEnabled: defaultBool(req.RunEnabled, true), CanvasEnabled: defaultBool(req.CanvasEnabled, true), CopyEnabled: defaultBool(req.CopyEnabled, false), PresetEnabled: defaultBool(req.PresetEnabled, false)}
 	item.Name, item.Description = req.Name, req.Description
@@ -405,8 +405,9 @@ func (s *applicationPlatformService) UpdateApplication(ctx context.Context, req 
 	if err != nil || (!p.Admin && item.OwnerUserID != p.UserID) {
 		return nil, errors.NewStatus(code.ErrAIAppApplicationNotFound, "application not found")
 	}
-	if req.Visibility != nil && *req.Visibility == iapiserver.ApplicationVisibilityGlobal && !p.Admin {
-		return nil, errors.NewStatus(code.ErrAIAppPermissionDenied, "only administrators can set global visibility")
+	if (item.Visibility == iapiserver.ApplicationVisibilityGlobal || (req.Visibility != nil && *req.Visibility == iapiserver.ApplicationVisibilityGlobal)) &&
+		(!p.Admin || !p.HasPermission("aiapp.application.manage_global")) {
+		return nil, errors.NewStatus(code.ErrAIAppPermissionDenied, "global application permission is required")
 	}
 	applyApplicationUpdate(item, req)
 	return s.Store.ApplicationPlatforms().UpdateApplication(ctx, item, req.ResourceVersion)

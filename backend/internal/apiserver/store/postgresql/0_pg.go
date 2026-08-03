@@ -90,12 +90,6 @@ CREATE INDEX IF NOT EXISTS idx_identity_registration_applications_status
 ON identity_registration_applications(status, submitted_at DESC);
 `
 
-const taskCenterAttemptLogsRefBackfillSQL = `
-UPDATE task_attempts
-SET logs_ref = 'task-attempt-log:' || id
-WHERE COALESCE(logs_ref, '') = '' AND id <> '';
-`
-
 const taskCenterFunctionContractSQL = `
 CREATE INDEX IF NOT EXISTS idx_atomic_tasks_function_contract
 ON atomic_tasks(function_ref, function_contract_version);
@@ -120,7 +114,6 @@ END $$;
 `
 
 const agentConstraintsSQL = `
-DROP INDEX IF EXISTS idx_agent_model_binding;
 CREATE INDEX IF NOT EXISTS idx_agents_owner_status ON agents(owner_user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_type, workspace_id);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions(agent_id, status, updated_at);
@@ -273,49 +266,7 @@ DO $$ BEGIN
 END $$;
 `
 
-const taskCenterDAGObservabilityMigrationSQL = `
-UPDATE atomic_tasks
-SET dag_node_key = child_key
-WHERE owner_type = 'DAG_TASK_GROUP' AND COALESCE(dag_node_key, '') = '' AND COALESCE(child_key, '') <> '';
-
-UPDATE dag_task_groups
-SET triggered_at = created_at
-WHERE triggered_at IS NULL;
-
-UPDATE dag_task_groups
-SET trigger_type = CASE
-  WHEN COALESCE(retry_of_id, '') <> '' THEN 'RETRY'
-  WHEN COALESCE(canvas_version_id, '') <> '' THEN 'CANVAS'
-  WHEN EXISTS (
-    SELECT 1 FROM task_schedule_executions e
-    WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag_task_groups.id
-  ) THEN 'SCHEDULE'
-  ELSE 'API'
-END
-WHERE COALESCE(trigger_type, '') = '' OR trigger_type = 'API';
-
-UPDATE dag_task_groups AS dag
-SET trigger_source_id = CASE
-      WHEN dag.trigger_type = 'RETRY' THEN dag.retry_of_id
-      WHEN dag.trigger_type = 'CANVAS' THEN dag.canvas_version_id
-      WHEN dag.trigger_type = 'SCHEDULE' THEN COALESCE((
-        SELECT e.schedule_id FROM task_schedule_executions e
-        WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag.id
-        ORDER BY e.scheduled_at DESC LIMIT 1
-      ), '')
-      ELSE dag.trigger_source_id
-    END,
-    trigger_source_name = CASE
-      WHEN dag.trigger_type = 'SCHEDULE' THEN COALESCE((
-        SELECT s.name FROM task_schedule_executions e
-        JOIN task_schedules s ON s.id = e.schedule_id
-        WHERE e.target_type = 'DAG_TASK_GROUP' AND e.target_id = dag.id
-        ORDER BY e.scheduled_at DESC LIMIT 1
-      ), '')
-      ELSE dag.trigger_source_name
-    END
-WHERE COALESCE(dag.trigger_source_id, '') = '';
-
+const taskCenterDAGObservabilityConstraintsSQL = `
 CREATE INDEX IF NOT EXISTS idx_atomic_tasks_dag_node
 ON atomic_tasks(owner_id, dag_node_key, child_order)
 WHERE owner_type = 'DAG_TASK_GROUP' AND dag_node_key <> '';
@@ -338,8 +289,7 @@ WHERE application_run_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_idempotency
 ON atomic_tasks(project_id, namespace, idempotency_scope, idempotency_key)
 WHERE idempotency_scope <> '';
-DROP INDEX IF EXISTS idx_atomic_tasks_owner_child;
-CREATE UNIQUE INDEX idx_atomic_tasks_owner_child
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_owner_child
 ON atomic_tasks(owner_type, owner_id, child_key)
 WHERE owner_type IN ('TASK_GROUP','DAG_TASK_GROUP') AND child_key <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_atomic_tasks_runtime_task
@@ -364,103 +314,6 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_sse_user_events_expiry') THEN
     ALTER TABLE sse_user_events ADD CONSTRAINT ck_sse_user_events_expiry CHECK (expires_at > occurred_at);
-  END IF;
-END $$;
-`
-
-const taskCenterScheduleOwnershipBackfillSQL = `
-UPDATE atomic_tasks AS target
-SET created_by = schedule.created_by,
-    project_id = schedule.project_id,
-    namespace = schedule.namespace,
-    owner_type = 'TASK_SCHEDULE',
-    owner_id = schedule.id
-FROM task_schedule_executions AS execution
-JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
-WHERE execution.target_type = 'ATOMIC_TASK'
-  AND execution.target_id <> ''
-  AND target.id = execution.target_id
-  AND (target.created_by, target.project_id, target.namespace, target.owner_type, target.owner_id)
-      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace, 'TASK_SCHEDULE', schedule.id);
-
-UPDATE task_groups AS target
-SET created_by = schedule.created_by,
-    project_id = schedule.project_id,
-    namespace = schedule.namespace
-FROM task_schedule_executions AS execution
-JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
-WHERE execution.target_type = 'TASK_GROUP'
-  AND execution.target_id <> ''
-  AND target.id = execution.target_id
-  AND (target.created_by, target.project_id, target.namespace)
-      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace);
-
-UPDATE atomic_tasks AS child
-SET created_by = parent.created_by,
-    project_id = parent.project_id,
-    namespace = parent.namespace
-FROM task_groups AS parent
-WHERE child.owner_type = 'TASK_GROUP'
-  AND child.owner_id = parent.id
-  AND EXISTS (
-    SELECT 1 FROM task_schedule_executions AS execution
-    WHERE execution.target_type = 'TASK_GROUP' AND execution.target_id = parent.id
-  )
-  AND (child.created_by, child.project_id, child.namespace)
-      IS DISTINCT FROM (parent.created_by, parent.project_id, parent.namespace);
-
-UPDATE dag_task_groups AS target
-SET created_by = schedule.created_by,
-    project_id = schedule.project_id,
-    namespace = schedule.namespace
-FROM task_schedule_executions AS execution
-JOIN task_schedules AS schedule ON schedule.id = execution.schedule_id
-WHERE execution.target_type = 'DAG_TASK_GROUP'
-  AND execution.target_id <> ''
-  AND target.id = execution.target_id
-  AND (target.created_by, target.project_id, target.namespace)
-      IS DISTINCT FROM (schedule.created_by, schedule.project_id, schedule.namespace);
-
-UPDATE atomic_tasks AS child
-SET created_by = parent.created_by,
-    project_id = parent.project_id,
-    namespace = parent.namespace
-FROM dag_task_groups AS parent
-WHERE child.owner_type = 'DAG_TASK_GROUP'
-  AND child.owner_id = parent.id
-  AND EXISTS (
-    SELECT 1 FROM task_schedule_executions AS execution
-    WHERE execution.target_type = 'DAG_TASK_GROUP' AND execution.target_id = parent.id
-  )
-  AND (child.created_by, child.project_id, child.namespace)
-      IS DISTINCT FROM (parent.created_by, parent.project_id, parent.namespace);
-`
-
-const applicationPlatformLegacySchemaSQL = `
-DO $$
-BEGIN
-  PERFORM pg_advisory_xact_lock(hashtext('omnimam:application-platform-schema-reset'));
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = current_schema()
-      AND table_name = 'aiapp_comfyui_workflows'
-      AND column_name = 'converted_application_template_id'
-  ) THEN
-    DROP TABLE IF EXISTS
-      aiapp_application_artifact_refs,
-      aiapp_artifacts,
-      aiapp_application_runs,
-      aiapp_application_versions,
-      aiapp_applications,
-      aiapp_application_template_versions,
-      aiapp_application_templates,
-      aiapp_comfyui_workflow_test_runs,
-      aiapp_comfyui_workflow_validations,
-      aiapp_comfyui_workflows,
-      aiapp_engine_capability_bindings,
-      aiapp_comfyui_engine_object_info,
-      aiapp_engine_instances
-      CASCADE;
   END IF;
 END $$;
 `
@@ -510,8 +363,7 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_template_version_number') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_number CHECK (version > 0); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_template_version_status') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_status CHECK (status IN ('draft','published','retired')); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_template_version_published_at') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_published_at CHECK ((status='published' AND published_at IS NOT NULL) OR status<>'published'); END IF;
-  ALTER TABLE aiapp_application_template_versions DROP CONSTRAINT IF EXISTS ck_aiapp_template_version_source;
-  ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_source CHECK ((capability_source_type='provider_capability' AND provider_capability_id IS NOT NULL AND provider_capability_revision IS NOT NULL AND provider_operation_id IS NOT NULL AND workflow_contract_revision IS NULL AND comfyui_api_workflow_json IS NULL) OR (capability_source_type='comfyui_workflow' AND provider_capability_id IS NULL AND provider_capability_revision IS NULL AND provider_operation_id IS NULL AND workflow_contract_revision IS NOT NULL AND comfyui_api_workflow_json IS NOT NULL));
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_template_version_source') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT ck_aiapp_template_version_source CHECK ((capability_source_type='provider_capability' AND provider_capability_id IS NOT NULL AND provider_capability_revision IS NOT NULL AND provider_operation_id IS NOT NULL AND workflow_contract_revision IS NULL AND comfyui_api_workflow_json IS NULL) OR (capability_source_type='comfyui_workflow' AND provider_capability_id IS NULL AND provider_capability_revision IS NULL AND provider_operation_id IS NULL AND workflow_contract_revision IS NOT NULL AND comfyui_api_workflow_json IS NOT NULL)); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_template_version_source_workflow') THEN ALTER TABLE aiapp_application_template_versions ADD CONSTRAINT fk_aiapp_template_version_source_workflow FOREIGN KEY (source_comfyui_workflow_id) REFERENCES aiapp_comfyui_workflows(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_aiapp_template_current_version') THEN ALTER TABLE aiapp_application_templates ADD CONSTRAINT fk_aiapp_template_current_version FOREIGN KEY (current_version_id) REFERENCES aiapp_application_template_versions(id); END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_aiapp_application_visibility') THEN ALTER TABLE aiapp_applications ADD CONSTRAINT ck_aiapp_application_visibility CHECK (visibility IN ('private','global')); END IF;
@@ -538,16 +390,8 @@ DO $$ BEGIN
 END $$;
 `
 
-const applicationPlatformBindingCascadeSQL = `
+const applicationPlatformBindingConstraintSQL = `
 DO $$ BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname='fk_aiapp_binding_engine'
-      AND conrelid='aiapp_engine_capability_bindings'::regclass
-      AND confdeltype <> 'c'
-  ) THEN
-    ALTER TABLE aiapp_engine_capability_bindings DROP CONSTRAINT fk_aiapp_binding_engine;
-  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname='fk_aiapp_binding_engine'
@@ -598,16 +442,10 @@ func (ds *datastore) Close() error {
 }
 
 func (ds *datastore) EnsureScheme(metaTypes ...any) error {
-	if err := ds.prepareApplicationPlatformScheme(); err != nil {
-		return err
-	}
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
 	if err := ds.db.Exec(identityRegistrationConstraintsSQL).Error; err != nil {
-		return err
-	}
-	if err := ds.ensurePlatformManagementScheme(); err != nil {
 		return err
 	}
 	if err := ds.ensureAssetLibraryScheme(); err != nil {
@@ -635,10 +473,6 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 		return err
 	}
 	return nil
-}
-
-func (ds *datastore) ensurePlatformManagementScheme() error {
-	return ds.db.Exec(`DROP INDEX IF EXISTS idx_platform_audit_logs_idempotency_key;`).Error
 }
 
 func (ds *datastore) ensureAgentScheme() error {
@@ -670,24 +504,14 @@ func (ds *datastore) ensureTaskCenterScheme() error {
 	if err := ds.db.Exec(sseUserEventConstraintsSQL).Error; err != nil {
 		return err
 	}
-	if err := ds.db.Exec(taskCenterScheduleOwnershipBackfillSQL).Error; err != nil {
-		return err
-	}
-	if err := ds.db.Exec(taskCenterAttemptLogsRefBackfillSQL).Error; err != nil {
-		return err
-	}
-	return ds.db.Exec(taskCenterDAGObservabilityMigrationSQL).Error
+	return ds.db.Exec(taskCenterDAGObservabilityConstraintsSQL).Error
 }
 
 func (ds *datastore) ensureApplicationPlatformScheme() error {
 	if err := ds.db.Exec(applicationPlatformConstraintsSQL).Error; err != nil {
 		return err
 	}
-	return ds.db.Exec(applicationPlatformBindingCascadeSQL).Error
-}
-
-func (ds *datastore) prepareApplicationPlatformScheme() error {
-	return ds.db.Exec(applicationPlatformLegacySchemaSQL).Error
+	return ds.db.Exec(applicationPlatformBindingConstraintSQL).Error
 }
 
 func (ds *datastore) Users() store.UserStore {
@@ -826,16 +650,8 @@ func (ds *datastore) FeatureFlags() store.FeatureFlagStore {
 	return newFeatureFlag(ds)
 }
 
-func (ds *datastore) Roles() store.RoleStore {
-	return newRole(ds)
-}
-
 func (ds *datastore) Permissions() store.PermissionStore {
 	return newPermission(ds)
-}
-
-func (ds *datastore) UserRoles() store.UserRoleStore {
-	return newUserRole(ds)
 }
 
 func (ds *datastore) AIChat() store.AIChatStore {

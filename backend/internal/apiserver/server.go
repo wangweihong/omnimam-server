@@ -322,9 +322,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.RuntimeProjectionEvent{},
 		&iapiserver.UserEvent{},
 		&iapiserver.FeatureFlag{},
-		&iapiserver.Role{},
 		&iapiserver.Permission{},
-		&iapiserver.UserRole{},
 
 		// agent
 		&iapiserver.Agent{},
