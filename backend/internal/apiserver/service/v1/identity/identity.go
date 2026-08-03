@@ -101,7 +101,7 @@ func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 // artifact/representation/task/workflow 的内部权限仅登记到权限目录，不授予用户角色。
 func DefaultRolePermissions() map[string][]string {
 	userPermissions := []string{
-		"identity.auth.session", "identity.user.read", "identity.permission.read",
+		"identity.auth.session", "identity.user.read", "identity.permission.read", "identity.resource_grant.read",
 		"agent.profile.read", "agent.read", "agent.manage", "agent.invoke", "agent.session.read", "agent.session.manage",
 		"agent.workspace.read", "agent.memory.read", "agent.memory.manage", "agent.runtime.operate", "agent.runtime.logs.read",
 		"ai_chat.topic.read", "ai_chat.topic.manage", "ai_chat.message.read", "ai_chat.message.send", "ai_chat.generation.operate",
@@ -124,15 +124,20 @@ func DefaultRolePermissions() map[string][]string {
 		"workflow.node_definition.read",
 	}
 	adminPermissions := append(append([]string(nil), userPermissions...),
+		"identity.user.manage", "identity.registration.review", "identity.group.manage", "identity.service_account.read",
+		"platform.overview.read", "platform.auth_config.read", "platform.audit.read",
 		"aiapp.application.manage_global", "aiapp.comfyui_workflow.manage_all",
 		"aiapp.engine_instance.manage", "aiapp.engine_binding.manage", "aiapp.provider_capability.read_diagnostics",
 		"asset.storage.read", "asset.storage.manage", "notification.admin.receive",
 		"task.schedule.manage", "task.operation.admin", "workflow.node_definition.manage",
 	)
+	superAdminPermissions := append(append([]string(nil), adminPermissions...),
+		"identity.role.manage", "identity.service_account.manage", "platform.auth_config.manage",
+	)
 	return map[string][]string{
 		"USER":        append([]string(nil), userPermissions...),
 		"ADMIN":       append([]string(nil), adminPermissions...),
-		"SUPER_ADMIN": append([]string(nil), adminPermissions...),
+		"SUPER_ADMIN": append([]string(nil), superAdminPermissions...),
 	}
 }
 

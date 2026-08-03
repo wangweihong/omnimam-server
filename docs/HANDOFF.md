@@ -2,6 +2,12 @@
 
 ## Current goal and status
 
+- Goal: 更新已发布 SSOT 到 `spec-v1.15.2`，并按该 release 补充新增权限。
+- Status: 已完成；submodule、`SSOT_VERSION` 和 Identity/Platform 内置角色权限基线均已同步到 `spec-v1.15.2`。
+
+- Goal: 确认前端未显示平台管理和 identity 入口是否因为后端未返回权限。
+- Status: 已完成只读核查；确认权限投影字段会返回，但默认角色未授予平台管理及大部分 Identity 管理权限。
+
 - Goal: 明确用户登录后前端判定角色/权限的正式契约。
 - Status: 已完成 SSOT 与当前后端路由核查；本次为只读答复，无代码行为变更。
 
@@ -9,6 +15,15 @@
 - Status: 已完成实现并通过 Identity 目标包验证，已提交当前 HEAD。
 
 ## Work completed in this session
+
+- 已确认 `spec-v1.15.2` 是 release tag，commit 为 `7eacab00bf4b505f69582e2ccc390ebc24feb774`，主题为默认角色权限规范。
+- 已将 `ssot` submodule 与 `SSOT_VERSION` 更新到 `spec-v1.15.2`。
+- 已核对 v1.15.2 直接变更的 Identity/Platform S1、Identity schema/module contract 及两域 `permissions.yaml`：权限码未新增，新增的是必须物化的 `default_roles` 授权基线。
+- 已更新 `DefaultRolePermissions()`：USER 增加 `identity.resource_grant.read`；ADMIN 增加 Identity 用户/注册/组/服务账号读取和 Platform 概览/认证配置读取/审计读取权限；SUPER_ADMIN 再增加角色、服务账号和认证配置管理权限。
+
+- 核对 `backend/internal/apiserver/route.go`：平台管理与 Identity 管理路由均存在并使用 `RequireIdentityPermission`。
+- 核对 `backend/internal/apiserver/service/v1/identity/identity.go`：登录、刷新和 `/api/v1/iam/auth/permissions` 均生成 `authorization.permission_codes`、`effective_roles`、`allowed_actions`。
+- 前序核查确认的默认角色权限缺口已由本次 `DefaultRolePermissions()` 更新修复。
 
 - 已读取 `skills/omnimam-server-backend/SKILL.md`、`backend/AGENTS.md` 和 v1.15.1 的 AppStudio Context/S2 变更。
 - 已将 `ssot` submodule 从 `spec-v1.15.0` 更新到 `spec-v1.15.1` commit `2d15f36c8c911373034b04d7861e8add5e54f48a`。
@@ -48,11 +63,18 @@
 
 ## API, schema, dependency, or configuration changes
 
+- SSOT pin 更新为 `spec-v1.15.2`；本次不新增 API、数据库字段、错误码、权限码、事件类型或依赖。
 - AppStudio 创建请求现在仅声明必填 `name` 和可选 `description`。
 - AppStudio 当前持久化模型不再映射 `template_id`、`technology_stack`。
 - 无依赖、错误码、权限码、事件或环境变量变更。
 
 ## Verification performed and remaining checks
+
+- `gofmt -w backend/internal/apiserver/service/v1/identity/identity.go`：通过。
+- `go test ./backend/internal/apiserver/service/v1/identity ./backend/internal/apiserver/store/postgresql`：通过；Identity service 无测试文件，PostgreSQL store 测试通过。
+- `git diff --check`：通过。
+- 已确认 `git submodule status ssot`、exact tag 和 `SSOT_VERSION.commit` 均为 `spec-v1.15.2` / `7eacab00bf4b505f69582e2ccc390ebc24feb774`。
+- 未运行全仓库测试，符合目标模块验证约束。
 
 - `make gen.deepcopy`：通过，生成文件无差异。
 - `go test ./backend/apis/iapiserver ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/controller/v1/appstudio ./backend/internal/apiserver/store/postgresql`：通过。
@@ -74,7 +96,7 @@
 
 ## Exact recommended next step
 
-后续如继续 Identity 授权工作，先读取本文件并确认当前 HEAD 已包含本次修复，再处理新的未完成事项。
+重启 API Server 或重新执行 store 初始化，使 `EnsureDefaultPermissions` 将新基线对账到现有数据库；随后重新登录或刷新授权投影确认管理入口可见。
 
 Next Prompt:
 

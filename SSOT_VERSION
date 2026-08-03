@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 2d15f36c8c911373034b04d7861e8add5e54f48a
-contract_version: spec-v1.15.1
+commit: 7eacab00bf4b505f69582e2ccc390ebc24feb774
+contract_version: spec-v1.15.2
 updated_at: 2026-08-04
 status: released
-note: Released AppStudio template cleanup specification.
+note: Released default role permission specification.
