@@ -6,8 +6,8 @@ package code
 func init() {
 	register(ErrSuccess, 200, map[string]string{"CN": "请求成功", "EN": "Success."})
 	register(ErrUnknown, 500, map[string]string{"CN": "服务器出错", "EN": "Internal server error."})
-	register(ErrBind, 400, map[string]string{"CN": "解析结构体出错", "EN": "Error occurred while binding the request body to the struct."})
-	register(ErrValidation, 400, map[string]string{"CN": "参数校验失败", "EN": "Validation failed."})
+	register(ErrBind, 200, map[string]string{"CN": "解析结构体出错", "EN": "Error occurred while binding the request body to the struct."})
+	register(ErrValidation, 200, map[string]string{"CN": "参数校验失败", "EN": "Validation failed."})
 	register(ErrTokenInvalid, 401, map[string]string{"CN": "令牌无效", "EN": "Token invalid."})
 	register(ErrPageNotFound, 404, map[string]string{"CN": "请求路由不存在", "EN": "Page not found."})
 	register(ErrOperationBatchExecute, 200, map[string]string{"CN": "批量执行操作", "EN": "Operation batch execute."})

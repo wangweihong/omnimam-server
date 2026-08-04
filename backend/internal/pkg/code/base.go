@@ -17,12 +17,12 @@ const (
 	// @EN Internal server error.
 	ErrUnknown
 
-	// @HTTP 400
+	// @HTTP 200
 	// @CN 解析结构体出错
 	// @EN Error occurred while binding the request body to the struct.
 	ErrBind
 
-	// @HTTP 400
+	// @HTTP 200
 	// @CN  参数校验失败
 	// @EN  Validation failed.
 	ErrValidation

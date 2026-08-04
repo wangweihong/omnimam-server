@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,13 @@ type requiredRequest struct {
 	Name string `json:"name" binding:"required"`
 }
 
-func TestRunBindingErrorUsesValidationStatus(t *testing.T) {
+type postBindErrorRequest struct{}
+
+func (postBindErrorRequest) PostBind() error {
+	return errors.New("post bind failed")
+}
+
+func TestRunValidationErrorUsesValidationStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	actionCalled := false
 	router := gin.New()
@@ -33,8 +40,8 @@ func TestRunBindingErrorUsesValidationStatus(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want %d", response.Code, http.StatusBadRequest)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusOK)
 	}
 	if actionCalled {
 		t.Fatal("action was called after request validation failed")
@@ -49,5 +56,40 @@ func TestRunBindingErrorUsesValidationStatus(t *testing.T) {
 	}
 	if body.Message != "Validation failed." {
 		t.Errorf("message = %q, want %q", body.Message, "Validation failed.")
+	}
+}
+
+func TestRunPostBindErrorUsesBindStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	actionCalled := false
+	router := gin.New()
+	router.POST("/test", func(c *gin.Context) {
+		core.Run(c, &postBindErrorRequest{}, func(*postBindErrorRequest) (any, error) {
+			actionCalled = true
+			return nil, nil
+		})
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusOK)
+	}
+	if actionCalled {
+		t.Fatal("action was called after post-bind failed")
+	}
+
+	var body core.ErrResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Code != code.ErrBind {
+		t.Errorf("business code = %d, want %d", body.Code, code.ErrBind)
+	}
+	if body.Message != "Error occurred while binding the request body to the struct." {
+		t.Errorf("message = %q, want %q", body.Message, "Error occurred while binding the request body to the struct.")
 	}
 }

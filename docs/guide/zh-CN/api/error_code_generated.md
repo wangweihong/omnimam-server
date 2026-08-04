@@ -24,8 +24,8 @@
 | ---------- | ---- | --------- | ----------- | ----------- |
 | ErrSuccess | 100001 | 200 | Success. | 请求成功 |
 | ErrUnknown | 100002 | 500 | Internal server error. | 服务器出错 |
-| ErrBind | 100003 | 400 | Error occurred while binding the request body to the struct. | 解析结构体出错 |
-| ErrValidation | 100004 | 400 | Validation failed. | 参数校验失败 |
+| ErrBind | 100003 | 200 | Error occurred while binding the request body to the struct. | 解析结构体出错 |
+| ErrValidation | 100004 | 200 | Validation failed. | 参数校验失败 |
 | ErrTokenInvalid | 100005 | 401 | Token invalid. | 令牌无效 |
 | ErrPageNotFound | 100006 | 404 | Page not found. | 请求路由不存在 |
 | ErrOperationBatchExecute | 100007 | 200 | Operation batch execute. | 批量执行操作 |
