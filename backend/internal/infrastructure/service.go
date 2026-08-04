@@ -24,6 +24,7 @@ type Service struct {
 	profiles map[string]*iapiserver.InfraRuntimeProfile
 }
 
+
 func NewService(storage store.InfrastructureStore, provider RuntimeProvider) (*Service, error) {
 	if storage == nil {
 		return nil, fmt.Errorf("infrastructure store is required")
@@ -65,6 +66,8 @@ func (s *Service) ListProfiles(ctx context.Context, req *iapiserver.InfraBasicLi
 func (s *Service) GetProfile(ctx context.Context, id string) (*iapiserver.InfraRuntimeProfile, error) {
 	return s.store.GetInfraRuntimeProfile(ctx, id)
 }
+
+// ListNodes 返回符合状态筛选和分页条件的受管节点摘要。
 func (s *Service) ListNodes(ctx context.Context, req *iapiserver.InfraBasicListRequest) (*iapiserver.InfraNodeListResponse, error) {
 	items, total, err := s.store.ListInfraNodes(ctx, req)
 	return &iapiserver.InfraNodeListResponse{Total: total, Items: items}, err
@@ -85,14 +88,25 @@ func (s *Service) GetEndpoint(ctx context.Context, id string) (*iapiserver.Infra
 	}
 	return s.store.GetInfraRuntimeEndpoint(ctx, id)
 }
-func (s *Service) ListOutputs(ctx context.Context, id string) (*iapiserver.InfraRuntimeOutputListResponse, error) {
+
+// ListOutputs 返回 Runtime 输出引用的分页结果。
+func (s *Service) ListOutputs(ctx context.Context, id string, req *iapiserver.InfraBasicListRequest) (*iapiserver.InfraRuntimeOutputListResponse, error) {
 	if _, err := s.store.GetInfraRuntime(ctx, id); err != nil {
 		return nil, err
 	}
 	items, err := s.store.ListInfraRuntimeOutputs(ctx, id)
-	return &iapiserver.InfraRuntimeOutputListResponse{Total: int64(len(items)), Items: items}, err
+	if err != nil {
+		return nil, err
+	}
+	window, err := req.PagingParams.Normalize()
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
+	}
+	return &iapiserver.InfraRuntimeOutputListResponse{Total: int64(len(items)), Items: imachinery.PaginateSlice(items, window)}, nil
 }
-func (s *Service) Logs(ctx context.Context, id string) (*iapiserver.InfraRuntimeLogListResponse, error) {
+
+// Logs 返回经 Provider 脱敏后的 Runtime 日志分页结果。
+func (s *Service) Logs(ctx context.Context, id string, req *iapiserver.InfraBasicListRequest) (*iapiserver.InfraRuntimeLogListResponse, error) {
 	runtime, err := s.store.GetInfraRuntime(ctx, id)
 	if err != nil {
 		return nil, err
@@ -100,8 +114,15 @@ func (s *Service) Logs(ctx context.Context, id string) (*iapiserver.InfraRuntime
 	if runtime.ProviderRuntimeRef == "" {
 		return &iapiserver.InfraRuntimeLogListResponse{Items: []*iapiserver.InfraRuntimeLogEntry{}}, nil
 	}
-	items, err := s.provider.Logs(ctx, runtime.ProviderRuntimeRef, 1000)
-	return &iapiserver.InfraRuntimeLogListResponse{Total: int64(len(items)), Items: items}, err
+	items, err := s.provider.Logs(ctx, runtime.ProviderRuntimeRef, 5000)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
+	}
+	window, err := req.PagingParams.Normalize()
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
+	}
+	return &iapiserver.InfraRuntimeLogListResponse{Total: int64(len(items)), Items: imachinery.PaginateSlice(items, window)}, nil
 }
 func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreateRuntimeRequest) (*iapiserver.InfraOperationResult, error) {
 	profile, ok := s.profiles[req.RuntimeProfileID]
@@ -181,13 +202,23 @@ func (s *Service) Start(ctx context.Context, id string) (*iapiserver.InfraOperat
 	}
 	return s.result(ctx, runtime, result)
 }
+
+// Stop 停止 Service；对 Job 按契约执行取消语义。
 func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iapiserver.InfraOperationResult, error) {
 	runtime, err := s.store.GetInfraRuntime(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if runtime.Status == "STOPPED" || runtime.Status == "DELETED" {
+	if runtime.Status == "DELETED" {
 		return s.result(ctx, runtime, nil)
+	}
+	if !deleteRuntime {
+		if runtime.RuntimeMode == "JOB" && runtime.Status == "CANCELED" {
+			return s.result(ctx, runtime, nil)
+		}
+		if runtime.RuntimeMode == "SERVICE" && runtime.Status == "STOPPED" {
+			return s.result(ctx, runtime, nil)
+		}
 	}
 	result, err := s.provider.Stop(ctx, runtime.ProviderRuntimeRef, deleteRuntime)
 	if err != nil {
@@ -195,6 +226,8 @@ func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iap
 	}
 	if deleteRuntime {
 		runtime.Status = "DELETED"
+	} else if runtime.RuntimeMode == "JOB" {
+		runtime.Status = "CANCELED"
 	} else {
 		runtime.Status = "STOPPED"
 	}
@@ -204,9 +237,17 @@ func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iap
 	}
 	return s.result(ctx, runtime, result)
 }
-func (s *Service) Delete(ctx context.Context, id string) error {
-	_, err := s.Stop(ctx, id, true)
-	return err
+
+// Delete 删除 Runtime 并返回删除后的脱敏摘要。
+func (s *Service) Delete(ctx context.Context, id string) (*iapiserver.InfraRuntime, error) {
+	result, err := s.Stop(ctx, id, true)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.Runtime == nil {
+		return nil, fmt.Errorf("infrastructure delete returned no runtime")
+	}
+	return result.Runtime, nil
 }
 func (s *Service) Cancel(ctx context.Context, id string) (*iapiserver.InfraOperationResult, error) {
 	runtime, err := s.store.GetInfraRuntime(ctx, id)
@@ -215,6 +256,9 @@ func (s *Service) Cancel(ctx context.Context, id string) (*iapiserver.InfraOpera
 	}
 	if runtime.RuntimeMode != "JOB" {
 		return nil, errors.NewStatus(code.ErrInfraRuntimeStateConflict, "only jobs can be canceled")
+	}
+	if runtime.Status == "CANCELED" {
+		return s.result(ctx, runtime, nil)
 	}
 	result, err := s.provider.Stop(ctx, runtime.ProviderRuntimeRef, false)
 	if err != nil {

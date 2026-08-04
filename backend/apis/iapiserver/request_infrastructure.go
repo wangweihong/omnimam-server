@@ -78,8 +78,14 @@ func (r *InfraCreateRuntimeRequest) Validate() error {
 // +k8s:deepcopy-gen=true
 type InfraRuntimeListRequest struct {
 	imachinery.BasicQueryParam
-	Status      string `form:"status" binding:"omitempty,max=256"`
-	OwnerDomain string `form:"owner_domain" binding:"omitempty,oneof=agent appstudio task-center asset-library"`
+	Status         string `form:"status" binding:"omitempty,max=256"`
+	OwnerDomain    string `form:"owner_domain" binding:"omitempty,oneof=agent appstudio task-center asset-library"`
+	OwnerReference string `form:"owner_reference" binding:"omitempty,max=512"`
+}
+
+// Validate 校验 Infrastructure Runtime 列表的独立分页上限。
+func (r *InfraRuntimeListRequest) Validate() error {
+	return normalizeInfraPaging(&r.PagingParams)
 }
 
 // +k8s:deepcopy-gen=true
@@ -90,4 +96,29 @@ type InfraActionRequest struct {
 }
 
 // +k8s:deepcopy-gen=true
-type InfraBasicListRequest struct{ imachinery.BasicQueryParam }
+type InfraBasicListRequest struct {
+	imachinery.BasicQueryParam
+	Status string `form:"status" binding:"omitempty,max=256"`
+}
+
+// Validate 校验 Infrastructure 基础列表的独立分页上限。
+func (r *InfraBasicListRequest) Validate() error {
+	return normalizeInfraPaging(&r.PagingParams)
+}
+
+func normalizeInfraPaging(params *imachinery.PagingParams) error {
+	if params.PageNum < 0 {
+		return fmt.Errorf("page_num must be greater than or equal to zero")
+	}
+	if params.PageSize < 0 {
+		return fmt.Errorf("page_size must be greater than or equal to zero")
+	}
+	if params.PageSize == 0 {
+		params.PageSize = 50
+	}
+	if params.PageSize > 200 {
+		return fmt.Errorf("page_size must be less than or equal to 200")
+	}
+	_, err := params.Normalize()
+	return err
+}

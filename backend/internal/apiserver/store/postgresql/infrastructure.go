@@ -67,7 +67,12 @@ func (s *infrastructureStore) GetInfraRuntimeProfile(ctx context.Context, id str
 }
 func (s *infrastructureStore) ListInfraNodes(ctx context.Context, req *iapiserver.InfraBasicListRequest) ([]*iapiserver.InfraNode, int64, error) {
 	var items []*iapiserver.InfraNode
-	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.InfraNode{}), nil)
+	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.InfraNode{}), func(q *gorm.DB) *gorm.DB {
+		if req.Status != "" {
+			q = q.Where("status IN ?", splitCSV(req.Status))
+		}
+		return q
+	})
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }
@@ -118,6 +123,9 @@ func (s *infrastructureStore) ListInfraRuntimes(ctx context.Context, req *iapise
 		}
 		if req.OwnerDomain != "" {
 			q = q.Where("owner_domain = ?", req.OwnerDomain)
+		}
+		if req.OwnerReference != "" {
+			q = q.Where("owner_reference = ?", req.OwnerReference)
 		}
 		return q
 	})

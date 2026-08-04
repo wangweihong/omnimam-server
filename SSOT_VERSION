@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 7eacab00bf4b505f69582e2ccc390ebc24feb774
-contract_version: spec-v1.15.2
+commit: 0c93e518f64d11b466e2fef7dae47f20ac3150b0
+contract_version: spec-v1.15.3
 updated_at: 2026-08-04
 status: released
-note: Released default role permission specification.
+note: Released Infrastructure status metadata; contract semantics remain those published by spec-v1.12.0.
