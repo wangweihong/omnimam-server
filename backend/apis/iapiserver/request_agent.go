@@ -17,7 +17,7 @@ type AgentListRequest struct {
 	OwnerUserID string `form:"-" json:"-"`
 }
 
-// AgentCreateRequest 创建 Agent 并在同事务固定 Workspace Binding。
+// AgentCreateRequest 创建 Platform Agent，并由后端初始化内部 Workspace Binding。
 // +k8s:deepcopy-gen=true
 type AgentCreateRequest struct {
 	// Name 是当前所有者可识别的 Agent 名称。
@@ -25,15 +25,9 @@ type AgentCreateRequest struct {
 	// Description 是不包含凭证的用途说明。
 	Description string `json:"description,omitempty" binding:"omitempty,max=2000"`
 	// AgentProfileID 只允许平台启用的只读 Profile。
-	AgentProfileID string `json:"agent_profile_id" binding:"required,oneof=agent.hermes agent.coding"`
+	AgentProfileID string `json:"agent_profile_id" binding:"required,oneof=agent.hermes"`
 	// AgentProfileRevision 固定 Profile 修订；省略时使用当前 ACTIVE 修订。
 	AgentProfileRevision string `json:"agent_profile_revision,omitempty" binding:"omitempty,max=64"`
-	// Kind 只允许 platform 或 coding，并决定 Workspace 类型。
-	Kind string `json:"kind" binding:"required,oneof=platform coding"`
-	// WorkspaceType 必须与 Kind 匹配且创建后不可修改。
-	WorkspaceType string `json:"workspace_type" binding:"required,oneof=agent studio"`
-	// WorkspaceID 是已授权稳定引用，不得使用路径。
-	WorkspaceID string `json:"workspace_id" binding:"required,min=1,max=128"`
 	// ModelBinding 可选地创建主要模型绑定，不包含明文凭证。
 	ModelBinding *AgentModelBindingInput `json:"model_binding,omitempty"`
 	// RuntimePolicy 是 Profile 允许范围内的恢复和空闲策略。
@@ -41,10 +35,6 @@ type AgentCreateRequest struct {
 }
 
 func (r *AgentCreateRequest) Validate() error {
-	if (r.Kind == AgentKindPlatform && r.WorkspaceType != AgentWorkspaceTypeAgent) ||
-		(r.Kind == AgentKindCoding && r.WorkspaceType != AgentWorkspaceTypeStudio) {
-		return fmt.Errorf("agent kind and workspace type do not match")
-	}
 	if len(r.RuntimePolicy) > 16*1024 {
 		return fmt.Errorf("agent runtime policy exceeds 16 KiB")
 	}

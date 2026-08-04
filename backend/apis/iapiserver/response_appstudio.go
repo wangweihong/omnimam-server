@@ -14,18 +14,18 @@ type StudioSourceFileListResponse struct {
 
 // +k8s:deepcopy-gen=true
 type StudioFileContent struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
-	Revision  int64  `json:"revision"`
+	Path           string `json:"path"`
+	Content        string `json:"content"`
+	Truncated      bool   `json:"truncated"`
+	SourceRevision int64  `json:"source_revision"`
 }
 
 // +k8s:deepcopy-gen=true
 type StudioSourceSearchHit struct {
-	Path       string `json:"path"`
-	LineNumber int    `json:"line_number"`
-	Snippet    string `json:"snippet"`
-	Revision   int64  `json:"revision"`
+	Path           string `json:"path"`
+	LineNumber     int    `json:"line_number"`
+	Snippet        string `json:"snippet"`
+	SourceRevision int64  `json:"source_revision"`
 }
 
 // +k8s:deepcopy-gen=true

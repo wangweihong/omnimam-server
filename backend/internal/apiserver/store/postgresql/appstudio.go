@@ -18,6 +18,16 @@ import (
 
 type appStudioStore struct{ ds *datastore }
 
+const (
+	studioApplicationLifecycleChangedEvent = "studio_application_lifecycle_changed"
+	studioSourceRevisionChangedEvent       = "studio_source_revision_changed"
+	studioSourceSnapshotCreatedEvent       = "studio_source_snapshot_created"
+	studioBuildProjectionChangedEvent      = "studio_build_projection_changed"
+	studioPreviewRuntimeChangedEvent       = "studio_preview_runtime_status_changed"
+	studioReleaseStatusChangedEvent        = "studio_release_status_changed"
+	studioRuntimeInstanceChangedEvent      = "studio_runtime_instance_status_changed"
+)
+
 func newAppStudioStore(ds *datastore) *appStudioStore { return &appStudioStore{ds: ds} }
 
 func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, app *iapiserver.StudioApplication, repository *iapiserver.StudioSourceRepository, workspace *iapiserver.StudioWorkspace, revision *iapiserver.StudioWorkspaceRevision) error {
@@ -27,9 +37,10 @@ func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, a
 				return err
 			}
 		}
-		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, "studio_application_lifecycle_changed", app.ResourceVersion, map[string]any{
-			"studio_application_id": app.ID, "owner_user_id": app.OwnerUserID, "from_status": nil, "to_status": app.Status,
-		})
+		if err := appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioApplicationLifecycleChangedEvent, appStudioEventKey(studioApplicationLifecycleChangedEvent, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil)); err != nil {
+			return err
+		}
+		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioSourceRevisionChangedEvent, appStudioEventKey(studioSourceRevisionChangedEvent, app.ID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(app.ID, revision.Revision, nil))
 	})
 }
 
@@ -67,9 +78,7 @@ func (s *appStudioStore) UpdateStudioApplication(ctx context.Context, app *iapis
 		if err := tx.Save(app).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, "studio_application_lifecycle_changed", app.ResourceVersion, map[string]any{
-			"studio_application_id": app.ID, "owner_user_id": app.OwnerUserID, "from_status": previous.Status, "to_status": app.Status,
-		})
+		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioApplicationLifecycleChangedEvent, appStudioEventKey(studioApplicationLifecycleChangedEvent, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, previous.Status))
 	})
 	return app, err
 }
@@ -79,7 +88,7 @@ func (s *appStudioStore) GetStudioWorkspaceByApplication(ctx context.Context, ap
 	err := s.ds.db.WithContext(ctx).Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
 		Where("studio_workspaces.studio_application_id = ? AND studio_applications.owner_user_id = ?", appID, owner).First(&item).Error
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAppStudioWorkspaceNotVisible, "studio workspace not visible")
+		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source not visible")
 	}
 	return &item, nil
 }
@@ -89,7 +98,7 @@ func (s *appStudioStore) GetStudioWorkspace(ctx context.Context, id, owner strin
 	err := s.ds.db.WithContext(ctx).Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
 		Where("studio_workspaces.id = ? AND studio_applications.owner_user_id = ?", id, owner).First(&item).Error
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAppStudioWorkspaceNotVisible, "studio workspace not visible")
+		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source not visible")
 	}
 	return &item, nil
 }
@@ -112,7 +121,7 @@ func (s *appStudioStore) GetStudioWorkspaceRevision(ctx context.Context, workspa
 		Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
 		Where("studio_workspace_revisions.workspace_id = ? AND studio_workspace_revisions.revision = ? AND studio_applications.owner_user_id = ?", workspaceID, revision, owner).First(&item).Error
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAppStudioWorkspaceNotVisible, "studio workspace revision not visible")
+		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source revision not visible")
 	}
 	return &item, nil
 }
@@ -133,10 +142,10 @@ func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string,
 		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
 			Where("studio_workspaces.id = ? AND studio_applications.owner_user_id = ?", changeSet.WorkspaceID, owner).First(&workspace).Error
 		if err != nil {
-			return mapNotFound(err, code.ErrAppStudioWorkspaceNotVisible, "studio workspace not visible")
+			return mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source not visible")
 		}
 		if workspace.CurrentRevision != changeSet.BaseRevision {
-			return errors.NewStatus(code.ErrAppStudioWorkspaceRevisionConflict, "workspace base revision conflicts")
+			return errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source base revision conflicts")
 		}
 		if err := tx.Create(changeSet).Error; err != nil {
 			return err
@@ -155,9 +164,7 @@ func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string,
 		if err := tx.Model(&iapiserver.StudioSourceRepository{}).Where("id = ?", workspace.RepositoryID).Updates(map[string]any{"current_revision": revision.Revision, "resource_version": gorm.Expr("resource_version + 1"), "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioWorkspace", workspace.ID, "studio_workspace_revision_changed", revision.ResourceVersion, map[string]any{
-			"workspace_id": workspace.ID, "studio_application_id": workspace.StudioApplicationID, "base_revision": changeSet.BaseRevision, "target_revision": revision.Revision, "content_digest": revision.ContentDigest, "change_set_id": changeSet.ID,
-		})
+		return appendAppStudioOutbox(tx, "StudioApplication", workspace.StudioApplicationID, studioSourceRevisionChangedEvent, appStudioEventKey(studioSourceRevisionChangedEvent, workspace.StudioApplicationID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(workspace.StudioApplicationID, revision.Revision, changeSet))
 	})
 	return result, err
 }
@@ -183,9 +190,7 @@ func (s *appStudioStore) CreateStudioSourceSnapshot(ctx context.Context, owner s
 		if err := tx.Create(snapshot).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioSourceSnapshot", snapshot.ID, "studio_source_snapshot_created", snapshot.ResourceVersion, map[string]any{
-			"source_snapshot_id": snapshot.ID, "studio_application_id": snapshot.StudioApplicationID, "workspace_id": snapshot.WorkspaceID, "workspace_revision": snapshot.WorkspaceRevision, "content_digest": snapshot.ContentDigest, "status": snapshot.Status,
-		})
+		return appendAppStudioOutbox(tx, "StudioSourceSnapshot", snapshot.ID, studioSourceSnapshotCreatedEvent, appStudioEventKey(studioSourceSnapshotCreatedEvent, snapshot.ID, snapshot.ResourceVersion), snapshot.ResourceVersion, studioSourceSnapshotPayload(snapshot))
 	})
 	return snapshot, err
 }
@@ -295,7 +300,7 @@ func (s *appStudioStore) GetStudioPreviewRuntime(ctx context.Context, workspaceI
 		return nil, nil
 	}
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAppStudioWorkspaceNotVisible, "studio preview runtime not visible")
+		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
 	}
 	return &item, nil
 }
@@ -306,7 +311,7 @@ func (s *appStudioStore) CreateStudioPreviewRuntime(ctx context.Context, owner s
 			return err
 		}
 		if count == 0 {
-			return errors.NewStatus(code.ErrAppStudioWorkspaceNotVisible, "studio preview runtime not visible")
+			return errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
 		}
 		if err := tx.Create(runtime).Error; err != nil {
 			return err
@@ -541,6 +546,7 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 		} else if runtime.Status == "FAILED" {
 			release.Status = "FAILED"
 		}
+		release.RuntimeInstanceID = runtime.ID
 		_, err = s.UpdateStudioRelease(ctx, &release)
 		return err
 	default:
@@ -548,41 +554,89 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 	}
 }
 
-func appendAppStudioOutbox(tx *gorm.DB, aggregateType, aggregateID, eventType string, version int64, payload map[string]any) error {
+func appStudioEventKey(eventType string, components ...any) string {
+	key := eventType
+	for _, component := range components {
+		key += ":" + fmt.Sprint(component)
+	}
+	return key
+}
+
+func marshalAppStudioEventPayload(payload map[string]any, version int64, occurredAt time.Time) ([]byte, error) {
 	payload["resource_version"] = version
-	payload["occurred_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-	raw, err := json.Marshal(payload)
+	payload["occurred_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+	return json.Marshal(payload)
+}
+
+func appendAppStudioOutbox(tx *gorm.DB, aggregateType, aggregateID, eventType, idempotencyKey string, version int64, payload map[string]any) error {
+	raw, err := marshalAppStudioEventPayload(payload, version, time.Now())
 	if err != nil {
 		return err
 	}
-	event := &iapiserver.AppStudioOutbox{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AggregateType: aggregateType, AggregateID: aggregateID, EventType: eventType, Payload: raw, IdempotencyKey: fmt.Sprintf("%s:%d", aggregateID, version), DeliveryStatus: "PENDING", NextAttemptAt: imachinery.Now()}
+	event := &iapiserver.AppStudioOutbox{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AggregateType: aggregateType, AggregateID: aggregateID, EventType: eventType, Payload: raw, IdempotencyKey: idempotencyKey, DeliveryStatus: "PENDING", NextAttemptAt: imachinery.Now()}
 	return tx.Create(event).Error
 }
+
+func studioApplicationLifecyclePayload(app *iapiserver.StudioApplication, fromStatus any) map[string]any {
+	return map[string]any{"studio_application_id": app.ID, "owner_user_id": app.OwnerUserID, "from_status": fromStatus, "to_status": app.Status}
+}
+
+func studioSourceRevisionPayload(appID string, currentRevision int64, changeSet *iapiserver.StudioChangeSet) map[string]any {
+	payload := map[string]any{"studio_application_id": appID, "previous_revision": nil, "current_revision": currentRevision, "change_set_id": nil, "agent_id": nil, "agent_invocation_id": nil}
+	if changeSet != nil {
+		payload["previous_revision"] = changeSet.BaseRevision
+		payload["change_set_id"] = changeSet.ID
+		payload["agent_id"] = agentNullableString(changeSet.AgentID)
+		payload["agent_invocation_id"] = agentNullableString(changeSet.AgentInvocationID)
+	}
+	return payload
+}
+
+func studioSourceSnapshotPayload(snapshot *iapiserver.StudioSourceSnapshot) map[string]any {
+	return map[string]any{"source_snapshot_id": snapshot.ID, "studio_application_id": snapshot.StudioApplicationID, "source_revision": snapshot.WorkspaceRevision, "content_digest": snapshot.ContentDigest, "manifest_digest": snapshot.ManifestDigest, "created_by": snapshot.CreatedBy}
+}
+
 func appendStudioBuildOutbox(tx *gorm.DB, previous, build *iapiserver.StudioBuild) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioBuild", build.ID, "studio_build_projection_changed", build.ResourceVersion, map[string]any{"studio_build_id": build.ID, "studio_application_id": build.StudioApplicationID, "source_snapshot_id": build.SourceSnapshotID, "atomic_task_id": agentNullableString(build.AtomicTaskID), "artifact_id": agentNullableString(build.ArtifactID), "artifact_digest": agentNullableString(build.ArtifactDigest), "from_status": from, "to_status": build.Status})
+	return appendAppStudioOutbox(tx, "StudioBuild", build.ID, studioBuildProjectionChangedEvent, appStudioEventKey(studioBuildProjectionChangedEvent, build.ID, build.ResourceVersion), build.ResourceVersion, studioBuildPayload(build, from))
+}
+func studioBuildPayload(build *iapiserver.StudioBuild, fromStatus any) map[string]any {
+	return map[string]any{"studio_build_id": build.ID, "studio_application_id": build.StudioApplicationID, "source_snapshot_id": build.SourceSnapshotID, "atomic_task_id": agentNullableString(build.AtomicTaskID), "artifact_id": agentNullableString(build.ArtifactID), "artifact_digest": agentNullableString(build.ArtifactDigest), "from_status": fromStatus, "to_status": build.Status, "error_code": nil}
 }
 func appendStudioPreviewOutbox(tx *gorm.DB, previous, runtime *iapiserver.StudioPreviewRuntime) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioPreviewRuntime", runtime.ID, "studio_preview_runtime_status_changed", runtime.ResourceVersion, map[string]any{"preview_runtime_id": runtime.ID, "studio_application_id": runtime.StudioApplicationID, "workspace_id": runtime.WorkspaceID, "workspace_revision": runtime.WorkspaceRevision, "infra_runtime_id": agentNullableString(runtime.InfraRuntimeID), "from_status": from, "to_status": runtime.Status})
+	return appendAppStudioOutbox(tx, "StudioPreviewRuntime", runtime.ID, studioPreviewRuntimeChangedEvent, appStudioEventKey(studioPreviewRuntimeChangedEvent, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioPreviewPayload(runtime, from))
+}
+func studioPreviewPayload(runtime *iapiserver.StudioPreviewRuntime, fromStatus any) map[string]any {
+	diagnosticsSummary := runtime.DiagnosticsSummary
+	if len(diagnosticsSummary) == 0 {
+		diagnosticsSummary = json.RawMessage("{}")
+	}
+	return map[string]any{"preview_runtime_id": runtime.ID, "studio_application_id": runtime.StudioApplicationID, "source_revision": runtime.WorkspaceRevision, "from_status": fromStatus, "to_status": runtime.Status, "diagnostics_summary": diagnosticsSummary, "error_code": nil}
 }
 func appendStudioReleaseOutbox(tx *gorm.DB, previous, release *iapiserver.StudioRelease) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioRelease", release.ID, "studio_release_status_changed", release.ResourceVersion, map[string]any{"studio_release_id": release.ID, "studio_application_id": release.StudioApplicationID, "environment": release.Environment, "from_status": from, "to_status": release.Status, "rollback_of_release_id": agentNullableString(release.RollbackOfReleaseID)})
+	return appendAppStudioOutbox(tx, "StudioRelease", release.ID, studioReleaseStatusChangedEvent, appStudioEventKey(studioReleaseStatusChangedEvent, release.ID, release.ResourceVersion), release.ResourceVersion, studioReleasePayload(release, from))
+}
+func studioReleasePayload(release *iapiserver.StudioRelease, fromStatus any) map[string]any {
+	return map[string]any{"studio_release_id": release.ID, "studio_application_id": release.StudioApplicationID, "studio_application_version_id": release.StudioApplicationVersionID, "studio_build_id": release.StudioBuildID, "runtime_config_id": release.RuntimeConfigID, "artifact_id": release.ArtifactID, "artifact_digest": release.ArtifactDigest, "environment": release.Environment, "runtime_instance_id": agentNullableString(release.RuntimeInstanceID), "rollback_of_release_id": agentNullableString(release.RollbackOfReleaseID), "from_status": fromStatus, "to_status": release.Status, "error_code": nil}
 }
 func appendStudioRuntimeOutbox(tx *gorm.DB, previous, runtime *iapiserver.StudioRuntimeInstance) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioRuntimeInstance", runtime.ID, "studio_runtime_instance_status_changed", runtime.ResourceVersion, map[string]any{"studio_runtime_instance_id": runtime.ID, "studio_release_id": runtime.StudioReleaseID, "studio_application_id": runtime.StudioApplicationID, "environment": runtime.Environment, "from_status": from, "to_status": runtime.Status, "health_status": runtime.HealthStatus, "is_current": runtime.IsCurrent})
+	return appendAppStudioOutbox(tx, "StudioRuntimeInstance", runtime.ID, studioRuntimeInstanceChangedEvent, appStudioEventKey(studioRuntimeInstanceChangedEvent, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioRuntimePayload(runtime, from))
+}
+func studioRuntimePayload(runtime *iapiserver.StudioRuntimeInstance, fromStatus any) map[string]any {
+	return map[string]any{"runtime_instance_id": runtime.ID, "studio_release_id": runtime.StudioReleaseID, "studio_application_id": runtime.StudioApplicationID, "environment": runtime.Environment, "atomic_task_id": agentNullableString(runtime.AtomicTaskID), "infra_runtime_id": agentNullableString(runtime.InfraRuntimeID), "from_status": fromStatus, "to_status": runtime.Status, "health_status": runtime.HealthStatus, "is_current": runtime.IsCurrent, "error_code": agentNullableString(runtime.ErrorCode)}
 }

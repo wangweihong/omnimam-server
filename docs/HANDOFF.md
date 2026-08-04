@@ -2,72 +2,72 @@
 
 ## Current goal and status
 
-- Goal: update the pinned SSOT to released `spec-v1.15.3` and implement the missing Infrastructure service APIs in `infra-server`.
-- Status: complete. The SSOT pin and all 15 released `/api/v1/infra/*` operations are implemented and verified with the allowed focused checks.
+- Goal: finish the AppStudio event and Identity permission implementation after publishing the corrected `spec-v1.16.1` contract.
+- Status: complete. Server is pinned to the released `spec-v1.16.1` commit `63defea97f45761acf300030cad1c00d6b83bb5a`, and the event and permission implementation passes focused verification.
 
 ## Work completed in this session
 
-- Validated released tag `spec-v1.15.3` at `0c93e518f64d11b466e2fef7dae47f20ac3150b0` and updated the `ssot` submodule plus root `SSOT_VERSION`.
-- Confirmed the released Infrastructure OpenAPI defines 15 service-authenticated operations for runtimes, endpoints, logs, nodes, profiles, and outputs.
-- Registered all 15 operations in the existing `infra-server` HTTP server without adding a binary or controller module.
-- Added static service Bearer authentication for `/api/v1/infra/*`, preserving the existing internal command response contract.
-- Added Infrastructure-specific symbolic/numeric error responses and retryability mapping without adding error codes.
-- Added `owner_reference` Runtime filtering, node `status` filtering, and Infrastructure pagination defaults of 50 with a maximum of 200.
-- Added output/log pagination, changed Job stop semantics to `CANCELED`, and changed delete to return the deleted Runtime summary.
+- Preserved all existing v1.16.0 Workspace-internalization work and unrelated user changes.
+- Confirmed the deterministic collision: application creation emits `appID:1`, and the first source Revision must also use current revision `1`.
+- Confirmed the implementation plan: explicit fully qualified event keys, exact payload alignment for seven event types, initialization Revision event, and corrected Identity source resources.
+- Published `spec-v1.16.1`, updated the `ssot` submodule to its Release commit, and synchronized `SSOT_VERSION`.
+- Implemented explicit fully qualified keys for all seven AppStudio events and decoupled event idempotency keys from payload resource versions.
+- Added the initialization Revision event to application creation and aligned all seven payloads with the released event contract.
+- Added explicit Release runtime-instance propagation and corrected the two Identity source permission resource mappings.
+- Extended the existing `outbox_test.go` with table-driven key, collision, Revision stability, and exact payload-field coverage.
 
 ## Current in-progress work
 
-- None.
+- None for this task.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `SSOT_VERSION`.
-- Modified: `ssot` submodule pointer.
-- Modified: `backend/apis/iapiserver/request_infrastructure.go`.
-- Modified: `backend/internal/apiserver/store/postgresql/infrastructure.go`.
-- Modified: `backend/internal/infrastructure/service.go`.
-- Modified: `backend/internal/infrastructure/server.go`.
-- Modified: `docs/HANDOFF.md`.
-- Existing unrelated modifications in `backend/internal/apiserver/service/v1/agent/service.go` and `third_party/gotoolbox/pkg/generic/generic.go` remain untouched.
+- Updated `SSOT_VERSION`, the `ssot` submodule pointer, and `docs/HANDOFF.md` in this phase.
+- Modified `backend/internal/apiserver/store/postgresql/appstudio.go`, `backend/internal/apiserver/store/postgresql/outbox_test.go`, and `backend/internal/apiserver/service/v1/identity/identity.go` for this fix.
+- Existing task changes in the Server working tree must be preserved, especially `backend/internal/apiserver/store/postgresql/appstudio.go`, AppStudio service/controller files, Identity service files, `SSOT_VERSION`, and the `ssot` submodule pointer.
+- Existing unrelated edits in `backend/internal/apiserver/service/v1/agent/service.go` and `third_party/gotoolbox/pkg/generic/generic.go` must not be overwritten.
 
 ## Key architectural or design decisions
 
-- `/api/v1/infra/*` remains a service boundary for the `task-center` trusted identity; this does not authorize direct Web/browser calls.
-- The existing `infra-server` binary, Service, Store, and provider abstractions are reused; no new schema, migration, dependency, environment variable, or binary is introduced.
-- Ordinary Infrastructure business errors use HTTP 200; authentication uses the existing token-invalid code and HTTP 401; unexpected errors use HTTP 500.
-- API write operations project `InfraOperationResult.Runtime` because the released OpenAPI response is `InfraRuntime`.
-- Runtime and node filtering is performed in PostgreSQL; bounded output/log result sets are paginated in the Infrastructure Service.
+- Keep the Outbox table's single-column global uniqueness contract; event types namespace all new idempotency keys.
+- `appendAppStudioOutbox` will receive an explicit idempotency key; payload `resource_version` remains independent.
+- Revision keys use `revision.Revision`, not the per-row `revision.ResourceVersion`.
+- Application creation emits an initialization Revision event with `current_revision=0`.
+- No SourceContentStore deletion-on-failure workaround is allowed; cross-store atomicity remains a follow-up design task.
 
 ## API, schema, dependency, or configuration changes
 
-- Added the 15 released `/api/v1/infra/*` HTTP operations to `infra-server`.
-- Added request support for Runtime `owner_reference` and node `status` filters.
-- Infrastructure list pagination now defaults to 50 and rejects values above 200 at the HTTP boundary.
-- No database schema, migration, dependency, error-code registry, permission-code registry, event type, environment variable, or binary changes.
+- Pin: `ssot` and `SSOT_VERSION` now reference released `spec-v1.16.1` commit `63defea97f45761acf300030cad1c00d6b83bb5a`.
+- Implemented Identity resource mapping:
+  - `appstudio.source.read`: `studio_application_source, studio_source_file`
+  - `appstudio.source.write`: `studio_change_set, studio_source_revision`
+- No Server migration or dependency change is planned.
 
 ## Verification performed and remaining checks
 
-- `git submodule status ssot` reports `0c93e518f64d11b466e2fef7dae47f20ac3150b0 ssot (spec-v1.15.3)`.
-- Ran `gofmt` on the four modified Go implementation files; the pre-existing user whitespace change in `backend/internal/infrastructure/service.go` was restored afterward rather than discarded.
-- `go test ./backend/apis/iapiserver ./backend/internal/infrastructure ./backend/internal/apiserver/store/postgresql` passes; Infrastructure compiles and has no test files, while the API DTO and PostgreSQL Store tests pass.
+- Ran `gofmt` on the three modified Go files.
+- `go test ./backend/internal/apiserver/store/postgresql` passes, including seven key formats, the lifecycle/first-Revision collision case, repeated and consecutive Revision behavior, and exact payload field sets.
+- `go test ./backend/internal/apiserver/service/v1/appstudio`, `go test ./backend/internal/apiserver/controller/v1/appstudio`, and `go test ./backend/internal/apiserver/service/v1/identity` pass; these packages currently have no test files beyond compilation.
 - `git diff --check` passes.
-- Confirmed `SSOT_VERSION.commit`, `SSOT_VERSION.contract_version`, the submodule commit, and the exact tag agree on `0c93e518f64d11b466e2fef7dae47f20ac3150b0` / `spec-v1.15.3`.
-- Confirmed the public Runtime JSON hides `ProviderRuntimeRef`, selected node, source ref, timeout-policy shadow, mount target/authorization references, and provider event identifiers via `json:"-"`; Docker endpoint display refs use the controlled `infra-runtime://` form.
-- No full-repository test was run, in accordance with the task verification scope.
+- Confirmed `ssot`, `SSOT_VERSION`, and `spec-v1.16.1` use Release commit `63defea97f45761acf300030cad1c00d6b83bb5a`.
+- Confirmed the public AppStudio API models do not expose `workspace_id`, `workspace_revision`, or bare `revision` JSON fields.
+- No full-repository test was run, per task constraints.
 
 ## Outstanding tasks
 
-- None for this task.
+- None for the Outbox conflict and permission-alignment task.
+- Follow-up only: design cross-store `SourceContentStore` atomicity independently.
 
 ## Known issues and risks
 
-- Runtime log pagination is limited to the provider's existing retained tail of up to 5000 sanitized entries; the API never exposes raw provider responses.
-- The package has no pre-existing focused HTTP test file, and repository rules prohibit adding an ad hoc test file outside the approved test layout; verification therefore relies on focused package compilation/tests and source-level contract checks.
-- The existing working tree contains unrelated user changes that must remain preserved.
+- The working tree is dirty and contains user changes; all overlapping edits require careful preservation.
+- Existing Outbox rows are not rewritten; consumers continue using each row's own idempotency key.
+- Preview, Build, and Release do not have independent persisted error-code facts and must emit `error_code: null`; RuntimeInstance uses its persisted `ErrorCode`.
+- SourceContentStore/database atomicity remains unresolved and outside this task.
 
 ## Exact recommended next step
 
-Restart `infra-server` and perform an authenticated Task Center service smoke test against the list, create, action, and read endpoints using the configured service Bearer token.
+Design a `SourceContentStore` `prepare/promote/discard` lifecycle under the Workspace row lock, including crash recovery and orphan cleanup, without changing this completed Outbox fix.
 
 Next Prompt:
 

@@ -173,6 +173,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent service")
 	}
+	appStudioService.SetCodingAgentCreator(agentService)
 	var mcpProcessor *mcpprotocol.Processor
 	if cfg.MCPOptions != nil && cfg.MCPOptions.Enabled {
 		mcpFactory, ok := storeIns.(store.MCPStoreFactory)

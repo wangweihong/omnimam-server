@@ -35,3 +35,10 @@ func GetIfNotZero[T comparable](s T, k T) T {
 	}
 	return s
 }
+func GetValueOrZero[T any](value *T, err error) (T, error) {
+	if value == nil {
+		var zero T
+		return zero, err
+	}
+	return *value, err
+}

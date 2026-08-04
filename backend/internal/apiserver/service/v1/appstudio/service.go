@@ -39,11 +39,16 @@ type ArtifactReader interface {
 	GetArtifact(context.Context, string, string) (*iapiserver.Artifact, error)
 }
 
+type CodingAgentCreator interface {
+	CreateCodingAgentForStudio(context.Context, string, string, string, string) (*iapiserver.Agent, error)
+}
+
 type Service struct {
 	store     store.AppStudioStore
 	tasks     TaskClient
 	sources   SourceContentStore
 	artifacts ArtifactReader
+	agents    CodingAgentCreator
 }
 type Dependencies struct {
 	Store     store.AppStudioStore
@@ -62,6 +67,10 @@ func New(deps Dependencies) (*Service, error) {
 	return &Service{store: deps.Store, tasks: deps.Tasks, sources: deps.Sources, artifacts: deps.Artifacts}, nil
 }
 
+func (s *Service) SetCodingAgentCreator(creator CodingAgentCreator) {
+	s.agents = creator
+}
+
 func (s *Service) ListApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) (*iapiserver.StudioApplicationListResponse, error) {
 	owner, err := studioUserID(ctx)
 	if err != nil {
@@ -77,14 +86,28 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		return nil, err
 	}
 	appID, repoID, workspaceID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description}, OwnerUserID: owner, Status: "READY", DefaultWorkspaceID: workspaceID}
+	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description}, OwnerUserID: owner, Status: "CREATING", DefaultWorkspaceID: workspaceID}
 	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: "BUILT_IN", Status: "READY"}
 	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: "main"}, StudioApplicationID: appID, RepositoryID: repoID, Status: "READY", CurrentRevisionDigest: emptyTreeDigest()}
 	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: emptyTreeDigest(), CreatedBy: owner}
 	if err := s.sources.WriteRevision(ctx, workspaceID, 0, map[string][]byte{}); err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceChangeRejected, err.Error())
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
 	}
 	if err := s.store.CreateStudioApplicationAggregate(ctx, app, repository, workspace, revision); err != nil {
+		return nil, err
+	}
+	if s.agents == nil {
+		app.Status = "ERROR"
+		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization is unavailable")
+	}
+	if _, err := s.agents.CreateCodingAgentForStudio(ctx, appID, workspaceID, owner, appID); err != nil {
+		app.Status = "ERROR"
+		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
+	}
+	app.Status = "READY"
+	if _, err := s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion); err != nil {
 		return nil, err
 	}
 	return app, nil
@@ -123,131 +146,115 @@ func (s *Service) ArchiveApplication(ctx context.Context, id string) (*iapiserve
 	app.Status = "ARCHIVED"
 	return s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
 }
-func (s *Service) GetApplicationWorkspace(ctx context.Context, appID string) (*iapiserver.StudioWorkspace, error) {
-	owner, err := studioUserID(ctx)
+func (s *Service) GetSource(ctx context.Context, appID string) (*iapiserver.StudioSourceState, error) {
+	_, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.GetStudioWorkspaceByApplication(ctx, appID, owner)
-}
-func (s *Service) GetWorkspace(ctx context.Context, id string) (*iapiserver.StudioWorkspace, error) {
-	owner, err := studioUserID(ctx)
-	if err != nil {
-		return nil, err
+	status := workspace.Status
+	if status == "CREATING" {
+		status = "INITIALIZING"
 	}
-	return s.store.GetStudioWorkspace(ctx, id, owner)
+	return &iapiserver.StudioSourceState{StudioApplicationID: appID, CurrentRevision: workspace.CurrentRevision, Status: status, UpdatedAt: workspace.UpdatedAt}, nil
 }
 
-func (s *Service) ListFiles(ctx context.Context, workspaceID string, req *iapiserver.StudioSourceFileListRequest) (*iapiserver.StudioSourceFileListResponse, error) {
-	owner, err := studioUserID(ctx)
+func (s *Service) ListFiles(ctx context.Context, appID string, req *iapiserver.StudioSourceFileListRequest) (*iapiserver.StudioSourceFileListResponse, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
-	if err != nil {
-		return nil, err
-	}
-	revision := req.Revision
+	revision := req.SourceRevision
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	items, err := s.store.ListStudioSourceFiles(ctx, workspaceID, revision, req.Prefix, owner)
+	items, err := s.store.ListStudioSourceFiles(ctx, workspace.ID, revision, req.Prefix, owner)
 	return &iapiserver.StudioSourceFileListResponse{Total: int64(len(items)), Items: items}, err
 }
-func (s *Service) GetFileContent(ctx context.Context, workspaceID string, req *iapiserver.StudioFileContentRequest) (*iapiserver.StudioFileContent, error) {
-	owner, err := studioUserID(ctx)
+
+func (s *Service) GetFileContent(ctx context.Context, appID string, req *iapiserver.StudioFileContentRequest) (*iapiserver.StudioFileContent, error) {
+	_, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
-	if err != nil {
-		return nil, err
-	}
-	revision := req.Revision
+	revision := req.SourceRevision
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	content, err := s.sources.ReadFile(ctx, workspaceID, revision, req.Path)
+	content, err := s.sources.ReadFile(ctx, workspace.ID, revision, req.Path)
 	if err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceNotVisible, "studio source file not visible")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio source file not visible")
 	}
 	truncated := len(content) > maxStudioContentReadBytes
 	if truncated {
 		content = content[:maxStudioContentReadBytes]
 	}
-	return &iapiserver.StudioFileContent{Path: req.Path, Content: string(content), Truncated: truncated, Revision: revision}, nil
+	return &iapiserver.StudioFileContent{Path: req.Path, Content: string(content), Truncated: truncated, SourceRevision: revision}, nil
 }
 
-func (s *Service) ApplyChangeSet(ctx context.Context, workspaceID string, req *iapiserver.StudioChangeSetRequest) (*iapiserver.StudioChangeSet, error) {
-	owner, err := studioUserID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
+func (s *Service) ApplyChangeSet(ctx context.Context, appID string, req *iapiserver.StudioChangeSetRequest) (*iapiserver.StudioChangeSet, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	if workspace.Status != "READY" {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceChangeRejected, "studio workspace is not ready")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "studio source is not ready")
 	}
 	if workspace.CurrentRevision != req.BaseRevision {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceRevisionConflict, "workspace base revision conflicts")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source base revision conflicts")
 	}
-	files, err := s.loadRevision(ctx, workspaceID, req.BaseRevision, owner)
+	files, err := s.loadRevision(ctx, workspace.ID, req.BaseRevision, owner)
 	if err != nil {
 		return nil, err
 	}
 	if err := applyOperations(files, req.Operations); err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceChangeRejected, err.Error())
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
 	}
 	target := req.BaseRevision + 1
-	digest, rows := revisionRows(workspaceID, target, files)
-	if err := s.sources.WriteRevision(ctx, workspaceID, target, files); err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceChangeRejected, err.Error())
+	digest, rows := revisionRows(workspace.ID, target, files)
+	if err := s.sources.WriteRevision(ctx, workspace.ID, target, files); err != nil {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
 	}
 	targetPtr := target
-	changeSet := &iapiserver.StudioChangeSet{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Description: req.Summary}, WorkspaceID: workspaceID, BaseRevision: req.BaseRevision, TargetRevision: &targetPtr, ActorID: owner, AgentID: req.AgentID, AgentSessionID: req.AgentSessionID, AgentInvocationID: req.AgentInvocationID, Operations: req.Operations, Status: "APPLIED", IdempotencyKey: req.IdempotencyKey}
+	changeSet := &iapiserver.StudioChangeSet{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Description: req.Summary}, StudioApplicationID: appID, WorkspaceID: workspace.ID, BaseRevision: req.BaseRevision, TargetRevision: &targetPtr, ActorID: owner, AgentID: req.AgentID, AgentSessionID: req.AgentSessionID, AgentInvocationID: req.AgentInvocationID, Operations: req.Operations, Status: "APPLIED", IdempotencyKey: req.IdempotencyKey}
 	parent := req.BaseRevision
-	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspaceID, Revision: target, ContentDigest: digest, ParentRevision: &parent, CreatedBy: owner, ChangeSetID: changeSet.ID}
-	return s.store.ApplyStudioChangeSet(ctx, owner, changeSet, revision, rows)
-}
-func (s *Service) RestoreRevision(ctx context.Context, workspaceID string, req *iapiserver.StudioRestoreRevisionRequest) (*iapiserver.StudioChangeSet, error) {
-	owner, err := studioUserID(ctx)
-	if err != nil {
-		return nil, err
+	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspace.ID, Revision: target, ContentDigest: digest, ParentRevision: &parent, CreatedBy: owner, ChangeSetID: changeSet.ID}
+	result, err := s.store.ApplyStudioChangeSet(ctx, owner, changeSet, revision, rows)
+	if result != nil {
+		result.StudioApplicationID = appID
 	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
+	return result, err
+}
+
+func (s *Service) RestoreRevision(ctx context.Context, appID string, req *iapiserver.StudioRestoreRevisionRequest) (*iapiserver.StudioChangeSet, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	if workspace.CurrentRevision != req.BaseRevision {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceRevisionConflict, "workspace base revision conflicts")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source base revision conflicts")
 	}
-	source, err := s.loadRevision(ctx, workspaceID, req.SourceRevision, owner)
+	source, err := s.loadRevision(ctx, workspace.ID, req.SourceRevision, owner)
 	if err != nil {
 		return nil, err
 	}
-	current, err := s.loadRevision(ctx, workspaceID, req.BaseRevision, owner)
+	current, err := s.loadRevision(ctx, workspace.ID, req.BaseRevision, owner)
 	if err != nil {
 		return nil, err
 	}
 	operations := diffOperations(current, source)
-	return s.ApplyChangeSet(ctx, workspaceID, &iapiserver.StudioChangeSetRequest{BaseRevision: req.BaseRevision, IdempotencyKey: req.IdempotencyKey, Operations: operations, Summary: fmt.Sprintf("Restore revision %d", req.SourceRevision)})
+	return s.ApplyChangeSet(ctx, appID, &iapiserver.StudioChangeSetRequest{BaseRevision: req.BaseRevision, IdempotencyKey: req.IdempotencyKey, Operations: operations, Summary: fmt.Sprintf("Restore revision %d", req.SourceRevision)})
 }
-func (s *Service) SearchWorkspace(ctx context.Context, workspaceID string, req *iapiserver.StudioSourceSearchRequest) (*iapiserver.StudioSourceSearchResponse, error) {
-	owner, err := studioUserID(ctx)
+
+func (s *Service) SearchSource(ctx context.Context, appID string, req *iapiserver.StudioSourceSearchRequest) (*iapiserver.StudioSourceSearchResponse, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
-	if err != nil {
-		return nil, err
-	}
-	revision := req.Revision
+	revision := req.SourceRevision
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	files, err := s.loadRevision(ctx, workspaceID, revision, owner)
+	files, err := s.loadRevision(ctx, workspace.ID, revision, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +264,7 @@ func (s *Service) SearchWorkspace(ctx context.Context, workspaceID string, req *
 	for _, path := range paths {
 		for index, line := range strings.Split(string(files[path]), "\n") {
 			if strings.Contains(strings.ToLower(line), needle) {
-				items = append(items, &iapiserver.StudioSourceSearchHit{Path: path, LineNumber: index + 1, Snippet: truncateText(line, 500), Revision: revision})
+				items = append(items, &iapiserver.StudioSourceSearchHit{Path: path, LineNumber: index + 1, Snippet: truncateText(line, 500), SourceRevision: revision})
 				if len(items) >= 500 {
 					break
 				}
@@ -270,32 +277,35 @@ func (s *Service) SearchWorkspace(ctx context.Context, workspaceID string, req *
 	return &iapiserver.StudioSourceSearchResponse{Total: int64(len(items)), Items: items}, nil
 }
 
-func (s *Service) CreateSnapshot(ctx context.Context, workspaceID string, req *iapiserver.StudioSnapshotRequest) (*iapiserver.StudioSourceSnapshot, error) {
-	owner, err := studioUserID(ctx)
+func (s *Service) CreateSnapshot(ctx context.Context, appID string, req *iapiserver.StudioSnapshotRequest) (*iapiserver.StudioSourceSnapshot, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
-	if err != nil {
-		return nil, err
-	}
-	revision := req.Revision
+	revision := req.SourceRevision
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	record, err := s.store.GetStudioWorkspaceRevision(ctx, workspaceID, revision, owner)
+	record, err := s.store.GetStudioWorkspaceRevision(ctx, workspace.ID, revision, owner)
 	if err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "workspace revision is unavailable")
+		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is unavailable")
 	}
-	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: workspace.StudioApplicationID, WorkspaceID: workspaceID, WorkspaceRevision: revision, ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: "READY", CreatedBy: owner}
+	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: "READY", CreatedBy: owner}
 	return s.store.CreateStudioSourceSnapshot(ctx, owner, snapshot)
 }
-func (s *Service) GetSnapshot(ctx context.Context, id string) (*iapiserver.StudioSourceSnapshot, error) {
+func (s *Service) GetSnapshot(ctx context.Context, appID, id string) (*iapiserver.StudioSourceSnapshot, error) {
 	owner, err := studioUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.GetStudioSourceSnapshot(ctx, id, owner)
+	snapshot, err := s.store.GetStudioSourceSnapshot(ctx, id, owner)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.StudioApplicationID != appID {
+		return nil, errors.NewStatus(code.ErrAppStudioSnapshotNotVisible, "studio source snapshot not visible")
+	}
+	return snapshot, nil
 }
 func (s *Service) CreateVersion(ctx context.Context, appID string, req *iapiserver.StudioApplicationVersionCreateRequest) (*iapiserver.StudioApplicationVersion, error) {
 	owner, err := studioUserID(ctx)
@@ -382,39 +392,35 @@ func (s *Service) CancelBuild(ctx context.Context, id string, req *iapiserver.St
 	return s.store.UpdateStudioBuild(ctx, build)
 }
 
-func (s *Service) GetPreview(ctx context.Context, workspaceID string) (*iapiserver.StudioPreviewRuntime, error) {
-	owner, err := studioUserID(ctx)
+func (s *Service) GetPreview(ctx context.Context, appID string) (*iapiserver.StudioPreviewRuntime, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.GetStudioPreviewRuntime(ctx, workspaceID, owner)
+	return s.store.GetStudioPreviewRuntime(ctx, workspace.ID, owner)
 }
-func (s *Service) RefreshPreview(ctx context.Context, workspaceID string, req *iapiserver.StudioPreviewRequest) (*iapiserver.StudioPreviewRuntime, error) {
-	owner, err := studioUserID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	workspace, err := s.store.GetStudioWorkspace(ctx, workspaceID, owner)
+func (s *Service) RefreshPreview(ctx context.Context, appID string, req *iapiserver.StudioPreviewRequest) (*iapiserver.StudioPreviewRuntime, error) {
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	if s.tasks == nil {
 		return nil, errors.NewStatus(code.ErrAppStudioRuntimeDeployFailed, "task center is unavailable")
 	}
-	revision := req.Revision
+	revision := req.SourceRevision
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	revisionRecord, err := s.store.GetStudioWorkspaceRevision(ctx, workspaceID, revision, owner)
+	revisionRecord, err := s.store.GetStudioWorkspaceRevision(ctx, workspace.ID, revision, owner)
 	if err != nil {
 		return nil, err
 	}
-	runtime := &iapiserver.StudioPreviewRuntime{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: workspace.StudioApplicationID, WorkspaceID: workspaceID, WorkspaceRevision: revision, Status: "PENDING", ExpiresAt: imachinery.Time{Time: time.Now().Add(24 * time.Hour)}}
+	runtime := &iapiserver.StudioPreviewRuntime{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, Status: "PENDING", ExpiresAt: imachinery.Time{Time: time.Now().Add(24 * time.Hour)}}
 	runtime, err = s.store.CreateStudioPreviewRuntime(ctx, owner, runtime)
 	if err != nil {
 		return nil, err
 	}
-	arguments := map[string]any{"studio_application_id": workspace.StudioApplicationID, "preview_runtime_id": runtime.ID, "existing_infra_runtime_id": nil, "workspace_id": workspaceID, "workspace_revision": revision, "workspace_revision_source_ref": "studio-workspace-revision://" + workspaceID + "/" + fmt.Sprint(revision), "runtime_profile_id": "appstudio.preview.static-web", "runtime_profile_revision": "1.0", "endpoint_visibility": "USER_ACCESSIBLE", "authorization_ref": fmt.Sprintf("appstudio-preview-grant://%s/%s/%d", workspaceID, runtime.ID, runtime.ResourceVersion), "expected_resource_version": runtime.ResourceVersion}
+	arguments := map[string]any{"studio_application_id": appID, "preview_runtime_id": runtime.ID, "existing_infra_runtime_id": nil, "workspace_id": workspace.ID, "workspace_revision": revision, "workspace_revision_source_ref": "studio-workspace-revision://" + workspace.ID + "/" + fmt.Sprint(revision), "runtime_profile_id": "appstudio.preview.static-web", "runtime_profile_revision": "1.0", "endpoint_visibility": "USER_ACCESSIBLE", "authorization_ref": fmt.Sprintf("appstudio-preview-grant://%s/%s/%d", workspace.ID, runtime.ID, runtime.ResourceVersion), "expected_resource_version": runtime.ResourceVersion}
 	_ = revisionRecord
 	_, err = s.tasks.CreateDomainAtomicTask(ctx, "appstudio", &iapiserver.AtomicTaskCreateRequest{Key: "preview-" + runtime.ID, Name: "AppStudio preview", FunctionRef: FunctionPreviewEnsure, Arguments: arguments, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace})
 	if err != nil {
@@ -424,13 +430,13 @@ func (s *Service) RefreshPreview(ctx context.Context, workspaceID string, req *i
 	}
 	return runtime, nil
 }
-func (s *Service) StopPreview(ctx context.Context, workspaceID string, req *iapiserver.StudioActionRequest) (*iapiserver.StudioPreviewRuntime, error) {
-	runtime, err := s.GetPreview(ctx, workspaceID)
+func (s *Service) StopPreview(ctx context.Context, appID string, req *iapiserver.StudioActionRequest) (*iapiserver.StudioPreviewRuntime, error) {
+	runtime, err := s.GetPreview(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
 	if runtime == nil {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceNotVisible, "studio preview runtime not visible")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
 	}
 	if runtime.Status == "STOPPED" || runtime.Status == "EXPIRED" {
 		return runtime, nil
@@ -438,7 +444,7 @@ func (s *Service) StopPreview(ctx context.Context, workspaceID string, req *iapi
 	if runtime.InfraRuntimeID == "" || s.tasks == nil {
 		return nil, errors.NewStatus(code.ErrAppStudioRuntimeDeployFailed, "preview infra runtime is unavailable")
 	}
-	_, err = s.tasks.CreateDomainAtomicTask(ctx, "appstudio", &iapiserver.AtomicTaskCreateRequest{Key: "preview-stop-" + runtime.ID, Name: "AppStudio preview stop", FunctionRef: FunctionPreviewStop, Arguments: map[string]any{"studio_application_id": runtime.StudioApplicationID, "preview_runtime_id": runtime.ID, "infra_runtime_id": runtime.InfraRuntimeID, "action": "STOP", "reason": req.Reason, "authorization_ref": fmt.Sprintf("appstudio-preview-grant://%s/%s/%d", workspaceID, runtime.ID, runtime.ResourceVersion), "expected_resource_version": runtime.ResourceVersion}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace})
+	_, err = s.tasks.CreateDomainAtomicTask(ctx, "appstudio", &iapiserver.AtomicTaskCreateRequest{Key: "preview-stop-" + runtime.ID, Name: "AppStudio preview stop", FunctionRef: FunctionPreviewStop, Arguments: map[string]any{"studio_application_id": runtime.StudioApplicationID, "preview_runtime_id": runtime.ID, "infra_runtime_id": runtime.InfraRuntimeID, "action": "STOP", "reason": req.Reason, "authorization_ref": fmt.Sprintf("appstudio-preview-grant://%s/%s/%d", runtime.WorkspaceID, runtime.ID, runtime.ResourceVersion), "expected_resource_version": runtime.ResourceVersion}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace})
 	return runtime, err
 }
 
@@ -600,9 +606,21 @@ func (s *Service) ValidateAgentWorkspaceBinding(ctx context.Context, owner, work
 		return nil, err
 	}
 	if workspace.Status != "READY" {
-		return nil, errors.NewStatus(code.ErrAppStudioWorkspaceNotVisible, "studio workspace is not ready")
+		return nil, errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio source is not ready")
 	}
 	return &iapiserver.AgentAuthorizationSummary{Source: "appstudio", ValidatedAt: imachinery.Now()}, nil
+}
+
+func (s *Service) sourceWorkspace(ctx context.Context, appID string) (string, *iapiserver.StudioWorkspace, error) {
+	owner, err := studioUserID(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	workspace, err := s.store.GetStudioWorkspaceByApplication(ctx, appID, owner)
+	if err != nil {
+		return "", nil, err
+	}
+	return owner, workspace, nil
 }
 
 func studioUserID(ctx context.Context) (string, error) {
@@ -621,7 +639,7 @@ func (s *Service) loadRevision(ctx context.Context, workspaceID string, revision
 	for _, row := range rows {
 		content, readErr := s.sources.ReadFile(ctx, workspaceID, revision, row.Path)
 		if readErr != nil {
-			return nil, errors.NewStatus(code.ErrAppStudioWorkspaceChangeRejected, "source content is unavailable")
+			return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source content is unavailable")
 		}
 		result[row.Path] = content
 	}

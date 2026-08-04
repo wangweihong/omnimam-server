@@ -19,9 +19,9 @@ const (
 	ErrAgentStateInvalid int = 200202
 
 	// @HTTP 200
-	// @CN Agent Workspace 绑定不符合类型或授权规则。
-	// @EN The Agent workspace binding violates workspace type or authorization rules.
-	ErrAgentWorkspaceBindingInvalid int = 200203
+	// @CN Agent 初始化失败。
+	// @EN Agent initialization failed.
+	ErrAgentInitializationFailed int = 200203
 
 	// @HTTP 200
 	// @CN 无权访问 Agent 资源。
@@ -84,24 +84,24 @@ const (
 	ErrAppStudioApplicationInvalidState int = 210201
 
 	// @HTTP 200
-	// @CN StudioWorkspace 不存在或当前主体不可见。
-	// @EN The StudioWorkspace does not exist or is not visible to the current principal.
-	ErrAppStudioWorkspaceNotVisible int = 210400
+	// @CN Studio Source 不存在或当前主体不可见。
+	// @EN The Studio Source does not exist or is not visible to the current principal.
+	ErrAppStudioSourceNotVisible int = 210400
 
 	// @HTTP 200
-	// @CN Workspace 当前 Revision 与 base_revision 冲突。
-	// @EN The Workspace current Revision conflicts with base_revision.
-	ErrAppStudioWorkspaceRevisionConflict int = 210401
+	// @CN Source 当前 Revision 与 base_revision 冲突。
+	// @EN The Source current Revision conflicts with base_revision.
+	ErrAppStudioSourceRevisionConflict int = 210401
 
 	// @HTTP 200
 	// @CN ChangeSet 未通过路径、依赖或安全校验。
 	// @EN The ChangeSet failed path, dependency, or security validation.
-	ErrAppStudioWorkspaceChangeRejected int = 210402
+	ErrAppStudioSourceChangeRejected int = 210402
 
 	// @HTTP 200
-	// @CN Workspace Tool 授权已过期、范围不匹配或不允许当前操作。
-	// @EN The Workspace Tool grant is expired, scope-mismatched, or does not allow the operation.
-	ErrAppStudioWorkspaceToolGrantInvalid int = 210403
+	// @CN Source 访问凭证无效、范围不匹配或不允许当前操作。
+	// @EN The Source access credential is invalid, scope-mismatched, or does not allow the operation.
+	ErrAppStudioSourceAccessInvalid int = 210403
 
 	// @HTTP 200
 	// @CN Source Snapshot 不存在或当前主体不可见。

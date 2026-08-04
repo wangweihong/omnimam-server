@@ -33,46 +33,45 @@ func (c *Controller) UpdateApplication(ctx *gin.Context) {
 func (c *Controller) ArchiveApplication(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.ArchiveApplication(ctx, ctx.Param("studio_application_id")) })
 }
-func (c *Controller) GetApplicationWorkspace(ctx *gin.Context) {
+func (c *Controller) GetSource(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) {
-		return c.service.GetApplicationWorkspace(ctx, ctx.Param("studio_application_id"))
+		return c.service.GetSource(ctx, ctx.Param("studio_application_id"))
 	})
-}
-func (c *Controller) GetWorkspace(ctx *gin.Context) {
-	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetWorkspace(ctx, ctx.Param("workspace_id")) })
 }
 func (c *Controller) ListFiles(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioSourceFileListRequest{}, func(req *iapiserver.StudioSourceFileListRequest) (any, error) {
-		return c.service.ListFiles(ctx, ctx.Param("workspace_id"), req)
+		return c.service.ListFiles(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) GetFileContent(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioFileContentRequest{}, func(req *iapiserver.StudioFileContentRequest) (any, error) {
-		return c.service.GetFileContent(ctx, ctx.Param("workspace_id"), req)
+		return c.service.GetFileContent(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) ApplyChangeSet(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioChangeSetRequest{}, func(req *iapiserver.StudioChangeSetRequest) (any, error) {
-		return c.service.ApplyChangeSet(ctx, ctx.Param("workspace_id"), req)
+		return c.service.ApplyChangeSet(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) RestoreRevision(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioRestoreRevisionRequest{}, func(req *iapiserver.StudioRestoreRevisionRequest) (any, error) {
-		return c.service.RestoreRevision(ctx, ctx.Param("workspace_id"), req)
+		return c.service.RestoreRevision(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
-func (c *Controller) SearchWorkspace(ctx *gin.Context) {
+func (c *Controller) SearchSource(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioSourceSearchRequest{}, func(req *iapiserver.StudioSourceSearchRequest) (any, error) {
-		return c.service.SearchWorkspace(ctx, ctx.Param("workspace_id"), req)
+		return c.service.SearchSource(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) CreateSnapshot(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioSnapshotRequest{}, func(req *iapiserver.StudioSnapshotRequest) (any, error) {
-		return c.service.CreateSnapshot(ctx, ctx.Param("workspace_id"), req)
+		return c.service.CreateSnapshot(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) GetSnapshot(ctx *gin.Context) {
-	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetSnapshot(ctx, ctx.Param("source_snapshot_id")) })
+	core.Run(ctx, nil, func(any) (any, error) {
+		return c.service.GetSnapshot(ctx, ctx.Param("studio_application_id"), ctx.Param("source_snapshot_id"))
+	})
 }
 func (c *Controller) CreateVersion(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioApplicationVersionCreateRequest{}, func(req *iapiserver.StudioApplicationVersionCreateRequest) (any, error) {
@@ -106,16 +105,16 @@ func (c *Controller) BuildLogs(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.BuildLogs(ctx, ctx.Param("studio_build_id")) })
 }
 func (c *Controller) GetPreview(ctx *gin.Context) {
-	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetPreview(ctx, ctx.Param("workspace_id")) })
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetPreview(ctx, ctx.Param("studio_application_id")) })
 }
 func (c *Controller) RefreshPreview(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioPreviewRequest{}, func(req *iapiserver.StudioPreviewRequest) (any, error) {
-		return c.service.RefreshPreview(ctx, ctx.Param("workspace_id"), req)
+		return c.service.RefreshPreview(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) StopPreview(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioActionRequest{}, func(req *iapiserver.StudioActionRequest) (any, error) {
-		return c.service.StopPreview(ctx, ctx.Param("workspace_id"), req)
+		return c.service.StopPreview(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
 func (c *Controller) GetRuntimeConfig(ctx *gin.Context) {

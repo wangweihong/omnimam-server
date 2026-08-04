@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 0c93e518f64d11b466e2fef7dae47f20ac3150b0
-contract_version: spec-v1.15.3
+commit: 63defea97f45761acf300030cad1c00d6b83bb5a
+contract_version: spec-v1.16.1
 updated_at: 2026-08-04
 status: released
-note: Released Infrastructure status metadata; contract semantics remain those published by spec-v1.12.0.
+note: Released AppStudio workspace internalization and globally qualified Outbox idempotency keys.

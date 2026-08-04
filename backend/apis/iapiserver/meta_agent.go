@@ -46,9 +46,9 @@ type Agent struct {
 	// AgentProfileRevision 防止 Profile 升级改写历史 Agent 运行合同。
 	AgentProfileRevision string `json:"agent_profile_revision" gorm:"column:agent_profile_revision;type:text;not null"`
 	// WorkspaceType 创建后不可变，platform/coding 分别固定 agent/studio。
-	WorkspaceType string `json:"workspace_type" gorm:"column:workspace_type;type:text;not null;index:idx_agents_workspace,priority:1"`
+	WorkspaceType string `json:"-" gorm:"column:workspace_type;type:text;not null;index:idx_agents_workspace,priority:1"`
 	// WorkspaceID 是固定 Workspace 稳定标识，不是存储路径。
-	WorkspaceID string `json:"workspace_id" gorm:"column:workspace_id;type:text;not null;index:idx_agents_workspace,priority:2"`
+	WorkspaceID string `json:"-" gorm:"column:workspace_id;type:text;not null;index:idx_agents_workspace,priority:2"`
 	// Status 是 Agent 自有状态，不复制 InfraRuntime 或 AtomicTask 状态机。
 	Status string `json:"status" gorm:"column:status;type:text;not null;index:idx_agents_owner_status,priority:2"`
 	// Disabled 显式阻止启动、恢复和新 Invocation。
@@ -204,11 +204,11 @@ type AgentAuthorizationSummary struct {
 // +k8s:deepcopy-gen=true
 type AgentWorkspaceBinding struct {
 	imachinery.ObjectMeta
-	AgentID                    string                    `json:"agent_id" gorm:"column:agent_id;type:text;not null;uniqueIndex"`
-	WorkspaceType              string                    `json:"workspace_type" gorm:"column:workspace_type;type:text;not null"`
-	WorkspaceID                string                    `json:"workspace_id" gorm:"column:workspace_id;type:text;not null"`
-	AccessMode                 string                    `json:"access_mode" gorm:"column:access_mode;type:text;not null"`
-	AuthorizationSummary       AgentAuthorizationSummary `json:"authorization_summary" gorm:"-"`
+	AgentID                    string                    `json:"-" gorm:"column:agent_id;type:text;not null;uniqueIndex"`
+	WorkspaceType              string                    `json:"-" gorm:"column:workspace_type;type:text;not null"`
+	WorkspaceID                string                    `json:"-" gorm:"column:workspace_id;type:text;not null"`
+	AccessMode                 string                    `json:"-" gorm:"column:access_mode;type:text;not null"`
+	AuthorizationSummary       AgentAuthorizationSummary `json:"-" gorm:"-"`
 	AuthorizationSummaryShadow string                    `json:"-" gorm:"column:authorization_summary_json;type:text;not null;default:'{}'"`
 }
 

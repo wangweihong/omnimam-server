@@ -12,7 +12,7 @@ type StudioApplication struct {
 	imachinery.ObjectMeta
 	OwnerUserID        string `json:"-" gorm:"column:owner_user_id;type:text;not null"`
 	Status             string `json:"status" gorm:"column:status;type:text;not null"`
-	DefaultWorkspaceID string `json:"workspace_id" gorm:"column:default_workspace_id;type:text"`
+	DefaultWorkspaceID string `json:"-" gorm:"column:default_workspace_id;type:text"`
 	CurrentVersionID   string `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text"`
 }
 
@@ -41,11 +41,20 @@ type StudioWorkspace struct {
 
 func (StudioWorkspace) TableName() string { return "studio_workspaces" }
 
+// StudioSourceState 是按 StudioApplication 投影的公共源码状态。
+// +k8s:deepcopy-gen=true
+type StudioSourceState struct {
+	StudioApplicationID string          `json:"studio_application_id"`
+	CurrentRevision     int64           `json:"current_revision"`
+	Status              string          `json:"status"`
+	UpdatedAt           imachinery.Time `json:"updated_at"`
+}
+
 // +k8s:deepcopy-gen=true
 type StudioSourceFile struct {
 	imachinery.ObjectMeta
 	WorkspaceID   string `json:"-" gorm:"column:workspace_id;type:text;not null"`
-	Revision      int64  `json:"revision,omitempty" gorm:"column:revision;not null"`
+	Revision      int64  `json:"-" gorm:"column:revision;not null"`
 	Path          string `json:"path" gorm:"column:path;type:text;not null"`
 	ContentDigest string `json:"content_digest" gorm:"column:content_digest;type:text;not null"`
 	SizeBytes     int64  `json:"size_bytes" gorm:"column:size_bytes;not null"`
@@ -58,8 +67,8 @@ func (StudioSourceFile) TableName() string { return "studio_source_files" }
 // +k8s:deepcopy-gen=true
 type StudioWorkspaceRevision struct {
 	imachinery.ObjectMeta
-	WorkspaceID    string `json:"workspace_id" gorm:"column:workspace_id;type:text;not null"`
-	Revision       int64  `json:"revision" gorm:"column:revision;not null"`
+	WorkspaceID    string `json:"-" gorm:"column:workspace_id;type:text;not null"`
+	Revision       int64  `json:"-" gorm:"column:revision;not null"`
 	ContentDigest  string `json:"content_digest" gorm:"column:content_digest;type:text;not null"`
 	ParentRevision *int64 `json:"parent_revision,omitempty" gorm:"column:parent_revision"`
 	CreatedBy      string `json:"created_by" gorm:"column:created_by;type:text;not null"`
@@ -79,18 +88,19 @@ type StudioChangeOperation struct {
 // +k8s:deepcopy-gen=true
 type StudioChangeSet struct {
 	imachinery.ObjectMeta
-	WorkspaceID       string                  `json:"workspace_id" gorm:"column:workspace_id;type:text;not null"`
-	BaseRevision      int64                   `json:"base_revision" gorm:"column:base_revision;not null"`
-	TargetRevision    *int64                  `json:"target_revision,omitempty" gorm:"column:target_revision"`
-	ActorID           string                  `json:"-" gorm:"column:actor_id;type:text;not null"`
-	AgentID           string                  `json:"agent_id,omitempty" gorm:"column:agent_id;type:text"`
-	AgentSessionID    string                  `json:"agent_session_id,omitempty" gorm:"column:agent_session_id;type:text"`
-	AgentInvocationID string                  `json:"agent_invocation_id,omitempty" gorm:"column:agent_invocation_id;type:text"`
-	Operations        []StudioChangeOperation `json:"operations,omitempty" gorm:"-"`
-	OperationsShadow  string                  `json:"-" gorm:"column:operations_json;type:text;not null"`
-	Status            string                  `json:"status" gorm:"column:status;type:text;not null"`
-	FailureCode       string                  `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
-	IdempotencyKey    string                  `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null"`
+	StudioApplicationID string                  `json:"studio_application_id" gorm:"-"`
+	WorkspaceID         string                  `json:"-" gorm:"column:workspace_id;type:text;not null"`
+	BaseRevision        int64                   `json:"base_revision" gorm:"column:base_revision;not null"`
+	TargetRevision      *int64                  `json:"target_revision,omitempty" gorm:"column:target_revision"`
+	ActorID             string                  `json:"-" gorm:"column:actor_id;type:text;not null"`
+	AgentID             string                  `json:"agent_id,omitempty" gorm:"column:agent_id;type:text"`
+	AgentSessionID      string                  `json:"agent_session_id,omitempty" gorm:"column:agent_session_id;type:text"`
+	AgentInvocationID   string                  `json:"agent_invocation_id,omitempty" gorm:"column:agent_invocation_id;type:text"`
+	Operations          []StudioChangeOperation `json:"operations,omitempty" gorm:"-"`
+	OperationsShadow    string                  `json:"-" gorm:"column:operations_json;type:text;not null"`
+	Status              string                  `json:"status" gorm:"column:status;type:text;not null"`
+	FailureCode         string                  `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
+	IdempotencyKey      string                  `json:"idempotency_key" gorm:"column:idempotency_key;type:text;not null"`
 }
 
 func (StudioChangeSet) TableName() string { return "studio_change_sets" }
@@ -115,8 +125,8 @@ func (c *StudioChangeSet) marshalJSON() error {
 type StudioSourceSnapshot struct {
 	imachinery.ObjectMeta
 	StudioApplicationID string `json:"studio_application_id,omitempty" gorm:"column:studio_application_id;type:text;not null"`
-	WorkspaceID         string `json:"workspace_id" gorm:"column:workspace_id;type:text;not null"`
-	WorkspaceRevision   int64  `json:"revision" gorm:"column:workspace_revision;not null"`
+	WorkspaceID         string `json:"-" gorm:"column:workspace_id;type:text;not null"`
+	WorkspaceRevision   int64  `json:"source_revision" gorm:"column:workspace_revision;not null"`
 	ContentDigest       string `json:"content_digest,omitempty" gorm:"column:content_digest;type:text"`
 	ManifestDigest      string `json:"manifest_digest,omitempty" gorm:"column:manifest_digest;type:text"`
 	Status              string `json:"status" gorm:"column:status;type:text;not null"`
@@ -142,9 +152,9 @@ func (StudioApplicationVersion) TableName() string { return "studio_application_
 // +k8s:deepcopy-gen=true
 type StudioPreviewRuntime struct {
 	imachinery.ObjectMeta
-	StudioApplicationID      string                 `json:"-" gorm:"column:studio_application_id;type:text;not null"`
-	WorkspaceID              string                 `json:"workspace_id" gorm:"column:workspace_id;type:text;not null"`
-	WorkspaceRevision        int64                  `json:"workspace_revision" gorm:"column:workspace_revision;not null"`
+	StudioApplicationID      string                 `json:"studio_application_id" gorm:"column:studio_application_id;type:text;not null"`
+	WorkspaceID              string                 `json:"-" gorm:"column:workspace_id;type:text;not null"`
+	WorkspaceRevision        int64                  `json:"source_revision" gorm:"column:workspace_revision;not null"`
 	InfraRuntimeID           string                 `json:"-" gorm:"column:infra_runtime_id;type:text"`
 	EndpointRef              string                 `json:"-" gorm:"column:endpoint_ref;type:text"`
 	Status                   string                 `json:"status" gorm:"column:status;type:text;not null"`

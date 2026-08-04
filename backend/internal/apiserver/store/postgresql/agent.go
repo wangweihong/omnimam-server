@@ -34,7 +34,6 @@ func (s *agentStore) CreateAgentAggregate(ctx context.Context, agent *iapiserver
 		}
 		return appendAgentOutbox(tx, "Agent", agent.ID, "agent_lifecycle_changed", agent.ResourceVersion, map[string]any{
 			"agent_id": agent.ID, "owner_user_id": agent.OwnerUserID, "kind": agent.Kind,
-			"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID,
 			"from_status": nil, "to_status": agent.Status,
 		})
 	})
@@ -43,7 +42,7 @@ func (s *agentStore) CreateAgentAggregate(ctx context.Context, agent *iapiserver
 func (s *agentStore) ListAgents(ctx context.Context, req *iapiserver.AgentListRequest) ([]*iapiserver.Agent, int64, error) {
 	var items []*iapiserver.Agent
 	filter := func(query *gorm.DB) *gorm.DB {
-		query = query.Where("owner_user_id = ?", req.OwnerUserID)
+		query = query.Where("owner_user_id = ? AND kind = ?", req.OwnerUserID, iapiserver.AgentKindPlatform)
 		if req.Statuses != "" {
 			query = query.Where("status IN ?", splitCSV(req.Statuses))
 		}
@@ -77,7 +76,6 @@ func (s *agentStore) UpdateAgent(ctx context.Context, agent *iapiserver.Agent, e
 		}
 		return appendAgentOutbox(tx, "Agent", agent.ID, "agent_lifecycle_changed", agent.ResourceVersion, map[string]any{
 			"agent_id": agent.ID, "owner_user_id": agent.OwnerUserID, "kind": agent.Kind,
-			"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID,
 			"from_status": previous.Status, "to_status": agent.Status,
 		})
 	})
@@ -287,7 +285,7 @@ func (s *agentStore) GetAgentWorkspaceBinding(ctx context.Context, agentID, owne
 	var item iapiserver.AgentWorkspaceBinding
 	err := s.ds.db.WithContext(ctx).Joins("JOIN agents ON agents.id = agent_workspace_bindings.agent_id").Where("agent_workspace_bindings.agent_id = ? AND agents.owner_user_id = ?", agentID, ownerUserID).First(&item).Error
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAgentWorkspaceBindingInvalid, "agent workspace binding not visible")
+		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "agent workspace binding not visible")
 	}
 	return &item, nil
 }
@@ -436,7 +434,6 @@ func (s *agentStore) ProjectAgentRuntime(ctx context.Context, runtime *iapiserve
 		}
 		return appendAgentOutbox(tx, "Agent", agent.ID, "agent_lifecycle_changed", agent.ResourceVersion, map[string]any{
 			"agent_id": agent.ID, "owner_user_id": agent.OwnerUserID, "kind": agent.Kind,
-			"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID,
 			"from_status": previousAgent.Status, "to_status": agent.Status,
 		})
 	})

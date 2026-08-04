@@ -298,32 +298,61 @@
 | ErrCanvasQuotaExceeded | 160802 | 200 | Canvas run quota is exhausted for the current project, namespace, or user. | 当前 project、namespace 或用户的画布运行配额不足。 |
 | ErrUserNotFound | 110001 | 500 | Unset error message | 错误信息未设置 |
 | ErrIdentityInvalidCredentials | 220200 | 200 | The username or password is invalid. | 用户名或密码错误。 |
+| ErrIdentityAccountPending | 220201 | 200 | The account is pending approval. | 账号正在等待审批。 |
 | ErrIdentityAccountDisabled | 220202 | 200 | The account is disabled. | 账号已禁用。 |
 | ErrIdentityAccountLocked | 220203 | 200 | The account is temporarily locked. | 账号已临时锁定。 |
+| ErrIdentityFirstLoginRequired | 220204 | 200 | The first-login flow must be completed. | 必须完成首次登录引导。 |
 | ErrIdentityTokenExpired | 220205 | 200 | The access token has expired. | Access Token 已过期。 |
 | ErrIdentityTokenRevoked | 220206 | 200 | The token or session has been revoked. | Token 或会话已撤销。 |
 | ErrIdentityRefreshTokenInvalid | 220207 | 200 | The refresh token is invalid. | Refresh Token 无效。 |
 | ErrIdentityRefreshTokenReused | 220208 | 200 | Refresh token reuse was detected and the session was revoked. | 检测到 Refresh Token 重用，会话已撤销。 |
 | ErrIdentityPasswordPolicyFailed | 220209 | 200 | The password does not satisfy the active security policy. | 密码不符合当前安全策略。 |
+| ErrIdentityOldPasswordInvalid | 220210 | 200 | The current password is invalid. | 原密码错误。 |
+| ErrIdentityAccountRejected | 220213 | 200 | The latest registration application was rejected and may be resubmitted. | 最近一次注册申请已被拒绝，可以重新提交申请。 |
+| ErrIdentityRegistrationStateInvalid | 220214 | 200 | The active registration mode or account application state does not allow registration. | 当前注册模式或账号申请状态不允许提交注册。 |
+| ErrIdentityPasswordProtocolUnsupported | 220215 | 200 | The legacy single-stage password protocol is unsupported; use the OPAQUE two-step API. | 不支持旧的单阶段密码协议，请使用 OPAQUE 二阶段接口。 |
+| ErrIdentityPasswordProtocolInvalid | 220216 | 200 | The OPAQUE message or exchange state is invalid. | OPAQUE 消息或交换状态无效。 |
+| ErrIdentityPasswordExchangeExpired | 220217 | 200 | The OPAQUE exchange has expired. | OPAQUE 交换已过期。 |
+| ErrIdentityPasswordExchangeReplayed | 220218 | 200 | The OPAQUE exchange has already been consumed. | OPAQUE 交换已被提交，不能重复使用。 |
 | ErrIdentityUserNotVisible | 220400 | 200 | The user does not exist or is not visible to the current principal. | 用户不存在或当前主体不可见。 |
 | ErrIdentityUsernameAlreadyExists | 220401 | 200 | The username already exists. | 用户名已存在。 |
 | ErrIdentityEmailAlreadyExists | 220402 | 200 | The email already exists. | 邮箱已存在。 |
 | ErrIdentityUserStateInvalid | 220403 | 200 | The user state does not allow this operation. | 用户当前状态不允许该操作。 |
+| ErrIdentityUserDeleteBlocked | 220404 | 200 | The user still owns business resources, tasks, service accounts, or grants. | 用户仍拥有未处理的业务资源、任务、服务账号或共享关系。 |
 | ErrIdentitySelfDeleteForbidden | 220405 | 200 | A user cannot delete itself. | 用户不能删除自己。 |
+| ErrIdentityLastSuperAdminProtected | 220406 | 200 | The last effective SUPER_ADMIN cannot be deleted or disabled. | 不能删除或禁用最后一个有效 SUPER_ADMIN。 |
+| ErrIdentityUserCreateInvalid | 220407 | 200 | The user creation input or default grant is invalid. | 用户创建参数或默认授权无效。 |
+| ErrIdentityRegistrationApplicationNotVisible | 220408 | 200 | The registration application does not exist or is not visible to the current principal. | 注册申请不存在或当前主体不可见。 |
+| ErrIdentityRegistrationDecisionConflict | 220409 | 200 | The registration application already has an opposite immutable decision. | 注册申请已存在不可覆盖的相反审批结果。 |
+| ErrIdentityRegistrationReasonRequired | 220410 | 200 | A reason is required to reject a registration application. | 拒绝注册申请必须填写原因。 |
+| ErrIdentityUserDeleteDependencyUnavailable | 220411 | 200 | A user-deletion dependency source is unavailable or incomplete, so the user cannot be deleted. | 用户删除依赖来源不可用或返回结果不完整，当前不能删除用户。 |
+| ErrIdentityUserDeleteCheckStale | 220412 | 200 | The user-deletion dependency check is expired or no longer matches current source facts. | 用户删除依赖检查已过期或不再匹配当前来源事实，请重新检查。 |
 | ErrIdentityRoleNotVisible | 220600 | 200 | The role does not exist or is not visible to the current principal. | 角色不存在或当前主体不可见。 |
+| ErrIdentityRoleGrantInvalid | 220602 | 200 | The role grant does not exist, is expired, or is not allowed. | 角色授权不存在、已过期或不允许。 |
 | ErrIdentityAuthzContextInvalid | 220607 | 200 | The authorization context is invalid. | 当前主体授权上下文无效。 |
 | ErrIdentityAuthzDenied | 220606 | 200 | The current principal is not authorized for the operation. | 当前主体无权执行该操作。 |
 | ErrIdentityServiceAccountNotVisible | 221000 | 200 | The service account does not exist or is not visible to the current principal. | 服务主体不存在或当前主体不可见。 |
+| ErrIdentityServiceAccountAlreadyExists | 221001 | 200 | The service account code already exists. | 服务账号编码已存在。 |
+| ErrIdentityServiceAccountDisabled | 221002 | 200 | The service account is disabled. | 服务账号已禁用。 |
+| ErrIdentityServiceAccountCredentialInvalid | 221003 | 200 | The service account credential is invalid. | 服务账号凭据无效。 |
+| ErrIdentityServiceAccountCredentialRotationFailed | 221004 | 200 | Service account credential rotation failed. | 服务账号凭据轮换失败。 |
+| ErrIdentityServiceAccountStateInvalid | 221005 | 200 | The service account state does not allow this operation. | 服务账号当前状态不允许该操作。 |
+| ErrIdentityServiceAccountOwnerInvalid | 221006 | 200 | The service-account owner does not exist, is not visible, or cannot own this account. | 服务账号 owner 不存在、不可见或不允许作为该账号归属。 |
+| ErrIdentityServiceAccountOwnerUnavailable | 221007 | 200 | Service-account owner validation is unavailable, so credential exchange was denied. | 服务账号 owner 校验当前不可用，凭据交换已被拒绝。 |
+| ErrIdentityServiceAccountCredentialNotVisible | 221008 | 200 | The service-account credential does not exist or is not visible to the current principal. | 服务账号凭据不存在或当前主体不可见。 |
 | ErrIdentityPrincipalContextInvalid | 221205 | 200 | The principal context is invalid. | 当前主体上下文无效。 |
 | ErrPlatformAuthConfigInvalid | 230200 | 200 | The system authentication configuration is invalid. | 平台认证配置无效。 |
 | ErrPlatformAuthConfigVersionConflict | 230202 | 200 | The system authentication configuration version conflicts with the current version. | 系统认证配置版本冲突。 |
+| ErrPlatformAuditLogNotVisible | 230400 | 200 | The audit record does not exist or is not visible to the current principal. | 审计记录不存在或当前主体不可见。 |
+| ErrPlatformAuditQueryInvalid | 230401 | 200 | The platform audit query is invalid. | 平台审计查询参数无效。 |
 | ErrPlatformOverviewUnavailable | 230601 | 200 | The platform overview is temporarily unavailable. | 平台系统概览暂不可用。 |
 | ErrPlatformAuditRecordInvalid | 230402 | 200 | The audit record is invalid or contains prohibited fields. | 审计记录无效或包含禁止字段。 |
 | ErrPlatformAuditWriteUnavailable | 230403 | 200 | The platform audit boundary is unavailable and the controlled operation was not executed. | 平台审计边界不可用，受控操作未执行。 |
+| ErrPlatformAuditIdempotencyConflict | 230404 | 200 | The audit idempotency key has already been used for different content. | 审计幂等键已用于不同内容。 |
 | ErrAgentNotVisible | 200200 | 200 | The Agent does not exist or is not visible to the current principal. | Agent 不存在或当前主体不可见。 |
 | ErrAgentProfileInvalid | 200201 | 200 | The AgentProfile is missing, disabled, or unavailable at the requested revision. | AgentProfile 不存在、禁用或版本不可用。 |
 | ErrAgentStateInvalid | 200202 | 200 | The Agent is not in a state that permits this operation. | Agent 当前状态不允许该操作。 |
-| ErrAgentWorkspaceBindingInvalid | 200203 | 200 | The Agent workspace binding violates workspace type or authorization rules. | Agent Workspace 绑定不符合类型或授权规则。 |
+| ErrAgentInitializationFailed | 200203 | 200 | Agent initialization failed. | Agent 初始化失败。 |
 | ErrAgentAccessDenied | 201000 | 200 | The current principal is not authorized to access the Agent resource. | 无权访问 Agent 资源。 |
 | ErrAgentSessionNotVisible | 200400 | 200 | The Session does not exist or is not visible to the current principal. | Session 不存在或当前主体不可见。 |
 | ErrAgentSessionClosed | 200401 | 200 | The Session is closed or archived and cannot accept new messages. | Session 已关闭或归档，不能接收新消息。 |
@@ -336,10 +365,10 @@
 | ErrAgentRuntimeUnhealthy | 200802 | 200 | The AgentRuntime health check failed. | AgentRuntime 健康检查失败。 |
 | ErrAppStudioApplicationNotVisible | 210200 | 200 | The StudioApplication does not exist or is not visible to the current principal. | StudioApplication 不存在或当前主体不可见。 |
 | ErrAppStudioApplicationInvalidState | 210201 | 200 | The StudioApplication is not in a state that permits this operation. | StudioApplication 当前状态不允许该操作。 |
-| ErrAppStudioWorkspaceNotVisible | 210400 | 200 | The StudioWorkspace does not exist or is not visible to the current principal. | StudioWorkspace 不存在或当前主体不可见。 |
-| ErrAppStudioWorkspaceRevisionConflict | 210401 | 200 | The Workspace current Revision conflicts with base_revision. | Workspace 当前 Revision 与 base_revision 冲突。 |
-| ErrAppStudioWorkspaceChangeRejected | 210402 | 200 | The ChangeSet failed path, dependency, or security validation. | ChangeSet 未通过路径、依赖或安全校验。 |
-| ErrAppStudioWorkspaceToolGrantInvalid | 210403 | 200 | The Workspace Tool grant is expired, scope-mismatched, or does not allow the operation. | Workspace Tool 授权已过期、范围不匹配或不允许当前操作。 |
+| ErrAppStudioSourceNotVisible | 210400 | 200 | The Studio Source does not exist or is not visible to the current principal. | Studio Source 不存在或当前主体不可见。 |
+| ErrAppStudioSourceRevisionConflict | 210401 | 200 | The Source current Revision conflicts with base_revision. | Source 当前 Revision 与 base_revision 冲突。 |
+| ErrAppStudioSourceChangeRejected | 210402 | 200 | The ChangeSet failed path, dependency, or security validation. | ChangeSet 未通过路径、依赖或安全校验。 |
+| ErrAppStudioSourceAccessInvalid | 210403 | 200 | The Source access credential is invalid, scope-mismatched, or does not allow the operation. | Source 访问凭证无效、范围不匹配或不允许当前操作。 |
 | ErrAppStudioSnapshotNotVisible | 210600 | 200 | The Source Snapshot does not exist or is not visible to the current principal. | Source Snapshot 不存在或当前主体不可见。 |
 | ErrAppStudioSnapshotInvalid | 210601 | 200 | The Source Snapshot is incomplete or its digest validation failed. | Source Snapshot 未完成或 digest 校验失败。 |
 | ErrAppStudioBuildNotVisible | 210800 | 200 | The StudioBuild does not exist or is not visible to the current principal. | StudioBuild 不存在或当前主体不可见。 |

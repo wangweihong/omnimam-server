@@ -133,22 +133,21 @@ func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	applicationManage.PATCH("/:studio_application_id", c.UpdateApplication)
 	applicationManage.POST("/:studio_application_id/archive", c.ArchiveApplication)
 
-	workspaceRead := rg.Group("")
-	workspaceRead.Use(authmiddleware.RequireIdentityPermission("appstudio.workspace.read"))
-	workspaceRead.GET("/studio-applications/:studio_application_id/workspaces", c.GetApplicationWorkspace)
-	workspaceRead.GET("/studio-workspaces/:workspace_id", c.GetWorkspace)
-	workspaceRead.GET("/studio-workspaces/:workspace_id/files", c.ListFiles)
-	workspaceRead.GET("/studio-workspaces/:workspace_id/file-content", c.GetFileContent)
-	workspaceRead.GET("/studio-workspaces/:workspace_id/search", c.SearchWorkspace)
-	workspaceWrite := rg.Group("/studio-workspaces/:workspace_id")
-	workspaceWrite.Use(authmiddleware.RequireIdentityPermission("appstudio.workspace.write"))
-	workspaceWrite.POST("/change-sets", c.ApplyChangeSet)
-	workspaceWrite.POST("/restore", c.RestoreRevision)
+	sourceRead := rg.Group("/studio-applications/:studio_application_id/source")
+	sourceRead.Use(authmiddleware.RequireIdentityPermission("appstudio.source.read"))
+	sourceRead.GET("", c.GetSource)
+	sourceRead.GET("/files", c.ListFiles)
+	sourceRead.GET("/file-content", c.GetFileContent)
+	sourceRead.GET("/search", c.SearchSource)
+	sourceWrite := rg.Group("/studio-applications/:studio_application_id/source")
+	sourceWrite.Use(authmiddleware.RequireIdentityPermission("appstudio.source.write"))
+	sourceWrite.POST("/change-sets", c.ApplyChangeSet)
+	sourceWrite.POST("/restore", c.RestoreRevision)
 
 	snapshots := rg.Group("")
 	snapshots.Use(authmiddleware.RequireIdentityPermission("appstudio.snapshot.manage"))
-	snapshots.POST("/studio-workspaces/:workspace_id/source-snapshots", c.CreateSnapshot)
-	snapshots.GET("/studio-source-snapshots/:source_snapshot_id", c.GetSnapshot)
+	snapshots.POST("/studio-applications/:studio_application_id/source-snapshots", c.CreateSnapshot)
+	snapshots.GET("/studio-applications/:studio_application_id/source-snapshots/:source_snapshot_id", c.GetSnapshot)
 	snapshots.POST("/studio-applications/:studio_application_id/versions", c.CreateVersion)
 	snapshots.GET("/studio-applications/:studio_application_id/versions", c.ListVersions)
 
@@ -160,7 +159,7 @@ func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	builds.POST("/studio-builds/:studio_build_id/cancel", c.CancelBuild)
 	builds.GET("/studio-builds/:studio_build_id/logs", c.BuildLogs)
 
-	preview := rg.Group("/studio-workspaces/:workspace_id")
+	preview := rg.Group("/studio-applications/:studio_application_id")
 	preview.Use(authmiddleware.RequireIdentityPermission("appstudio.preview.operate"))
 	preview.GET("/preview-runtime", c.GetPreview)
 	preview.POST("/preview-checks", c.RefreshPreview)
@@ -245,9 +244,6 @@ func installAgentApis(rg *gin.RouterGroup, service *agentsvc.Service) {
 	memoryManage.PATCH("/agent-memories/:memory_id", controller.UpdateMemory)
 	memoryManage.DELETE("/agent-memories/:memory_id", controller.DeleteMemory)
 
-	workspace := rg.Group("/agents/:agent_id/workspace-binding")
-	workspace.Use(authmiddleware.RequireIdentityPermission("agent.workspace.read"))
-	workspace.GET("", controller.GetWorkspaceBinding)
 }
 
 // installIdentityPlatformApis 在统一 JWT、权限和审计链后安装已发布的 Identity 与 Platform Management API。

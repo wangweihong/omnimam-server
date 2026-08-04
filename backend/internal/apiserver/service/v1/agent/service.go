@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/generic"
+	"github.com/wangweihong/gotoolbox/pkg/sets"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -73,7 +74,7 @@ func defaultProfiles() map[string]iapiserver.AgentProfile {
 // ListProfiles 返回当前启用的只读 AgentProfile。
 func (s *Service) ListProfiles(context.Context) (*iapiserver.AgentProfileListResponse, error) {
 	items := make([]*iapiserver.AgentProfile, 0, len(s.profiles))
-	for _, id := range []string{"agent.coding", "agent.hermes"} {
+	for _, id := range []string{"agent.hermes"} {
 		profile := s.profiles[id]
 		copy := profile
 		items = append(items, &copy)
@@ -99,44 +100,104 @@ func (s *Service) CreateAgent(ctx context.Context, req *iapiserver.AgentCreateRe
 		return nil, err
 	}
 	profile, ok := s.profiles[req.AgentProfileID]
-	if !ok || profile.Status != "ACTIVE" || !contains(profile.SupportedAgentKinds, req.Kind) {
-		return nil, errors.NewStatus(code.ErrAgentProfileInvalid, "agent profile is unavailable for agent kind")
+	if !ok || profile.Status != "ACTIVE" || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindPlatform) {
+		return nil, errors.NewStatus(code.ErrAgentProfileInvalid, "agent profile is unavailable for platform agents")
 	}
 	if req.AgentProfileRevision != "" && req.AgentProfileRevision != profile.Revision {
 		return nil, errors.NewStatus(code.ErrAgentProfileInvalid, "agent profile revision is unavailable")
 	}
+	workspaceID := uuid.NewString()
 	authorization := iapiserver.AgentAuthorizationSummary{Source: "agent", ValidatedAt: imachinery.Now()}
-	if req.Kind == iapiserver.AgentKindCoding {
-		authorization.Source = "appstudio"
-		if s.workspaces == nil {
-			return nil, errors.NewStatus(code.ErrAgentWorkspaceBindingInvalid, "appstudio workspace validation is unavailable")
-		}
-		authorization, err = valueOrZero(s.workspaces.ValidateAgentWorkspaceBinding(ctx, owner, req.WorkspaceID))
-		if err != nil {
-			return nil, errors.NewStatus(code.ErrAgentWorkspaceBindingInvalid, err.Error())
-		}
-	}
 	agentID, sessionID := uuid.NewString(), uuid.NewString()
 	agent := &iapiserver.Agent{
 		ObjectMeta:  imachinery.ObjectMeta{ID: agentID, Name: req.Name, Description: req.Description},
-		OwnerUserID: owner, Kind: req.Kind, AgentProfileID: profile.ID, AgentProfileRevision: profile.Revision,
-		WorkspaceType: req.WorkspaceType, WorkspaceID: req.WorkspaceID, Status: "READY", RuntimePolicy: req.RuntimePolicy,
+		OwnerUserID: owner, Kind: iapiserver.AgentKindPlatform, AgentProfileID: profile.ID, AgentProfileRevision: profile.Revision,
+		WorkspaceType: iapiserver.AgentWorkspaceTypeAgent, WorkspaceID: workspaceID, Status: "READY", RuntimePolicy: req.RuntimePolicy,
 	}
 	session := &iapiserver.AgentSession{ObjectMeta: imachinery.ObjectMeta{ID: sessionID}, AgentID: agentID, OwnerUserID: owner, Title: req.Name, Status: "OPEN"}
 	binding := &iapiserver.AgentWorkspaceBinding{
-		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agentID, WorkspaceType: req.WorkspaceType,
-		WorkspaceID: req.WorkspaceID, AccessMode: "READ_WRITE", AuthorizationSummary: authorization,
+		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeAgent,
+		WorkspaceID: workspaceID, AccessMode: "READ_WRITE", AuthorizationSummary: authorization,
 	}
 	var model *iapiserver.AgentModelBinding
 	if req.ModelBinding != nil {
 		model = modelBinding(agentID, "primary-model", req.ModelBinding)
 	} else {
 		model = modelBinding(agentID, "primary-model", &iapiserver.AgentModelBindingInput{
-			SourceType: "USER_DEFAULT_MODEL", SourceRef: "user-default", Purpose: defaultPurpose(req.Kind),
+			SourceType: "USER_DEFAULT_MODEL", SourceRef: "user-default", Purpose: defaultPurpose(iapiserver.AgentKindPlatform),
 		})
 	}
 	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
 		return nil, err
+	}
+	return agent, nil
+}
+
+// CreateCodingAgentForStudio 仅供 AppStudio 在应用初始化期间创建固定 Coding Agent。
+func (s *Service) CreateCodingAgentForStudio(
+	ctx context.Context,
+	studioApplicationID string,
+	workspaceID string,
+	ownerUserID string,
+	idempotencyKey string,
+) (*iapiserver.Agent, error) {
+	if studioApplicationID == "" || workspaceID == "" || ownerUserID == "" || idempotencyKey == "" {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization context is incomplete")
+	}
+	if s.workspaces == nil {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "appstudio workspace validation is unavailable")
+	}
+	profile, ok := s.profiles["agent.coding"]
+	if !ok || profile.Status != "ACTIVE" || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindCoding) {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent profile is unavailable")
+	}
+	authorization, err := generic.GetValueOrZero(s.workspaces.ValidateAgentWorkspaceBinding(ctx, ownerUserID, workspaceID))
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
+	}
+
+	agentID := stableCodingAgentID(idempotencyKey)
+	if existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID); getErr == nil {
+		if codingAgentMatchesStudio(existing, workspaceID) {
+			return existing, nil
+		}
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent idempotency key conflicts")
+	}
+
+	agent := &iapiserver.Agent{
+		ObjectMeta: imachinery.ObjectMeta{
+			ID:          agentID,
+			Name:        "Studio Coding Agent",
+			Description: "Coding Agent for StudioApplication " + studioApplicationID,
+		},
+		OwnerUserID:          ownerUserID,
+		Kind:                 iapiserver.AgentKindCoding,
+		AgentProfileID:       profile.ID,
+		AgentProfileRevision: profile.Revision,
+		WorkspaceType:        iapiserver.AgentWorkspaceTypeStudio,
+		WorkspaceID:          workspaceID,
+		Status:               "READY",
+	}
+	session := &iapiserver.AgentSession{
+		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "session")},
+		AgentID:    agentID, OwnerUserID: ownerUserID, Title: "Coding Session", Status: "OPEN",
+	}
+	binding := &iapiserver.AgentWorkspaceBinding{
+		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "workspace-binding")},
+		AgentID:    agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeStudio, WorkspaceID: workspaceID,
+		AccessMode: "READ_WRITE", AuthorizationSummary: authorization,
+	}
+	model := &iapiserver.AgentModelBinding{
+		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "primary-model"), Name: "primary-model"},
+		AgentID:    agentID, SourceType: "USER_DEFAULT_MODEL", SourceRef: "user-default",
+		Purpose: defaultPurpose(iapiserver.AgentKindCoding), Status: "ACTIVE", IsPrimary: true,
+	}
+	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
+		existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID)
+		if getErr == nil && codingAgentMatchesStudio(existing, workspaceID) {
+			return existing, nil
+		}
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
 	}
 	return agent, nil
 }
@@ -147,7 +208,14 @@ func (s *Service) GetAgent(ctx context.Context, id string) (*iapiserver.Agent, e
 	if err != nil {
 		return nil, err
 	}
-	return s.store.GetAgent(ctx, id, owner)
+	agent, err := s.store.GetAgent(ctx, id, owner)
+	if err != nil {
+		return nil, err
+	}
+	if agent.Kind != iapiserver.AgentKindPlatform {
+		return nil, errors.NewStatus(code.ErrAgentNotVisible, "agent not visible")
+	}
+	return agent, nil
 }
 
 // UpdateAgent 更新非敏感配置并保持 Kind/Profile/Workspace 不变。
@@ -678,23 +746,20 @@ func defaultPurpose(kind string) string {
 	}
 	return "CHAT"
 }
-func contains(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
+
+func stableCodingAgentID(idempotencyKey string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("appstudio:coding-agent:"+idempotencyKey)).String()
 }
+
+func stableCodingAgentChildID(agentID, child string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent:"+agentID+":"+child)).String()
+}
+
+func codingAgentMatchesStudio(agent *iapiserver.Agent, workspaceID string) bool {
+	return agent != nil && agent.Kind == iapiserver.AgentKindCoding &&
+		agent.WorkspaceType == iapiserver.AgentWorkspaceTypeStudio && agent.WorkspaceID == workspaceID
+}
+
 func isInvocationTerminal(status string) bool {
 	return status == "SUCCEEDED" || status == "FAILED" || status == "CANCELED"
 }
-func valueOrZero[T any](value *T, err error) (T, error) {
-	if value == nil {
-		var zero T
-		return zero, err
-	}
-	return *value, err
-}
-
-var _ = time.Second

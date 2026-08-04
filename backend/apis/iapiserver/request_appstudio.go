@@ -38,14 +38,14 @@ func (r *StudioApplicationUpdateRequest) Validate() error {
 // +k8s:deepcopy-gen=true
 type StudioSourceFileListRequest struct {
 	imachinery.BasicQueryParam
-	Revision int64  `form:"revision" binding:"min=0"`
-	Prefix   string `form:"prefix" binding:"omitempty,max=1024"`
+	SourceRevision int64  `form:"source_revision" binding:"min=0"`
+	Prefix         string `form:"prefix" binding:"omitempty,max=1024"`
 }
 
 // +k8s:deepcopy-gen=true
 type StudioFileContentRequest struct {
-	Path     string `form:"path" binding:"required,max=1024"`
-	Revision int64  `form:"revision" binding:"min=0"`
+	Path           string `form:"path" binding:"required,max=1024"`
+	SourceRevision int64  `form:"source_revision" binding:"min=0"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -79,7 +79,7 @@ func (r *StudioChangeSetRequest) Validate() error {
 
 // +k8s:deepcopy-gen=true
 type StudioSnapshotRequest struct {
-	Revision       int64  `json:"revision" binding:"min=0"`
+	SourceRevision int64  `json:"source_revision" binding:"min=0"`
 	IdempotencyKey string `json:"idempotency_key,omitempty" binding:"omitempty,max=200"`
 }
 
@@ -99,7 +99,7 @@ type StudioBuildRequest struct {
 
 // +k8s:deepcopy-gen=true
 type StudioPreviewRequest struct {
-	Revision       int64  `json:"revision" binding:"min=0"`
+	SourceRevision int64  `json:"source_revision" binding:"min=0"`
 	IdempotencyKey string `json:"idempotency_key,omitempty" binding:"omitempty,max=200"`
 }
 
@@ -113,8 +113,8 @@ type StudioRestoreRevisionRequest struct {
 // +k8s:deepcopy-gen=true
 type StudioSourceSearchRequest struct {
 	imachinery.BasicQueryParam
-	Query    string `form:"query" binding:"required,min=1,max=500"`
-	Revision int64  `form:"revision" binding:"min=0"`
+	Query          string `form:"query" binding:"required,min=1,max=500"`
+	SourceRevision int64  `form:"source_revision" binding:"min=0"`
 }
 
 // +k8s:deepcopy-gen=true
