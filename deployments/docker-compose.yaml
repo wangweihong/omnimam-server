@@ -112,7 +112,7 @@ services:
       APISERVER_CONDUCTOR_AUTH_SECRET: ${OMNIMAM_CONDUCTOR_AUTH_SECRET:-}
       APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
       APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
-      OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
+      OMNIMAM_STORAGE_ROOT: ${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}
     ports:
       - "${OMNIMAM_APISERVER_PORT:-8080}:8080"
     entrypoint:
@@ -317,7 +317,7 @@ services:
       APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
       APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
       # 缩略图 Worker 必须与 API Server 读取同一素材根目录。
-      OMNIMAM_STORAGE_ROOT: /var/lib/omnimam/assets
+      OMNIMAM_STORAGE_ROOT: ${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}
     volumes:
       - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
       - omnimam_assets:/var/lib/omnimam/assets
