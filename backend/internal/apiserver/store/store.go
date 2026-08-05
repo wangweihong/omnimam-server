@@ -394,6 +394,8 @@ type StorageBackendStore interface {
 	Add(ctx context.Context, data *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error)
 	Update(ctx context.Context, data *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error)
 	GetDefaultLocal(ctx context.Context) (*iapiserver.StorageBackend, error)
+	// EnsureDefaultLocal 幂等返回已有可写 local 后端，缺失时创建 bootstrap 提供的默认配置。
+	EnsureDefaultLocal(ctx context.Context, desired *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error)
 }
 
 type AssetStore interface {

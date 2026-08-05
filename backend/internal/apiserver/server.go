@@ -106,6 +106,9 @@ func createServer(cfg *config.Config) (*server, error) {
 		return nil, err
 	}
 	storeIns := store.Client()
+	if _, err := assetlibrarysvc.ReconcileDefaultLocalStorageBackend(context.Background(), storeIns.StorageBackends()); err != nil {
+		return nil, errors.Wrap(err, "reconcile default local storage backend")
+	}
 	registrations, err := modeladapters.NewRegistrations()
 	if err != nil {
 		return nil, errors.Wrap(err, "load application platform adapter registrations")

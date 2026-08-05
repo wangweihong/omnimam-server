@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"gorm.io/driver/postgres"
@@ -14,6 +15,52 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
+
+func TestEnsureDefaultLocalStorageBackend(t *testing.T) {
+	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("OMNIMAM_TEST_POSTGRES_DSN is not set")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&iapiserver.StorageBackend{}); err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	repository := newStorageBackend(&datastore{db: tx})
+	root := filepath.Join(t.TempDir(), "assets")
+	desired := &iapiserver.StorageBackend{Type: iapiserver.StorageBackendTypeLocal, Root: root, Enabled: true}
+	desired.Name = "default-local"
+
+	first, err := repository.EnsureDefaultLocal(t.Context(), desired)
+	if err != nil {
+		t.Fatalf("first EnsureDefaultLocal() error = %v", err)
+	}
+	replacement := &iapiserver.StorageBackend{Type: iapiserver.StorageBackendTypeLocal, Root: filepath.Join(t.TempDir(), "replacement"), Enabled: true}
+	replacement.Name = "replacement-local"
+	second, err := repository.EnsureDefaultLocal(t.Context(), replacement)
+	if err != nil {
+		t.Fatalf("second EnsureDefaultLocal() error = %v", err)
+	}
+	if first.ID == "" || second.ID != first.ID || second.Name != desired.Name || second.Root != root {
+		t.Fatalf("ensured backends first=%#v second=%#v", first, second)
+	}
+	var count int64
+	if err := tx.Model(&iapiserver.StorageBackend{}).
+		Where("type = ? AND enabled = ? AND readonly = ?", iapiserver.StorageBackendTypeLocal, true, false).
+		Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("writable local backend count = %d, want 1", count)
+	}
+}
 
 func TestPostgresAssetContractLifecycle(t *testing.T) {
 	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")

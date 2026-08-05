@@ -418,6 +418,11 @@ type storageBackendStore struct{ ds *datastore }
 
 func newStorageBackend(ds *datastore) *storageBackendStore { return &storageBackendStore{ds: ds} }
 
+const (
+	defaultStorageBackendLockNamespace = "omnimam"
+	defaultStorageBackendLockName      = "default-local-storage-backend"
+)
+
 func (s *storageBackendStore) GetBlob(ctx context.Context, id string) (*iapiserver.AssetBlob, error) {
 	var item iapiserver.AssetBlob
 	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
@@ -479,6 +484,42 @@ func (s *storageBackendStore) GetDefaultLocal(ctx context.Context) (*iapiserver.
 		Where("type = ? AND enabled = ? AND readonly = ?", iapiserver.StorageBackendTypeLocal, true, false).
 		Order("created_at ASC").
 		First(&item).Error
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
+func (s *storageBackendStore) EnsureDefaultLocal(
+	ctx context.Context,
+	desired *iapiserver.StorageBackend,
+) (*iapiserver.StorageBackend, error) {
+	if desired == nil {
+		return nil, errors.Errorf("default local storage backend is required")
+	}
+	var item iapiserver.StorageBackend
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// API Server replicas may bootstrap together; serialize only this singleton reconciliation.
+		if err := tx.Exec(
+			"SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))",
+			defaultStorageBackendLockNamespace,
+			defaultStorageBackendLockName,
+		).Error; err != nil {
+			return err
+		}
+		err := tx.
+			Where("type = ? AND enabled = ? AND readonly = ?", iapiserver.StorageBackendTypeLocal, true, false).
+			Order("created_at ASC").
+			First(&item).Error
+		if err == nil {
+			return nil
+		}
+		if !stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		item = *desired
+		return tx.Create(&item).Error
+	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

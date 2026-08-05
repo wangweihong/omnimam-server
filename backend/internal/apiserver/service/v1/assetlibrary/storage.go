@@ -37,6 +37,41 @@ func NewLocalContentStorage(factory store.Factory) *LocalContentStorage {
 	return &LocalContentStorage{factory: factory}
 }
 
+// ReconcileDefaultLocalStorageBackend 在 API Server 启动时确保首期 local StorageAdapter 有可写后端。
+// 已有可写 local 后端时保持管理员配置不变；缺失时使用部署环境根目录创建默认配置。
+func ReconcileDefaultLocalStorageBackend(
+	ctx context.Context,
+	target store.StorageBackendStore,
+) (*iapiserver.StorageBackend, error) {
+	if target == nil {
+		return nil, errors.Errorf("storage backend store is unavailable")
+	}
+	root, err := defaultLocalStorageRoot()
+	if err != nil {
+		return nil, err
+	}
+	desired := &iapiserver.StorageBackend{
+		Type:    iapiserver.StorageBackendTypeLocal,
+		Root:    root,
+		Config:  map[string]any{},
+		Enabled: true,
+	}
+	desired.Name = "default-local"
+	return target.EnsureDefaultLocal(ctx, desired)
+}
+
+func defaultLocalStorageRoot() (string, error) {
+	root := os.Getenv("OMNIMAM_STORAGE_ROOT")
+	if strings.TrimSpace(root) == "" {
+		root = filepath.Join("data", "assets")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
+	return filepath.Clean(abs), nil
+}
+
 func (s *LocalContentStorage) WriteUploadPart(ctx context.Context, upload *iapiserver.AssetUploadSession, partNumber int, reader io.Reader) (iapiserver.UploadedPart, error) {
 	_, root, err := s.localBackend(ctx)
 	if err != nil {

@@ -23,6 +23,17 @@ type localBackendStore struct {
 	backend *iapiserver.StorageBackend
 }
 
+type ensuringBackendStore struct {
+	store.StorageBackendStore
+	desired *iapiserver.StorageBackend
+}
+
+func (s *ensuringBackendStore) EnsureDefaultLocal(_ context.Context, desired *iapiserver.StorageBackend) (*iapiserver.StorageBackend, error) {
+	s.desired = desired
+	desired.ID = "storage-backend-1"
+	return desired, nil
+}
+
 func (s localBackendStore) GetBlob(context.Context, string) (*iapiserver.AssetBlob, error) {
 	return nil, nil
 }
@@ -32,6 +43,26 @@ func (s localBackendStore) GetDefaultLocal(context.Context) (*iapiserver.Storage
 }
 func (s localBackendStore) Get(context.Context, string) (*iapiserver.StorageBackend, error) {
 	return s.backend, nil
+}
+
+func TestReconcileDefaultLocalStorageBackend(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("OMNIMAM_STORAGE_ROOT", root)
+	repository := &ensuringBackendStore{}
+
+	backend, err := ReconcileDefaultLocalStorageBackend(t.Context(), repository)
+	if err != nil {
+		t.Fatalf("ReconcileDefaultLocalStorageBackend() error = %v", err)
+	}
+	if repository.desired == nil {
+		t.Fatal("ReconcileDefaultLocalStorageBackend() did not ensure a backend")
+	}
+	if backend.ID != "storage-backend-1" || backend.Name != "default-local" || backend.Type != iapiserver.StorageBackendTypeLocal {
+		t.Fatalf("default backend identity = %#v", backend)
+	}
+	if backend.Root != root || !backend.Enabled || backend.Readonly || backend.Quota != 0 {
+		t.Fatalf("default backend configuration = %#v", backend)
+	}
 }
 
 func TestLocalContentStorageFinalizesVerifiedUpload(t *testing.T) {
