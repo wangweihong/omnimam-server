@@ -98,12 +98,13 @@ func (r *InfraRuntime) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type InfraRuntimeEndpoint struct {
 	imachinery.ObjectMeta
-	RuntimeID  string          `json:"runtime_id" gorm:"column:runtime_id;type:text;not null"`
-	Visibility string          `json:"visibility" gorm:"column:visibility;type:text;not null"`
-	Status     string          `json:"status" gorm:"column:status;type:text;not null"`
-	DisplayRef string          `json:"display_ref,omitempty" gorm:"column:display_ref;type:text"`
-	ExpiresAt  imachinery.Time `json:"expires_at,omitempty" gorm:"column:expires_at"`
-	RevokedAt  imachinery.Time `json:"-" gorm:"column:revoked_at"`
+	RuntimeID    string          `json:"runtime_id" gorm:"column:runtime_id;type:text;not null"`
+	EndpointName string          `json:"endpoint_name,omitempty" gorm:"-"`
+	Visibility   string          `json:"visibility" gorm:"column:visibility;type:text;not null"`
+	Status       string          `json:"status" gorm:"column:status;type:text;not null"`
+	DisplayRef   string          `json:"display_ref,omitempty" gorm:"column:display_ref;type:text"`
+	ExpiresAt    imachinery.Time `json:"expires_at,omitempty" gorm:"column:expires_at"`
+	RevokedAt    imachinery.Time `json:"-" gorm:"column:revoked_at"`
 }
 
 func (InfraRuntimeEndpoint) TableName() string { return "infra_runtime_endpoints" }
@@ -136,12 +137,16 @@ func (InfraRuntimeConfigBinding) TableName() string { return "infra_runtime_conf
 // +k8s:deepcopy-gen=true
 type InfraRuntimeOutput struct {
 	imachinery.ObjectMeta
-	RuntimeID   string `json:"runtime_id" gorm:"column:runtime_id;type:text;not null"`
-	OutputKey   string `json:"output_key" gorm:"column:output_key;type:text;not null"`
-	Status      string `json:"status" gorm:"column:status;type:text;not null"`
-	ArtifactID  string `json:"artifact_id,omitempty" gorm:"column:artifact_id;type:text"`
-	MediaType   string `json:"media_type,omitempty" gorm:"column:media_type;type:text"`
-	FailureCode string `json:"-" gorm:"column:failure_code;type:text"`
+	RuntimeID     string           `json:"runtime_id" gorm:"column:runtime_id;type:text;not null"`
+	OutputKey     string           `json:"output_key" gorm:"column:output_key;type:text;not null"`
+	Status        string           `json:"status" gorm:"column:status;type:text;not null"`
+	ArtifactID    string           `json:"artifact_id,omitempty" gorm:"column:artifact_id;type:text"`
+	MediaType     string           `json:"media_type,omitempty" gorm:"column:media_type;type:text"`
+	SizeBytes     int64            `json:"size_bytes,omitempty" gorm:"-"`
+	ContentDigest string           `json:"content_digest,omitempty" gorm:"-"`
+	ContentRef    string           `json:"content_ref,omitempty" gorm:"-"`
+	CollectedAt   *imachinery.Time `json:"collected_at,omitempty" gorm:"-"`
+	FailureCode   string           `json:"-" gorm:"column:failure_code;type:text"`
 }
 
 func (InfraRuntimeOutput) TableName() string { return "infra_runtime_outputs" }

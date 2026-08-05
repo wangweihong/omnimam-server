@@ -164,7 +164,10 @@ type InfrastructureStore interface {
 	GetInfraRuntime(context.Context, string) (*iapiserver.InfraRuntime, error)
 	UpdateInfraRuntime(context.Context, *iapiserver.InfraRuntime, *iapiserver.InfraRuntimeEndpoint, []*iapiserver.InfraRuntimeOutput, string) (*iapiserver.InfraRuntime, error)
 	GetInfraRuntimeEndpoint(context.Context, string) (*iapiserver.InfraRuntimeEndpoint, error)
+	GetInfraRuntimeEndpointByID(context.Context, string) (*iapiserver.InfraRuntimeEndpoint, error)
 	ListInfraRuntimeOutputs(context.Context, string) ([]*iapiserver.InfraRuntimeOutput, error)
+	GetInfraRuntimeOutput(context.Context, string) (*iapiserver.InfraRuntimeOutput, error)
+	AttachInfraRuntimeOutputArtifact(context.Context, string, string) (*iapiserver.InfraRuntimeOutput, error)
 }
 
 // IdentityAdminStore 是 Identity RBAC、资源授权和服务账号的管理能力边界。

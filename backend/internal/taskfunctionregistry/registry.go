@@ -113,28 +113,44 @@ type TimeoutPolicy struct {
 }
 
 type InfraAdapter struct {
-	Operation                  string         `json:"operation" yaml:"operation"`
-	RuntimeMode                string         `json:"runtime_mode" yaml:"runtime_mode"`
-	RequestingService          string         `json:"requesting_service" yaml:"requesting_service"`
-	RequestIDTemplate          string         `json:"request_id_template" yaml:"request_id_template"`
-	OwnerDomain                string         `json:"owner_domain" yaml:"owner_domain"`
-	OwnerReferencePath         string         `json:"owner_reference_path" yaml:"owner_reference_path"`
-	AuthorizationRefPath       string         `json:"authorization_ref_path" yaml:"authorization_ref_path"`
-	ExistingRuntimeIDPath      string         `json:"existing_runtime_id_path,omitempty" yaml:"existing_runtime_id_path,omitempty"`
-	RuntimeProfileIDPath       string         `json:"runtime_profile_id_path,omitempty" yaml:"runtime_profile_id_path,omitempty"`
-	RuntimeProfileRevisionPath string         `json:"runtime_profile_revision_path,omitempty" yaml:"runtime_profile_revision_path,omitempty"`
-	SourceRefPath              string         `json:"source_ref_path,omitempty" yaml:"source_ref_path,omitempty"`
-	SourcePolicy               string         `json:"source_policy,omitempty" yaml:"source_policy,omitempty"`
-	Constants                  map[string]any `json:"constants" yaml:"constants"`
+	Operation                  string              `json:"operation" yaml:"operation"`
+	RuntimeMode                string              `json:"runtime_mode" yaml:"runtime_mode"`
+	RequestingService          string              `json:"requesting_service" yaml:"requesting_service"`
+	RequestIDTemplate          string              `json:"request_id_template" yaml:"request_id_template"`
+	OwnerDomain                string              `json:"owner_domain" yaml:"owner_domain"`
+	OwnerReferencePath         string              `json:"owner_reference_path" yaml:"owner_reference_path"`
+	AuthorizationRefPath       string              `json:"authorization_ref_path" yaml:"authorization_ref_path"`
+	ExistingRuntimeIDPath      string              `json:"existing_runtime_id_path,omitempty" yaml:"existing_runtime_id_path,omitempty"`
+	RuntimeProfileIDPath       string              `json:"runtime_profile_id_path,omitempty" yaml:"runtime_profile_id_path,omitempty"`
+	RuntimeProfileRevisionPath string              `json:"runtime_profile_revision_path,omitempty" yaml:"runtime_profile_revision_path,omitempty"`
+	SourceRefPath              string              `json:"source_ref_path,omitempty" yaml:"source_ref_path,omitempty"`
+	SourcePolicy               string              `json:"source_policy,omitempty" yaml:"source_policy,omitempty"`
+	OutputDeclarations         []OutputDeclaration `json:"output_declarations,omitempty" yaml:"output_declarations,omitempty"`
+	Constants                  map[string]any      `json:"constants" yaml:"constants"`
+}
+
+type OutputDeclaration struct {
+	OutputKey    string `json:"output_key" yaml:"output_key"`
+	RelativePath string `json:"relative_path" yaml:"relative_path"`
+	MediaType    string `json:"media_type" yaml:"media_type"`
 }
 
 type ArtifactRegistration struct {
-	Enabled                        bool   `json:"enabled" yaml:"enabled"`
-	ProducerType                   string `json:"producer_type" yaml:"producer_type"`
-	ProducerIDPath                 string `json:"producer_id_path" yaml:"producer_id_path"`
-	ProducerIdempotencyKeyTemplate string `json:"producer_idempotency_key_template" yaml:"producer_idempotency_key_template"`
-	OutputKey                      string `json:"output_key" yaml:"output_key"`
-	DigestSource                   string `json:"digest_source" yaml:"digest_source"`
+	Enabled                        bool                    `json:"enabled" yaml:"enabled"`
+	ProducerType                   string                  `json:"producer_type" yaml:"producer_type"`
+	ProducerIDPath                 string                  `json:"producer_id_path" yaml:"producer_id_path"`
+	ProducerIdempotencyKeyTemplate string                  `json:"producer_idempotency_key_template" yaml:"producer_idempotency_key_template"`
+	OutputKey                      string                  `json:"output_key" yaml:"output_key"`
+	DigestSource                   string                  `json:"digest_source" yaml:"digest_source"`
+	DeliveryPolicy                 *ArtifactDeliveryPolicy `json:"delivery_policy,omitempty" yaml:"delivery_policy,omitempty"`
+}
+
+type ArtifactDeliveryPolicy struct {
+	ContentSource         string   `json:"content_source" yaml:"content_source"`
+	ContentRead           string   `json:"content_read" yaml:"content_read"`
+	AssetLibrarySequence  []string `json:"asset_library_sequence" yaml:"asset_library_sequence"`
+	IntegrityVerification string   `json:"integrity_verification" yaml:"integrity_verification"`
+	AttachAfterComplete   bool     `json:"attach_after_complete" yaml:"attach_after_complete"`
 }
 
 type ResultProjection struct {
@@ -467,6 +483,7 @@ func contractDigest(contract *Contract, inputSchema, outputSchema map[string]any
 	}
 	delete(entry, "contract_digest")
 	delete(entry, "x-s1-refs")
+	entry["status"] = StatusActive
 	payload := map[string]any{"function_entry": entry, "input_schema": inputSchema, "output_schema": outputSchema}
 	raw, err = json.Marshal(payload)
 	if err != nil {

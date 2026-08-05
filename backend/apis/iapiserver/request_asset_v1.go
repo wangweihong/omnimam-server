@@ -374,7 +374,7 @@ type AddTagsRequest struct {
 }
 
 type CreateArtifactRequest struct {
-	ProducerType             string           `json:"producer_type" binding:"required,oneof=application_run canvas_run atomic_task"`
+	ProducerType             string           `json:"producer_type" binding:"required,oneof=application_run canvas_run atomic_task studio_build"`
 	ProducerID               string           `json:"producer_id" binding:"required,max=128"`
 	ProducerIdempotencyKey   string           `json:"producer_idempotency_key" binding:"required,max=512"`
 	AtomicTaskID             string           `json:"atomic_task_id" binding:"omitempty,max=128"`
@@ -398,7 +398,7 @@ type ArtifactListRequest struct {
 	imachinery.BasicQueryParam
 	ProcessingStatus   string `form:"processing_status" binding:"omitempty,oneof=created transferring processing ready failed deleted"`
 	RegistrationStatus string `form:"registration_status" binding:"omitempty,oneof=pending registered failed"`
-	ProducerType       string `form:"producer_type" binding:"omitempty,oneof=application_run canvas_run atomic_task"`
+	ProducerType       string `form:"producer_type" binding:"omitempty,oneof=application_run canvas_run atomic_task studio_build"`
 }
 
 type ArtifactListResponse struct {

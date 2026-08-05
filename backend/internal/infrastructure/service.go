@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,11 +22,13 @@ import (
 )
 
 type Service struct {
-	store    store.InfrastructureStore
-	provider RuntimeProvider
-	profiles map[string]*iapiserver.InfraRuntimeProfile
+	store     store.InfrastructureStore
+	provider  RuntimeProvider
+	profiles  map[string]*iapiserver.InfraRuntimeProfile
+	stateMu   sync.RWMutex
+	endpoints map[string]ProviderEndpoint
+	outputs   map[string]ProviderOutputContent
 }
-
 
 func NewService(storage store.InfrastructureStore, provider RuntimeProvider) (*Service, error) {
 	if storage == nil {
@@ -33,7 +38,7 @@ func NewService(storage store.InfrastructureStore, provider RuntimeProvider) (*S
 		provider = UnavailableProvider{}
 	}
 	profiles := defaultProfiles()
-	service := &Service{store: storage, provider: provider, profiles: profiles}
+	service := &Service{store: storage, provider: provider, profiles: profiles, endpoints: make(map[string]ProviderEndpoint), outputs: make(map[string]ProviderOutputContent)}
 	return service, nil
 }
 func (s *Service) ReconcileCatalog(ctx context.Context) error {
@@ -89,6 +94,34 @@ func (s *Service) GetEndpoint(ctx context.Context, id string) (*iapiserver.Infra
 	return s.store.GetInfraRuntimeEndpoint(ctx, id)
 }
 
+func (s *Service) ResolveEndpoint(ctx context.Context, id string, req *iapiserver.InfraResolveEndpointRequest) (*iapiserver.InfraResolvedEndpoint, error) {
+	endpoint, err := s.store.GetInfraRuntimeEndpointByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.store.GetInfraRuntime(ctx, endpoint.RuntimeID)
+	if err != nil || runtime.OwnerReference != req.OwnerReference {
+		return nil, errors.NewStatus(code.ErrInfraEndpointAccessDenied, "infra endpoint owner does not match")
+	}
+	now := time.Now()
+	if endpoint.Status != "READY" || runtime.Status != "RUNNING" || !endpoint.RevokedAt.IsZero() || (!endpoint.ExpiresAt.IsZero() && !endpoint.ExpiresAt.Time.After(now)) {
+		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint is not ready")
+	}
+	s.stateMu.RLock()
+	target, ok := s.endpoints[id]
+	s.stateMu.RUnlock()
+	if !ok || target.BaseURL == "" || (target.ValidUntil.Before(now)) {
+		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is unavailable")
+	}
+	parsed, err := url.Parse(target.BaseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Scheme != target.Protocol {
+		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is invalid")
+	}
+	resolvedAt := imachinery.NewTime(now)
+	validUntil := imachinery.NewTime(target.ValidUntil)
+	return &iapiserver.InfraResolvedEndpoint{EndpointRef: "infra-endpoint://" + endpoint.ID, RuntimeID: runtime.ID, Protocol: target.Protocol, BaseURL: target.BaseURL, ResolvedAt: resolvedAt, ValidUntil: validUntil}, nil
+}
+
 // ListOutputs 返回 Runtime 输出引用的分页结果。
 func (s *Service) ListOutputs(ctx context.Context, id string, req *iapiserver.InfraBasicListRequest) (*iapiserver.InfraRuntimeOutputListResponse, error) {
 	if _, err := s.store.GetInfraRuntime(ctx, id); err != nil {
@@ -98,11 +131,59 @@ func (s *Service) ListOutputs(ctx context.Context, id string, req *iapiserver.In
 	if err != nil {
 		return nil, err
 	}
+	s.enrichOutputs(items)
 	window, err := req.PagingParams.Normalize()
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
 	}
 	return &iapiserver.InfraRuntimeOutputListResponse{Total: int64(len(items)), Items: imachinery.PaginateSlice(items, window)}, nil
+}
+
+type RuntimeOutputContent struct {
+	Reader        io.ReadCloser
+	MediaType     string
+	SizeBytes     int64
+	ContentDigest string
+}
+
+func (s *Service) ReadOutputContent(ctx context.Context, id string) (*RuntimeOutputContent, error) {
+	output, err := s.store.GetInfraRuntimeOutput(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.stateMu.RLock()
+	content, ok := s.outputs[id]
+	s.stateMu.RUnlock()
+	if output.Status != "COLLECTED" || !ok || content.Open == nil {
+		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
+	}
+	reader, err := content.Open(ctx)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content cannot be opened")
+	}
+	return &RuntimeOutputContent{Reader: reader, MediaType: content.MediaType, SizeBytes: content.SizeBytes, ContentDigest: content.ContentDigest}, nil
+}
+
+func (s *Service) AttachOutputArtifact(ctx context.Context, id string, req *iapiserver.InfraAttachArtifactRequest) (*iapiserver.InfraRuntimeOutput, error) {
+	output, err := s.store.GetInfraRuntimeOutput(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.stateMu.RLock()
+	content, ok := s.outputs[id]
+	s.stateMu.RUnlock()
+	if output.Status != "COLLECTED" || !ok {
+		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
+	}
+	if content.SizeBytes != req.SizeBytes || content.ContentDigest != req.ContentDigest {
+		return nil, errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "infra runtime output artifact metadata does not match")
+	}
+	attached, err := s.store.AttachInfraRuntimeOutputArtifact(ctx, id, req.ArtifactID)
+	if err != nil {
+		return nil, err
+	}
+	s.enrichOutput(attached)
+	return attached, nil
 }
 
 // Logs 返回经 Provider 脱敏后的 Runtime 日志分页结果。
@@ -164,10 +245,22 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
+	if providerResult == nil {
+		created.Status = "FAILED"
+		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
+		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
+		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "provider returned no runtime result")
+	}
 	created.ProviderRuntimeRef = providerResult.ProviderRuntimeRef
 	created.Status = providerResult.Status
 	if created.Status == "" {
 		created.Status = "RUNNING"
+	}
+	if err := prepareProviderOutputs(created.ID, providerResult, req.OutputDeclarations); err != nil {
+		created.Status = "FAILED"
+		created.FailureCode = "ERR_INFRA_OUTPUT_COLLECTION_FAILED"
+		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
+		return nil, errors.NewStatus(code.ErrInfraOutputCollectionFailed, err.Error())
 	}
 	endpoint := endpointFromResult(created, req, providerResult)
 	created.EndpointRef = ""
@@ -178,6 +271,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	if err != nil {
 		return nil, err
 	}
+	s.rememberProviderState(endpoint, providerResult)
 	return s.result(ctx, created, providerResult)
 }
 func (s *Service) Start(ctx context.Context, id string) (*iapiserver.InfraOperationResult, error) {
@@ -292,8 +386,13 @@ func (s *Service) result(ctx context.Context, runtime *iapiserver.InfraRuntime, 
 	if endpoint, err := s.store.GetInfraRuntimeEndpoint(ctx, runtime.ID); err == nil {
 		result.Endpoint = endpoint
 	}
-	outputs, _ := s.store.ListInfraRuntimeOutputs(ctx, runtime.ID)
-	result.Outputs = outputs
+	if provider != nil && len(provider.Outputs) > 0 {
+		result.Outputs = provider.Outputs
+	} else {
+		outputs, _ := s.store.ListInfraRuntimeOutputs(ctx, runtime.ID)
+		s.enrichOutputs(outputs)
+		result.Outputs = outputs
+	}
 	if provider != nil {
 		result.ArtifactDigest = provider.ArtifactDigest
 	}
@@ -311,15 +410,150 @@ func requestFingerprint(req *iapiserver.InfraCreateRuntimeRequest) (string, erro
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraCreateRuntimeRequest, result *ProviderResult) *iapiserver.InfraRuntimeEndpoint {
-	if result.EndpointDisplayRef == "" {
+	if result.EndpointDisplayRef == "" && result.Endpoint == nil {
 		return nil
 	}
 	visibility := req.EndpointVisibility
 	if visibility == "" {
 		visibility = "INTERNAL"
 	}
-	return &iapiserver.InfraRuntimeEndpoint{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtime.ID, Visibility: visibility, Status: "READY", DisplayRef: result.EndpointDisplayRef}
+	endpointName := ""
+	if req.EndpointRequest != nil {
+		endpointName = req.EndpointRequest.EndpointName
+	}
+	return &iapiserver.InfraRuntimeEndpoint{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtime.ID, EndpointName: endpointName, Visibility: visibility, Status: "READY", DisplayRef: result.EndpointDisplayRef}
 }
 
-var _ = strings.TrimSpace
-var _ = time.Second
+func prepareProviderOutputs(runtimeID string, result *ProviderResult, declarations []iapiserver.InfraRuntimeOutputDeclaration) error {
+	if result == nil {
+		return fmt.Errorf("provider returned no runtime result")
+	}
+	declared := make(map[string]iapiserver.InfraRuntimeOutputDeclaration, len(declarations))
+	for _, declaration := range declarations {
+		declared[declaration.OutputKey] = declaration
+	}
+	byKey := make(map[string]*iapiserver.InfraRuntimeOutput, len(result.Outputs)+len(declarations))
+	for _, output := range result.Outputs {
+		if output == nil || output.OutputKey == "" {
+			return fmt.Errorf("provider returned an invalid output descriptor")
+		}
+		if _, exists := byKey[output.OutputKey]; exists {
+			return fmt.Errorf("provider returned duplicate output %q", output.OutputKey)
+		}
+		if len(declared) > 0 {
+			declaration, ok := declared[output.OutputKey]
+			if !ok {
+				return fmt.Errorf("provider returned undeclared output %q", output.OutputKey)
+			}
+			if output.MediaType != "" && output.MediaType != declaration.MediaType {
+				return fmt.Errorf("collected output %q media type does not match", output.OutputKey)
+			}
+		}
+		if output.ID == "" {
+			output.ID = uuid.NewString()
+		}
+		output.RuntimeID = runtimeID
+		if output.Status == "" {
+			output.Status = "PENDING"
+		}
+		byKey[output.OutputKey] = output
+	}
+	for _, declaration := range declarations {
+		if _, exists := byKey[declaration.OutputKey]; exists {
+			continue
+		}
+		output := &iapiserver.InfraRuntimeOutput{
+			ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtimeID,
+			OutputKey: declaration.OutputKey, Status: "PENDING", MediaType: declaration.MediaType,
+		}
+		result.Outputs = append(result.Outputs, output)
+		byKey[declaration.OutputKey] = output
+	}
+	for key, content := range result.OutputContents {
+		output := byKey[key]
+		if output == nil || content.Open == nil || content.SizeBytes < 0 || !validSHA256(content.ContentDigest) || content.MediaType == "" {
+			return fmt.Errorf("collected output %q is invalid", key)
+		}
+		if output.MediaType != "" && output.MediaType != content.MediaType {
+			return fmt.Errorf("collected output %q media type does not match", key)
+		}
+		if content.CollectedAt.IsZero() {
+			content.CollectedAt = time.Now()
+			result.OutputContents[key] = content
+		}
+		collectedAt := imachinery.NewTime(content.CollectedAt)
+		output.Status = "COLLECTED"
+		output.MediaType = content.MediaType
+		output.SizeBytes = content.SizeBytes
+		output.ContentDigest = content.ContentDigest
+		output.CollectedAt = &collectedAt
+	}
+	if result.Status == "SUCCEEDED" {
+		for _, declaration := range declarations {
+			if _, ok := result.OutputContents[declaration.OutputKey]; !ok {
+				return fmt.Errorf("declared output %q was not collected", declaration.OutputKey)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) rememberProviderState(endpoint *iapiserver.InfraRuntimeEndpoint, result *ProviderResult) {
+	if result == nil {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if endpoint != nil && result.Endpoint != nil {
+		s.endpoints[endpoint.ID] = *result.Endpoint
+	}
+	for _, output := range result.Outputs {
+		if output == nil || output.ID == "" {
+			continue
+		}
+		content, ok := result.OutputContents[output.OutputKey]
+		if !ok {
+			continue
+		}
+		output.ContentRef = "infra-output://" + output.ID
+		s.outputs[output.ID] = content
+	}
+}
+
+func (s *Service) enrichOutputs(outputs []*iapiserver.InfraRuntimeOutput) {
+	for _, output := range outputs {
+		s.enrichOutput(output)
+	}
+}
+
+func (s *Service) enrichOutput(output *iapiserver.InfraRuntimeOutput) {
+	if output == nil {
+		return
+	}
+	s.stateMu.RLock()
+	content, ok := s.outputs[output.ID]
+	s.stateMu.RUnlock()
+	if !ok {
+		return
+	}
+	output.MediaType = content.MediaType
+	output.SizeBytes = content.SizeBytes
+	output.ContentDigest = content.ContentDigest
+	output.ContentRef = "infra-output://" + output.ID
+	if !content.CollectedAt.IsZero() {
+		collectedAt := imachinery.NewTime(content.CollectedAt)
+		output.CollectedAt = &collectedAt
+	}
+}
+
+func validSHA256(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, char := range value[len("sha256:"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}

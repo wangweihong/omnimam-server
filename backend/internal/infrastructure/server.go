@@ -101,6 +101,13 @@ func (s *Server) registerInfrastructureRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runtimes/{runtime_id}/endpoint", s.respond(func(r *http.Request) (any, error) {
 		return s.service.GetEndpoint(r.Context(), r.PathValue("runtime_id"))
 	}))
+	mux.HandleFunc("POST /endpoints/{endpoint_id}/resolve", s.respond(func(r *http.Request) (any, error) {
+		var req iapiserver.InfraResolveEndpointRequest
+		if err := decodeInfraRequest(r, &req, true); err != nil {
+			return nil, err
+		}
+		return s.service.ResolveEndpoint(r.Context(), r.PathValue("endpoint_id"), &req)
+	}))
 	mux.HandleFunc("GET /runtimes/{runtime_id}/logs", s.respond(func(r *http.Request) (any, error) {
 		req, err := basicListRequest(r, false)
 		if err != nil {
@@ -135,6 +142,29 @@ func (s *Server) registerInfrastructureRoutes(mux *http.ServeMux) {
 		}
 		return s.service.ListOutputs(r.Context(), r.PathValue("runtime_id"), req)
 	}))
+	mux.HandleFunc("GET /runtime-outputs/{output_id}/content", s.readOutputContent)
+	mux.HandleFunc("POST /runtime-outputs/{output_id}/attach-artifact", s.respond(func(r *http.Request) (any, error) {
+		var req iapiserver.InfraAttachArtifactRequest
+		if err := decodeInfraRequest(r, &req, true); err != nil {
+			return nil, err
+		}
+		return s.service.AttachOutputArtifact(r.Context(), r.PathValue("output_id"), &req)
+	}))
+}
+
+// readOutputContent 流式返回已收集 RuntimeOutput 的实际字节和可信 descriptor headers。
+func (s *Server) readOutputContent(w http.ResponseWriter, r *http.Request) {
+	content, err := s.service.ReadOutputContent(r.Context(), r.PathValue("output_id"))
+	if err != nil {
+		writeInfraError(w, err)
+		return
+	}
+	defer content.Reader.Close()
+	w.Header().Set("Content-Type", content.MediaType)
+	w.Header().Set("Content-Length", strconv.FormatInt(content.SizeBytes, 10))
+	w.Header().Set("X-Content-Digest", content.ContentDigest)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, content.Reader)
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -309,6 +339,10 @@ var infraErrorSymbols = map[int]string{
 	code.ErrInfraSecretResolutionFailed:   "ERR_INFRA_SECRET_RESOLUTION_FAILED",
 	code.ErrInfraEndpointAllocationFailed: "ERR_INFRA_ENDPOINT_ALLOCATION_FAILED",
 	code.ErrInfraEndpointAccessDenied:     "ERR_INFRA_ENDPOINT_ACCESS_DENIED",
+	code.ErrInfraEndpointNotReady:         "ERR_INFRA_ENDPOINT_NOT_READY",
+	code.ErrInfraOutputCollectionFailed:   "ERR_INFRA_OUTPUT_COLLECTION_FAILED",
+	code.ErrInfraOutputContentUnavailable: "ERR_INFRA_OUTPUT_CONTENT_UNAVAILABLE",
+	code.ErrInfraOutputIntegrityMismatch:  "ERR_INFRA_OUTPUT_INTEGRITY_MISMATCH",
 }
 
 var infraRetryableErrors = map[int]bool{
@@ -318,6 +352,8 @@ var infraRetryableErrors = map[int]bool{
 	code.ErrInfraRuntimeStateConflict:     true,
 	code.ErrInfraSecretResolutionFailed:   true,
 	code.ErrInfraEndpointAllocationFailed: true,
+	code.ErrInfraOutputCollectionFailed:   true,
+	code.ErrInfraOutputContentUnavailable: true,
 }
 
 func (s *Server) execute(w http.ResponseWriter, r *http.Request) {

@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.1"
 registry_id: task-center.infra-backed
 scope: INFRA_BACKED_V1
 description: >-
@@ -8,7 +8,7 @@ description: >-
 contract_digest:
   algorithm: SHA-256
   canonicalization: RFC8785
-  payload: function_entry_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas
+  payload: function_entry_with_status_normalized_to_active_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas
 x-s1-refs:
   user_stories: [US-TASK-026, US-AGENT-001, US-APPSTUDIO-001, US-INFRA-001]
   business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-150, BR-TASK-151, BR-TASK-152, BR-TASK-153]
@@ -529,7 +529,7 @@ functions:
   - function_ref: appstudio.build.execute
     contract_version: "1.0"
     contract_digest: sha256:7f8bcae550794c5274802ba90973dd3e97c7da5a21fe1df344a7ce29c85bd1f2
-    status: ACTIVE
+    status: RETAINED
     owning_domain: appstudio
     handler: task-center.infra-adapter
     execution_mode: JOB
@@ -586,6 +586,75 @@ functions:
     x-s1-refs:
       user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
       business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-STUDIO-011, R-STUDIO-017, R-STUDIO-018, R-INFRA-008, R-INFRA-016]
+
+  - function_ref: appstudio.build.execute
+    contract_version: "1.1"
+    contract_digest: sha256:8e2738acd06cdebbd7569be888aacb1b95d06ab154326dbbb969d0efea09e82e
+    status: ACTIVE
+    owning_domain: appstudio
+    handler: task-center.infra-adapter
+    execution_mode: JOB
+    required_capabilities: [infra.runtime.job, infra.output.collect, infra.output.content.read, source.studio_snapshot.read, asset.artifact.register]
+    input_schema_ref: '#/schemas/appstudio_build_execute_input'
+    output_schema_ref: '#/schemas/build_execute_output'
+    task_idempotency:
+      scope_template: 'appstudio-build:{arguments.studio_build_id}'
+      key_template: '{arguments.source_snapshot_digest}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 2
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 10
+      max_delay_seconds: 120
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, ERR_INFRA_OUTPUT_COLLECTION_FAILED, ERR_INFRA_OUTPUT_CONTENT_UNAVAILABLE, artifact_content_unavailable]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_CANCEL, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 300, per_attempt_timeout_seconds: 3600, overall_timeout_seconds: 7200}
+    infra_adapter:
+      operation: CREATE_JOB
+      runtime_mode: JOB
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: appstudio
+      owner_reference_path: arguments.studio_build_id
+      authorization_ref_path: arguments.authorization_ref
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.source_snapshot_source_ref
+      source_policy: STUDIO_SNAPSHOT_READ_ONLY
+      output_declarations:
+        - {output_key: bundle, relative_path: bundle.tar.gz, media_type: application/gzip}
+      constants: {provider_type: docker, mount_read_only: true, expose_endpoint: false}
+    artifact_registration:
+      enabled: true
+      producer_type: studio_build
+      producer_id_path: arguments.studio_build_id
+      producer_idempotency_key_template: 'studio-build:{arguments.studio_build_id}:bundle'
+      output_key: bundle
+      digest_source: infra_output_descriptor
+      delivery_policy:
+        content_source: infra_output_descriptor
+        content_read: INFRA_AUTHENTICATED_STREAM
+        asset_library_sequence: [CREATE_ARTIFACT, UPLOAD_CONTENT, COMPLETE_ARTIFACT]
+        integrity_verification: SIZE_AND_SHA256_BEFORE_AND_AFTER_UPLOAD
+        attach_after_complete: true
+    result_projection:
+      consumer_domain: appstudio
+      aggregate_type: StudioBuild
+      aggregate_id_path: arguments.studio_build_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.artifact_id, to: artifact_id}
+        - {from: result.artifact_digest, to: artifact_digest}
+        - {from: result.processing_status, to: diagnostics_summary.artifact_processing_status}
+        - {from: result.validation_status, to: diagnostics_summary.validation_status}
+        - {from: result.logs_ref, to: diagnostics_summary.logs_ref}
+    security:
+      allowed_callers: [appstudio]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, base_url, content_ref, staging_ref, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-APPSTUDIO-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-STUDIO-011, R-STUDIO-017, R-STUDIO-018, R-INFRA-008, R-INFRA-016, R-INFRA-022]
 
   - function_ref: appstudio.production.reconcile
     contract_version: "1.0"

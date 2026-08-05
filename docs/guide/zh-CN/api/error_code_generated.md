@@ -393,3 +393,7 @@
 | ErrInfraSecretResolutionFailed | 240801 | 200 | SecretRef or ModelAccessSpec resolution failed. | SecretRef 或 ModelAccessSpec 解析失败。 |
 | ErrInfraEndpointAllocationFailed | 240802 | 200 | Endpoint allocation or refresh failed. | Endpoint 分配或刷新失败。 |
 | ErrInfraEndpointAccessDenied | 240803 | 200 | The current principal, owner, or short-lived grant cannot resolve the endpoint. | 当前主体、owner 或短期授权不允许解析该 Endpoint。 |
+| ErrInfraEndpointNotReady | 240804 | 200 | The endpoint or its runtime is not ready for resolution, or the endpoint has expired or been revoked. | Endpoint 或所属 Runtime 未达到可解析状态，或 Endpoint 已过期、撤销。 |
+| ErrInfraOutputCollectionFailed | 240805 | 200 | The declared output is missing, is not a regular file, escapes the output root, or could not be collected. | 声明输出缺失、不是普通文件、路径逃逸或实际字节收集失败。 |
+| ErrInfraOutputContentUnavailable | 240806 | 200 | The RuntimeOutput content has not been collected, has been cleaned up, or is unavailable to the current Task Worker. | RuntimeOutput 内容尚未收集、已清理或当前 Task Worker 无法读取。 |
+| ErrInfraOutputIntegrityMismatch | 240807 | 200 | The size or SHA-256 differs across the RuntimeOutput, transferred bytes, and Artifact. | RuntimeOutput、传输字节与 Artifact 的大小或 SHA-256 不一致。 |

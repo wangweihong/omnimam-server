@@ -27,7 +27,7 @@ func (s *assetV1Store) CreateArtifact(ctx context.Context, data *iapiserver.Arti
 	if data.OwnerUserID == "" || data.ProducerType == "" || data.ProducerID == "" || data.ProducerIdempotencyKey == "" || data.OutputKey == "" || data.ArtifactType == "" || data.MediaType == "" || data.ProcessingProfileVersion == "" {
 		return nil, false, errors.Errorf("artifact identity and routing fields are required")
 	}
-	if !oneOf(data.ProducerType, "application_run", "canvas_run", "atomic_task") ||
+	if !oneOf(data.ProducerType, "application_run", "canvas_run", "atomic_task", "studio_build") ||
 		!oneOf(data.MediaType, "image", "video", "audio", "text", "document", "model_3d", "prompt", "prompt_template", "pdf", "other") ||
 		!oneOf(data.SavePolicy, iapiserver.ArtifactSaveTransient, iapiserver.ArtifactSaveManual, iapiserver.ArtifactSaveAutomatic) || data.Sequence < 0 {
 		return nil, false, errors.Errorf("artifact producer, media type, save policy, or sequence is invalid")

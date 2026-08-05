@@ -3,10 +3,10 @@ package iapiserver
 import (
 	//"encoding/json"
 
-	"gorm.io/gorm"
 	"github.com/wangweihong/gotoolbox/pkg/json"
 	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"gorm.io/gorm"
 )
 
 const (
@@ -78,7 +78,7 @@ type Artifact struct {
 	ArtifactType string `json:"artifact_type" gorm:"column:artifact_type;type:text;not null"`
 	// MediaType 是 SSOT 支持的素材媒体类型。
 	MediaType string `json:"media_type" gorm:"column:media_type;type:text;not null"`
-	// ProducerType 仅允许 application_run、canvas_run 或 atomic_task。
+	// ProducerType 允许受控运行、任务或 StudioBuild producer。
 	ProducerType string `json:"producer_type" gorm:"column:producer_type;type:text;not null;uniqueIndex:idx_artifacts_producer_key,priority:2"`
 	// ProducerID 标识产生该制品的所属运行或任务。
 	ProducerID string `json:"producer_id" gorm:"column:producer_id;type:text;not null"`

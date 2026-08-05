@@ -1,5 +1,7 @@
 package iapiserver
 
+import "github.com/wangweihong/omnimam/backend/apis/imachinery"
+
 // +k8s:deepcopy-gen=true
 type InfraRuntimeListResponse struct {
 	Total int64           `json:"total"`
@@ -22,6 +24,16 @@ type InfraRuntimeProfileListResponse struct {
 type InfraRuntimeOutputListResponse struct {
 	Total int64                 `json:"total"`
 	Items []*InfraRuntimeOutput `json:"items"`
+}
+
+// +k8s:deepcopy-gen=true
+type InfraResolvedEndpoint struct {
+	EndpointRef string          `json:"endpoint_ref"`
+	RuntimeID   string          `json:"runtime_id"`
+	Protocol    string          `json:"protocol"`
+	BaseURL     string          `json:"base_url"`
+	ResolvedAt  imachinery.Time `json:"resolved_at"`
+	ValidUntil  imachinery.Time `json:"valid_until"`
 }
 
 // +k8s:deepcopy-gen=true

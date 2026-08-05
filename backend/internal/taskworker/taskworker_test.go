@@ -1,9 +1,13 @@
 package apiserver
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +15,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -20,14 +25,32 @@ import (
 )
 
 type recordingInfrastructureExecutor struct {
-	requests []*infrastructure.CommandRequest
-	response *infrastructure.CommandResponse
-	err      error
+	requests       []*infrastructure.CommandRequest
+	response       *infrastructure.CommandResponse
+	err            error
+	outputContent  *infrastructure.OutputContent
+	readCalls      int
+	attachRequests []*iapiserver.InfraAttachArtifactRequest
+	attachedOutput *iapiserver.InfraRuntimeOutput
 }
 
 func (f *recordingInfrastructureExecutor) Execute(_ context.Context, request *infrastructure.CommandRequest) (*infrastructure.CommandResponse, error) {
 	f.requests = append(f.requests, request)
 	return f.response, f.err
+}
+
+func (f *recordingInfrastructureExecutor) ReadOutputContent(_ context.Context, _ string) (*infrastructure.OutputContent, error) {
+	f.readCalls++
+	return f.outputContent, f.err
+}
+
+func (f *recordingInfrastructureExecutor) AttachOutputArtifact(_ context.Context, outputID string, request *iapiserver.InfraAttachArtifactRequest) (*iapiserver.InfraRuntimeOutput, error) {
+	copy := *request
+	f.attachRequests = append(f.attachRequests, &copy)
+	if f.attachedOutput != nil || f.err != nil {
+		return f.attachedOutput, f.err
+	}
+	return &iapiserver.InfraRuntimeOutput{ObjectMeta: imachinery.ObjectMeta{ID: outputID}, ArtifactID: request.ArtifactID}, nil
 }
 
 func appStudioReadyResponse(runtimeID, endpointID string) *infrastructure.CommandResponse {
@@ -49,6 +72,53 @@ func appStudioStopResponse(runtimeID, status string) *infrastructure.CommandResp
 	return &infrastructure.CommandResponse{Result: &iapiserver.InfraOperationResult{Runtime: runtime}}
 }
 
+func appStudioBuildResponse(content []byte) (*infrastructure.CommandResponse, *iapiserver.InfraRuntimeOutput) {
+	sum := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	collectedAt := imachinery.Now()
+	runtime := &iapiserver.InfraRuntime{}
+	runtime.ID = "infra-build-1"
+	runtime.Status = "SUCCEEDED"
+	output := &iapiserver.InfraRuntimeOutput{
+		ObjectMeta: imachinery.ObjectMeta{ID: "output-1"}, RuntimeID: runtime.ID, OutputKey: "bundle", Status: "COLLECTED",
+		MediaType: "application/gzip", SizeBytes: int64(len(content)), ContentDigest: digest, ContentRef: "infra-output://output-1", CollectedAt: &collectedAt,
+	}
+	return &infrastructure.CommandResponse{Result: &iapiserver.InfraOperationResult{Runtime: runtime, Outputs: []*iapiserver.InfraRuntimeOutput{output}}}, output
+}
+
+type recordingBuildArtifactLifecycle struct {
+	existing    *iapiserver.Artifact
+	prepared    *iapiserver.Artifact
+	storedBytes []byte
+	storeCalls  int
+}
+
+func (l *recordingBuildArtifactLifecycle) Prepare(_ context.Context, desired *iapiserver.Artifact) (*iapiserver.Artifact, bool, error) {
+	l.prepared = desired.DeepCopy()
+	if l.existing != nil {
+		return l.existing.DeepCopy(), false, nil
+	}
+	created := desired.DeepCopy()
+	created.ID = "artifact-build-1"
+	created.ProcessingStatus = iapiserver.ArtifactProcessingCreated
+	created.RegistrationStatus = iapiserver.ArtifactRegistrationPending
+	return created, true, nil
+}
+
+func (l *recordingBuildArtifactLifecycle) StoreContent(_ context.Context, artifact *iapiserver.Artifact, mimeType string, reader io.Reader) (*iapiserver.Artifact, error) {
+	l.storeCalls++
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	l.storedBytes = raw
+	sum := sha256.Sum256(raw)
+	completed := artifact.DeepCopy()
+	completed.ProcessingStatus = iapiserver.ArtifactProcessingReady
+	completed.Metadata = map[string]any{"sha256": hex.EncodeToString(sum[:]), "size_bytes": int64(len(raw)), "mime_type": mimeType}
+	return completed, nil
+}
+
 func appStudioTask(t *testing.T, functionRef string, arguments map[string]any) (*taskfunctionregistry.Registry, workflowruntime.WorkerTask, *iapiserver.AtomicTask) {
 	t.Helper()
 	registry, err := taskfunctionregistry.New()
@@ -61,7 +131,7 @@ func appStudioTask(t *testing.T, functionRef string, arguments map[string]any) (
 	}
 	atomic := &iapiserver.AtomicTask{FunctionRef: functionRef, FunctionContractVersion: contract.ContractVersion, FunctionContractDigest: contract.ContractDigest, Arguments: arguments, CreatedBy: "user-1"}
 	atomic.ID = "atomic-1"
-	worker := workflowruntime.WorkerTask{AtomicTaskID: atomic.ID, FunctionRef: functionRef, RetryCount: 1, Arguments: arguments}
+	worker := workflowruntime.WorkerTask{AtomicTaskID: atomic.ID, RuntimeTaskID: "runtime-task-1", FunctionRef: functionRef, RetryCount: 1, Arguments: arguments}
 	return registry, worker, atomic
 }
 
@@ -552,19 +622,95 @@ func TestExecuteAppStudioPreviewStopDelete(t *testing.T) {
 	}
 }
 
-func TestExecuteAppStudioBuildFailsClosedBeforeInfrastructure(t *testing.T) {
-	arguments := map[string]any{
+func TestExecuteAppStudioBuildDeliversArtifact(t *testing.T) {
+	arguments := appStudioBuildTestArguments()
+	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+	content := []byte("build bundle bytes")
+	response, output := appStudioBuildResponse(content)
+	executor := &recordingInfrastructureExecutor{response: response, outputContent: &infrastructure.OutputContent{
+		Body: io.NopCloser(bytes.NewReader(content)), MediaType: output.MediaType, SizeBytes: output.SizeBytes, ContentDigest: output.ContentDigest,
+	}}
+	lifecycle := &recordingBuildArtifactLifecycle{}
+	result, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.requests) != 1 || executor.requests[0].Create == nil {
+		t.Fatalf("infrastructure requests = %#v, want one create", executor.requests)
+	}
+	create := executor.requests[0].Create
+	if create.RuntimeMode != "JOB" || create.OwnerReference != "build-1" || len(create.OutputDeclarations) != 1 || create.OutputDeclarations[0].OutputKey != "bundle" || create.OutputDeclarations[0].RelativePath != "bundle.tar.gz" {
+		t.Fatalf("build create request = %#v", create)
+	}
+	if lifecycle.prepared == nil || lifecycle.prepared.ProducerType != "studio_build" || lifecycle.prepared.ProducerIdempotencyKey != "studio-build:build-1:bundle" || lifecycle.prepared.OutputKey != "bundle" {
+		t.Fatalf("prepared artifact = %#v", lifecycle.prepared)
+	}
+	if !bytes.Equal(lifecycle.storedBytes, content) || len(executor.attachRequests) != 1 || executor.attachRequests[0].ArtifactID != "artifact-build-1" || executor.attachRequests[0].ContentDigest != output.ContentDigest {
+		t.Fatalf("delivery state bytes=%q attach=%#v", lifecycle.storedBytes, executor.attachRequests)
+	}
+	if result["artifact_id"] != "artifact-build-1" || result["artifact_digest"] != output.ContentDigest || result["processing_status"] != "ready" || result["validation_status"] != "PASSED" || result["logs_ref"] != "task-attempt-log:runtime-task-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecuteAppStudioBuildRejectsContentMismatch(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		mutate      func(*iapiserver.InfraRuntimeOutput)
+		contentBody []byte
+	}{
+		{name: "size", mutate: func(output *iapiserver.InfraRuntimeOutput) { output.SizeBytes++ }, contentBody: []byte("build bundle bytes")},
+		{name: "digest", mutate: func(output *iapiserver.InfraRuntimeOutput) {
+			output.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+		}, contentBody: []byte("build bundle bytes")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			arguments := appStudioBuildTestArguments()
+			registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+			response, output := appStudioBuildResponse(test.contentBody)
+			test.mutate(output)
+			executor := &recordingInfrastructureExecutor{response: response, outputContent: &infrastructure.OutputContent{
+				Body: io.NopCloser(bytes.NewReader(test.contentBody)), MediaType: output.MediaType, SizeBytes: output.SizeBytes, ContentDigest: output.ContentDigest,
+			}}
+			lifecycle := &recordingBuildArtifactLifecycle{}
+			if _, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic); err == nil {
+				t.Fatal("expected content integrity failure")
+			}
+			if lifecycle.storeCalls != 0 || len(executor.attachRequests) != 0 {
+				t.Fatalf("store calls = %d attach calls = %d, want zero", lifecycle.storeCalls, len(executor.attachRequests))
+			}
+		})
+	}
+}
+
+func TestExecuteAppStudioBuildReusesReadyArtifact(t *testing.T) {
+	arguments := appStudioBuildTestArguments()
+	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+	content := []byte("build bundle bytes")
+	response, output := appStudioBuildResponse(content)
+	existing := &iapiserver.Artifact{ProcessingStatus: iapiserver.ArtifactProcessingReady, Metadata: map[string]any{
+		"sha256": strings.TrimPrefix(output.ContentDigest, "sha256:"), "size_bytes": output.SizeBytes, "mime_type": output.MediaType,
+	}}
+	existing.ID = "artifact-existing"
+	executor := &recordingInfrastructureExecutor{response: response}
+	lifecycle := &recordingBuildArtifactLifecycle{existing: existing}
+	result, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executor.readCalls != 0 || lifecycle.storeCalls != 0 || len(executor.attachRequests) != 1 {
+		t.Fatalf("read=%d store=%d attach=%d", executor.readCalls, lifecycle.storeCalls, len(executor.attachRequests))
+	}
+	if result["artifact_id"] != "artifact-existing" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func appStudioBuildTestArguments() map[string]any {
+	return map[string]any{
 		"studio_application_id": "application-1", "studio_build_id": "build-1", "source_snapshot_id": "snapshot-1", "source_snapshot_digest": "sha256:snapshot",
 		"source_snapshot_source_ref": "studio-snapshot://snapshot-1", "runtime_profile_id": "appstudio.build.static-web", "runtime_profile_revision": "profile-rev-1",
 		"build_config_ref": "appstudio-build-config://config-1", "dependency_lock_digest": "sha256:lock", "authorization_ref": "appstudio-build-grant://grant-1", "expected_resource_version": 1,
-	}
-	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
-	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("unused", "unused")}
-	if _, err := executeAppStudioBuild(t.Context(), executor, registry, worker, atomic); err == nil || !strings.Contains(err.Error(), "artifact registration is unavailable") {
-		t.Fatalf("error = %v, want artifact registration failure", err)
-	}
-	if len(executor.requests) != 0 {
-		t.Fatalf("infrastructure calls = %d, want 0", len(executor.requests))
 	}
 }
 

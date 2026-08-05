@@ -3,6 +3,8 @@ package infrastructure
 import (
 	"context"
 	"fmt"
+	"io"
+	"time"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
@@ -16,8 +18,22 @@ type ProviderResult struct {
 	ProviderRuntimeRef string
 	Status             string
 	EndpointDisplayRef string
+	Endpoint           *ProviderEndpoint
 	ArtifactDigest     string
 	Outputs            []*iapiserver.InfraRuntimeOutput
+	OutputContents     map[string]ProviderOutputContent
+}
+type ProviderEndpoint struct {
+	Protocol   string
+	BaseURL    string
+	ValidUntil time.Time
+}
+type ProviderOutputContent struct {
+	MediaType     string
+	SizeBytes     int64
+	ContentDigest string
+	CollectedAt   time.Time
+	Open          func(context.Context) (io.ReadCloser, error)
 }
 type RuntimeProvider interface {
 	Info(context.Context) (*iapiserver.InfraNode, error)

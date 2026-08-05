@@ -375,4 +375,8 @@ func init() {
 	register(ErrInfraSecretResolutionFailed, 200, map[string]string{"CN": "SecretRef 或 ModelAccessSpec 解析失败。", "EN": "SecretRef or ModelAccessSpec resolution failed."})
 	register(ErrInfraEndpointAllocationFailed, 200, map[string]string{"CN": "Endpoint 分配或刷新失败。", "EN": "Endpoint allocation or refresh failed."})
 	register(ErrInfraEndpointAccessDenied, 200, map[string]string{"CN": "当前主体、owner 或短期授权不允许解析该 Endpoint。", "EN": "The current principal, owner, or short-lived grant cannot resolve the endpoint."})
+	register(ErrInfraEndpointNotReady, 200, map[string]string{"CN": "Endpoint 或所属 Runtime 未达到可解析状态，或 Endpoint 已过期、撤销。", "EN": "The endpoint or its runtime is not ready for resolution, or the endpoint has expired or been revoked."})
+	register(ErrInfraOutputCollectionFailed, 200, map[string]string{"CN": "声明输出缺失、不是普通文件、路径逃逸或实际字节收集失败。", "EN": "The declared output is missing, is not a regular file, escapes the output root, or could not be collected."})
+	register(ErrInfraOutputContentUnavailable, 200, map[string]string{"CN": "RuntimeOutput 内容尚未收集、已清理或当前 Task Worker 无法读取。", "EN": "The RuntimeOutput content has not been collected, has been cleaned up, or is unavailable to the current Task Worker."})
+	register(ErrInfraOutputIntegrityMismatch, 200, map[string]string{"CN": "RuntimeOutput、传输字节与 Artifact 的大小或 SHA-256 不一致。", "EN": "The size or SHA-256 differs across the RuntimeOutput, transferred bytes, and Artifact."})
 }

@@ -199,10 +199,41 @@ func (s *infrastructureStore) GetInfraRuntimeEndpoint(ctx context.Context, runti
 	}
 	return &item, nil
 }
+func (s *infrastructureStore) GetInfraRuntimeEndpointByID(ctx context.Context, id string) (*iapiserver.InfraRuntimeEndpoint, error) {
+	var item iapiserver.InfraRuntimeEndpoint
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrInfraEndpointAccessDenied, "infra endpoint not visible")
+	}
+	return &item, nil
+}
 func (s *infrastructureStore) ListInfraRuntimeOutputs(ctx context.Context, runtimeID string) ([]*iapiserver.InfraRuntimeOutput, error) {
 	var items []*iapiserver.InfraRuntimeOutput
 	err := s.ds.db.WithContext(ctx).Where("runtime_id = ?", runtimeID).Order("output_key ASC").Find(&items).Error
 	return items, err
+}
+func (s *infrastructureStore) GetInfraRuntimeOutput(ctx context.Context, id string) (*iapiserver.InfraRuntimeOutput, error) {
+	var item iapiserver.InfraRuntimeOutput
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
+	}
+	return &item, nil
+}
+func (s *infrastructureStore) AttachInfraRuntimeOutputArtifact(ctx context.Context, id, artifactID string) (*iapiserver.InfraRuntimeOutput, error) {
+	var item iapiserver.InfraRuntimeOutput
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&item).Error; err != nil {
+			return mapNotFound(err, code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
+		}
+		if item.ArtifactID != "" && item.ArtifactID != artifactID {
+			return errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "infra runtime output is already attached to another artifact")
+		}
+		if item.ArtifactID == artifactID {
+			return nil
+		}
+		item.ArtifactID = artifactID
+		return tx.Save(&item).Error
+	})
+	return &item, err
 }
 func appendInfraEvent(tx *gorm.DB, runtime, previous *iapiserver.InfraRuntime, eventType string) error {
 	from := any(nil)

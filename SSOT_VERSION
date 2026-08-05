@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 35c2a582a53f9c416b71aa2695d99ad51797218e
-contract_version: spec-v1.17.1
+commit: 5990e6054ec8b79a342ef6e979b6522b855378aa
+contract_version: spec-v1.17.2
 updated_at: 2026-08-05
 status: released
-note: Released Agent invocation and Studio Build producer contracts.
+note: Released Hermes endpoint resolution and runtime output delivery contracts.

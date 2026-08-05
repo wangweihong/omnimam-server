@@ -33,7 +33,7 @@ properties:
     properties:
       algorithm: {const: SHA-256}
       canonicalization: {const: RFC8785}
-      payload: {const: function_entry_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas}
+      payload: {const: function_entry_with_status_normalized_to_active_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas}
   x-s1-refs:
     $ref: '#/$defs/s1Refs'
   schemas:
@@ -136,9 +136,44 @@ $defs:
       runtime_profile_revision_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
       source_ref_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
       source_policy: {enum: [NONE, AGENT_KIND_CONDITIONAL, STUDIO_WORKSPACE_REVISION_READ_ONLY, STUDIO_SNAPSHOT_READ_ONLY, ARTIFACT_DIGEST_READ_ONLY]}
+      output_declarations:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: object
+          additionalProperties: false
+          required: [output_key, relative_path, media_type]
+          properties:
+            output_key: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+            relative_path:
+              type: string
+              minLength: 1
+              allOf:
+                - pattern: '^[^/]'
+                - not: {pattern: '(^|/)\.\.(/|$)'}
+            media_type: {type: string, minLength: 1}
       constants:
         type: object
         additionalProperties: true
+  artifactDeliveryPolicy:
+    type: object
+    additionalProperties: false
+    required: [content_source, content_read, asset_library_sequence, integrity_verification, attach_after_complete]
+    properties:
+      content_source: {const: infra_output_descriptor}
+      content_read: {const: INFRA_AUTHENTICATED_STREAM}
+      asset_library_sequence:
+        type: array
+        minItems: 3
+        maxItems: 3
+        prefixItems:
+          - {const: CREATE_ARTIFACT}
+          - {const: UPLOAD_CONTENT}
+          - {const: COMPLETE_ARTIFACT}
+        items: false
+      integrity_verification: {const: SIZE_AND_SHA256_BEFORE_AND_AFTER_UPLOAD}
+      attach_after_complete: {const: true}
   artifactRegistration:
     type: object
     additionalProperties: false
@@ -150,6 +185,7 @@ $defs:
       producer_idempotency_key_template: {const: 'studio-build:{arguments.studio_build_id}:bundle'}
       output_key: {const: bundle}
       digest_source: {const: infra_output_descriptor}
+      delivery_policy: {$ref: '#/$defs/artifactDeliveryPolicy'}
   resultProjection:
     type: object
     additionalProperties: false
