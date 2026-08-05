@@ -294,7 +294,7 @@ func (s *aiChatStore) CreateMessageGeneration(
 	ownerUserID string,
 	topic *iapiserver.AIChatTopic,
 	req *iapiserver.AIChatMessageCreateRequest,
-	model *iapiserver.AIChatModel,
+	route store.AIChatGenerationRoute,
 	assistant *iapiserver.AIChatAssistant,
 ) (*store.AIChatGenerationBundle, error) {
 	var bundle *store.AIChatGenerationBundle
@@ -321,21 +321,24 @@ func (s *aiChatStore) CreateMessageGeneration(
 			Role:              iapiserver.AIChatMessageRoleAssistant,
 			Status:            iapiserver.AIChatStatusGenerating,
 			ParentMessageID:   userMsg.ID,
-			ModelSnapshot:     modelSnapshot(model),
+			ModelSnapshot:     route.ModelSnapshot,
 			AssistantSnapshot: assistantSnapshot(assistant),
 		}
 		if err := tx.Create(assistantMsg).Error; err != nil {
 			return err
 		}
 		generation := &iapiserver.AIChatGeneration{
-			TopicID:            topic.ID,
-			OwnerUserID:        ownerUserID,
-			AssistantMessageID: assistantMsg.ID,
-			Operation:          req.Operation,
-			Status:             iapiserver.AIChatStatusGenerating,
-			ModelID:            model.ID,
-			AssistantID:        assistantID(assistant),
-			StartedAt:          &now,
+			TopicID:                topic.ID,
+			OwnerUserID:            ownerUserID,
+			AssistantMessageID:     assistantMsg.ID,
+			Operation:              req.Operation,
+			Status:                 iapiserver.AIChatStatusGenerating,
+			ModelID:                route.ModelID,
+			CapabilityDefinitionID: route.CapabilityDefinitionID,
+			ModelConfigVersion:     route.ModelConfigVersion,
+			ModelSnapshot:          route.ModelSnapshot,
+			AssistantID:            assistantID(assistant),
+			StartedAt:              &now,
 		}
 		if err := tx.Create(generation).Error; err != nil {
 			return err
@@ -345,7 +348,7 @@ func (s *aiChatStore) CreateMessageGeneration(
 			Updates(map[string]any{
 				"last_active_at": now,
 				"assistant_id":   assistantID(assistant),
-				"model_id":       model.ID,
+				"model_id":       route.ModelID,
 			}).Error; err != nil {
 			return err
 		}
@@ -364,7 +367,7 @@ func (s *aiChatStore) CreateEditRegenerateGeneration(
 	ownerUserID string,
 	source *iapiserver.AIChatMessage,
 	req *iapiserver.AIChatEditRegenerateRequest,
-	model *iapiserver.AIChatModel,
+	route store.AIChatGenerationRoute,
 	assistant *iapiserver.AIChatAssistant,
 ) (*store.AIChatGenerationBundle, error) {
 	var topic iapiserver.AIChatTopic
@@ -380,7 +383,7 @@ func (s *aiChatStore) CreateEditRegenerateGeneration(
 		Content:         req.Content,
 		Images:          req.Images,
 	}
-	bundle, err := s.CreateMessageGeneration(ctx, ownerUserID, &topic, createReq, model, assistant)
+	bundle, err := s.CreateMessageGeneration(ctx, ownerUserID, &topic, createReq, route, assistant)
 	if err != nil {
 		return nil, err
 	}
@@ -629,19 +632,6 @@ func attachmentIcons(images []*iapiserver.AIChatImageAttachmentInput) []string {
 		icons = append(icons, image.MimeType)
 	}
 	return icons
-}
-
-func modelSnapshot(model *iapiserver.AIChatModel) map[string]any {
-	if model == nil {
-		return map[string]any{}
-	}
-	return map[string]any{
-		"id":                model.ID,
-		"name":              model.Name,
-		"provider":          model.Provider,
-		"provider_model_id": model.ProviderModelID,
-		"capabilities":      model.Capabilities,
-	}
 }
 
 func assistantSnapshot(assistant *iapiserver.AIChatAssistant) map[string]any {

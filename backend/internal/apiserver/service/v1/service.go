@@ -55,5 +55,5 @@ func (s *service) TaskCenters() taskcenter.TaskCenterSrv {
 }
 
 func (s *service) AIChat() aichat.AIChatSrv {
-	return aichat.NewService(s.store, appplatform.NewLegacyService(s.store))
+	return aichat.NewService(aichat.Dependencies{Store: s.store, ModelReader: appplatform.NewLegacyService(s.store)})
 }

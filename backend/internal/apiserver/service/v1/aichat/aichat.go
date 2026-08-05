@@ -3,6 +3,7 @@ package aichat
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"strings"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -10,7 +11,8 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/provider"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/usermodel"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
@@ -49,15 +51,30 @@ type MessageCreateResult struct {
 type aiChatService struct {
 	store       store.Factory
 	modelReader ModelSummaryReader
+	userModels  UserModelExecutionContextResolver
+	gateway     OperationGateway
 }
 
-// NewService 创建 AI Chat 服务，并可注入 model-management 的受控模型摘要读取能力。
-func NewService(str store.Factory, modelReaders ...ModelSummaryReader) AIChatSrv {
-	service := &aiChatService{store: str}
-	if len(modelReaders) > 0 {
-		service.modelReader = modelReaders[0]
+type UserModelExecutionContextResolver interface {
+	ResolveUserModelExecutionContext(context.Context, usermodel.ExecutionContextRequest) (*modelgateway.UserModelExecutionContext, error)
+}
+
+type OperationGateway interface {
+	ExecuteOperation(context.Context, modelgateway.OperationExecutionRequest) (*modelgateway.OperationExecutionResult, error)
+}
+
+type Dependencies struct {
+	Store       store.Factory
+	ModelReader ModelSummaryReader
+	UserModels  UserModelExecutionContextResolver
+	Gateway     OperationGateway
+}
+
+// NewService creates AI Chat with explicit User Model and Model Gateway execution boundaries.
+func NewService(deps Dependencies) AIChatSrv {
+	return &aiChatService{
+		store: deps.Store, modelReader: deps.ModelReader, userModels: deps.UserModels, gateway: deps.Gateway,
 	}
-	return service
 }
 
 func (s *aiChatService) ListAssistants(ctx context.Context) (*iapiserver.AIChatAssistantListResponse, error) {
@@ -258,15 +275,19 @@ func (s *aiChatService) CreateMessage(
 	if req.Operation == iapiserver.AIChatOperationTranslate {
 		return s.translate(ctx, userID, topic, req)
 	}
-	model, assistant, err := s.resolveModelAndAssistant(ctx, userID, topic, req.ModelID, req.AssistantID, len(req.Images) > 0)
+	assistant, err := s.resolveAssistant(ctx, userID, topic, req.AssistantID)
 	if err != nil {
 		return nil, err
 	}
-	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, req, model, assistant)
+	grant, err := s.resolveExecutionContext(ctx, firstNonEmpty(req.ModelID, topic.ModelID), usermodel.CapabilityTextChatCompletion, len(req.Images) > 0, "assistant.default")
+	if err != nil {
+		return nil, err
+	}
+	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, req, generationRoute(grant), assistant)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatGenerationConflict, "generation conflict")
 	}
-	content, invokeErr := s.invokeProvider(ctx, model, req.Content)
+	content, invokeErr := s.invokeGateway(ctx, userID, grant, req.Content, req.Images, "")
 	if invokeErr != nil {
 		_ = s.store.AIChat().FailGeneration(ctx, userID, bundle.Generation.ID, "AI_CHAT_MODEL_UNAVAILABLE", invokeErr.Error())
 		return &MessageCreateResult{Bundle: bundle, Err: invokeErr}, nil
@@ -305,7 +326,11 @@ func (s *aiChatService) RegenerateMessage(ctx context.Context, messageID string)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatTopicNotFound, "topic not found")
 	}
-	model, assistant, err := s.resolveModelAndAssistant(ctx, userID, topic, topic.ModelID, topic.AssistantID, false)
+	assistant, err := s.resolveAssistant(ctx, userID, topic, topic.AssistantID)
+	if err != nil {
+		return nil, err
+	}
+	grant, err := s.resolveExecutionContext(ctx, topic.ModelID, usermodel.CapabilityTextChatCompletion, false, "assistant.default")
 	if err != nil {
 		return nil, err
 	}
@@ -314,11 +339,11 @@ func (s *aiChatService) RegenerateMessage(ctx context.Context, messageID string)
 		Operation: iapiserver.AIChatOperationChat,
 		Content:   "regenerate",
 	}
-	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, req, model, assistant)
+	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, req, generationRoute(grant), assistant)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatGenerationConflict, "generation conflict")
 	}
-	content, invokeErr := s.invokeProvider(ctx, model, source.Content)
+	content, invokeErr := s.invokeGateway(ctx, userID, grant, source.Content, nil, "")
 	if invokeErr != nil {
 		_ = s.store.AIChat().FailGeneration(ctx, userID, bundle.Generation.ID, "AI_CHAT_MODEL_UNAVAILABLE", invokeErr.Error())
 		return &MessageCreateResult{Bundle: bundle, Err: invokeErr}, nil
@@ -345,15 +370,19 @@ func (s *aiChatService) EditRegenerateMessage(
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatTopicNotFound, "topic not found")
 	}
-	model, assistant, err := s.resolveModelAndAssistant(ctx, userID, topic, topic.ModelID, topic.AssistantID, len(req.Images) > 0)
+	assistant, err := s.resolveAssistant(ctx, userID, topic, topic.AssistantID)
 	if err != nil {
 		return nil, err
 	}
-	bundle, err := s.store.AIChat().CreateEditRegenerateGeneration(ctx, userID, source, req, model, assistant)
+	grant, err := s.resolveExecutionContext(ctx, topic.ModelID, usermodel.CapabilityTextChatCompletion, len(req.Images) > 0, "assistant.default")
+	if err != nil {
+		return nil, err
+	}
+	bundle, err := s.store.AIChat().CreateEditRegenerateGeneration(ctx, userID, source, req, generationRoute(grant), assistant)
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAIChatGenerationConflict, "generation conflict")
 	}
-	content, invokeErr := s.invokeProvider(ctx, model, req.Content)
+	content, invokeErr := s.invokeGateway(ctx, userID, grant, req.Content, req.Images, "")
 	if invokeErr != nil {
 		_ = s.store.AIChat().FailGeneration(ctx, userID, bundle.Generation.ID, "AI_CHAT_MODEL_UNAVAILABLE", invokeErr.Error())
 		return &MessageCreateResult{Bundle: bundle, Err: invokeErr}, nil
@@ -454,19 +483,16 @@ func (s *aiChatService) TranslateContent(
 	if err != nil {
 		return nil, err
 	}
-	model, err := s.defaultTranslationModel(ctx, userID)
+	grant, err := s.resolveExecutionContext(ctx, "", usermodel.CapabilityTextTranslate, false, "translation")
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIChatTranslationModelMissing, "translation model missing")
-	}
-	if !model.Enabled || isUnhealthyModel(model) {
-		return nil, errors.NewStatusF(code.ErrAIChatTranslationModelUnhealthy, "translation model unhealthy")
+		return nil, errors.NewStatusF(code.ErrAIChatTranslationModelMissing, "translation model missing or unavailable")
 	}
 	if req.MessageID != "" {
 		if _, err := s.store.AIChat().GetMessage(ctx, userID, req.MessageID); err != nil {
 			return nil, mapNotFound(err, code.ErrAIChatMessageNotFound, "message not found")
 		}
 	}
-	content, err := s.invokeProvider(ctx, model, req.Content)
+	content, err := s.invokeGateway(ctx, userID, grant, req.Content, nil, req.TargetLanguage)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +501,7 @@ func (s *aiChatService) TranslateContent(
 		OwnerUserID:       userID,
 		TargetLanguage:    req.TargetLanguage,
 		TranslatedContent: content,
-		ModelSnapshot:     map[string]any{"id": model.ID, "name": model.Name},
+		ModelSnapshot:     grant.ModelSnapshot,
 	})
 }
 
@@ -485,36 +511,33 @@ func (s *aiChatService) translate(
 	topic *iapiserver.AIChatTopic,
 	req *iapiserver.AIChatMessageCreateRequest,
 ) (*MessageCreateResult, error) {
-	model, err := s.defaultTranslationModel(ctx, userID)
+	grant, err := s.resolveExecutionContext(ctx, "", usermodel.CapabilityTextTranslate, false, "translation")
 	if err != nil {
-		return nil, mapNotFound(err, code.ErrAIChatTranslationModelMissing, "translation model missing")
-	}
-	if !model.Enabled {
-		return nil, errors.NewStatusF(code.ErrAIChatTranslationModelDisabled, "translation model disabled")
-	}
-	if isUnhealthyModel(model) {
-		return nil, errors.NewStatusF(code.ErrAIChatModelUnavailable, "translation model unhealthy: %s", model.HealthReason)
-	}
-	content, err := s.invokeProvider(ctx, model, req.Content)
-	if err != nil {
-		return nil, err
+		return nil, errors.NewStatusF(code.ErrAIChatTranslationModelMissing, "translation model missing or unavailable")
 	}
 	messageReq := &iapiserver.AIChatMessageCreateRequest{
 		TopicID:   topic.ID,
-		Operation: iapiserver.AIChatOperationChat,
+		Operation: iapiserver.AIChatOperationTranslate,
 		Content:   req.Content,
 	}
-	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, messageReq, model, nil)
+	bundle, err := s.store.AIChat().CreateMessageGeneration(ctx, userID, topic, messageReq, generationRoute(grant), nil)
 	if err != nil {
 		return nil, err
 	}
-	_, _ = s.store.AIChat().CompleteGeneration(ctx, userID, bundle.Generation.ID, content)
+	content, invokeErr := s.invokeGateway(ctx, userID, grant, req.Content, nil, req.TargetLanguage)
+	if invokeErr != nil {
+		_ = s.store.AIChat().FailGeneration(ctx, userID, bundle.Generation.ID, "AI_CHAT_MODEL_UNAVAILABLE", invokeErr.Error())
+		return &MessageCreateResult{Bundle: bundle, Err: invokeErr}, nil
+	}
+	if _, err := s.store.AIChat().CompleteGeneration(ctx, userID, bundle.Generation.ID, content); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	translation := &iapiserver.AIChatMessageTranslation{
 		MessageID:         bundle.UserMessage.ID,
 		OwnerUserID:       userID,
 		TargetLanguage:    req.TargetLanguage,
 		TranslatedContent: content,
-		ModelSnapshot:     map[string]any{"id": model.ID, "name": model.Name},
+		ModelSnapshot:     grant.ModelSnapshot,
 	}
 	created, err := s.store.AIChat().CreateTranslation(ctx, translation)
 	if err != nil {
@@ -529,87 +552,124 @@ func (s *aiChatService) translate(
 	}}, nil
 }
 
-func (s *aiChatService) defaultTranslationModel(ctx context.Context, ownerUserID string) (*iapiserver.AIChatModel, error) {
-	configs, err := s.store.SystemLLMConfigs().List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, cfg := range configs {
-		if cfg.OwnerUserID == ownerUserID && cfg.Purpose == "translation" {
-			return s.getModel(ctx, ownerUserID, cfg.ModelID)
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-
-func (s *aiChatService) resolveModelAndAssistant(
-	ctx context.Context,
-	userID string,
-	topic *iapiserver.AIChatTopic,
-	modelID string,
-	assistantID string,
-	requiresImage bool,
-) (*iapiserver.AIChatModel, *iapiserver.AIChatAssistant, error) {
-	if modelID == "" {
-		modelID = topic.ModelID
-	}
-	if modelID == "" {
-		return nil, nil, errors.NewStatusF(code.ErrAIChatModelNotFound, "model is required")
-	}
-	model, err := s.getModel(ctx, userID, modelID)
-	if err != nil {
-		return nil, nil, mapNotFound(err, code.ErrAIChatModelNotFound, "model not found")
-	}
-	if !model.Enabled {
-		return nil, nil, errors.NewStatusF(code.ErrAIChatModelDisabled, "model disabled")
-	}
-	if isUnhealthyModel(model) {
-		return nil, nil, errors.NewStatusF(code.ErrAIChatModelUnavailable, "model unhealthy: %s", model.HealthReason)
-	}
-	if requiresImage && !containsCapability(model, "image", "vision") {
-		return nil, nil, errors.NewStatusF(code.ErrAIChatModelCapabilityUnsupported, "model does not support image")
-	}
+func (s *aiChatService) resolveAssistant(ctx context.Context, userID string, topic *iapiserver.AIChatTopic, assistantID string) (*iapiserver.AIChatAssistant, error) {
 	if assistantID == "" {
 		assistantID = topic.AssistantID
 	}
-	var assistant *iapiserver.AIChatAssistant
-	if assistantID != "" {
-		assistant, err = s.store.AIChat().GetAssistant(ctx, userID, assistantID)
-		if err != nil {
-			return nil, nil, mapNotFound(err, code.ErrAIChatAssistantNotFound, "assistant not found")
-		}
+	if assistantID == "" {
+		return nil, nil
 	}
-	return model, assistant, nil
+	assistant, err := s.store.AIChat().GetAssistant(ctx, userID, assistantID)
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAIChatAssistantNotFound, "assistant not found")
+	}
+	return assistant, nil
 }
 
-func (s *aiChatService) invokeProvider(ctx context.Context, model *iapiserver.AIChatModel, input string) (string, error) {
-	providerMeta, err := s.store.Providers().Get(ctx, model.Provider)
-	if err != nil {
-		return "", errors.NewStatusF(code.ErrAIChatModelUnavailable, "provider is unavailable")
+func (s *aiChatService) resolveExecutionContext(
+	ctx context.Context,
+	modelID, capabilityID string,
+	requiresImage bool,
+	defaultUsage string,
+) (*modelgateway.UserModelExecutionContext, error) {
+	if s.userModels == nil || s.gateway == nil {
+		return nil, errors.NewStatusF(code.ErrAIChatModelUnavailable, "user model execution is unavailable")
 	}
-	if !providerMeta.Enabled {
-		return "", errors.NewStatusF(code.ErrAIChatModelUnavailable, "provider is disabled")
+	required := []string(nil)
+	if requiresImage {
+		required = append(required, "image.understanding")
 	}
-	if providerMeta.Type != iapiserver.ProviderTypeOpenAICompatible {
-		return "", errors.NewStatusF(code.ErrAIChatModelUnavailable, "provider type is unsupported")
-	}
-	adapter := provider.NewOpenAICompatibleAdapter(provider.OpenAICompatibleConfig{
-		ID:            providerMeta.ID,
-		BaseURL:       providerMeta.BaseURL,
-		CredentialRef: providerMeta.CredentialRef,
-		Capabilities:  toProviderCapabilities(model.Capabilities),
+	grant, err := s.userModels.ResolveUserModelExecutionContext(ctx, usermodel.ExecutionContextRequest{
+		ModelID: modelID, CapabilityDefinitionID: capabilityID,
+		RequiredCapabilityDefinitionIDs: required, DefaultUsage: defaultUsage,
 	})
-	result, err := adapter.Invoke(ctx, provider.InvokeRequest{
-		Capability: provider.Capability(iapiserver.CapabilityLLMChat),
-		Model:      model.ProviderModelID,
-		Messages: []provider.ChatMessage{
-			{Role: "user", Content: input},
-		},
+	if err != nil {
+		return nil, errors.NewStatusF(code.ErrAIChatModelUnavailable, "user model is not execution eligible")
+	}
+	return grant, nil
+}
+
+func (s *aiChatService) invokeGateway(
+	ctx context.Context,
+	userID string,
+	grant *modelgateway.UserModelExecutionContext,
+	input string,
+	images []*iapiserver.AIChatImageAttachmentInput,
+	targetLanguage string,
+) (string, error) {
+	result, err := s.gateway.ExecuteOperation(ctx, modelgateway.OperationExecutionRequest{
+		PrincipalUserID:        userID,
+		Target:                 modelgateway.UserModelTarget{ExecutionContext: *grant},
+		CapabilityDefinitionID: grant.CapabilityDefinitionID,
+		Input:                  map[string]any{"messages": gatewayMessages(input, images, targetLanguage)},
 	})
 	if err != nil {
 		return "", errors.NewStatusF(code.ErrAIChatModelUnavailable, "provider runtime is unavailable")
 	}
-	return result.Content, nil
+	content, ok := gatewayOutputContent(result.Output)
+	if !ok {
+		return "", errors.NewStatusF(code.ErrAIChatModelUnavailable, "provider response does not contain message content")
+	}
+	return content, nil
+}
+
+func gatewayMessages(input string, images []*iapiserver.AIChatImageAttachmentInput, targetLanguage string) []any {
+	messages := []any{}
+	if targetLanguage = strings.TrimSpace(targetLanguage); targetLanguage != "" {
+		messages = append(messages, map[string]any{
+			"role": "system",
+			"content": fmt.Sprintf(
+				"Translate the next user message into %q. Return only the translated text.",
+				targetLanguage,
+			),
+		})
+	}
+	return append(messages, map[string]any{"role": "user", "content": gatewayMessageContent(input, images)})
+}
+
+func gatewayMessageContent(input string, images []*iapiserver.AIChatImageAttachmentInput) any {
+	if len(images) == 0 {
+		return input
+	}
+	parts := []any{map[string]any{"type": "text", "text": input}}
+	for _, image := range images {
+		if image == nil {
+			continue
+		}
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": fmt.Sprintf("data:%s;base64,%s", image.MimeType, image.Base64Data)},
+		})
+	}
+	return parts
+}
+
+func gatewayOutputContent(output map[string]any) (string, bool) {
+	values, _ := output["values"].(map[string]any)
+	choices, _ := values["choices"].([]any)
+	if len(choices) == 0 {
+		return "", false
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	content, ok := message["content"].(string)
+	return content, ok && content != ""
+}
+
+func generationRoute(grant *modelgateway.UserModelExecutionContext) store.AIChatGenerationRoute {
+	return store.AIChatGenerationRoute{
+		ModelID: grant.ModelID, CapabilityDefinitionID: grant.CapabilityDefinitionID,
+		ModelConfigVersion: grant.ConfigVersion, ModelSnapshot: grant.ModelSnapshot,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func currentUserID(ctx context.Context) (string, error) {
@@ -618,81 +678,6 @@ func currentUserID(ctx context.Context) (string, error) {
 		return "system-admin", nil
 	}
 	return user.ID, nil
-}
-
-func (s *aiChatService) getModel(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatModel, error) {
-	providerModel, err := s.store.ProviderModels().Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if providerModel.OwnerUserID != ownerUserID {
-		return nil, gorm.ErrRecordNotFound
-	}
-	provider, err := s.store.Providers().Get(ctx, providerModel.ProviderID)
-	if err != nil {
-		if isRecordNotFound(err) {
-			return nil, gorm.ErrRecordNotFound
-		}
-		return nil, err
-	}
-	if provider.OwnerUserID != ownerUserID {
-		return nil, gorm.ErrRecordNotFound
-	}
-	if !provider.Enabled || !providerModel.Enabled {
-		return nil, gorm.ErrRecordNotFound
-	}
-	if providerModel.HealthStatus == iapiserver.ProviderModelHealthUnhealthy {
-		return nil, errors.NewStatusF(code.ErrAIChatModelUnavailable, "model unhealthy: %s", providerModel.HealthReason)
-	}
-	return providerModelToAIChatModel(ownerUserID, provider, providerModel), nil
-}
-
-func providerModelToAIChatModel(
-	ownerUserID string,
-	provider *iapiserver.Provider,
-	providerModel *iapiserver.ProviderModel,
-) *iapiserver.AIChatModel {
-	name := providerModel.DisplayName
-	if name == "" {
-		name = providerModel.Model
-	}
-	return &iapiserver.AIChatModel{
-		ID:              providerModel.ID,
-		OwnerUserID:     ownerUserID,
-		Provider:        provider.ID,
-		ProviderModelID: providerModel.Model,
-		Name:            name,
-		Capabilities:    normalizeProviderCapabilities(providerModel),
-		Enabled:         provider.Enabled && providerModel.Enabled,
-		HealthStatus:    providerModel.HealthStatus,
-		HealthReason:    providerModel.HealthReason,
-	}
-}
-
-func normalizeProviderCapabilities(providerModel *iapiserver.ProviderModel) []string {
-	seen := map[string]struct{}{}
-	var values []string
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		values = append(values, value)
-	}
-	for _, capability := range providerModel.Capabilities {
-		add(capability)
-	}
-	for _, modelType := range providerModel.ModelTypes {
-		add(modelType)
-	}
-	if len(values) == 0 || providerModel.EndpointType == "chat" {
-		add("text")
-	}
-	return values
 }
 
 func mapNotFound(err error, errCode int, message string) error {
@@ -730,29 +715,4 @@ func quickPhraseFromRequest(req *iapiserver.AIChatQuickPhraseUpsertRequest) *iap
 		AssistantID: req.AssistantID,
 		PhraseType:  req.PhraseType,
 	}
-}
-
-func containsCapability(model *iapiserver.AIChatModel, names ...string) bool {
-	allowed := map[string]struct{}{}
-	for _, name := range names {
-		allowed[name] = struct{}{}
-	}
-	for _, capability := range model.Capabilities {
-		if _, ok := allowed[strings.TrimSpace(capability)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func isUnhealthyModel(model *iapiserver.AIChatModel) bool {
-	return model != nil && model.HealthStatus == iapiserver.ProviderModelHealthUnhealthy
-}
-
-func toProviderCapabilities(values []string) []provider.Capability {
-	capabilities := make([]provider.Capability, 0, len(values))
-	for _, value := range values {
-		capabilities = append(capabilities, provider.Capability(value))
-	}
-	return capabilities
 }

@@ -287,6 +287,14 @@ type AIChatGeneration struct {
 	Status string `json:"status"               gorm:"column:status;type:varchar(24);not null;index:idx_ai_chat_generations_owner_status,priority:2"`
 	// ModelID 指向实际使用的 provider model，来自请求、话题、助手或默认模型解析。
 	ModelID string `json:"model_id"             gorm:"column:model_id;type:varchar(64);not null"`
+	// CapabilityDefinitionID 固定本次生成提交给 Model Gateway 的标准能力。
+	CapabilityDefinitionID string `json:"capability_definition_id" gorm:"column:capability_definition_id;type:text;not null"`
+	// ModelConfigVersion 固定 User Model 签发执行上下文时的模型配置版本。
+	ModelConfigVersion int64 `json:"model_config_version" gorm:"column:model_config_version;type:bigint;not null"`
+	// ModelSnapshot 是生成开始前固定的非敏感模型路由事实。
+	ModelSnapshot map[string]any `json:"model_snapshot" gorm:"-"`
+	// ModelSnapshotShadow 保存 ModelSnapshot 的 JSONB 表示。
+	ModelSnapshotShadow string `json:"-" gorm:"column:model_snapshot_json;type:jsonb;not null;default:'{}'"`
 	// AssistantID 记录本次生成使用的助手，纯翻译或默认生成可为空。
 	AssistantID string `json:"assistant_id"         gorm:"column:assistant_id;type:varchar(64)"`
 	// StartedAt 记录模型调用开始时间，用于前端展示和运行诊断。
@@ -304,16 +312,29 @@ type AIChatGeneration struct {
 func (AIChatGeneration) TableName() string { return "ai_chat_generation_runs" }
 
 func (g *AIChatGeneration) BeforeCreate(tx *gorm.DB) error {
-	return g.ObjectMeta.BeforeCreate(tx)
+	if err := g.ObjectMeta.BeforeCreate(tx); err != nil {
+		return err
+	}
+	return marshalAIChatJSON(g.ModelSnapshot, &g.ModelSnapshotShadow)
 }
 
 func (g *AIChatGeneration) AfterCreate(tx *gorm.DB) error { return nil }
 
 func (g *AIChatGeneration) BeforeUpdate(tx *gorm.DB) error {
-	return g.ObjectMeta.BeforeUpdate(tx)
+	if err := g.ObjectMeta.BeforeUpdate(tx); err != nil {
+		return err
+	}
+	return marshalAIChatJSON(g.ModelSnapshot, &g.ModelSnapshotShadow)
 }
 
 func (g *AIChatGeneration) AfterUpdate(tx *gorm.DB) error { return nil }
+
+func (g *AIChatGeneration) AfterFind(tx *gorm.DB) error {
+	if err := g.ObjectMeta.AfterFind(tx); err != nil {
+		return err
+	}
+	return unmarshalAIChatJSON(g.ModelSnapshotShadow, &g.ModelSnapshot)
+}
 
 // AIChatQuickPhrase 保存用户快捷短语，支持全局和助手级作用域。
 // +k8s:deepcopy-gen=true

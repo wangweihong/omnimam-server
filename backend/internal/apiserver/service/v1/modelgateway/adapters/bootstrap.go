@@ -10,6 +10,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/modelark"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/ollama"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/openai"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/openaicompat"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/runninghub"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/xai"
 )
@@ -35,7 +36,7 @@ func ValidateImplementations(runtime *modelgateway.RuntimeRegistry, engineAdapte
 			}
 		}
 	}
-	return nil
+	return runtime.ValidateProviderTypeImplementations(engineAdapters, operationExecutors)
 }
 
 // NewRegistrations 显式汇总每个提供商包拥有的静态 Registry 事实。
@@ -72,7 +73,7 @@ func NewRegistrations() ([]modelgateway.Registration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse modelark capability manifest: %w", err)
 	}
-	registrations := []modelgateway.Registration{comfyUIRegistration, deepSeekRegistration, modelArkRegistration}
+	registrations := []modelgateway.Registration{comfyUIRegistration, deepSeekRegistration, modelArkRegistration, openaicompat.Registration()}
 	registrations = append(registrations, openAIRegistrations...)
 	registrations = append(registrations, xAIRegistration, googleRegistration, ollamaRegistration, runningHubRegistration)
 	return registrations, nil
@@ -86,6 +87,7 @@ func NewEngineAdapters() map[string]modelgateway.Adapter {
 		deepseek.AdapterID:        deepseek.NewAdapter(),
 		openai.ResponsesAdapterID: openai.NewResponsesAdapter(),
 		openai.ImagesAdapterID:    openai.NewImagesAdapter(),
+		openaicompat.AdapterID:    openaicompat.NewAdapter(),
 		xai.AdapterID:             xai.Adapter{},
 		google.AdapterID:          google.Adapter{},
 		ollama.AdapterID:          ollama.Adapter{},
@@ -100,6 +102,7 @@ func NewOperationExecutors() map[string]modelgateway.OperationExecutor {
 		deepseek.ExecutorID:        deepseek.NewExecutor(),
 		openai.ResponsesExecutorID: openai.NewResponsesExecutor(),
 		openai.ImagesExecutorID:    openai.NewImagesExecutor(),
+		openaicompat.ExecutorID:    openaicompat.NewExecutor(),
 		xai.ExecutorID:             xai.NewExecutor(),
 		google.ExecutorID:          google.Executor{},
 		ollama.ChatExecutorID:      ollama.NewExecutor(ollama.ChatExecutorID, "/chat/completions"),

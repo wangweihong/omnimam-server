@@ -25,6 +25,7 @@ type Factory interface {
 	// platform contracts
 	Providers() ProviderStore
 	ProviderModels() ProviderModelStore
+	ModelHealthChecks() ModelHealthCheckStore
 	ProviderCapabilities() ProviderCapabilityStore
 	SystemLLMConfigs() SystemLLMConfigStore
 	StorageBackends() StorageBackendStore

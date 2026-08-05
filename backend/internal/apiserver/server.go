@@ -15,6 +15,7 @@ import (
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
+	aichatsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
@@ -25,6 +26,7 @@ import (
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	usermodelsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/usermodel"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
@@ -46,6 +48,8 @@ type server struct {
 	agent                  *agentsvc.Service
 	appStudio              *appstudiosvc.Service
 	taskCenter             taskcentersvc.TaskCenterSrv
+	userModel              *usermodelsvc.Service
+	aiChat                 aichatsvc.AIChatSrv
 	workflowRuntime        workflowruntime.WorkflowRuntime
 	authOptions            *options.AuthOptions
 	sseOptions             *options.SSEOptions
@@ -119,6 +123,23 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := modeladapters.ValidateImplementations(runtimeRegistry, adapters, executors); err != nil {
 		return nil, errors.Wrap(err, "validate application platform adapter implementations")
 	}
+	credentialBroker := usermodelsvc.NewCredentialBroker(0)
+	userModelGateway, err := engine.NewUserModelGatewayService(engine.UserModelGatewayDependencies{
+		Runtime: runtimeRegistry, Adapters: adapters, Executors: executors, Credentials: credentialBroker,
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct user model gateway")
+	}
+	userModelService, err := usermodelsvc.New(usermodelsvc.Dependencies{
+		Store: storeIns, Gateway: userModelGateway, Credentials: credentialBroker,
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct user model service")
+	}
+	aiChatService := aichatsvc.NewService(aichatsvc.Dependencies{
+		Store: storeIns, ModelReader: appplatformsvc.NewLegacyService(storeIns),
+		UserModels: userModelService, Gateway: userModelGateway,
+	})
 	assets := appsvc.NoopArtifactLifecycle{}
 	events := appsvc.NoopEventPublisher{}
 	workflowRuntime := workflowruntime.WorkflowRuntime(workflowruntime.UnavailableRuntime{})
@@ -213,6 +234,8 @@ func createServer(cfg *config.Config) (*server, error) {
 		agent:               agentService,
 		appStudio:           appStudioService,
 		taskCenter:          taskCenterService,
+		userModel:           userModelService,
+		aiChat:              aiChatService,
 		workflowRuntime:     workflowRuntime,
 		authOptions:         cfg.AuthOptions,
 		sseOptions:          cfg.SSEOptions,
@@ -292,6 +315,7 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.PlatformOutboxEvent{},
 		&iapiserver.Provider{},
 		&iapiserver.ProviderModel{},
+		&iapiserver.ModelHealthCheck{},
 		&iapiserver.ProviderCapability{},
 		&iapiserver.SystemLLMConfig{},
 		&iapiserver.StorageBackend{},
@@ -462,7 +486,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
 	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.agent, s.appStudio, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.userModel, s.aiChat, s.agent, s.appStudio, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		ssectrl.BeginDraining()
@@ -488,7 +512,9 @@ func (s preparedServer) Run(stopCh <-chan struct{}) error {
 		appplatformsvc.SetChunkUploadTempDir(s.assetUpload.ChunkTempDir)
 		appplatformsvc.StartChunkUploadCleanup(stopCh, time.Duration(s.assetUpload.ChunkCleanupHours)*time.Hour)
 	}
-	appplatformsvc.StartProviderModelHealthCheck(stopCh, store.Client(), 30*time.Second)
+	if s.userModel != nil {
+		s.userModel.StartProviderModelHealthChecks(stopCh, 30*time.Second)
+	}
 	// start shutdown managers
 	if err := s.gracefulShutdown.Start(); err != nil {
 		log.Fatalf("start shutdown manager failed: %s", err.Error())

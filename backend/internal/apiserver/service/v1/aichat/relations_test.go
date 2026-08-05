@@ -7,6 +7,8 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/usermodel"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 )
 
@@ -44,31 +46,23 @@ type modelSummaryReaderStub struct {
 	lastBatchLen int
 }
 
-type modelOwnerFactory struct {
-	store.Factory
-	modelStore    store.ProviderModelStore
-	providerStore store.ProviderStore
+type executionContextResolverStub struct {
+	request usermodel.ExecutionContextRequest
 }
 
-func (f *modelOwnerFactory) ProviderModels() store.ProviderModelStore { return f.modelStore }
-func (f *modelOwnerFactory) Providers() store.ProviderStore           { return f.providerStore }
-
-type modelOwnerStore struct {
-	store.ProviderModelStore
-	item *iapiserver.ProviderModel
+func (s *executionContextResolverStub) ResolveUserModelExecutionContext(_ context.Context, request usermodel.ExecutionContextRequest) (*modelgateway.UserModelExecutionContext, error) {
+	s.request = request
+	return &modelgateway.UserModelExecutionContext{ModelID: request.ModelID}, nil
 }
 
-func (s *modelOwnerStore) Get(context.Context, string) (*iapiserver.ProviderModel, error) {
-	return s.item, nil
+type operationGatewayStub struct {
+	request modelgateway.OperationExecutionRequest
+	output  map[string]any
 }
 
-type providerOwnerStore struct {
-	store.ProviderStore
-	item *iapiserver.Provider
-}
-
-func (s *providerOwnerStore) Get(context.Context, string) (*iapiserver.Provider, error) {
-	return s.item, nil
+func (s *operationGatewayStub) ExecuteOperation(_ context.Context, request modelgateway.OperationExecutionRequest) (*modelgateway.OperationExecutionResult, error) {
+	s.request = request
+	return &modelgateway.OperationExecutionResult{Output: s.output}, nil
 }
 
 func (r *modelSummaryReaderStub) GetProviderModelRefSummaries(
@@ -144,26 +138,48 @@ func TestAIChatRelationSummariesSerializeAlongsideIDs(t *testing.T) {
 	}
 }
 
-func TestGetModelRejectsCrossUserModelAndProvider(t *testing.T) {
-	tests := []struct {
-		name          string
-		modelOwner    string
-		providerOwner string
-	}{
-		{name: "model belongs to another user", modelOwner: "user-b", providerOwner: "user-a"},
-		{name: "provider belongs to another user", modelOwner: "user-a", providerOwner: "user-b"},
+func TestResolveExecutionContextUsesUserModelBoundary(t *testing.T) {
+	resolver := &executionContextResolverStub{}
+	service := &aiChatService{userModels: resolver, gateway: &operationGatewayStub{}}
+	grant, err := service.resolveExecutionContext(context.Background(), "model-1", usermodel.CapabilityTextChatCompletion, true, "assistant.default")
+	if err != nil || grant.ModelID != "model-1" {
+		t.Fatalf("execution context = %#v, %v", grant, err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			factory := &modelOwnerFactory{
-				modelStore:    &modelOwnerStore{item: &iapiserver.ProviderModel{ObjectMeta: imachinery.ObjectMeta{ID: "model"}, OwnerUserID: test.modelOwner, ProviderID: "provider", Enabled: true}},
-				providerStore: &providerOwnerStore{item: &iapiserver.Provider{ObjectMeta: imachinery.ObjectMeta{ID: "provider"}, OwnerUserID: test.providerOwner, Enabled: true}},
-			}
-			service := &aiChatService{store: factory}
-			if _, err := service.getModel(context.Background(), "user-a", "model"); !isRecordNotFound(err) {
-				t.Fatalf("cross-user model error = %v", err)
-			}
-		})
+	if resolver.request.ModelID != "model-1" || resolver.request.CapabilityDefinitionID != usermodel.CapabilityTextChatCompletion ||
+		len(resolver.request.RequiredCapabilityDefinitionIDs) != 1 || resolver.request.RequiredCapabilityDefinitionIDs[0] != "image.understanding" {
+		t.Fatalf("user model request = %#v", resolver.request)
+	}
+}
+
+func TestInvokeGatewayUsesTranslationTargetAndOpenAICompatibleResponse(t *testing.T) {
+	gateway := &operationGatewayStub{output: map[string]any{
+		"values": map[string]any{
+			"choices": []any{map[string]any{
+				"message": map[string]any{"content": "你好"},
+			}},
+		},
+	}}
+	service := &aiChatService{gateway: gateway}
+	grant := &modelgateway.UserModelExecutionContext{
+		CapabilityDefinitionID: usermodel.CapabilityTextTranslate,
+	}
+
+	content, err := service.invokeGateway(context.Background(), "user-a", grant, "hello", nil, "zh-CN")
+	if err != nil || content != "你好" {
+		t.Fatalf("translation output = %q, %v", content, err)
+	}
+	if gateway.request.PrincipalUserID != "user-a" || gateway.request.CapabilityDefinitionID != usermodel.CapabilityTextTranslate {
+		t.Fatalf("gateway request scope = %#v", gateway.request)
+	}
+	messages, _ := gateway.request.Input["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("gateway messages = %#v", messages)
+	}
+	system, _ := messages[0].(map[string]any)
+	user, _ := messages[1].(map[string]any)
+	if system["role"] != "system" || system["content"] != `Translate the next user message into "zh-CN". Return only the translated text.` ||
+		user["role"] != "user" || user["content"] != "hello" {
+		t.Fatalf("gateway messages = %#v", messages)
 	}
 }
 

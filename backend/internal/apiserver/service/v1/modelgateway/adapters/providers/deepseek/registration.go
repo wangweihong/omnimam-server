@@ -21,6 +21,13 @@ func Registration() (modelgateway.Registration, error) {
 		CapabilityDefinitions: []iapiserver.CapabilityDefinition{definition},
 		EngineAdapter:         iapiserver.EngineAdapterDefinition{ID: AdapterID, Responsibilities: []string{"authentication", "base_url", "health_check", "common_error_mapping"}},
 		OperationExecutors:    []iapiserver.OperationExecutorDefinition{{ID: ExecutorID, EngineAdapterID: AdapterID, CapabilityDefinitionIDs: []string{definition.ID}}},
+		ProviderType: &modelgateway.ProviderTypeRegistration{
+			ID: iapiserver.ProviderTypeDeepSeekOfficial, DisplayName: "DeepSeek Official API",
+			AuthenticationTypes:    []string{iapiserver.EngineAuthAPIKey},
+			ConfigurationSchema:    map[string]any{"type": "object", "additionalProperties": false},
+			SupportsModelDiscovery: true, SupportsModelProbe: true, AdapterID: AdapterID,
+			OperationExecutors: map[string]string{definition.ID: ExecutorID},
+		},
 		EngineType: iapiserver.ApplicationEngineType{
 			ID: AdapterID, NameI18n: bilingual("DeepSeek 官方 API", "DeepSeek Official API"), DescriptionI18n: bilingual("DeepSeek 官方 OpenAI-compatible 对话服务。", "Official DeepSeek OpenAI-compatible chat service."),
 			OfficialWebsiteURL: "https://www.deepseek.com/", OfficialDocumentationURL: "https://api-docs.deepseek.com/api/create-chat-completion", DefaultAPIBaseURL: "https://api.deepseek.com",

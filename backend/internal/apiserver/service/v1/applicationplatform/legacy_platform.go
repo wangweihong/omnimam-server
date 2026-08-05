@@ -656,7 +656,7 @@ func (s *platformService) checkProviderModel(
 	model *iapiserver.ProviderModel,
 ) (*iapiserver.ProviderModel, error) {
 	provider, err := s.store.Providers().Get(ctx, model.ProviderID)
-	now := time.Now()
+	now := imachinery.NewTime(time.Now())
 	if err != nil {
 		model.HealthStatus = iapiserver.ProviderModelHealthUnhealthy
 		model.HealthReason = "模型提供商不存在或不可用"

@@ -333,17 +333,23 @@ type CanvasApplicationArtifactProjection struct {
 type ProviderStore interface {
 	List(ctx context.Context, req *iapiserver.ProviderListRequest) ([]*iapiserver.Provider, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.Provider, error)
+	// GetOwned 只返回指定用户拥有的 Provider，不扩大 MODEL_* 权限的数据范围。
+	GetOwned(ctx context.Context, ownerUserID, id string) (*iapiserver.Provider, error)
 	// GetByIDs 按当前所有者边界批量读取 provider，供跨领域一跳投影使用。
 	GetByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.Provider, error)
 	Add(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error)
 	Update(ctx context.Context, data *iapiserver.Provider) (*iapiserver.Provider, error)
 	// Delete removes one provider record by id.
 	Delete(ctx context.Context, id string) error
+	// DeleteOwnedCascade 在同一事务内清理当前用户的 Provider、模型和默认绑定。
+	DeleteOwnedCascade(ctx context.Context, ownerUserID, id string) error
 }
 
 type ProviderModelStore interface {
 	List(ctx context.Context, req *iapiserver.ProviderModelListRequest) ([]*iapiserver.ProviderModel, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.ProviderModel, error)
+	// GetOwned 只返回指定用户拥有的 ProviderModel。
+	GetOwned(ctx context.Context, ownerUserID, id string) (*iapiserver.ProviderModel, error)
 	// GetByIDs 按当前所有者边界批量读取模型，禁止消费方逐 ID 查询。
 	GetByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ProviderModel, error)
 	Add(ctx context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error)
@@ -352,6 +358,13 @@ type ProviderModelStore interface {
 	Delete(ctx context.Context, providerID, id string) error
 	// DeleteByProviderID removes all models under one provider.
 	DeleteByProviderID(ctx context.Context, providerID string) error
+	// DeleteOwnedCascade 在同一事务内清理当前用户的模型及其默认绑定。
+	DeleteOwnedCascade(ctx context.Context, ownerUserID, id string) error
+}
+
+type ModelHealthCheckStore interface {
+	// Add 保存一次已持久化 Provider 或模型的检测结果；未保存表单测试不得调用。
+	Add(ctx context.Context, data *iapiserver.ModelHealthCheck) (*iapiserver.ModelHealthCheck, error)
 }
 
 type ProviderCapabilityStore interface {
@@ -361,6 +374,10 @@ type ProviderCapabilityStore interface {
 
 type SystemLLMConfigStore interface {
 	List(ctx context.Context) ([]*iapiserver.SystemLLMConfig, error)
+	// ListOwned 只读取指定用户的默认模型配置。
+	ListOwned(ctx context.Context, ownerUserID string) ([]*iapiserver.SystemLLMConfig, error)
+	// GetOwned 读取指定用户和用途的唯一默认模型配置。
+	GetOwned(ctx context.Context, ownerUserID, usage string) (*iapiserver.SystemLLMConfig, error)
 	Upsert(ctx context.Context, data *iapiserver.SystemLLMConfig) (*iapiserver.SystemLLMConfig, error)
 	// DeleteByProviderModelID 删除引用指定模型的默认模型绑定。
 	DeleteByProviderModelID(ctx context.Context, providerID, modelID string) error
@@ -624,6 +641,13 @@ type AIChatGenerationBundle struct {
 	Generation       *iapiserver.AIChatGeneration
 }
 
+type AIChatGenerationRoute struct {
+	ModelID                string
+	CapabilityDefinitionID string
+	ModelConfigVersion     int64
+	ModelSnapshot          map[string]any
+}
+
 type AIChatStore interface {
 	ListAssistants(ctx context.Context, ownerUserID string) ([]*iapiserver.AIChatAssistant, error)
 	GetAssistant(ctx context.Context, ownerUserID, id string) (*iapiserver.AIChatAssistant, error)
@@ -647,7 +671,7 @@ type AIChatStore interface {
 		ownerUserID string,
 		topic *iapiserver.AIChatTopic,
 		req *iapiserver.AIChatMessageCreateRequest,
-		model *iapiserver.AIChatModel,
+		route AIChatGenerationRoute,
 		assistant *iapiserver.AIChatAssistant,
 	) (*AIChatGenerationBundle, error)
 	CreateEditRegenerateGeneration(
@@ -655,7 +679,7 @@ type AIChatStore interface {
 		ownerUserID string,
 		source *iapiserver.AIChatMessage,
 		req *iapiserver.AIChatEditRegenerateRequest,
-		model *iapiserver.AIChatModel,
+		route AIChatGenerationRoute,
 		assistant *iapiserver.AIChatAssistant,
 	) (*AIChatGenerationBundle, error)
 	CompleteGeneration(ctx context.Context, ownerUserID, generationID, content string) (*iapiserver.AIChatGeneration, error)

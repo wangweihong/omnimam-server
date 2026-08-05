@@ -26,6 +26,7 @@ type invokeOptions struct {
 	apiKeyInPayload bool
 	modelArkSigning bool
 	baseURL         string
+	headers         map[string]string
 }
 
 // InvokeOption 定义由具体协议适配器选择的请求认证策略。
@@ -51,6 +52,16 @@ func WithBaseURL(baseURL string) InvokeOption {
 	return func(options *invokeOptions) { options.baseURL = baseURL }
 }
 
+// WithHeader 添加由受信任协议 Adapter 声明的 Provider 公共 Header。
+func WithHeader(name, value string) InvokeOption {
+	return func(options *invokeOptions) {
+		if options.headers == nil {
+			options.headers = map[string]string{}
+		}
+		options.headers[name] = value
+	}
+}
+
 // Invoke 执行带 EngineInstance 认证与超时约束的 JSON Provider 请求。
 func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requestPath string, payload any, options ...InvokeOption) (map[string]any, error) {
 	if engine == nil || strings.TrimSpace(engine.BaseURL) == "" {
@@ -63,6 +74,9 @@ func Invoke(ctx context.Context, engine *iapiserver.EngineInstance, method, requ
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(requestPath, "/")
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(method).AddHeaderParam("Accept", "application/json")
+	for name, value := range config.headers {
+		builder.AddHeaderParam(name, value)
+	}
 	var raw json.RawMessage
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -119,6 +133,9 @@ func Probe(ctx context.Context, engine *iapiserver.EngineInstance, method, reque
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(requestPath, "/")
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(endpoint).WithMethod(method).AddHeaderParam("Accept", "application/json")
+	for name, value := range config.headers {
+		builder.AddHeaderParam(name, value)
+	}
 	if err := applyAuthentication(builder, engine, method, requestPath, nil, config); err != nil {
 		return err
 	}

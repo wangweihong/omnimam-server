@@ -2,7 +2,6 @@ package iapiserver
 
 import (
 	"encoding/json"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -10,7 +9,8 @@ import (
 )
 
 const (
-	ProviderTypeOpenAICompatible = "openai-compatible"
+	ProviderTypeOpenAICompatible = "openai_compatible"
+	ProviderTypeDeepSeekOfficial = "deepseek_official"
 
 	ProviderAuthTypeAPIKey = "api_key"
 
@@ -67,6 +67,24 @@ const (
 	AssetGroupTypeDynamic    = "dynamic"
 )
 
+// +k8s:deepcopy-gen=true
+
+// ProviderType 是 Model Gateway Runtime Registry 的公共脱敏投影。
+// Adapter 与 OperationExecutor 标识只在 Gateway 内部保存。
+type ProviderType struct {
+	ID                     string         `json:"id"`
+	DisplayName            string         `json:"display_name"`
+	AuthenticationTypes    []string       `json:"authentication_types"`
+	ConfigurationSchema    map[string]any `json:"configuration_schema"`
+	SupportsModelDiscovery bool           `json:"supports_model_discovery"`
+	SupportsModelProbe     bool           `json:"supports_model_probe"`
+}
+
+type ProviderTypeListResponse struct {
+	Total int             `json:"total"`
+	Items []*ProviderType `json:"items"`
+}
+
 type Provider struct {
 	imachinery.ObjectMeta
 	// OwnerUserID 标识 provider 所属用户，model-management S2 当前按用户隔离配置。
@@ -89,6 +107,8 @@ type Provider struct {
 	ConfigShadow string `json:"-"                       gorm:"column:extra_config_json;type:text;not null;default:'{}'"`
 	// DeletedAt 用于草稿阶段软删除，避免破坏已有 provider/model/default 关联。
 	DeletedAt string `json:"-"                       gorm:"column:deleted_at;type:text;default:'';index"`
+	// ConfigVersion 是当前 Provider 配置版本，由持久化资源版本投影，客户端只读。
+	ConfigVersion int64 `json:"config_version" gorm:"-"`
 }
 
 func (Provider) TableName() string { return "user_model_providers" }
@@ -107,11 +127,16 @@ func (p *Provider) BeforeUpdate(tx *gorm.DB) error {
 	return p.marshalShadows()
 }
 
+func (p *Provider) AfterCreate(tx *gorm.DB) error { return p.ObjectMeta.AfterCreate(tx) }
+
+func (p *Provider) AfterUpdate(tx *gorm.DB) error { return p.ObjectMeta.AfterUpdate(tx) }
+
 func (p *Provider) AfterFind(tx *gorm.DB) error {
 	if err := p.ObjectMeta.AfterFind(tx); err != nil {
 		return err
 	}
 	_ = json.Unmarshal([]byte(p.ConfigShadow), &p.Config)
+	p.ConfigVersion = p.ResourceVersion
 	return nil
 }
 
@@ -138,18 +163,32 @@ type ProviderModel struct {
 	DisplayName string `json:"display_name"             gorm:"column:display_name;type:text;not null"`
 	// GroupName 用于模型选项分组展示，对外字段名按 S2 使用 group。
 	GroupName string `json:"group,omitempty"          gorm:"column:model_group;type:text;default:'';index"`
-	// Capabilities 声明模型支持的业务能力，如 llm.chat、query.parse。
-	Capabilities []string `json:"capabilities"             gorm:"-"`
-	// CapabilitiesShadow 是 Capabilities 的 JSON 存储影子字段。
-	CapabilitiesShadow string `json:"-"                        gorm:"column:capabilities_json;type:text;not null;default:'[]'"`
-	// StreamSupported 表示模型是否支持流式输出，供 ai-chat generation 选择策略使用。
-	StreamSupported bool `json:"stream_supported"         gorm:"column:stream_supported;type:boolean;not null;default:true"`
+	// FeatureLabels 是用户维护的展示和筛选标签，不参与能力推导。
+	FeatureLabels []string `json:"feature_labels" gorm:"-"`
+	// FeatureLabelsShadow 是 FeatureLabels 的 JSON 存储影子字段。
+	FeatureLabelsShadow string `json:"-" gorm:"column:feature_labels_json;type:text;not null;default:'[]'"`
+	// DisabledCapabilityDefinitionIDs 是用户在 Gateway 已验证能力中主动关闭的能力集合。
+	DisabledCapabilityDefinitionIDs []string `json:"disabled_capability_definition_ids" gorm:"-"`
+	// DisabledCapabilityDefinitionIDsShadow 是关闭能力集合的 JSON 存储影子字段。
+	DisabledCapabilityDefinitionIDsShadow string `json:"-" gorm:"column:disabled_capability_definition_ids_json;type:text;not null;default:'[]'"`
+	// Capabilities 是 Gateway 派生的最终可执行 CapabilityDefinition ID，只读返回。
+	Capabilities []string `json:"capability_definition_ids" gorm:"-"`
+	// CapabilitiesShadow 仅保留旧数据库列兼容，不再作为能力事实源。
+	CapabilitiesShadow string `json:"-" gorm:"column:capabilities_json;type:text;not null;default:'[]'"`
+	// StreamSupported 由 Gateway Adapter 与 Operation 派生，只读返回。
+	StreamSupported bool `json:"stream_supported" gorm:"-"`
+	// Executable 表示当前模型是否满足 Gateway 能力解析和执行资格。
+	Executable bool `json:"executable" gorm:"-"`
+	// UnavailableReason 是 Gateway 派生的安全不可执行原因。
+	UnavailableReason string `json:"unavailable_reason,omitempty" gorm:"-"`
+	// CapabilityResolutionStatus 表示能力投影是否已解析、不可用或过期。
+	CapabilityResolutionStatus string `json:"capability_resolution_status" gorm:"-"`
 	// HealthStatus 保存最近一次健康检测结果，用于过滤不可用模型。
 	HealthStatus string `json:"health_status"            gorm:"column:health_status;type:text;not null;default:'unknown';index"`
 	// HealthReason 保存健康检测失败原因，对外按 S2 暴露为 unhealthy_reason。
 	HealthReason string `json:"unhealthy_reason,omitempty" gorm:"column:unhealthy_reason;type:text;default:''"`
-	// HealthCheckedAt 是旧草稿健康检查的运行态临时字段，S2 响应不直接暴露。
-	HealthCheckedAt *time.Time `json:"-"                      gorm:"-"`
+	// HealthCheckedAt 保存最近一次完成模型探测的时间。
+	HealthCheckedAt *imachinery.Time `json:"last_checked_at,omitempty" gorm:"column:last_checked_at;type:timestamptz"`
 	// Enabled 控制该模型是否出现在可选模型列表中。
 	Enabled bool `json:"enabled"                  gorm:"column:enabled;type:boolean;not null;default:true"`
 	// EndpointType 是 provider 同步时的内部分类结果，当前不进入 S2 表结构。
@@ -168,6 +207,8 @@ type ProviderModel struct {
 	PricingShadow string `json:"-"                   gorm:"-"`
 	// DeletedAt 用于软删除 provider model，避免影响已引用的默认模型配置。
 	DeletedAt string `json:"-"                   gorm:"column:deleted_at;type:text;default:'';index"`
+	// ConfigVersion 是当前模型配置版本，由持久化资源版本投影，客户端只读。
+	ConfigVersion int64 `json:"config_version" gorm:"-"`
 }
 
 func (ProviderModel) TableName() string { return "user_provider_models" }
@@ -186,22 +227,64 @@ func (m *ProviderModel) BeforeUpdate(tx *gorm.DB) error {
 	return m.marshalShadows()
 }
 
+func (m *ProviderModel) AfterCreate(tx *gorm.DB) error { return m.ObjectMeta.AfterCreate(tx) }
+
+func (m *ProviderModel) AfterUpdate(tx *gorm.DB) error { return m.ObjectMeta.AfterUpdate(tx) }
+
 func (m *ProviderModel) AfterFind(tx *gorm.DB) error {
 	if err := m.ObjectMeta.AfterFind(tx); err != nil {
 		return err
 	}
-	_ = json.Unmarshal([]byte(m.CapabilitiesShadow), &m.Capabilities)
+	_ = json.Unmarshal([]byte(m.FeatureLabelsShadow), &m.FeatureLabels)
+	_ = json.Unmarshal([]byte(m.DisabledCapabilityDefinitionIDsShadow), &m.DisabledCapabilityDefinitionIDs)
+	m.ConfigVersion = m.ResourceVersion
 	return nil
 }
 
 func (m *ProviderModel) marshalShadows() error {
-	capabilities, err := json.Marshal(m.Capabilities)
+	featureLabels, err := json.Marshal(m.FeatureLabels)
 	if err != nil {
 		return err
 	}
-	m.CapabilitiesShadow = string(capabilities)
+	disabledCapabilities, err := json.Marshal(m.DisabledCapabilityDefinitionIDs)
+	if err != nil {
+		return err
+	}
+	m.FeatureLabelsShadow = string(featureLabels)
+	m.DisabledCapabilityDefinitionIDsShadow = string(disabledCapabilities)
 	return nil
 }
+
+// ModelHealthCheck 保存已持久化 Provider 或模型检测结果；未保存 Provider 测试不得创建该记录。
+type ModelHealthCheck struct {
+	imachinery.ObjectMeta
+	// OwnerUserID 将健康事实限制在当前登录用户范围内。
+	OwnerUserID string `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null;index"`
+	// TargetType 区分 Provider 级连接检测和单模型探测。
+	TargetType string `json:"target_type" gorm:"column:target_type;type:text;not null"`
+	// ProviderID 指向当前用户被检测的 Provider。
+	ProviderID string `json:"provider_id" gorm:"column:provider_id;type:text;not null;index"`
+	// ModelID 仅在单模型检测时保存目标模型 ID。
+	ModelID string `json:"model_id,omitempty" gorm:"column:model_id;type:text;default:'';index"`
+	// Success 表示 Gateway 是否确认目标可连接或模型可用。
+	Success bool `json:"success" gorm:"column:success;type:boolean;not null"`
+	// HealthStatus 保存 unknown、healthy 或 unhealthy 的规范状态。
+	HealthStatus string `json:"health_status" gorm:"column:health_status;type:text;not null"`
+	// Message 保存不包含凭证和原始上游响应的安全结果摘要。
+	Message string `json:"message,omitempty" gorm:"column:message;type:text;default:''"`
+	// CheckedAt 是本次检测完成时间。
+	CheckedAt imachinery.Time `json:"checked_at" gorm:"column:checked_at;type:text;not null"`
+}
+
+func (ModelHealthCheck) TableName() string { return "model_health_checks" }
+
+func (h *ModelHealthCheck) BeforeCreate(tx *gorm.DB) error { return h.ObjectMeta.BeforeCreate(tx) }
+
+func (h *ModelHealthCheck) AfterCreate(tx *gorm.DB) error { return h.ObjectMeta.AfterCreate(tx) }
+
+func (h *ModelHealthCheck) BeforeUpdate(tx *gorm.DB) error { return h.ObjectMeta.BeforeUpdate(tx) }
+
+func (h *ModelHealthCheck) AfterUpdate(tx *gorm.DB) error { return h.ObjectMeta.AfterUpdate(tx) }
 
 type ProviderCapability struct {
 	imachinery.ObjectMeta

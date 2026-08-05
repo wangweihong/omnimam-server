@@ -41,44 +41,44 @@ type (
 
 	ProviderCreateRequest struct {
 		// Name 是 provider 展示名称。
-		Name string `json:"name"           binding:"required"`
+		Name string `json:"name"           binding:"required,max=255"`
 		// Type 表示 provider 协议类型，当前 S2 使用 openai-compatible。
-		Type string `json:"provider_type"   binding:"required"`
+		Type string `json:"provider_type"   binding:"required,max=128"`
 		// Enabled 控制 provider 创建后是否立即可用，空值使用服务端默认。
-		Enabled *bool `json:"enabled"`
+		Enabled *bool `json:"enabled" binding:"required"`
 		// BaseURL 是 provider API 入口地址。
-		BaseURL string `json:"api_base_url"     binding:"required"`
+		BaseURL string `json:"api_base_url"     binding:"required,url,max=2048"`
 		// AuthType 表示鉴权方式，当前实现使用 api_key。
-		AuthType string `json:"auth_type"       binding:"required"`
+		AuthType string `json:"auth_type"       binding:"required,max=64"`
 		// CredentialRef 引用凭据存储中的 API key，不接收明文密钥。
-		CredentialRef string `json:"api_key_ref"`
+		CredentialRef string `json:"api_key_ref" binding:"max=1024"`
 		// PresetKey 是旧 preset 导入入口的内部参数，不属于 S2 请求体。
 		PresetKey string `json:"-"`
 		// Config 保存 provider 额外连接配置。
 		Config map[string]any `json:"extra_config"`
 		// Description 保存 provider 说明文本。
-		Description string `json:"description"`
+		Description string `json:"description" binding:"max=2048"`
 	}
 
 	ProviderUpdateRequest struct {
 		// ID 指定要更新的 provider，由路径参数写入。
 		ID string `json:"id"`
 		// Name 更新 provider 展示名称，空指针表示不修改。
-		Name *string `json:"name"`
+		Name *string `json:"name" binding:"omitempty,max=255"`
 		// Type 更新 provider 协议类型，空指针表示不修改。
-		Type *string `json:"provider_type"`
+		Type *string `json:"provider_type" binding:"omitempty,max=128"`
 		// Enabled 更新 provider 可用状态，空指针表示不修改。
 		Enabled *bool `json:"enabled"`
 		// BaseURL 更新 provider API 入口地址，空指针表示不修改。
-		BaseURL *string `json:"api_base_url"`
+		BaseURL *string `json:"api_base_url" binding:"omitempty,url,max=2048"`
 		// AuthType 更新鉴权方式，空指针表示不修改。
-		AuthType *string `json:"auth_type"`
+		AuthType *string `json:"auth_type" binding:"omitempty,max=64"`
 		// CredentialRef 更新凭据引用，空指针表示不修改。
-		CredentialRef *string `json:"api_key_ref"`
+		CredentialRef *string `json:"api_key_ref" binding:"omitempty,max=1024"`
 		// Config 更新 provider 额外连接配置，空指针表示不修改。
 		Config *map[string]any `json:"extra_config"`
 		// Description 更新 provider 描述，空指针表示不修改。
-		Description *string `json:"description"`
+		Description *string `json:"description" binding:"omitempty,max=2048"`
 	}
 
 	ProviderModelTypeRule struct {
@@ -98,11 +98,20 @@ type (
 		// ID 指定已保存的 provider；为空时使用请求中的临时配置做检测。
 		ID string `json:"id"`
 		// BaseURL 是未保存配置的临时 API 入口地址。
-		BaseURL string `json:"api_base_url"`
+		BaseURL string `json:"api_base_url" binding:"required,url,max=2048"`
 		// AuthType 是未保存配置的临时鉴权方式。
-		AuthType string `json:"auth_type"`
+		AuthType string `json:"auth_type" binding:"required,max=64"`
 		// CredentialRef 是未保存配置的临时凭据引用。
-		CredentialRef string `json:"api_key_ref"`
+		CredentialRef string `json:"api_key_ref" binding:"max=1024"`
+		// Type 是未保存 Provider 测试使用的稳定 ProviderType ID。
+		Type string `json:"provider_type" binding:"required,max=128"`
+		// Name 和 Enabled 属于 OpenAPI 复用的创建表单字段，连接测试不持久化。
+		Name    string `json:"name" binding:"required,max=255"`
+		Enabled *bool  `json:"enabled" binding:"required"`
+		// Config 是未保存 Provider 测试的非敏感额外连接配置。
+		Config map[string]any `json:"extra_config"`
+		// Description 仅用于保持测试请求与创建表单契约一致，不参与连接。
+		Description string `json:"description" binding:"max=2048"`
 	}
 
 	ProviderTestResponse struct {
@@ -118,6 +127,8 @@ type (
 		HealthStatus string `json:"health_status"`
 		// Message 返回检测结果说明或失败原因。
 		Message string `json:"message"`
+		// GatewayErrorCategory 是归一化的安全错误类别，不包含凭证或原始响应。
+		GatewayErrorCategory string `json:"gateway_error_category,omitempty"`
 		// CheckedAt 记录检测发生时间。
 		CheckedAt imachinery.Time `json:"checked_at"`
 	}
@@ -147,19 +158,21 @@ type (
 		// ProviderID 指定模型所属 provider。
 		ProviderID string `json:"provider_id"`
 		// Name 是模型展示名，对外字段为 display_name。
-		Name string `json:"display_name"    binding:"required"`
+		Name string `json:"display_name"    binding:"required,max=255"`
 		// Model 是上游 provider 的真实模型标识。
-		Model string `json:"model"          binding:"required"`
+		Model string `json:"model"          binding:"required,max=512"`
 		// EndpointType 是旧同步逻辑内部字段，不属于 S2 请求体。
 		EndpointType string `json:"-"`
 		// GroupName 是模型选项展示分组。
-		GroupName string `json:"group"`
-		// Capabilities 声明模型支持的业务能力。
-		Capabilities []string `json:"capabilities"`
+		GroupName string `json:"group" binding:"max=255"`
+		// FeatureLabels 是用户维护的展示与筛选标签，不参与执行能力推导。
+		FeatureLabels []string `json:"feature_labels" binding:"max=100,dive,max=128"`
+		// Capabilities 是旧 service 内部兼容字段，canonical API 不接收。
+		Capabilities []string `json:"-"`
 		// ModelTypes 是旧同步逻辑内部分类结果，不属于 S2 请求体。
 		ModelTypes []string `json:"-"`
 		// StreamSupported 表示模型是否支持流式输出，空值使用默认 true。
-		StreamSupported *bool `json:"stream_supported"`
+		StreamSupported *bool `json:"-"`
 		// Enabled 控制模型创建后是否可选，空值使用服务端默认。
 		Enabled *bool `json:"enabled"`
 		// DefaultParams 是旧草稿字段，当前 S2 不接收。
@@ -174,19 +187,23 @@ type (
 		// ProviderID 指定模型所属 provider，通常由路径或查询上下文确定。
 		ProviderID string `json:"provider_id"`
 		// Name 更新模型展示名，空指针表示不修改。
-		Name *string `json:"display_name"`
-		// Model 更新上游 provider 的真实模型标识，空指针表示不修改。
-		Model *string `json:"model"`
+		Name *string `json:"display_name" binding:"omitempty,max=255"`
+		// Model 是旧 service 内部兼容字段，canonical API 不允许修改远端模型标识。
+		Model *string `json:"-"`
 		// EndpointType 是旧同步逻辑内部字段，当前不接收。
 		EndpointType *string `json:"-"`
 		// GroupName 更新模型选项展示分组，空指针表示不修改。
-		GroupName *string `json:"group"`
-		// Capabilities 更新模型能力集合，空指针表示不修改。
-		Capabilities *[]string `json:"capabilities"`
+		GroupName *string `json:"group" binding:"omitempty,max=255"`
+		// FeatureLabels 更新用户维护的展示与筛选标签。
+		FeatureLabels *[]string `json:"feature_labels" binding:"omitempty,max=100,dive,max=128"`
+		// DisabledCapabilityDefinitionIDs 只能关闭 Gateway 当前已验证的能力。
+		DisabledCapabilityDefinitionIDs *[]string `json:"disabled_capability_definition_ids" binding:"omitempty,max=100,dive,max=128"`
+		// Capabilities 是旧 service 内部兼容字段，canonical API 不接收。
+		Capabilities *[]string `json:"-"`
 		// ModelTypes 是旧同步逻辑内部字段，当前不接收。
 		ModelTypes *[]string `json:"-"`
 		// StreamSupported 更新流式输出能力，空指针表示不修改。
-		StreamSupported *bool `json:"stream_supported"`
+		StreamSupported *bool `json:"-"`
 		// Enabled 更新模型可用状态，空指针表示不修改。
 		Enabled *bool `json:"enabled"`
 		// DefaultParams 是旧草稿字段，当前不接收。

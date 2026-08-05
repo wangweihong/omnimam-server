@@ -575,6 +575,10 @@ func (ds *datastore) ProviderModels() store.ProviderModelStore {
 	return newProviderModel(ds)
 }
 
+func (ds *datastore) ModelHealthChecks() store.ModelHealthCheckStore {
+	return newModelHealthCheck(ds)
+}
+
 func (ds *datastore) ProviderCapabilities() store.ProviderCapabilityStore {
 	return newProviderCapability(ds)
 }

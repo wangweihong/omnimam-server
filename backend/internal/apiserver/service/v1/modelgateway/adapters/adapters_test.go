@@ -85,6 +85,43 @@ func TestOpenAICompatibleProvidersUseProtocolPackage(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleDiscoversAndProbesModelsWithoutGeneration(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/models" {
+			t.Fatalf("request = %s %s, want GET /models", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("OpenAI-Organization") != "org-1" || r.Header.Get("OpenAI-Project") != "project-1" {
+			t.Fatalf("unexpected provider headers: %#v", r.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-z"},{"id":"gpt-a"},{"id":"gpt-a"}]}`))
+	}))
+	defer server.Close()
+	engine := testEngine(server.URL, iapiserver.ProviderTypeOpenAICompatible)
+	engine.AuthConfig["organization"] = "org-1"
+	engine.AuthConfig["project"] = "project-1"
+	adapter, ok := NewEngineAdapters()[iapiserver.ProviderTypeOpenAICompatible].(enginegateway.UserModelAdapter)
+	if !ok {
+		t.Fatal("OpenAI-compatible adapter does not implement UserModelAdapter")
+	}
+	models, err := adapter.DiscoverProviderModels(context.Background(), engine)
+	if err != nil || len(models) != 2 || models[0].RemoteModel != "gpt-a" || models[1].RemoteModel != "gpt-z" {
+		t.Fatalf("models = %#v, %v", models, err)
+	}
+	probe, err := adapter.ProbeProviderModel(context.Background(), engine, "gpt-z")
+	if err != nil || !probe.Available || !probe.StreamSupported || probe.RemoteModel != "gpt-z" {
+		t.Fatalf("probe = %#v, %v", probe, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want two non-generation model-list requests", requests.Load())
+	}
+	if _, err := adapter.ProbeProviderModel(context.Background(), engine, "missing"); errors.ToStatus(err).Code != code.ErrAIAppProviderRuntimeCapabilityMismatch {
+		t.Fatalf("missing model error = %v", err)
+	}
+}
+
 func TestOllamaDiscoversInstanceModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/tags" {

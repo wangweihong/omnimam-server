@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/wangweihong/gotoolbox/pkg/maputil"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
@@ -23,16 +24,38 @@ type Registration struct {
 	EngineAdapter         iapiserver.EngineAdapterDefinition
 	OperationExecutors    []iapiserver.OperationExecutorDefinition
 	EngineType            iapiserver.ApplicationEngineType
+	ProviderType          *ProviderTypeRegistration
 	ProviderCapabilities  []iapiserver.AIAppProviderCapability
+}
+
+// ProviderTypeRegistration 保存 ProviderType 的公共字段及 Gateway 私有路由映射。
+type ProviderTypeRegistration struct {
+	ID                     string
+	DisplayName            string
+	AuthenticationTypes    []string
+	ConfigurationSchema    map[string]any
+	SupportsModelDiscovery bool
+	SupportsModelProbe     bool
+	AdapterID              string
+	OperationExecutors     map[string]string
+}
+
+type registeredProviderType struct {
+	public              iapiserver.ProviderType
+	configurationSchema *jsonschema.Schema
+	adapterID           string
+	operationExecutors  map[string]string
 }
 
 // RuntimeRegistry 是由全部提供商静态注册原子组装的不可变执行目录。
 type RuntimeRegistry struct {
-	capabilities map[string]iapiserver.CapabilityDefinition
-	adapters     map[string]iapiserver.EngineAdapterDefinition
-	executors    map[string]iapiserver.OperationExecutorDefinition
-	engineTypes  map[string]iapiserver.ApplicationEngineType
-	engineList   []*iapiserver.ApplicationEngineType
+	capabilities  map[string]iapiserver.CapabilityDefinition
+	adapters      map[string]iapiserver.EngineAdapterDefinition
+	executors     map[string]iapiserver.OperationExecutorDefinition
+	engineTypes   map[string]iapiserver.ApplicationEngineType
+	engineList    []*iapiserver.ApplicationEngineType
+	providerTypes map[string]registeredProviderType
+	providerList  []string
 }
 
 // AuthenticationConfigSchema 返回 EngineType 使用的严格鉴权字段结构。
@@ -55,11 +78,13 @@ func AuthenticationConfigSchema(authTypes ...string) map[string]map[string]any {
 // NewRuntimeRegistry 显式合并提供商注册；任一冲突或缺失引用都会阻止启动。
 func NewRuntimeRegistry(registrations []Registration) (*RuntimeRegistry, error) {
 	registry := &RuntimeRegistry{
-		capabilities: make(map[string]iapiserver.CapabilityDefinition),
-		adapters:     make(map[string]iapiserver.EngineAdapterDefinition),
-		executors:    make(map[string]iapiserver.OperationExecutorDefinition),
-		engineTypes:  make(map[string]iapiserver.ApplicationEngineType),
-		engineList:   make([]*iapiserver.ApplicationEngineType, 0, len(registrations)),
+		capabilities:  make(map[string]iapiserver.CapabilityDefinition),
+		adapters:      make(map[string]iapiserver.EngineAdapterDefinition),
+		executors:     make(map[string]iapiserver.OperationExecutorDefinition),
+		engineTypes:   make(map[string]iapiserver.ApplicationEngineType),
+		engineList:    make([]*iapiserver.ApplicationEngineType, 0, len(registrations)),
+		providerTypes: make(map[string]registeredProviderType),
+		providerList:  make([]string, 0),
 	}
 	for _, registration := range registrations {
 		for _, definition := range registration.CapabilityDefinitions {
@@ -84,12 +109,74 @@ func NewRuntimeRegistry(registrations []Registration) (*RuntimeRegistry, error) 
 		}
 	}
 	for _, registration := range registrations {
-		if err := registry.addEngineType(registration.EngineType); err != nil {
-			return nil, err
+		if registration.EngineType.ID != "" {
+			if err := registry.addEngineType(registration.EngineType); err != nil {
+				return nil, err
+			}
+		}
+		if registration.ProviderType != nil {
+			if err := registry.addProviderType(*registration.ProviderType); err != nil {
+				return nil, err
+			}
 		}
 	}
 	sort.Slice(registry.engineList, func(i, j int) bool { return registry.engineList[i].ID < registry.engineList[j].ID })
+	sort.Strings(registry.providerList)
 	return registry, nil
+}
+
+func (r *RuntimeRegistry) addProviderType(item ProviderTypeRegistration) error {
+	if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.DisplayName) == "" {
+		return fmt.Errorf("invalid static provider type %q", item.ID)
+	}
+	if _, exists := r.providerTypes[item.ID]; exists {
+		return fmt.Errorf("duplicate static provider type %q", item.ID)
+	}
+	if _, ok := r.adapters[item.AdapterID]; !ok {
+		return fmt.Errorf("provider type %s references unknown adapter %s", item.ID, item.AdapterID)
+	}
+	if len(item.AuthenticationTypes) == 0 || item.ConfigurationSchema == nil {
+		return fmt.Errorf("provider type %s has incomplete public configuration", item.ID)
+	}
+	seenAuthTypes := make(map[string]struct{}, len(item.AuthenticationTypes))
+	for _, authType := range item.AuthenticationTypes {
+		if _, supported := authenticationFields(authType); !supported {
+			return fmt.Errorf("provider type %s has unsupported authentication type %s", item.ID, authType)
+		}
+		if _, duplicate := seenAuthTypes[authType]; duplicate {
+			return fmt.Errorf("provider type %s has duplicate authentication type %s", item.ID, authType)
+		}
+		seenAuthTypes[authType] = struct{}{}
+	}
+	if additional, ok := item.ConfigurationSchema["additionalProperties"]; !ok || additional != false {
+		return fmt.Errorf("provider type %s configuration schema must reject additional properties", item.ID)
+	}
+	configurationSchema, err := compileCapabilitySchema("urn:omnimam:provider-type:"+item.ID, item.ConfigurationSchema)
+	if err != nil {
+		return fmt.Errorf("provider type %s has invalid configuration schema: %w", item.ID, err)
+	}
+	if len(item.OperationExecutors) == 0 {
+		return fmt.Errorf("provider type %s has no operation executors", item.ID)
+	}
+	for capabilityID, executorID := range item.OperationExecutors {
+		executor, ok := r.executors[executorID]
+		if !ok || executor.EngineAdapterID != item.AdapterID || !containsString(executor.CapabilityDefinitionIDs, capabilityID) {
+			return fmt.Errorf("provider type %s has invalid executor mapping %s -> %s", item.ID, capabilityID, executorID)
+		}
+	}
+	public := (&iapiserver.ProviderType{
+		ID: item.ID, DisplayName: item.DisplayName,
+		AuthenticationTypes:    item.AuthenticationTypes,
+		ConfigurationSchema:    item.ConfigurationSchema,
+		SupportsModelDiscovery: item.SupportsModelDiscovery,
+		SupportsModelProbe:     item.SupportsModelProbe,
+	}).DeepCopy()
+	r.providerTypes[item.ID] = registeredProviderType{
+		public: *public, configurationSchema: configurationSchema, adapterID: item.AdapterID,
+		operationExecutors: maps.Clone(item.OperationExecutors),
+	}
+	r.providerList = append(r.providerList, item.ID)
+	return nil
 }
 
 func (r *RuntimeRegistry) addCapabilityDefinition(item iapiserver.CapabilityDefinition) error {
@@ -201,6 +288,44 @@ func (r *RuntimeRegistry) EngineType(id string) (*iapiserver.ApplicationEngineTy
 		return nil, false
 	}
 	return item.DeepCopy(), true
+}
+
+// ProviderTypes 返回按稳定 ID 排序且不含 Adapter/Executor ID 的公共投影。
+func (r *RuntimeRegistry) ProviderTypes() []*iapiserver.ProviderType {
+	items := make([]*iapiserver.ProviderType, 0, len(r.providerList))
+	for _, id := range r.providerList {
+		item := r.providerTypes[id].public
+		items = append(items, item.DeepCopy())
+	}
+	return items
+}
+
+func (r *RuntimeRegistry) providerType(id string) (registeredProviderType, bool) {
+	item, ok := r.providerTypes[id]
+	if !ok {
+		return registeredProviderType{}, false
+	}
+	item.public = *item.public.DeepCopy()
+	item.operationExecutors = maps.Clone(item.operationExecutors)
+	return item, true
+}
+
+// ValidateProviderTypeImplementations 确认 ProviderType 私有路由均有可执行实现。
+func (r *RuntimeRegistry) ValidateProviderTypeImplementations(adapters map[string]Adapter, executors map[string]OperationExecutor) error {
+	for _, id := range r.providerList {
+		item := r.providerTypes[id]
+		adapter := adapters[item.adapterID]
+		if adapter == nil || adapter.ID() != item.adapterID {
+			return fmt.Errorf("provider type %s has no implementation for adapter %s", id, item.adapterID)
+		}
+		for _, executorID := range item.operationExecutors {
+			executor := executors[executorID]
+			if executor == nil || executor.ID() != executorID {
+				return fmt.Errorf("provider type %s has no implementation for executor %s", id, executorID)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *RuntimeRegistry) Capability(id string) (*iapiserver.CapabilityDefinition, bool) {

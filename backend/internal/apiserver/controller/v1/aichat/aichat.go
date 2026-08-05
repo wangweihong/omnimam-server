@@ -6,31 +6,29 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
-	srvv1 "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1"
 	aichatsrv "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
 type AIChatController struct {
-	srv srvv1.Service
+	srv aichatsrv.AIChatSrv
 }
 
-func NewController(storeIns store.Factory) *AIChatController {
-	return &AIChatController{srv: srvv1.NewService(storeIns)}
+func NewController(service aichatsrv.AIChatSrv) *AIChatController {
+	return &AIChatController{srv: service}
 }
 
 // ListAssistants 返回系统助手和当前用户助手，不返回其他用户助手。
 func (ac *AIChatController) ListAssistants(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().ListAssistants(c)
+		return ac.srv.ListAssistants(c)
 	})
 }
 
 // CreateAssistant 创建当前用户助手；系统助手只能由系统预置，不由该接口创建。
 func (ac *AIChatController) CreateAssistant(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatAssistantUpsertRequest{}, func(r *iapiserver.AIChatAssistantUpsertRequest) (any, error) {
-		return ac.srv.AIChat().CreateAssistant(c, r)
+		return ac.srv.CreateAssistant(c, r)
 	})
 }
 
@@ -38,34 +36,34 @@ func (ac *AIChatController) CreateAssistant(c *gin.Context) {
 func (ac *AIChatController) UpdateAssistant(c *gin.Context) {
 	req := &iapiserver.AIChatAssistantUpsertRequest{ID: c.Param("assistant_id")}
 	core.Run(c, req, func(r *iapiserver.AIChatAssistantUpsertRequest) (any, error) {
-		return ac.srv.AIChat().UpdateAssistant(c, r)
+		return ac.srv.UpdateAssistant(c, r)
 	})
 }
 
 // DeleteAssistant 删除当前用户非系统助手，系统助手返回业务错误码。
 func (ac *AIChatController) DeleteAssistant(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().DeleteAssistant(c, c.Param("assistant_id"))
+		return ac.srv.DeleteAssistant(c, c.Param("assistant_id"))
 	})
 }
 
 // ListTopics 按当前用户隔离返回话题列表。
 func (ac *AIChatController) ListTopics(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatTopicListRequest{}, func(r *iapiserver.AIChatTopicListRequest) (any, error) {
-		return ac.srv.AIChat().ListTopics(c, r)
+		return ac.srv.ListTopics(c, r)
 	})
 }
 
 // CreateTopic 创建当前用户话题，不创建跨用户共享入口。
 func (ac *AIChatController) CreateTopic(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatTopicCreateRequest{}, func(r *iapiserver.AIChatTopicCreateRequest) (any, error) {
-		return ac.srv.AIChat().CreateTopic(c, r)
+		return ac.srv.CreateTopic(c, r)
 	})
 }
 
 func (ac *AIChatController) GetTopic(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().GetTopic(c, c.Param("topic_id"))
+		return ac.srv.GetTopic(c, c.Param("topic_id"))
 	})
 }
 
@@ -73,21 +71,21 @@ func (ac *AIChatController) GetTopic(c *gin.Context) {
 func (ac *AIChatController) UpdateTopic(c *gin.Context) {
 	req := &iapiserver.AIChatTopicUpdateRequest{ID: c.Param("topic_id")}
 	core.Run(c, req, func(r *iapiserver.AIChatTopicUpdateRequest) (any, error) {
-		return ac.srv.AIChat().UpdateTopic(c, r)
+		return ac.srv.UpdateTopic(c, r)
 	})
 }
 
 // DeleteTopic 软删除当前用户话题和消息视图。
 func (ac *AIChatController) DeleteTopic(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().DeleteTopic(c, c.Param("topic_id"))
+		return ac.srv.DeleteTopic(c, c.Param("topic_id"))
 	})
 }
 
 // ListMessages 按 created_at asc、version asc 返回当前用户话题消息。
 func (ac *AIChatController) ListMessages(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().ListMessages(c, c.Param("topic_id"))
+		return ac.srv.ListMessages(c, c.Param("topic_id"))
 	})
 }
 
@@ -98,7 +96,7 @@ func (ac *AIChatController) CreateMessage(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	result, err := ac.srv.AIChat().CreateMessage(c, req)
+	result, err := ac.srv.CreateMessage(c, req)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -113,7 +111,7 @@ func (ac *AIChatController) CreateMessage(c *gin.Context) {
 // StopGeneration 原子停止当前用户 generation，并更新 assistant message 状态。
 func (ac *AIChatController) StopGeneration(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().StopGeneration(c, c.Param("generation_id"))
+		return ac.srv.StopGeneration(c, c.Param("generation_id"))
 	})
 }
 
@@ -124,7 +122,7 @@ func (ac *AIChatController) StreamGenerationEvents(c *gin.Context) {
 
 // RegenerateMessage 对当前用户 assistant message 重新生成并返回 SSE。
 func (ac *AIChatController) RegenerateMessage(c *gin.Context) {
-	result, err := ac.srv.AIChat().RegenerateMessage(c, c.Param("message_id"))
+	result, err := ac.srv.RegenerateMessage(c, c.Param("message_id"))
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -139,7 +137,7 @@ func (ac *AIChatController) EditRegenerateMessage(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	result, err := ac.srv.AIChat().EditRegenerateMessage(c, req)
+	result, err := ac.srv.EditRegenerateMessage(c, req)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -150,21 +148,21 @@ func (ac *AIChatController) EditRegenerateMessage(c *gin.Context) {
 // BranchMessage 从当前用户 assistant message 继续原话题或创建分支话题。
 func (ac *AIChatController) BranchMessage(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().BranchMessage(c, c.Param("message_id"))
+		return ac.srv.BranchMessage(c, c.Param("message_id"))
 	})
 }
 
 // ListQuickPhrases 返回当前用户全局和助手级快捷短语。
 func (ac *AIChatController) ListQuickPhrases(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatQuickPhraseListRequest{}, func(r *iapiserver.AIChatQuickPhraseListRequest) (any, error) {
-		return ac.srv.AIChat().ListQuickPhrases(c, r)
+		return ac.srv.ListQuickPhrases(c, r)
 	})
 }
 
 // CreateQuickPhrase 创建当前用户快捷短语。
 func (ac *AIChatController) CreateQuickPhrase(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatQuickPhraseUpsertRequest{}, func(r *iapiserver.AIChatQuickPhraseUpsertRequest) (any, error) {
-		return ac.srv.AIChat().CreateQuickPhrase(c, r)
+		return ac.srv.CreateQuickPhrase(c, r)
 	})
 }
 
@@ -172,20 +170,20 @@ func (ac *AIChatController) CreateQuickPhrase(c *gin.Context) {
 func (ac *AIChatController) UpdateQuickPhrase(c *gin.Context) {
 	req := &iapiserver.AIChatQuickPhraseUpsertRequest{ID: c.Param("quick_phrase_id")}
 	core.Run(c, req, func(r *iapiserver.AIChatQuickPhraseUpsertRequest) (any, error) {
-		return ac.srv.AIChat().UpdateQuickPhrase(c, r)
+		return ac.srv.UpdateQuickPhrase(c, r)
 	})
 }
 
 // DeleteQuickPhrase 删除当前用户快捷短语。
 func (ac *AIChatController) DeleteQuickPhrase(c *gin.Context) {
 	core.Run(c, nil, func(_ any) (any, error) {
-		return ac.srv.AIChat().DeleteQuickPhrase(c, c.Param("quick_phrase_id"))
+		return ac.srv.DeleteQuickPhrase(c, c.Param("quick_phrase_id"))
 	})
 }
 
 func (ac *AIChatController) TranslateContent(c *gin.Context) {
 	core.Run(c, &iapiserver.AIChatTranslationRequest{}, func(r *iapiserver.AIChatTranslationRequest) (any, error) {
-		return ac.srv.AIChat().TranslateContent(c, r)
+		return ac.srv.TranslateContent(c, r)
 	})
 }
 

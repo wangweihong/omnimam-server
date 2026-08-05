@@ -18,10 +18,12 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/prompt"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
 	taskcenterctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/taskcenter"
+	usermodelctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/usermodel"
 	workflowcanvasctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/workflowcanvas"
 	authmiddleware "github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
+	aichatsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	legacyappsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
@@ -30,6 +32,7 @@ import (
 	notificationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/notification"
 	platformmanagementsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platformmanagement"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	usermodelsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/usermodel"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
@@ -42,6 +45,8 @@ func initRouter(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
+	userModel *usermodelsvc.Service,
+	aiChat aichatsvc.AIChatSrv,
 	agent *agentsvc.Service,
 	appStudio *appstudiosvc.Service,
 	authOptions *options.AuthOptions,
@@ -50,7 +55,7 @@ func initRouter(
 	mcpOptions *options.MCPOptions,
 ) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, agent, appStudio, authOptions, sseOptions, mcpProcessor, mcpOptions)
+	installApis(g, applicationPlatform, taskCenter, userModel, aiChat, agent, appStudio, authOptions, sseOptions, mcpProcessor, mcpOptions)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -64,13 +69,15 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, nil, nil, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
+	return installApis(g, applicationPlatform, taskCenter, nil, nil, nil, nil, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
 }
 
 func installApis(
 	g *gin.Engine,
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
+	userModel *usermodelsvc.Service,
+	aiChat aichatsvc.AIChatSrv,
 	agent *agentsvc.Service,
 	appStudio *appstudiosvc.Service,
 	authOptions *options.AuthOptions,
@@ -98,6 +105,9 @@ func installApis(
 			installSSEApis(v1, storeIns, sseOptions)
 			installNotificationApis(v1, storeIns)
 			installPlatformApis(v1, storeIns, nil)
+			if userModel != nil {
+				installUserModelApis(v1, userModel)
+			}
 			installAssetLibraryContractApis(v1, storeIns, taskCenter, applicationPlatform)
 			installAssetApis(v1, storeIns)
 			installPromptApis(v1, storeIns)
@@ -111,7 +121,10 @@ func installApis(
 				installTaskCenterApis(v1, taskCenter)
 				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter, applicationPlatform))
 			}
-			installAIChatApis(v1, storeIns)
+			if aiChat == nil {
+				aiChat = aichatsvc.NewService(aichatsvc.Dependencies{Store: storeIns, ModelReader: legacyappsvc.NewLegacyService(storeIns)})
+			}
+			installAIChatApis(v1, aiChat)
 			if applicationPlatform != nil {
 				installApplicationPlatformApis(v1, applicationPlatform)
 			}
@@ -520,8 +533,8 @@ func installTaskCenterApis(rg *gin.RouterGroup, service taskcentersvc.TaskCenter
 	}
 }
 
-func installAIChatApis(rg *gin.RouterGroup, storeIns store.Factory) {
-	aiChatController := aichatctrl.NewController(storeIns)
+func installAIChatApis(rg *gin.RouterGroup, service aichatsvc.AIChatSrv) {
+	aiChatController := aichatctrl.NewController(service)
 	aiChat := rg.Group("/ai-chat")
 	{
 		assistantRead := aiChat.Group("/assistants")
@@ -572,28 +585,6 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 
 	rg.GET("/me", platformController.Me)
 
-	// 模型提供商
-	providers := rg.Group("/model-providers")
-	{
-		providers.GET("", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), platformController.ListProviders)
-		providers.POST("", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.CreateProvider)
-		providers.POST("/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), platformController.TestUnsavedProvider)
-		providers.GET("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), platformController.GetProvider)
-		providers.PATCH("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.UpdateProvider)
-		providers.DELETE("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.DeleteProvider)
-		providers.POST("/:provider_id/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), platformController.TestProvider)
-		providers.GET("/:provider_id/models", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), platformController.ListProviderModels)
-		providers.POST("/:provider_id/models", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.CreateProviderModel)
-		providers.POST("/:provider_id/models/sync", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.SyncProviderModels)
-	}
-
-	rg.PATCH("/provider-models/:model_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.UpdateProviderModel)
-	rg.DELETE("/provider-models/:model_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), platformController.DeleteProviderModel)
-	rg.POST("/provider-models/:model_id/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), platformController.CheckProviderModelHealth)
-	rg.GET("/default-models/:usage", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), platformController.GetDefaultModel)
-	rg.PUT("/default-models/:usage", authmiddleware.RequireIdentityPermission("MODEL_DEFAULT_WRITE"), platformController.PutDefaultModel)
-	rg.GET("/model-options", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), platformController.ListModelOptions)
-
 	assets := rg.Group("/assets")
 	{
 		assets.POST("/upload", platformController.UploadAsset)
@@ -615,6 +606,34 @@ func installPlatformApis(rg *gin.RouterGroup, storeIns store.Factory, dispatcher
 		canvasAssets.POST("/register-output", platformController.RegisterCanvasOutput)
 	}
 
+}
+
+func installUserModelApis(rg *gin.RouterGroup, service *usermodelsvc.Service) {
+	controller := usermodelctrl.New(service)
+	userModel := rg.Group("/user-model")
+	userModel.GET("/provider-types", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.ListProviderTypes)
+
+	providers := userModel.Group("/providers")
+	providers.GET("", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.ListProviders)
+	providers.POST("", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.CreateProvider)
+	providers.POST("/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), controller.TestUnsavedProvider)
+	providers.GET("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.GetProvider)
+	providers.PATCH("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.UpdateProvider)
+	providers.DELETE("/:provider_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.DeleteProvider)
+	providers.POST("/:provider_id/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), controller.TestProvider)
+	providers.GET("/:provider_id/models", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.ListProviderModels)
+	providers.POST("/:provider_id/models", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.CreateProviderModel)
+	providers.POST("/:provider_id/models/sync", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.SyncProviderModels)
+
+	models := userModel.Group("/models")
+	models.PATCH("/:model_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.UpdateProviderModel)
+	models.DELETE("/:model_id", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_WRITE"), controller.DeleteProviderModel)
+	models.POST("/:model_id/test", authmiddleware.RequireIdentityPermission("MODEL_HEALTH_TEST"), controller.TestProviderModel)
+
+	defaults := userModel.Group("/defaults")
+	defaults.GET("/:usage", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.GetDefaultModel)
+	defaults.PUT("/:usage", authmiddleware.RequireIdentityPermission("MODEL_DEFAULT_WRITE"), controller.SaveDefaultModel)
+	userModel.GET("/options", authmiddleware.RequireIdentityPermission("MODEL_CONFIG_READ"), controller.ListModelOptions)
 }
 
 func installAssetLibraryContractApis(

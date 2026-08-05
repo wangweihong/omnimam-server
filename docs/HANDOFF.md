@@ -2,94 +2,126 @@
 
 ## Current goal and status
 
-- Goal: diagnose and fix backend/runtime issues A-003, A-005, A-006, A-007, and A-011 from `/home/wwhvw/codespace/omnimam-web/docs/agent-appstudio-real-user-test-2026-08-04.md`.
-- Status: focused fixes are implemented, deployed, and verified. Remaining Agent Coding/Hermes execution, browser endpoint, and deletion semantics are explicit contract/runtime blockers documented below.
+- Goal: update the server to released SSOT tag `spec-v1.17.0` and implement its required User Model, Model Gateway, and AI Chat backend changes.
+- Status: complete. The server is pinned to released `spec-v1.17.0`; the required User Model, Model Gateway, and AI Chat backend changes are implemented and all permitted focused checks pass.
 
 ## Work completed in this session
 
-- Read the repository and backend implementation rules plus the required backend skill.
-- Confirmed `ssot` and `SSOT_VERSION` both reference released `spec-v1.16.1` commit `63defea97f45761acf300030cad1c00d6b83bb5a`.
-- Read only the relevant report sections for A-003, A-005, A-006, A-007, A-011, and the Hermes permission evidence.
-- Identified the first concrete environment risk: Hermes runs as UID/GID `10000`, while `/opt/data/kanban.db.init.lock` is owned by UID/GID `1000` with mode `0644`.
-- Repaired the active standalone `hermes` container data mount with `chown -R 10000:10000 /opt/data` and `chmod -R u+rwX /opt/data`; the directory, database, and lock file now belong to `10000:10000`, with no new immediate `PermissionError` observed.
-- Confirmed Agent Runtime task failures report `agent runtime ensure returned an invalid ready endpoint` after three attempts.
-- Confirmed AppStudio Preview task failures report `appstudio preview ensure returned an invalid ready runtime` after three attempts.
-- Confirmed CHAT Invocation `545be5fb-ae4b-4d13-8759-410e5a3f6767` had no AtomicTask or execution completion path and remained `RUNNING` until manually canceled.
-- Confirmed AppStudio keyword search currently uses PostgreSQL case-sensitive `LIKE` over `name` and `description`.
-- Confirmed Agent `1dca9028-637d-4644-99ca-4daee44f0801` remains `DELETING`; deletion can skip cleanup task submission when the current Runtime binding is already terminal, while no final deletion transition is present.
-- Fixed the direct A-003/A-007 validation defect: Infra stores endpoint references as `infra-endpoint://<id>`, while Task Worker compared them to the bare endpoint ID and therefore rejected every otherwise-ready response.
-- Changed AppStudio application keyword filtering to explicit PostgreSQL `ILIKE` over `name` and `description`, scoped only to AppStudio.
-- Changed unsupported CHAT execution from indefinite `RUNNING` to an immediately persisted `FAILED` Invocation with `ERR_AGENT_INVOCATION_TASK_UNAVAILABLE` and a clear failure message; idempotent replays now return the existing Invocation without mutating its terminal state.
-- Passed focused tests for Task Worker, AppStudio PostgreSQL store, and Agent service; built and deployed `apiserver` and `taskworker` image `3812662-amd64` with targeted container recreation.
-- Verified deployed AppStudio filtering directly: lowercase `e2e` returns only the two mixed-case `E2E` projects.
-- Verified a new AppStudio Preview reaches `RUNNING` with a canonical `infra-endpoint://...` reference, eliminating the previous invalid-ready-runtime failure.
-- Found that the internal Task Worker to Infra Server JSON protocol drops `AuthorizationRef`, `EndpointVisibility`, `FunctionRef`, and `FunctionArguments` because those fields are intentionally hidden from the public API DTO with `json:"-"`; the resulting Preview endpoint incorrectly defaults to `INTERNAL` and has no browser URL.
-- Added the internal `create_context` command object, rebuilt/redeployed `infraserver` and `taskworker`, and verified Preview `67440f2a-9ee8-4499-9f17-2c67beffbad7` reaches `RUNNING` with a `READY`, `USER_ACCESSIBLE` endpoint.
-- Confirmed the generated Runtime containers use `nginx:1.27-alpine` and exit with code 1 because `ReadonlyRootfs=true` prevents nginx from creating `/var/cache/nginx/client_temp`.
-- Confirmed two AppStudio Coding Agents (`agent.coding`) exist in `READY` but have no `agent_runtime_bindings`; AppStudio initialization creates only Agent metadata and never submits a Coding Runtime ensure task. The public runtime start path also intentionally hides non-platform Agents.
-- Docker service Runtime creation now inspects the container immediately after start and returns a wrapped failure when it has already exited; the failed container is deleted instead of persisting a false `RUNNING` result. Rebuilt and recreated `omnimam-infraserver` with image tag `3812662-amd64`.
-- Updated `agent.coding@1.0` to `ghcr.io/anomalyco/opencode:1.18.13` in `scripts/install/environment.sh` and the self-contained Compose fallback, pulled the image (digest `sha256:246ebd75d25380cde481b7507d38ed01ce813d541eb4c7412a25ba7d9bd1abe7`), and recreated a healthy `omnimam-infraserver` with the new mapping.
-- Updated `agent.hermes@1.0` to `nousresearch/hermes-agent:v2026.8.3` in both deployment default sources, pulled digest `sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e`, and recreated a healthy `omnimam-infraserver` with both pinned Agent profile mappings.
+- Updated `ssot` to released tag `spec-v1.17.0` at commit `bb3a0e8ff182c740f8d08e46613a6876a8e2aa86`.
+- Updated `SSOT_VERSION` and verified its commit matches the submodule HEAD.
+- Read the repository rules, `backend/AGENTS.md`, and `skills/omnimam-server-backend/SKILL.md`.
+- Read the `spec-v1.17.0` release entry and only its directly relevant User Model, Model Gateway, and AI Chat contract sections.
+- Mapped the changed contracts to the existing Model Gateway registry, legacy model-management service/controller/routes, AI Chat service, DTOs, and stores.
+- Confirmed the existing model tables already use `user_model_providers`, `user_provider_models`, and `user_default_model_configs`.
+- Added canonical public ProviderType DTOs and changed the OpenAI-compatible stable ID from `openai-compatible` to `openai_compatible` without a compatibility alias.
+- Extended the immutable Runtime Registry with ProviderType registrations, private Adapter/Executor mappings, validation, sorted redacted projections, and defensive deep copies.
+- Registered `openai_compatible` and `deepseek_official` with their SSOT-defined authentication, configuration, discovery/probe, Adapter, and capability Executor facts.
+- Added OpenAI-compatible Gateway Adapter/Executor bootstrap implementations by reusing the existing OpenAI-compatible protocol implementation.
+- Extended the existing Registry tests for projection immutability and invalid internal mappings; focused Registry tests pass.
+- Verified the static adapter registrations and OpenAI-compatible protocol reuse with the existing focused adapter tests.
+- Added the controlled `ListProviderTypes`, `TestProviderConnection`, `DiscoverProviderModels`, `ProbeProviderModel`, and `ResolveUserModelCapabilities` module interfaces.
+- Added an injected `CredentialResolver`; Gateway requests accept only scoped opaque handles and never return resolved authentication fields.
+- Added request-time ProviderType, endpoint, authentication, credential, and non-sensitive config-schema validation without persisting transient connection data.
+- Added OpenAI-compatible `/models` discovery from `data[].id`, model probe by directory lookup only, and `OpenAI-Organization` / `OpenAI-Project` header application.
+- Generated `ProviderType.DeepCopy` and used it for defensive public Registry projections.
+- Added the canonical User Model service and controller with owner-scoped Provider/model/default operations, saved and unsaved Provider tests, non-destructive model sync, model probes, health fact persistence, capability projection, and default-model eligibility checks.
+- Installed only canonical `/api/v1/user-model/...` routes and removed legacy model-management route registration.
+- Added focused tests for opaque credential handles, non-destructive model sync, and canonical route coverage; the related User Model, Gateway, adapter, store compile, route, and DTO compile checks pass.
+- Added short-lived `UserModelExecutionContext` issuance with owner, provider/model eligibility, capability, configuration-version, and default-usage validation.
+- Added `ExecuteOperation(UserModelTarget)` with issuer, principal scope, expiry, capability, configuration-version, Registry mapping, and executor implementation validation.
+- Added focused tests for non-sensitive execution grants, cross-user rejection, expiry rejection, and Registry executor dispatch; User Model and Model Gateway package tests pass.
+- Added the SSOT-required GenerationRun route snapshot fields: `capability_definition_id`, `model_config_version`, and non-sensitive `model_snapshot_json`, including persistence JSON hooks.
+- Changed AI Chat generation transaction creation to persist a fixed User Model route snapshot before any remote provider execution.
+- Routed chat, image chat, translation, regenerate, and edit-regenerate through User Model execution-context resolution and Model Gateway operation execution.
+- Required both `text.chat_completion` and `image.understanding` for image chat; translation uses `text.translate`.
+- Removed AI Chat's direct construction of the legacy OpenAI-compatible adapter and injected the complete AI Chat service from server bootstrap.
+- Updated the existing AI Chat relation test to verify the User Model/Gateway boundary; focused AI Chat and API-server compile checks passed before the final generation pass.
+- Regenerated API deep-copy code from the repository root and verified `AIChatGeneration.DeepCopyInto` deep-copies `ModelSnapshot` through `deepcopyGenAnyInto`.
+- Fixed `text.translate` Gateway input to carry `target_language` as a system instruction while keeping source content in the user message.
+- Extended the existing AI Chat test file to cover the OpenAI-compatible `values.choices[0].message.content` output shape and translation target propagation; the focused AI Chat package test passes.
 
 ## Current in-progress work
 
-- No implementation is currently in progress.
-- Profile-specific Agent Runtime lifecycle work requires explicit authorization and released-SSOT-compatible mounts, endpoint routing, and Invocation execution contracts.
+- None.
 
 ## Files added, modified, renamed, or removed
 
-- Modified `docs/HANDOFF.md` for this live checkpoint.
-- Modified `backend/internal/taskworker/taskworker.go` and its existing test for canonical Infra endpoint references.
-- Modified `backend/internal/apiserver/store/postgresql/appstudio.go` and existing `pagination_test.go` for case-insensitive AppStudio keyword filtering.
-- Modified `backend/internal/apiserver/service/v1/agent/service.go` so unavailable CHAT execution reaches a failed terminal state.
-- Modified `backend/internal/infrastructure/protocol.go`, `client.go`, and `server.go` so service-internal create context survives JSON transport without exposing the fields on the public API DTO.
-- Preserve all pre-existing user changes in the dirty working tree, including prior AppStudio, Agent, Identity, SSOT pin, and gotoolbox edits.
+- Modified `SSOT_VERSION`.
+- Updated the `ssot` submodule gitlink.
+- Modified `docs/HANDOFF.md`.
+- Modified `backend/apis/iapiserver/meta_platform.go`.
+- Modified `backend/apis/iapiserver/request_platform.go`.
+- Regenerated `backend/apis/iapiserver/deepcopy_generated.go`.
+- Modified `backend/internal/apiserver/service/v1/modelgateway/registry.go` and existing `registry_test.go`.
+- Added `backend/internal/apiserver/service/v1/modelgateway/user_model_gateway.go`.
+- Modified `backend/internal/apiserver/store/store.go`, `factory.go`, `postgresql/0_pg.go`, and `postgresql/platform.go` for owner-scoped access, transactional cascade deletion, and model health-check persistence.
+- Modified Model Gateway adapter bootstrap and DeepSeek registration.
+- Added `backend/internal/apiserver/service/v1/modelgateway/adapters/providers/openaicompat/registration.go`.
+- Modified the OpenAI-compatible protocol adapter, shared HTTP JSON transport, and existing adapter tests.
+- Added `backend/internal/apiserver/service/v1/usermodel/credential.go` and `service.go`.
+- Added `backend/internal/apiserver/controller/v1/usermodel/usermodel.go`.
+- Modified `backend/internal/apiserver/server.go` and `route.go` to inject User Model and install only canonical `/api/v1/user-model/...` routes.
+- Modified `backend/apis/iapiserver/meta_ai_chat.go`, `backend/internal/apiserver/store/store.go`, and `backend/internal/apiserver/store/postgresql/ai_chat.go` for immutable GenerationRun route snapshots.
+- Modified `backend/internal/apiserver/service/v1/aichat/aichat.go`, its existing relation test, and `backend/internal/apiserver/controller/v1/aichat/aichat.go` to use the User Model/Gateway execution boundary.
 
 ## Key architectural or design decisions
 
-- The active Hermes storage ownership problem is fixed, but Runtime/Preview have separate, explicit invalid-ready-output failures that require orchestration/configuration fixes.
-- Runtime failure must propagate to dependent Invocation and deletion workflows using existing SSOT-defined terminal states and errors; no new states or error codes will be invented.
-- AppStudio keyword filtering will be fixed at the existing query boundary without changing the public API.
-- Task Worker must validate the canonical `infra-endpoint://<id>` reference produced by Infrastructure; the endpoint readiness requirement itself remains strict.
-- `ERR_AGENT_INVOCATION_TASK_UNAVAILABLE` is reused for fail-fast CHAT terminalization because no released Agent Invocation execution functionRef or adapter contract exists.
-- Public Infrastructure API fields remain unchanged; service-only authorization, endpoint visibility, and function metadata travel in a separate internal command context.
+- `user-model` immediately replaces `model-management`; canonical APIs use `/api/v1/user-model/...` and legacy model routes are removed without aliases or redirects.
+- User Model owns user Provider records, models, defaults, health facts, execution eligibility, and issuance of `UserModelExecutionContext`.
+- Model Gateway owns the ProviderType registry, adapters, discovery, probes, and operation execution using `UserModelTarget`.
+- ApplicationEngineType remains a separate existing runtime concept and must not be exposed as the ProviderType registry.
+- AI Chat must resolve a User Model execution context before invoking Model Gateway.
+- GenerationRun must persist `model_id`, `capability_definition_id`, `model_config_version`, and a non-sensitive `model_snapshot_json`.
+- Execution context connection details remain in-process only; `model_snapshot` excludes endpoint, credential reference, credential handle, and authentication configuration.
+- Required capability IDs are `text.chat_completion`, `text.translate`, and additionally `image.understanding` for image chat.
+- Provider connection, discovery, and model probe use request-local transient `EngineInstance` values solely to reuse the existing transport; they are never persisted or converted into platform Engine/Binding facts.
+- OpenAI-compatible model probe performs only `GET /models`; it never issues a chat or generation request.
 
 ## API, schema, dependency, or configuration changes
 
-- Active container state only: `/opt/data` ownership changed to UID/GID `10000`; no repository deployment configuration has changed yet.
-- No public API, schema, dependency, or environment-variable changes were made. The internal Infrastructure command wire format gains an optional `create_context` object.
-- Any deployment environment variable change must originate in `scripts/install/environment.sh`; no `.env` or Compose `env_file` will be introduced.
+- SSOT pin changed from `spec-v1.16.1` to `spec-v1.17.0`.
+- Added the SSOT-defined in-process ProviderType DTO and registry contract.
+- Provider responses now include read-only `config_version`; provider-model responses add feature labels, disabled/derived capability fields, execution eligibility fields, resolution status, health timestamp, and read-only config version.
+- Canonical create/update requests no longer accept client-maintained capabilities or `stream_supported`; provider/model inputs now carry bounded string and URL validation.
+- Added the `ModelHealthCheck` persistence model and store boundary; focused PostgreSQL package compilation passes.
+- Added an in-process 30-second opaque credential handle broker scoped to ProviderType and authentication type.
+- User Model CRUD now uses owner-scoped store reads/deletes; model sync only creates missing remote models and does not overwrite user-maintained fields.
+- Removed legacy `/model-providers`, `/provider-models`, `/default-models`, and `/model-options` route registration without aliases.
 
 ## Verification performed and remaining checks
 
-- Verified the SSOT release pin, exact reported reproduction evidence, active Hermes ownership repair, focused tests, image builds, targeted deployment, AppStudio `ILIKE` behavior, internal create-context transport, and Preview transition to `RUNNING` with `USER_ACCESSIBLE` visibility.
-- Final verification passed: `go test ./internal/infrastructure ./internal/taskworker ./internal/apiserver/store/postgresql ./internal/apiserver/service/v1/agent`, `bash -n scripts/install/environment.sh`, `docker compose -f deployments/docker-compose.yaml config`, and `git diff --check`.
-- A browser HTTP(S) endpoint and functional Agent runtime cannot be verified with the current Docker profile implementation.
+- Verified `SSOT_VERSION.commit == ssot HEAD == bb3a0e8ff182c740f8d08e46613a6876a8e2aa86` and exact tag `spec-v1.17.0`.
+- Verified the release is eligible as a formal implementation basis.
+- Passed focused Registry tests: `go test ./internal/apiserver/service/v1/modelgateway -run 'Test(StaticRegistries|StaticRegistryRejectsInvalidRegistrations|ProviderTypeRegistryRejectsInternalMappingErrors)$' -count=1`.
+- Passed focused adapter bootstrap tests: `go test ./internal/apiserver/service/v1/modelgateway/adapters -run 'Test(StaticRegistrationsHaveImplementations|OpenAICompatibleProvidersUseProtocolPackage)$' -count=1`.
+- Passed focused User Model Gateway tests: `go test ./internal/apiserver/service/v1/modelgateway -run 'Test(StaticRegistries|StaticRegistryRejectsInvalidRegistrations|ProviderTypeRegistryRejectsInternalMappingErrors|UserModelGatewayProviderOperations|UserModelGatewayRejectsUntrustedConnectionFields)$' -count=1`.
+- Passed focused OpenAI-compatible discovery/probe tests: `go test ./internal/apiserver/service/v1/modelgateway/adapters -run 'Test(StaticRegistrationsHaveImplementations|OpenAICompatibleProvidersUseProtocolPackage|OpenAICompatibleDiscoversAndProbesModelsWithoutGeneration)$' -count=1`.
+- Passed compile-only checks for `service/v1/usermodel`, `controller/v1/usermodel`, and `service/v1/modelgateway`.
+- Passed full focused User Model and Model Gateway package tests, focused OpenAI-compatible adapter tests, focused PostgreSQL compile, canonical route test, API DTO compile, and `git diff --check` as recorded in the current session checkpoint.
+- Re-ran focused User Model, Model Gateway, PostgreSQL compile, canonical route, and API DTO compile checks after exposing `last_checked_at`; all pass.
+- Passed focused AI Chat package tests and API-server route compile/test checks before this checkpoint.
+- Passed the final focused AI Chat package test after deep-copy generation and response-shape coverage.
+- Verified by code review that chat, regenerate, edit-regenerate, and in-topic translation create their GenerationRun transaction before Gateway execution; standalone translation is a MessageTranslation operation and still resolves User Model before Gateway execution as required by BR-AICHAT-27.
+- Re-ran `go test ./internal/apiserver/service/v1/usermodel -count=1`, `go test ./internal/apiserver/service/v1/modelgateway -count=1`, PostgreSQL compile, canonical route test, and API DTO compile; all pass.
+- Verified AI Chat has no remaining `OpenAICompatibleAdapter` or `invokeProvider` execution path.
+- Verified `ssot/` has no internal file changes and remains at exact tag `spec-v1.17.0`.
+- Final `git diff --check` passes. The full repository test suite was intentionally not run per task constraints.
 
 ## Outstanding tasks
 
-- Make Hermes `/opt/data` ownership safe in repository-managed deployment if the relevant existing deployment path is confirmed.
-- Preserve user-accessible endpoint visibility across the internal Infrastructure command transport.
-- Implement a real endpoint allocation/display URL and profile-specific Docker runtime behavior only after confirming the released runtime contract and deployment design; the current provider returns only `infra-runtime://...`.
-- Add an SSOT-approved AppStudio Coding Runtime lifecycle and OpenCode-compatible runtime adapter; current AppStudio creation stops after creating Coding Agent metadata.
-- Ensure Agent deletion cannot remain indefinitely in `DELETING`; use existing retry/failure semantics.
-- Recheck legacy Agent `1dca9028-637d-4644-99ca-4daee44f0801` without deleting unrelated data.
+- None for the requested `spec-v1.17.0` backend update.
 
 ## Known issues and risks
 
-- The working tree is dirty; overlapping user edits must be preserved.
-- Runtime and Preview no longer fail on canonical endpoint validation, but the current Docker provider still does not create a functional Hermes runtime or browser-accessible Preview endpoint.
-- `agent.hermes@1.0` now maps to `nousresearch/hermes-agent:v2026.8.3`, but the Docker provider still supplies no persistent `/opt/data` bind mount or Hermes port publication.
-- `agent.coding@1.0` now maps to `ghcr.io/anomalyco/opencode:1.18.13`; no Coding Runtime is currently requested, and the Docker provider still has no profile-specific command, workspace mount, endpoint publication, or Invocation adapter.
-- Infrastructure persists Runtime status `RUNNING` immediately after Docker start, while the actual containers can already be `Exited (1)`; no background provider reconciliation corrects the stale database state.
-- The active standalone Hermes image is `nousresearch/hermes-agent:latest`, exposes ports `8642` and `9119`, and bind-mounts `/home/wwhvw/.hermes` to `/opt/data`; the repository Docker provider currently has no profile-specific command, port publishing, persistent mount, or source resolver, so changing only the image would not constitute a working Agent Runtime.
-- A-011 cannot currently be finalized cleanly: Agent S1 permits deleting or soft-deleting the Agent, but released S2 has no Agent soft-delete field and foreign keys retain Session/Message/Invocation facts. Hard deletion would require deleting historical facts; adding a field is prohibited without SSOT. Do not choose either behavior without an upstream contract correction.
-- `ssot/domains/agent/context.md` contains stale unreleased navigation text, while `RELEASE.md`, `GLOBAL_CONTEXT.md`, and `CONTEXT_MAP.md` confirm Agent S1/S2 release in `spec-v1.16.0`; do not modify `ssot/` here.
-- The test environment at port `9990` may be running an older image than the current source tree.
+- Existing provider type value `openai-compatible` differs from canonical `openai_compatible`; no client compatibility alias may be invented.
+- The current worktree is dirty with the intentional SSOT and handoff changes; preserve all unrelated user changes.
+- `ProviderTestRequest` now represents an unsaved-provider test and has required connection fields; the saved-provider test endpoint must use only its path provider ID instead of binding that DTO.
+- Do not modify files inside `ssot/` in this repository.
+- Do not add a new binary under `backend/cmd/` without explicit user approval.
 
 ## Exact recommended next step
 
-Define and release the Agent Coding/Hermes runtime execution contract, then implement profile-specific mounts, ports/endpoints, lifecycle reconciliation, and Invocation adapters without repeating the completed fixes above.
+Review the completed diff, then stage and commit the `spec-v1.17.0` server update when ready.
 
 Next Prompt:
 

@@ -50,6 +50,16 @@ func (s *providerStore) Get(ctx context.Context, id string) (*iapiserver.Provide
 	return &item, nil
 }
 
+func (s *providerStore) GetOwned(ctx context.Context, ownerUserID, id string) (*iapiserver.Provider, error) {
+	var item iapiserver.Provider
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).
+		First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
 func (s *providerStore) GetByIDs(
 	ctx context.Context,
 	ownerUserID string,
@@ -110,6 +120,28 @@ func (s *providerStore) Delete(ctx context.Context, id string) error {
 	return errors.WithStack(s.ds.db.WithContext(ctx).Model(&iapiserver.Provider{}).
 		Where("id = ?", id).
 		Update("deleted_at", time.Now().UTC().Format(time.RFC3339)).Error)
+}
+
+func (s *providerStore) DeleteOwnedCascade(ctx context.Context, ownerUserID, id string) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var provider iapiserver.Provider
+		if err := tx.Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).First(&provider).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("owner_user_id = ? AND provider_id = ?", ownerUserID, id).
+			Delete(&iapiserver.SystemLLMConfig{}).Error; err != nil {
+			return err
+		}
+		deletedAt := time.Now().UTC().Format(time.RFC3339)
+		if err := tx.Model(&iapiserver.ProviderModel{}).
+			Where("owner_user_id = ? AND provider_id = ? AND deleted_at = ''", ownerUserID, id).
+			Update("deleted_at", deletedAt).Error; err != nil {
+			return err
+		}
+		return tx.Model(&iapiserver.Provider{}).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).
+			Update("deleted_at", deletedAt).Error
+	}))
 }
 
 type providerModelStore struct{ ds *datastore }
@@ -193,6 +225,16 @@ func (s *providerModelStore) Get(ctx context.Context, id string) (*iapiserver.Pr
 	return &item, nil
 }
 
+func (s *providerModelStore) GetOwned(ctx context.Context, ownerUserID, id string) (*iapiserver.ProviderModel, error) {
+	var item iapiserver.ProviderModel
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).
+		First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
+}
+
 func (s *providerModelStore) GetByIDs(
 	ctx context.Context,
 	ownerUserID string,
@@ -246,6 +288,33 @@ func (s *providerModelStore) DeleteByProviderID(ctx context.Context, providerID 
 	)
 }
 
+func (s *providerModelStore) DeleteOwnedCascade(ctx context.Context, ownerUserID, id string) error {
+	return errors.WithStack(s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model iapiserver.ProviderModel
+		if err := tx.Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).First(&model).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("owner_user_id = ? AND provider_id = ? AND model_id = ?", ownerUserID, model.ProviderID, id).
+			Delete(&iapiserver.SystemLLMConfig{}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&iapiserver.ProviderModel{}).
+			Where("owner_user_id = ? AND id = ? AND deleted_at = ''", ownerUserID, id).
+			Update("deleted_at", time.Now().UTC().Format(time.RFC3339)).Error
+	}))
+}
+
+type modelHealthCheckStore struct{ ds *datastore }
+
+func newModelHealthCheck(ds *datastore) *modelHealthCheckStore { return &modelHealthCheckStore{ds: ds} }
+
+func (s *modelHealthCheckStore) Add(ctx context.Context, data *iapiserver.ModelHealthCheck) (*iapiserver.ModelHealthCheck, error) {
+	if err := s.ds.db.WithContext(ctx).Create(data).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return data, nil
+}
+
 type providerCapabilityStore struct{ ds *datastore }
 
 func newProviderCapability(ds *datastore) *providerCapabilityStore {
@@ -282,6 +351,27 @@ func (s *systemLLMConfigStore) List(ctx context.Context) ([]*iapiserver.SystemLL
 		return nil, errors.WithStack(err)
 	}
 	return items, nil
+}
+
+func (s *systemLLMConfigStore) ListOwned(ctx context.Context, ownerUserID string) ([]*iapiserver.SystemLLMConfig, error) {
+	var items []*iapiserver.SystemLLMConfig
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ?", ownerUserID).
+		Order("usage ASC").
+		Find(&items).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return items, nil
+}
+
+func (s *systemLLMConfigStore) GetOwned(ctx context.Context, ownerUserID, usage string) (*iapiserver.SystemLLMConfig, error) {
+	var item iapiserver.SystemLLMConfig
+	if err := s.ds.db.WithContext(ctx).
+		Where("owner_user_id = ? AND usage = ?", ownerUserID, usage).
+		First(&item).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &item, nil
 }
 
 func (s *systemLLMConfigStore) Upsert(
