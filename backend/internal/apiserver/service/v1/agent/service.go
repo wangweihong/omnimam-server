@@ -347,7 +347,7 @@ func (s *Service) setSessionStatus(ctx context.Context, id, status string) (*iap
 	return s.store.UpdateAgentSession(ctx, session, session.ResourceVersion)
 }
 
-// SendMessage 持久化消息和 Invocation；缺少 released Invocation functionRef 时明确 fail closed。
+// SendMessage 持久化消息和 Invocation；执行适配器不可用时立即进入失败终态。
 func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapiserver.AgentMessageRequest) (*iapiserver.AgentInvocation, error) {
 	owner, err := currentUserID(ctx)
 	if err != nil {
@@ -385,7 +385,13 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	if err != nil {
 		return nil, err
 	}
-	created.Status, created.StartedAt = "RUNNING", imachinery.Now()
+	if created.ID != invocationID {
+		return created, nil
+	}
+	created.Status = "FAILED"
+	created.FailureCode = "ERR_AGENT_INVOCATION_TASK_UNAVAILABLE"
+	created.FailureMessage = "Agent execution adapter is unavailable for " + typeName + " invocation."
+	created.CompletedAt = imachinery.Now()
 	if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
 		return nil, err
 	}

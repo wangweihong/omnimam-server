@@ -25,7 +25,16 @@ func NewClient(baseURL, token string) (*Client, error) {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), token: token, http: &http.Client{Timeout: 10 * time.Minute}}, nil
 }
 func (c *Client) Execute(ctx context.Context, request *CommandRequest) (*CommandResponse, error) {
-	raw, err := json.Marshal(request)
+	transportRequest := *request
+	if request.Create != nil {
+		transportRequest.CreateContext = &CommandCreateContext{
+			AuthorizationRef:   request.Create.AuthorizationRef,
+			EndpointVisibility: request.Create.EndpointVisibility,
+			FunctionRef:        request.Create.FunctionRef,
+			FunctionArguments:  request.Create.FunctionArguments,
+		}
+	}
+	raw, err := json.Marshal(&transportRequest)
 	if err != nil {
 		return nil, err
 	}

@@ -671,7 +671,7 @@ func executeAgentRuntimeEnsure(
 	if runtime.Status != "RUNNING" {
 		return nil, fmt.Errorf("agent runtime ensure returned runtime status %q", runtime.Status)
 	}
-	if response.Result.Endpoint == nil || response.Result.Endpoint.ID == "" || response.Result.Endpoint.Status != "READY" || runtime.EndpointRef != response.Result.Endpoint.ID {
+	if !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
 		return nil, fmt.Errorf("agent runtime ensure returned an invalid ready endpoint")
 	}
 	result := map[string]any{
@@ -907,7 +907,7 @@ func executeAppStudioReady(ctx context.Context, client infrastructureCommandExec
 	if existing != nil && runtime.ID != *existing {
 		return nil, fmt.Errorf("appstudio %s returned unexpected infrastructure runtime %q", operation, runtime.ID)
 	}
-	if runtime.Status != "RUNNING" || response.Result.Endpoint == nil || response.Result.Endpoint.ID == "" || response.Result.Endpoint.Status != "READY" || runtime.EndpointRef != response.Result.Endpoint.ID {
+	if runtime.Status != "RUNNING" || !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
 		return nil, fmt.Errorf("appstudio %s returned an invalid ready runtime", operation)
 	}
 	result := map[string]any{"infra_runtime_id": runtime.ID, "runtime_status": "RUNNING", "health_status": "HEALTHY", "endpoint_ref": runtime.EndpointRef, "diagnostics_summary": map[string]any{}}
@@ -915,6 +915,11 @@ func executeAppStudioReady(ctx context.Context, client infrastructureCommandExec
 		return nil, errors.Wrap(err, "validate appstudio "+operation+" output")
 	}
 	return result, nil
+}
+
+func hasReadyInfrastructureEndpoint(runtime *iapiserver.InfraRuntime, endpoint *iapiserver.InfraRuntimeEndpoint) bool {
+	return runtime != nil && endpoint != nil && endpoint.ID != "" && endpoint.Status == "READY" &&
+		runtime.EndpointRef == "infra-endpoint://"+endpoint.ID
 }
 
 func executeAppStudioStop(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, contract *taskfunctionregistry.Contract, runtimeID, action string, deleteRuntime bool, operation string) (map[string]any, error) {

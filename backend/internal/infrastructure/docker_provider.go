@@ -107,6 +107,15 @@ func (d *DockerProvider) Ensure(ctx context.Context, input ProviderRequest) (*Pr
 		}
 		return &ProviderResult{ProviderRuntimeRef: created.ID, Status: "SUCCEEDED"}, nil
 	}
+	state, err := d.Inspect(ctx, created.ID)
+	if err != nil {
+		_ = d.Delete(context.Background(), created.ID)
+		return nil, fmt.Errorf("inspect docker runtime after start: %w", err)
+	}
+	if state.Status != "RUNNING" {
+		_ = d.Delete(context.Background(), created.ID)
+		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
+	}
 	return &ProviderResult{ProviderRuntimeRef: created.ID, Status: "RUNNING", EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
 }
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*ProviderResult, error) {

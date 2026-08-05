@@ -65,7 +65,7 @@ readonly OMNIMAM_AUTH_JWT_SECRET="${OMNIMAM_AUTH_JWT_SECRET:-${APISERVER_AUTH_JW
 readonly OMNIMAM_OPAQUE_SERVER_SETUP="${OMNIMAM_OPAQUE_SERVER_SETUP:-${APISERVER_OPAQUE_SERVER_SETUP}}"
 readonly OMNIMAM_INFRA_SERVICE_TOKEN="${OMNIMAM_INFRA_SERVICE_TOKEN:-${APISERVER_INFRASTRUCTURE_CLIENT_TOKEN}}"
 if [[ -z "${OMNIMAM_INFRA_PROFILE_IMAGES:-}" ]]; then
-    OMNIMAM_INFRA_PROFILE_IMAGES='{"agent.hermes@1.0":"nginx:1.27-alpine","agent.coding@1.0":"nginx:1.27-alpine","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}'
+    OMNIMAM_INFRA_PROFILE_IMAGES='{"agent.hermes@1.0":"nousresearch/hermes-agent:v2026.8.3","agent.coding@1.0":"ghcr.io/anomalyco/opencode:1.18.13","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}'
 fi
 readonly OMNIMAM_INFRA_PROFILE_IMAGES
 

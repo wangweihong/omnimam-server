@@ -34,7 +34,7 @@ func appStudioReadyResponse(runtimeID, endpointID string) *infrastructure.Comman
 	runtime := &iapiserver.InfraRuntime{}
 	runtime.ID = runtimeID
 	runtime.Status = "RUNNING"
-	runtime.EndpointRef = endpointID
+	runtime.EndpointRef = "infra-endpoint://" + endpointID
 	endpoint := &iapiserver.InfraRuntimeEndpoint{}
 	endpoint.ID = endpointID
 	endpoint.RuntimeID = runtimeID
@@ -515,7 +515,7 @@ func TestExecuteAppStudioPreviewEnsureCreatesRuntime(t *testing.T) {
 	if request.Create.RuntimeProfileID != "appstudio.preview.static-web" || request.Create.EndpointVisibility != "USER_ACCESSIBLE" || request.Create.AuthorizationRef != "appstudio-preview-grant://grant-1" {
 		t.Fatalf("create request profile/security = %#v", request.Create)
 	}
-	if result["infra_runtime_id"] != "infra-preview-1" || result["runtime_status"] != "RUNNING" || result["health_status"] != "HEALTHY" || result["endpoint_ref"] != "endpoint-1" {
+	if result["infra_runtime_id"] != "infra-preview-1" || result["runtime_status"] != "RUNNING" || result["health_status"] != "HEALTHY" || result["endpoint_ref"] != "infra-endpoint://endpoint-1" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -583,7 +583,7 @@ func TestExecuteAppStudioProductionReconcileCreatesArtifactRuntime(t *testing.T)
 	if request.Create.RuntimeProfileID != "studioapp.runtime.web-backend" || request.Create.EndpointVisibility != "INTERNAL" {
 		t.Fatalf("request profile/visibility = %#v", request.Create)
 	}
-	if result["infra_runtime_id"] != "infra-production-1" || result["endpoint_ref"] != "endpoint-production-1" {
+	if result["infra_runtime_id"] != "infra-production-1" || result["endpoint_ref"] != "infra-endpoint://endpoint-production-1" {
 		t.Fatalf("result = %#v", result)
 	}
 }

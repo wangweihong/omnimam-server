@@ -337,6 +337,12 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(CommandResponse{Error: "invalid request"})
 		return
 	}
+	if command.Create != nil && command.CreateContext != nil {
+		command.Create.AuthorizationRef = command.CreateContext.AuthorizationRef
+		command.Create.EndpointVisibility = command.CreateContext.EndpointVisibility
+		command.Create.FunctionRef = command.CreateContext.FunctionRef
+		command.Create.FunctionArguments = command.CreateContext.FunctionArguments
+	}
 	result, err := s.dispatch(r.Context(), &command)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(CommandResponse{Error: err.Error()})

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
@@ -54,5 +55,34 @@ func TestCountAndFindPageKeepsCountUnpaginated(t *testing.T) {
 	}
 	if !strings.Contains(findSQL, "LIMIT 20 OFFSET 20") {
 		t.Fatalf("find SQL has unexpected pagination: %s", findSQL)
+	}
+}
+
+func TestListStudioApplicationsUsesCaseInsensitiveKeyword(t *testing.T) {
+	var output bytes.Buffer
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=localhost user=test dbname=test sslmode=disable"}), &gorm.Config{
+		DryRun:               true,
+		DisableAutomaticPing: true,
+		Logger: logger.New(log.New(&output, "", 0), logger.Config{
+			LogLevel: logger.Info,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("open dry-run database: %v", err)
+	}
+
+	appStore := newAppStudioStore(&datastore{db: db})
+	_, _, err = appStore.ListStudioApplications(t.Context(), &iapiserver.StudioApplicationListRequest{
+		BasicQueryParam: imachinery.BasicQueryParam{
+			PagingParams: imachinery.PagingParams{PageSize: 20},
+			Keyword:      "unique",
+		},
+		OwnerUserID: "user-1",
+	})
+	if err != nil {
+		t.Fatalf("ListStudioApplications() error = %v", err)
+	}
+	if sql := output.String(); !strings.Contains(sql, "name ILIKE '%unique%' OR description ILIKE '%unique%'") {
+		t.Fatalf("keyword SQL is not case-insensitive: %s", sql)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,8 +47,14 @@ func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, a
 
 func (s *appStudioStore) ListStudioApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error) {
 	var items []*iapiserver.StudioApplication
-	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.StudioApplication{}), func(query *gorm.DB) *gorm.DB {
+	params := req.BasicQueryParam
+	params.Keyword = ""
+	query := params.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.StudioApplication{}), func(query *gorm.DB) *gorm.DB {
 		query = query.Where("owner_user_id = ?", req.OwnerUserID)
+		if keyword := strings.TrimSpace(req.Keyword); keyword != "" {
+			pattern := "%" + keyword + "%"
+			query = query.Where("name ILIKE ? OR description ILIKE ?", pattern, pattern)
+		}
 		if req.Status != "" {
 			query = query.Where("status = ?", req.Status)
 		}
