@@ -260,6 +260,11 @@ func Audit(platform store.PlatformManagementStore, sourceDomain string) gin.Hand
 		if platform == nil {
 			return
 		}
+		if value, ok := c.Get(IdentityPrincipalContextKey); ok {
+			if p, valid := value.(IdentityPrincipal); valid {
+				principal = p
+			}
+		}
 		result := "SUCCESS"
 		if c.Writer.Status() >= 400 {
 			result = "FAILED"

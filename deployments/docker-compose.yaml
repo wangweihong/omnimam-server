@@ -81,6 +81,8 @@ services:
       conductor:
         condition: service_healthy
     environment:
+      OMNIMAM_VERSION: ${OMNIMAM_VERSION:-dev}
+      OMNIMAM_ENVIRONMENT: ${OMNIMAM_ENVIRONMENT:-development}
       omnimam_LOG_DIR: /var/log/omnimam
       APISERVER_RUNTIME_DEBUG_OUTPUT_DIR: /var/lib/omnimam/debug/apiserver
       APISERVER_INSECURE_BIND_ADDRESS: 0.0.0.0
