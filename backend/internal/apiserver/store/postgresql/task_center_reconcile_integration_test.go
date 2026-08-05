@@ -4,6 +4,7 @@ package postgresql
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -16,6 +17,82 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
+
+func TestPostgresProjectStudioPreviewEnsureTerminal(t *testing.T) {
+	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("OMNIMAM_TEST_POSTGRES_DSN is not set")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+
+	ownerID := uuid.NewString()
+	applicationID := uuid.NewString()
+	if err := tx.Create(&iapiserver.StudioApplication{
+		ObjectMeta:  imachinery.ObjectMeta{ID: applicationID},
+		OwnerUserID: ownerID,
+		Status:      "ACTIVE",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	previewID := uuid.NewString()
+	workspaceID := uuid.NewString()
+	preview := &iapiserver.StudioPreviewRuntime{
+		ObjectMeta:          imachinery.ObjectMeta{ID: previewID},
+		StudioApplicationID: applicationID,
+		WorkspaceID:         workspaceID,
+		WorkspaceRevision:   3,
+		Status:              "STARTING",
+	}
+	if err := tx.Create(preview).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	storage := newAppStudioStore(&datastore{db: tx})
+	task := &iapiserver.AtomicTask{
+		FunctionRef: "appstudio.preview.ensure",
+		Arguments:   map[string]any{"preview_runtime_id": previewID},
+		Status:      iapiserver.AtomicTaskStatusSuccess,
+		Output: map[string]any{
+			"infra_runtime_id": "infra-preview-1",
+			"runtime_status":   "RUNNING",
+			"health_status":    "HEALTHY",
+			"endpoint_ref":     "infra-endpoint://endpoint-1",
+		},
+	}
+	if err := storage.ProjectStudioTaskTerminal(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	var persisted iapiserver.StudioPreviewRuntime
+	if err := tx.Where("id = ?", previewID).First(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.InfraRuntimeID != "infra-preview-1" || persisted.EndpointRef != "infra-endpoint://endpoint-1" || persisted.Status != "RUNNING" {
+		t.Fatalf("preview projection = %#v", persisted)
+	}
+	var diagnostics map[string]any
+	if err := json.Unmarshal(persisted.DiagnosticsSummary, &diagnostics); err != nil {
+		t.Fatalf("decode diagnostics summary: %v", err)
+	}
+	if diagnostics["health_status"] != "HEALTHY" {
+		t.Fatalf("diagnostics summary = %#v, want health_status HEALTHY", diagnostics)
+	}
+	visible, err := storage.GetStudioPreviewRuntime(t.Context(), workspaceID, ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visible.EndpointSummary == nil || visible.EndpointSummary.DisplayRef != "infra-endpoint://endpoint-1" || visible.EndpointSummary.Visibility != "USER_ACCESSIBLE" || visible.EndpointSummary.Status != "READY" {
+		t.Fatalf("endpoint summary = %#v", visible.EndpointSummary)
+	}
+}
 
 func TestPostgresReconcileOverlapAndRetention(t *testing.T) {
 	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")

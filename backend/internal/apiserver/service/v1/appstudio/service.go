@@ -290,6 +290,13 @@ func (s *Service) CreateSnapshot(ctx context.Context, appID string, req *iapiser
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is unavailable")
 	}
+	files, err := s.store.ListStudioSourceFiles(ctx, workspace.ID, revision, "", owner)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is empty")
+	}
 	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: "READY", CreatedBy: owner}
 	return s.store.CreateStudioSourceSnapshot(ctx, owner, snapshot)
 }
@@ -336,6 +343,25 @@ func (s *Service) ListBuilds(ctx context.Context, appID string, req *iapiserver.
 	items, total, err := s.store.ListStudioBuilds(ctx, appID, owner, req)
 	return &iapiserver.StudioBuildListResponse{Total: total, Items: items}, err
 }
+func (s *Service) BatchBuildSummaries(ctx context.Context, req *iapiserver.StudioBuildBatchSummaryRequest) (*iapiserver.StudioBuildBatchSummaryResponse, error) {
+	owner, err := studioUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		ids = append(ids, item.ID)
+	}
+	summaries, err := s.store.ResolveStudioBuildSummaries(ctx, owner, ids)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*iapiserver.StudioBuildBatchSummaryItem, 0, len(req.Items))
+	for _, item := range req.Items {
+		items = append(items, &iapiserver.StudioBuildBatchSummaryItem{ID: item.ID, StudioBuild: summaries[item.ID]})
+	}
+	return &iapiserver.StudioBuildBatchSummaryResponse{Total: len(items), Items: items}, nil
+}
 func (s *Service) CreateBuild(ctx context.Context, appID string, req *iapiserver.StudioBuildRequest) (*iapiserver.StudioBuild, error) {
 	owner, err := studioUserID(ctx)
 	if err != nil {
@@ -348,7 +374,8 @@ func (s *Service) CreateBuild(ctx context.Context, appID string, req *iapiserver
 	if s.tasks == nil {
 		return nil, errors.NewStatus(code.ErrAppStudioBuildFailed, "task center is unavailable")
 	}
-	build := &iapiserver.StudioBuild{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, OwnerUserID: owner, StudioApplicationID: appID, SourceSnapshotID: snapshot.ID, StudioApplicationVersionID: req.StudioApplicationVersionID, Status: "PENDING", IdempotencyKey: req.IdempotencyKey}
+	buildID := uuid.NewString()
+	build := &iapiserver.StudioBuild{ObjectMeta: imachinery.ObjectMeta{ID: buildID, Name: "Build " + buildID}, OwnerUserID: owner, StudioApplicationID: appID, SourceSnapshotID: snapshot.ID, StudioApplicationVersionID: req.StudioApplicationVersionID, Status: "PENDING", IdempotencyKey: req.IdempotencyKey}
 	created, err := s.store.CreateStudioBuild(ctx, owner, build)
 	if err != nil {
 		return nil, err

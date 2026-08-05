@@ -97,6 +97,16 @@ type StudioBuildRequest struct {
 	StudioApplicationVersionID string `json:"studio_application_version_id,omitempty" binding:"omitempty,max=128"`
 }
 
+// StudioBuildBatchSummaryRequestItem identifies one producer without granting visibility.
+type StudioBuildBatchSummaryRequestItem struct {
+	ID string `json:"id" binding:"required,min=1,max=128"`
+}
+
+// StudioBuildBatchSummaryRequest resolves 1..200 Build producer summaries in request order.
+type StudioBuildBatchSummaryRequest struct {
+	Items []StudioBuildBatchSummaryRequestItem `json:"items" binding:"required,min=1,max=200,dive"`
+}
+
 // +k8s:deepcopy-gen=true
 type StudioPreviewRequest struct {
 	SourceRevision int64  `json:"source_revision" binding:"min=0"`

@@ -168,6 +168,7 @@ func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	builds.Use(authmiddleware.RequireIdentityPermission("appstudio.build.manage"))
 	builds.GET("/studio-applications/:studio_application_id/builds", c.ListBuilds)
 	builds.POST("/studio-applications/:studio_application_id/builds", c.CreateBuild)
+	builds.POST("/studio-builds/batch-summaries", c.BatchBuildSummaries)
 	builds.GET("/studio-builds/:studio_build_id", c.GetBuild)
 	builds.POST("/studio-builds/:studio_build_id/cancel", c.CancelBuild)
 	builds.GET("/studio-builds/:studio_build_id/logs", c.BuildLogs)

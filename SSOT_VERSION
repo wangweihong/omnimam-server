@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: bb3a0e8ff182c740f8d08e46613a6876a8e2aa86
-contract_version: spec-v1.17.0
+commit: 35c2a582a53f9c416b71aa2695d99ad51797218e
+contract_version: spec-v1.17.1
 updated_at: 2026-08-05
 status: released
-note: Released user model gateway integration.
+note: Released Agent invocation and Studio Build producer contracts.

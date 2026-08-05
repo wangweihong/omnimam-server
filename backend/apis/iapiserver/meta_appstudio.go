@@ -219,7 +219,7 @@ func (c *StudioRuntimeConfig) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type StudioBuild struct {
 	imachinery.ObjectMeta
-	OwnerUserID                string          `json:"-" gorm:"column:owner_user_id;type:text;not null"`
+	OwnerUserID                string          `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null"`
 	StudioApplicationID        string          `json:"studio_application_id" gorm:"column:studio_application_id;type:text;not null"`
 	SourceSnapshotID           string          `json:"source_snapshot_id" gorm:"column:source_snapshot_id;type:text;not null"`
 	StudioApplicationVersionID string          `json:"studio_application_version_id,omitempty" gorm:"column:studio_application_version_id;type:text"`

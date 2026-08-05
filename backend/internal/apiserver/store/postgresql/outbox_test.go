@@ -1,6 +1,7 @@
 package postgresql
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"sort"
@@ -8,10 +9,120 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	appstudioservice "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
+
+type snapshotValidationStore struct {
+	store.AppStudioStore
+	created bool
+	files   []*iapiserver.StudioSourceFile
+}
+
+type buildSummaryStore struct {
+	store.AppStudioStore
+	owner string
+	ids   []string
+}
+
+func (s *buildSummaryStore) ResolveStudioBuildSummaries(_ context.Context, owner string, ids []string) (map[string]*iapiserver.StudioBuildProducerProjection, error) {
+	s.owner = owner
+	s.ids = append([]string(nil), ids...)
+	return map[string]*iapiserver.StudioBuildProducerProjection{
+		"build-1": {ID: "build-1", OwnerUserID: owner, Name: "Build build-1", Status: "SUCCEEDED"},
+	}, nil
+}
+
+func (s *snapshotValidationStore) GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error) {
+	return &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: "workspace-1"}}, nil
+}
+
+func (s *snapshotValidationStore) GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error) {
+	return &iapiserver.StudioWorkspaceRevision{Revision: 0, ContentDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, nil
+}
+
+func (s *snapshotValidationStore) ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error) {
+	return s.files, nil
+}
+
+func (s *snapshotValidationStore) CreateStudioSourceSnapshot(_ context.Context, _ string, snapshot *iapiserver.StudioSourceSnapshot) (*iapiserver.StudioSourceSnapshot, error) {
+	s.created = true
+	return snapshot, nil
+}
+
+func TestCreateStudioSourceSnapshotRejectsEmptyRevision(t *testing.T) {
+	tests := []struct {
+		name        string
+		files       []*iapiserver.StudioSourceFile
+		wantCode    int
+		wantCreated bool
+	}{
+		{name: "empty revision", wantCode: code.ErrAppStudioSnapshotInvalid},
+		{name: "revision with source", files: []*iapiserver.StudioSourceFile{{Path: "index.html"}}, wantCreated: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := &snapshotValidationStore{files: tt.files}
+			sources, err := appstudioservice.NewLocalSourceContentStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewLocalSourceContentStore() error = %v", err)
+			}
+			service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, Sources: sources})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			ctx := context.WithValue(t.Context(), iapiserver.GinContextKeyUser, &iapiserver.User{ObjectMeta: imachinery.ObjectMeta{ID: "user-1"}})
+
+			snapshot, err := service.CreateSnapshot(ctx, "application-1", &iapiserver.StudioSnapshotRequest{})
+
+			if tt.wantCode != 0 {
+				if snapshot != nil {
+					t.Fatalf("CreateSnapshot() snapshot = %#v, want nil", snapshot)
+				}
+				if got := toolboxerrors.ToStatus(err).Code; got != tt.wantCode {
+					t.Fatalf("CreateSnapshot() error code = %d, want %d", got, tt.wantCode)
+				}
+			} else if err != nil || snapshot == nil || snapshot.Status != "READY" {
+				t.Fatalf("CreateSnapshot() snapshot = %#v, error = %v", snapshot, err)
+			}
+			if storage.created != tt.wantCreated {
+				t.Fatalf("CreateSnapshot() persisted = %t, want %t", storage.created, tt.wantCreated)
+			}
+		})
+	}
+}
+
+func TestBatchStudioBuildSummariesPreservesOrderAndTrimsInvisibleItems(t *testing.T) {
+	storage := &buildSummaryStore{}
+	sources, err := appstudioservice.NewLocalSourceContentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, Sources: sources})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(t.Context(), iapiserver.GinContextKeyUser, &iapiserver.User{ObjectMeta: imachinery.ObjectMeta{ID: "user-1"}})
+
+	response, err := service.BatchBuildSummaries(ctx, &iapiserver.StudioBuildBatchSummaryRequest{Items: []iapiserver.StudioBuildBatchSummaryRequestItem{{ID: "build-1"}, {ID: "missing"}, {ID: "build-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.owner != "user-1" || !reflect.DeepEqual(storage.ids, []string{"build-1", "missing", "build-1"}) {
+		t.Fatalf("summary scope = owner:%q ids:%#v", storage.owner, storage.ids)
+	}
+	if response.Total != 3 || response.Items[0].StudioBuild == nil || response.Items[1].StudioBuild != nil || response.Items[2].StudioBuild == nil {
+		t.Fatalf("response = %#v", response)
+	}
+	if response.Items[0].StudioBuild.OwnerUserID != "user-1" || response.Items[0].StudioBuild.Name != "Build build-1" {
+		t.Fatalf("projection = %#v", response.Items[0].StudioBuild)
+	}
+}
 
 func TestNewOutboxMessageSeparatesUUIDAndIdempotencyKey(t *testing.T) {
 	idempotencyKey := uuid.NewString() + ":uploaded"

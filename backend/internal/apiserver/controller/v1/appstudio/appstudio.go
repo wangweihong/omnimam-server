@@ -93,6 +93,11 @@ func (c *Controller) CreateBuild(ctx *gin.Context) {
 		return c.service.CreateBuild(ctx, ctx.Param("studio_application_id"), req)
 	})
 }
+func (c *Controller) BatchBuildSummaries(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioBuildBatchSummaryRequest{}, func(req *iapiserver.StudioBuildBatchSummaryRequest) (any, error) {
+		return c.service.BatchBuildSummaries(ctx, req)
+	})
+}
 func (c *Controller) GetBuild(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetBuild(ctx, ctx.Param("studio_build_id")) })
 }

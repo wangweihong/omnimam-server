@@ -136,6 +136,7 @@ type AppStudioStore interface {
 	CreateStudioBuild(context.Context, string, *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error)
 	ListStudioBuilds(context.Context, string, string, *iapiserver.StudioBuildListRequest) ([]*iapiserver.StudioBuild, int64, error)
 	GetStudioBuild(context.Context, string, string) (*iapiserver.StudioBuild, error)
+	ResolveStudioBuildSummaries(context.Context, string, []string) (map[string]*iapiserver.StudioBuildProducerProjection, error)
 	UpdateStudioBuild(context.Context, *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error)
 	GetStudioPreviewRuntime(context.Context, string, string) (*iapiserver.StudioPreviewRuntime, error)
 	CreateStudioPreviewRuntime(context.Context, string, *iapiserver.StudioPreviewRuntime) (*iapiserver.StudioPreviewRuntime, error)

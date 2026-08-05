@@ -40,6 +40,24 @@ type StudioBuildListResponse struct {
 	Items []*StudioBuild `json:"items"`
 }
 
+// StudioBuildProducerProjection is the bounded cross-domain Build identity projection.
+type StudioBuildProducerProjection struct {
+	ID          string `json:"id"`
+	OwnerUserID string `json:"owner_user_id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+}
+
+type StudioBuildBatchSummaryItem struct {
+	ID          string                         `json:"id"`
+	StudioBuild *StudioBuildProducerProjection `json:"studio_build"`
+}
+
+type StudioBuildBatchSummaryResponse struct {
+	Total int                            `json:"total"`
+	Items []*StudioBuildBatchSummaryItem `json:"items"`
+}
+
 // +k8s:deepcopy-gen=true
 type StudioReleaseListResponse struct {
 	Total int64            `json:"total"`

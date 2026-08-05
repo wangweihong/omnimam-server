@@ -285,6 +285,22 @@ func (s *appStudioStore) GetStudioBuild(ctx context.Context, id, owner string) (
 	}
 	return &item, nil
 }
+func (s *appStudioStore) ResolveStudioBuildSummaries(ctx context.Context, owner string, ids []string) (map[string]*iapiserver.StudioBuildProducerProjection, error) {
+	items := make([]*iapiserver.StudioBuildProducerProjection, 0, len(ids))
+	if len(ids) > 0 {
+		if err := s.ds.db.WithContext(ctx).Model(&iapiserver.StudioBuild{}).
+			Select("id", "owner_user_id", "name", "status").
+			Where("id IN ? AND owner_user_id = ?", ids, owner).
+			Scan(&items).Error; err != nil {
+			return nil, err
+		}
+	}
+	summaries := make(map[string]*iapiserver.StudioBuildProducerProjection, len(items))
+	for _, item := range items {
+		summaries[item.ID] = item
+	}
+	return summaries, nil
+}
 func (s *appStudioStore) UpdateStudioBuild(ctx context.Context, build *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.StudioBuild
@@ -308,6 +324,9 @@ func (s *appStudioStore) GetStudioPreviewRuntime(ctx context.Context, workspaceI
 	}
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
+	}
+	if item.Status == "RUNNING" && item.EndpointRef != "" {
+		item.EndpointSummary = &iapiserver.StudioEndpointSummary{DisplayRef: item.EndpointRef, Visibility: "USER_ACCESSIBLE", Status: "READY", ExpiresAt: item.ExpiresAt}
 	}
 	return &item, nil
 }
@@ -493,6 +512,21 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 			runtime.InfraRuntimeID, _ = task.Output["infra_runtime_id"].(string)
 			runtime.EndpointRef, _ = task.Output["endpoint_ref"].(string)
 			if task.FunctionRef == "appstudio.preview.ensure" {
+				healthStatus, _ := task.Output["health_status"].(string)
+				if healthStatus != "" {
+					diagnostics := make(map[string]any)
+					if len(runtime.DiagnosticsSummary) > 0 {
+						if err := json.Unmarshal(runtime.DiagnosticsSummary, &diagnostics); err != nil {
+							return err
+						}
+					}
+					diagnostics["health_status"] = healthStatus
+					encoded, err := json.Marshal(diagnostics)
+					if err != nil {
+						return err
+					}
+					runtime.DiagnosticsSummary = encoded
+				}
 				runtime.Status = "RUNNING"
 			} else {
 				runtime.Status = "STOPPED"
