@@ -151,13 +151,13 @@ func TestAppStudioEventKeyFormats(t *testing.T) {
 		components []any
 		want       string
 	}{
-		{"application lifecycle", studioApplicationLifecycleChangedEvent, []any{"app-1", int64(1)}, "studio_application_lifecycle_changed:app-1:1"},
-		{"source revision", studioSourceRevisionChangedEvent, []any{"app-1", int64(1)}, "studio_source_revision_changed:app-1:1"},
-		{"source snapshot", studioSourceSnapshotCreatedEvent, []any{"snapshot-1", int64(2)}, "studio_source_snapshot_created:snapshot-1:2"},
-		{"build projection", studioBuildProjectionChangedEvent, []any{"build-1", int64(3)}, "studio_build_projection_changed:build-1:3"},
-		{"preview runtime", studioPreviewRuntimeChangedEvent, []any{"preview-1", int64(4)}, "studio_preview_runtime_status_changed:preview-1:4"},
-		{"release status", studioReleaseStatusChangedEvent, []any{"release-1", int64(5)}, "studio_release_status_changed:release-1:5"},
-		{"runtime instance", studioRuntimeInstanceChangedEvent, []any{"runtime-1", int64(6)}, "studio_runtime_instance_status_changed:runtime-1:6"},
+		{"application lifecycle", iapiserver.AppStudioEventApplicationLifecycleChanged, []any{"app-1", int64(1)}, "studio_application_lifecycle_changed:app-1:1"},
+		{"source revision", iapiserver.AppStudioEventSourceRevisionChanged, []any{"app-1", int64(1)}, "studio_source_revision_changed:app-1:1"},
+		{"source snapshot", iapiserver.AppStudioEventSourceSnapshotCreated, []any{"snapshot-1", int64(2)}, "studio_source_snapshot_created:snapshot-1:2"},
+		{"build projection", iapiserver.AppStudioEventBuildProjectionChanged, []any{"build-1", int64(3)}, "studio_build_projection_changed:build-1:3"},
+		{"preview runtime", iapiserver.AppStudioEventPreviewRuntimeChanged, []any{"preview-1", int64(4)}, "studio_preview_runtime_status_changed:preview-1:4"},
+		{"release status", iapiserver.AppStudioEventReleaseStatusChanged, []any{"release-1", int64(5)}, "studio_release_status_changed:release-1:5"},
+		{"runtime instance", iapiserver.AppStudioEventRuntimeInstanceChanged, []any{"runtime-1", int64(6)}, "studio_runtime_instance_status_changed:runtime-1:6"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -167,15 +167,15 @@ func TestAppStudioEventKeyFormats(t *testing.T) {
 		})
 	}
 
-	lifecycleKey := appStudioEventKey(studioApplicationLifecycleChangedEvent, "app-1", int64(1))
-	firstRevisionKey := appStudioEventKey(studioSourceRevisionChangedEvent, "app-1", int64(1))
+	lifecycleKey := appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, "app-1", int64(1))
+	firstRevisionKey := appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, "app-1", int64(1))
 	if lifecycleKey == firstRevisionKey {
 		t.Fatalf("lifecycle key %q conflicts with first revision key", lifecycleKey)
 	}
-	if repeated := appStudioEventKey(studioSourceRevisionChangedEvent, "app-1", int64(1)); repeated != firstRevisionKey {
+	if repeated := appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, "app-1", int64(1)); repeated != firstRevisionKey {
 		t.Fatalf("repeated revision key = %q, want stable key %q", repeated, firstRevisionKey)
 	}
-	if next := appStudioEventKey(studioSourceRevisionChangedEvent, "app-1", int64(2)); next == firstRevisionKey {
+	if next := appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, "app-1", int64(2)); next == firstRevisionKey {
 		t.Fatalf("consecutive revision key %q must differ from %q", next, firstRevisionKey)
 	}
 }
@@ -191,7 +191,7 @@ func TestAppStudioEventPayloadFields(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		payload map[string]any
+		payload any
 		fields  []string
 	}{
 		{"application lifecycle", studioApplicationLifecyclePayload(app, nil), []string{"studio_application_id", "owner_user_id", "from_status", "to_status", "resource_version", "occurred_at"}},
@@ -238,7 +238,7 @@ func TestAppStudioEventPayloadFields(t *testing.T) {
 	}
 }
 
-func decodeAppStudioEventPayload(t *testing.T, payload map[string]any) map[string]any {
+func decodeAppStudioEventPayload(t *testing.T, payload any) map[string]any {
 	t.Helper()
 	raw, err := marshalAppStudioEventPayload(payload, 7, time.Date(2026, time.August, 4, 10, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60)))
 	if err != nil {

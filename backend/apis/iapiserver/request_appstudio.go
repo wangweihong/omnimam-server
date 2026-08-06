@@ -8,6 +8,253 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
+const (
+	// AppStudio 各资源状态独立定义，避免不同生命周期因字面值相同而混用。
+	AppStudioApplicationStatusCreating = "CREATING"
+	AppStudioApplicationStatusReady    = "READY"
+	AppStudioApplicationStatusArchived = "ARCHIVED"
+	AppStudioApplicationStatusError    = "ERROR"
+	AppStudioSourceStatusInitializing  = "INITIALIZING"
+	AppStudioRepositoryStatusReady     = "READY"
+	AppStudioWorkspaceStatusReady      = "READY"
+	AppStudioChangeSetStatusApplied    = "APPLIED"
+	AppStudioSnapshotStatusReady       = "READY"
+	AppStudioVersionStatusDraft        = "DRAFT"
+	AppStudioBuildStatusPending        = "PENDING"
+	AppStudioBuildStatusRunning        = "RUNNING"
+	AppStudioBuildStatusSucceeded      = "SUCCEEDED"
+	AppStudioBuildStatusFailed         = "FAILED"
+	AppStudioBuildStatusCanceled       = "CANCELED"
+	AppStudioPreviewStatusPending      = "PENDING"
+	AppStudioPreviewStatusRunning      = "RUNNING"
+	AppStudioPreviewStatusStopped      = "STOPPED"
+	AppStudioPreviewStatusExpired      = "EXPIRED"
+	AppStudioPreviewStatusFailed       = "FAILED"
+	AppStudioRuntimeConfigStatusValid  = "VALID"
+	AppStudioReleaseStatusPending      = "PENDING"
+	AppStudioReleaseStatusDeploying    = "DEPLOYING"
+	AppStudioReleaseStatusReady        = "READY"
+	AppStudioReleaseStatusFailed       = "FAILED"
+	AppStudioRuntimeStatusCreating     = "CREATING"
+	AppStudioRuntimeStatusReady        = "READY"
+	AppStudioRuntimeStatusStopped      = "STOPPED"
+	AppStudioRuntimeStatusFailed       = "FAILED"
+	AppStudioRuntimeHealthUnknown      = "UNKNOWN"
+	AppStudioRuntimeHealthHealthy      = "HEALTHY"
+	AppStudioRuntimeHealthUnhealthy    = "UNHEALTHY"
+	AppStudioEndpointVisibilityUser    = "USER_ACCESSIBLE"
+	AppStudioEndpointStatusReady       = "READY"
+	AppStudioOutboxDeliveryPending     = "PENDING"
+
+	AppStudioSourceProviderBuiltIn    = "BUILT_IN"
+	AppStudioChangeOperationCreate    = "create"
+	AppStudioChangeOperationUpdate    = "update"
+	AppStudioChangeOperationDelete    = "delete"
+	AppStudioChangeOperationMove      = "move"
+	AppStudioEnvironmentPreview       = "preview"
+	AppStudioEnvironmentProduction    = "production"
+	AppStudioTaskActionStop           = "STOP"
+	AppStudioDeploymentReasonRelease  = "RELEASE"
+	AppStudioDeploymentReasonRollback = "ROLLBACK"
+	AppStudioArtifactProcessingReady  = "ready"
+
+	AppStudioFunctionPreviewEnsure      = "appstudio.preview.ensure"
+	AppStudioFunctionPreviewStop        = "appstudio.preview.stop"
+	AppStudioFunctionBuildExecute       = "appstudio.build.execute"
+	AppStudioFunctionProductionEnsure   = "appstudio.production.reconcile"
+	AppStudioFunctionProductionStop     = "appstudio.production.stop"
+	AppStudioTaskDomain                 = "appstudio"
+	AppStudioRuntimeProfileRevision     = "1.0"
+	AppStudioPreviewProfileStaticWeb    = "appstudio.preview.static-web"
+	AppStudioBuildProfileStaticWeb      = "appstudio.build.static-web"
+	AppStudioProductionProfileStaticWeb = "appstudio.production.static-web"
+	AppStudioDefaultWorkspaceName       = "main"
+
+	AppStudioRefPrefixSecret            = "secret://"
+	AppStudioRefPrefixIntegration       = "integration://"
+	AppStudioRefPrefixStudioSnapshot    = "studio-snapshot://"
+	AppStudioRefPrefixWorkspaceRevision = "studio-workspace-revision://"
+	AppStudioRefPrefixBuildConfig       = "appstudio-build-config://"
+	AppStudioRefPrefixBuildGrant        = "appstudio-build-grant://"
+	AppStudioRefPrefixPreviewGrant      = "appstudio-preview-grant://"
+	AppStudioRefPrefixArtifact          = "artifact://"
+	AppStudioRefPrefixHealthCheck       = "appstudio-health-check://"
+	AppStudioRefPrefixProductionGrant   = "appstudio-production-grant://"
+
+	AppStudioAggregateTypeApplication         = "StudioApplication"
+	AppStudioAggregateTypeSourceSnapshot      = "StudioSourceSnapshot"
+	AppStudioAggregateTypeBuild               = "StudioBuild"
+	AppStudioAggregateTypePreviewRuntime      = "StudioPreviewRuntime"
+	AppStudioAggregateTypeRelease             = "StudioRelease"
+	AppStudioAggregateTypeRuntime             = "StudioRuntimeInstance"
+	AppStudioEventApplicationLifecycleChanged = "studio_application_lifecycle_changed"
+	AppStudioEventSourceRevisionChanged       = "studio_source_revision_changed"
+	AppStudioEventSourceSnapshotCreated       = "studio_source_snapshot_created"
+	AppStudioEventBuildProjectionChanged      = "studio_build_projection_changed"
+	AppStudioEventPreviewRuntimeChanged       = "studio_preview_runtime_status_changed"
+	AppStudioEventReleaseStatusChanged        = "studio_release_status_changed"
+	AppStudioEventRuntimeInstanceChanged      = "studio_runtime_instance_status_changed"
+)
+
+// AppStudioBuildTaskArguments 是 AppStudio 构建任务的结构化参数。
+type AppStudioBuildTaskArguments struct {
+	StudioApplicationID        string  `json:"studio_application_id"`
+	StudioBuildID              string  `json:"studio_build_id"`
+	SourceSnapshotID           string  `json:"source_snapshot_id"`
+	SourceSnapshotDigest       string  `json:"source_snapshot_digest"`
+	SourceSnapshotSourceRef    string  `json:"source_snapshot_source_ref"`
+	StudioApplicationVersionID *string `json:"studio_application_version_id"`
+	RuntimeProfileID           string  `json:"runtime_profile_id"`
+	RuntimeProfileRevision     string  `json:"runtime_profile_revision"`
+	BuildConfigRef             string  `json:"build_config_ref"`
+	DependencyLockDigest       string  `json:"dependency_lock_digest"`
+	AuthorizationRef           string  `json:"authorization_ref"`
+	ExpectedResourceVersion    int64   `json:"expected_resource_version"`
+}
+
+func (a AppStudioBuildTaskArguments) AtomicTaskArguments() map[string]any {
+	return map[string]any{
+		"studio_application_id":         a.StudioApplicationID,
+		"studio_build_id":               a.StudioBuildID,
+		"source_snapshot_id":            a.SourceSnapshotID,
+		"source_snapshot_digest":        a.SourceSnapshotDigest,
+		"source_snapshot_source_ref":    a.SourceSnapshotSourceRef,
+		"studio_application_version_id": a.StudioApplicationVersionID,
+		"runtime_profile_id":            a.RuntimeProfileID,
+		"runtime_profile_revision":      a.RuntimeProfileRevision,
+		"build_config_ref":              a.BuildConfigRef,
+		"dependency_lock_digest":        a.DependencyLockDigest,
+		"authorization_ref":             a.AuthorizationRef,
+		"expected_resource_version":     a.ExpectedResourceVersion,
+	}
+}
+
+// AppStudioPreviewTaskArguments 是 AppStudio 预览环境启动任务的结构化参数。
+type AppStudioPreviewTaskArguments struct {
+	StudioApplicationID        string  `json:"studio_application_id"`
+	PreviewRuntimeID           string  `json:"preview_runtime_id"`
+	ExistingInfraRuntimeID     *string `json:"existing_infra_runtime_id"`
+	WorkspaceID                string  `json:"workspace_id"`
+	WorkspaceRevision          int64   `json:"workspace_revision"`
+	WorkspaceRevisionSourceRef string  `json:"workspace_revision_source_ref"`
+	RuntimeProfileID           string  `json:"runtime_profile_id"`
+	RuntimeProfileRevision     string  `json:"runtime_profile_revision"`
+	EndpointVisibility         string  `json:"endpoint_visibility"`
+	AuthorizationRef           string  `json:"authorization_ref"`
+	ExpectedResourceVersion    int64   `json:"expected_resource_version"`
+}
+
+func (a AppStudioPreviewTaskArguments) AtomicTaskArguments() map[string]any {
+	return map[string]any{
+		"studio_application_id":         a.StudioApplicationID,
+		"preview_runtime_id":            a.PreviewRuntimeID,
+		"existing_infra_runtime_id":     a.ExistingInfraRuntimeID,
+		"workspace_id":                  a.WorkspaceID,
+		"workspace_revision":            a.WorkspaceRevision,
+		"workspace_revision_source_ref": a.WorkspaceRevisionSourceRef,
+		"runtime_profile_id":            a.RuntimeProfileID,
+		"runtime_profile_revision":      a.RuntimeProfileRevision,
+		"endpoint_visibility":           a.EndpointVisibility,
+		"authorization_ref":             a.AuthorizationRef,
+		"expected_resource_version":     a.ExpectedResourceVersion,
+	}
+}
+
+// AppStudioProductionTaskArguments 是 AppStudio 生产环境调和任务的结构化参数。
+type AppStudioProductionTaskArguments struct {
+	StudioApplicationID        string  `json:"studio_application_id"`
+	StudioReleaseID            string  `json:"studio_release_id"`
+	StudioRuntimeInstanceID    string  `json:"studio_runtime_instance_id"`
+	ExistingInfraRuntimeID     *string `json:"existing_infra_runtime_id"`
+	StudioApplicationVersionID string  `json:"studio_application_version_id"`
+	RuntimeConfigID            string  `json:"runtime_config_id"`
+	ArtifactID                 string  `json:"artifact_id"`
+	ArtifactDigest             string  `json:"artifact_digest"`
+	ArtifactSourceRef          string  `json:"artifact_source_ref"`
+	Environment                string  `json:"environment"`
+	DeploymentReason           string  `json:"deployment_reason"`
+	RuntimeProfileID           string  `json:"runtime_profile_id"`
+	RuntimeProfileRevision     string  `json:"runtime_profile_revision"`
+	HealthCheckRef             string  `json:"health_check_ref"`
+	EndpointVisibility         string  `json:"endpoint_visibility"`
+	AuthorizationRef           string  `json:"authorization_ref"`
+	ExpectedResourceVersion    int64   `json:"expected_resource_version"`
+}
+
+func (a AppStudioProductionTaskArguments) AtomicTaskArguments() map[string]any {
+	return map[string]any{
+		"studio_application_id":         a.StudioApplicationID,
+		"studio_release_id":             a.StudioReleaseID,
+		"studio_runtime_instance_id":    a.StudioRuntimeInstanceID,
+		"existing_infra_runtime_id":     a.ExistingInfraRuntimeID,
+		"studio_application_version_id": a.StudioApplicationVersionID,
+		"runtime_config_id":             a.RuntimeConfigID,
+		"artifact_id":                   a.ArtifactID,
+		"artifact_digest":               a.ArtifactDigest,
+		"artifact_source_ref":           a.ArtifactSourceRef,
+		"environment":                   a.Environment,
+		"deployment_reason":             a.DeploymentReason,
+		"runtime_profile_id":            a.RuntimeProfileID,
+		"runtime_profile_revision":      a.RuntimeProfileRevision,
+		"health_check_ref":              a.HealthCheckRef,
+		"endpoint_visibility":           a.EndpointVisibility,
+		"authorization_ref":             a.AuthorizationRef,
+		"expected_resource_version":     a.ExpectedResourceVersion,
+	}
+}
+
+// AppStudioStopTaskArguments 是 AppStudio 预览或生产 Runtime 停止任务的结构化参数。
+type AppStudioStopTaskArguments struct {
+	StudioApplicationID     string `json:"studio_application_id"`
+	PreviewRuntimeID        string `json:"preview_runtime_id,omitempty"`
+	StudioReleaseID         string `json:"studio_release_id,omitempty"`
+	StudioRuntimeInstanceID string `json:"studio_runtime_instance_id,omitempty"`
+	InfraRuntimeID          string `json:"infra_runtime_id"`
+	Action                  string `json:"action"`
+	Reason                  string `json:"reason,omitempty"`
+	AuthorizationRef        string `json:"authorization_ref"`
+	ExpectedResourceVersion int64  `json:"expected_resource_version"`
+}
+
+func (a AppStudioStopTaskArguments) AtomicTaskArguments() map[string]any {
+	arguments := map[string]any{
+		"studio_application_id":     a.StudioApplicationID,
+		"infra_runtime_id":          a.InfraRuntimeID,
+		"action":                    a.Action,
+		"authorization_ref":         a.AuthorizationRef,
+		"expected_resource_version": a.ExpectedResourceVersion,
+	}
+	if a.PreviewRuntimeID != "" {
+		arguments["preview_runtime_id"] = a.PreviewRuntimeID
+	}
+	if a.StudioReleaseID != "" {
+		arguments["studio_release_id"] = a.StudioReleaseID
+	}
+	if a.StudioRuntimeInstanceID != "" {
+		arguments["studio_runtime_instance_id"] = a.StudioRuntimeInstanceID
+	}
+	if a.Reason != "" {
+		arguments["reason"] = a.Reason
+	}
+	return arguments
+}
+
+// AppStudioTaskOutput 是 AppStudio Task Worker 返回给投影器的结构化输出。
+type AppStudioTaskOutput struct {
+	InfraRuntimeID string `json:"infra_runtime_id"`
+	EndpointRef    string `json:"endpoint_ref"`
+	HealthStatus   string `json:"health_status"`
+	ArtifactID     string `json:"artifact_id"`
+	ArtifactDigest string `json:"artifact_digest"`
+}
+
+// AppStudioTaskProjectionArguments 是终态投影定位 AppStudio 资源所需的参数子集。
+type AppStudioTaskProjectionArguments struct {
+	PreviewRuntimeID        string `json:"preview_runtime_id"`
+	StudioBuildID           string `json:"studio_build_id"`
+	StudioRuntimeInstanceID string `json:"studio_runtime_instance_id"`
+}
+
 // +k8s:deepcopy-gen=true
 type StudioApplicationListRequest struct {
 	imachinery.BasicQueryParam
@@ -61,16 +308,16 @@ type StudioChangeSetRequest struct {
 
 func (r *StudioChangeSetRequest) Validate() error {
 	for _, op := range r.Operations {
-		if op.Operation != "create" && op.Operation != "update" && op.Operation != "delete" && op.Operation != "move" {
+		if op.Operation != AppStudioChangeOperationCreate && op.Operation != AppStudioChangeOperationUpdate && op.Operation != AppStudioChangeOperationDelete && op.Operation != AppStudioChangeOperationMove {
 			return fmt.Errorf("unsupported change operation")
 		}
 		if op.Path == "" || strings.HasPrefix(op.Path, "/") || strings.Contains(op.Path, "..") {
 			return fmt.Errorf("invalid source path")
 		}
-		if (op.Operation == "create" || op.Operation == "update") && op.Content == nil {
+		if (op.Operation == AppStudioChangeOperationCreate || op.Operation == AppStudioChangeOperationUpdate) && op.Content == nil {
 			return fmt.Errorf("source content is required")
 		}
-		if op.Operation == "move" && (op.TargetPath == nil || *op.TargetPath == "") {
+		if op.Operation == AppStudioChangeOperationMove && (op.TargetPath == nil || *op.TargetPath == "") {
 			return fmt.Errorf("move target path is required")
 		}
 	}
@@ -140,12 +387,12 @@ func (r *StudioRuntimeConfigRequest) Validate() error {
 		return fmt.Errorf("runtime public config exceeds 64 KiB")
 	}
 	for _, ref := range r.SecretReferences {
-		if !strings.HasPrefix(ref, "secret://") {
+		if !strings.HasPrefix(ref, AppStudioRefPrefixSecret) {
 			return fmt.Errorf("invalid secret reference")
 		}
 	}
 	for _, ref := range r.IntegrationReferences {
-		if !strings.HasPrefix(ref, "integration://") {
+		if !strings.HasPrefix(ref, AppStudioRefPrefixIntegration) {
 			return fmt.Errorf("invalid integration reference")
 		}
 	}

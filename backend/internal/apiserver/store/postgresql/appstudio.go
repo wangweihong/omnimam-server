@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mitchellh/mapstructure"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -19,16 +20,6 @@ import (
 
 type appStudioStore struct{ ds *datastore }
 
-const (
-	studioApplicationLifecycleChangedEvent = "studio_application_lifecycle_changed"
-	studioSourceRevisionChangedEvent       = "studio_source_revision_changed"
-	studioSourceSnapshotCreatedEvent       = "studio_source_snapshot_created"
-	studioBuildProjectionChangedEvent      = "studio_build_projection_changed"
-	studioPreviewRuntimeChangedEvent       = "studio_preview_runtime_status_changed"
-	studioReleaseStatusChangedEvent        = "studio_release_status_changed"
-	studioRuntimeInstanceChangedEvent      = "studio_runtime_instance_status_changed"
-)
-
 func newAppStudioStore(ds *datastore) *appStudioStore { return &appStudioStore{ds: ds} }
 
 func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, app *iapiserver.StudioApplication, repository *iapiserver.StudioSourceRepository, workspace *iapiserver.StudioWorkspace, revision *iapiserver.StudioWorkspaceRevision) error {
@@ -38,10 +29,10 @@ func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, a
 				return err
 			}
 		}
-		if err := appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioApplicationLifecycleChangedEvent, appStudioEventKey(studioApplicationLifecycleChangedEvent, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil)); err != nil {
+		if err := appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil)); err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioSourceRevisionChangedEvent, appStudioEventKey(studioSourceRevisionChangedEvent, app.ID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(app.ID, revision.Revision, nil))
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventSourceRevisionChanged, appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, app.ID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(app.ID, revision.Revision, nil))
 	})
 }
 
@@ -85,7 +76,7 @@ func (s *appStudioStore) UpdateStudioApplication(ctx context.Context, app *iapis
 		if err := tx.Save(app).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioApplication", app.ID, studioApplicationLifecycleChangedEvent, appStudioEventKey(studioApplicationLifecycleChangedEvent, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, previous.Status))
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, previous.Status))
 	})
 	return app, err
 }
@@ -171,7 +162,7 @@ func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string,
 		if err := tx.Model(&iapiserver.StudioSourceRepository{}).Where("id = ?", workspace.RepositoryID).Updates(map[string]any{"current_revision": revision.Revision, "resource_version": gorm.Expr("resource_version + 1"), "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioApplication", workspace.StudioApplicationID, studioSourceRevisionChangedEvent, appStudioEventKey(studioSourceRevisionChangedEvent, workspace.StudioApplicationID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(workspace.StudioApplicationID, revision.Revision, changeSet))
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, workspace.StudioApplicationID, iapiserver.AppStudioEventSourceRevisionChanged, appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, workspace.StudioApplicationID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(workspace.StudioApplicationID, revision.Revision, changeSet))
 	})
 	return result, err
 }
@@ -197,7 +188,7 @@ func (s *appStudioStore) CreateStudioSourceSnapshot(ctx context.Context, owner s
 		if err := tx.Create(snapshot).Error; err != nil {
 			return err
 		}
-		return appendAppStudioOutbox(tx, "StudioSourceSnapshot", snapshot.ID, studioSourceSnapshotCreatedEvent, appStudioEventKey(studioSourceSnapshotCreatedEvent, snapshot.ID, snapshot.ResourceVersion), snapshot.ResourceVersion, studioSourceSnapshotPayload(snapshot))
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeSourceSnapshot, snapshot.ID, iapiserver.AppStudioEventSourceSnapshotCreated, appStudioEventKey(iapiserver.AppStudioEventSourceSnapshotCreated, snapshot.ID, snapshot.ResourceVersion), snapshot.ResourceVersion, studioSourceSnapshotPayload(snapshot))
 	})
 	return snapshot, err
 }
@@ -325,8 +316,8 @@ func (s *appStudioStore) GetStudioPreviewRuntime(ctx context.Context, workspaceI
 	if err != nil {
 		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
 	}
-	if item.Status == "RUNNING" && item.EndpointRef != "" {
-		item.EndpointSummary = &iapiserver.StudioEndpointSummary{DisplayRef: item.EndpointRef, Visibility: "USER_ACCESSIBLE", Status: "READY", ExpiresAt: item.ExpiresAt}
+	if item.Status == iapiserver.AppStudioPreviewStatusRunning && item.EndpointRef != "" {
+		item.EndpointSummary = &iapiserver.StudioEndpointSummary{DisplayRef: item.EndpointRef, Visibility: iapiserver.AppStudioEndpointVisibilityUser, Status: iapiserver.AppStudioEndpointStatusReady, ExpiresAt: item.ExpiresAt}
 	}
 	return &item, nil
 }
@@ -502,17 +493,25 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 		return nil
 	}
 	switch task.FunctionRef {
-	case "appstudio.preview.ensure", "appstudio.preview.stop":
-		id, _ := task.Arguments["preview_runtime_id"].(string)
+	case iapiserver.AppStudioFunctionPreviewEnsure, iapiserver.AppStudioFunctionPreviewStop:
+		arguments, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskProjectionArguments](task.Arguments)
+		if err != nil {
+			return err
+		}
+		id := arguments.PreviewRuntimeID
 		var runtime iapiserver.StudioPreviewRuntime
 		if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&runtime).Error; err != nil {
 			return err
 		}
 		if task.Status == iapiserver.AtomicTaskStatusSuccess {
-			runtime.InfraRuntimeID, _ = task.Output["infra_runtime_id"].(string)
-			runtime.EndpointRef, _ = task.Output["endpoint_ref"].(string)
-			if task.FunctionRef == "appstudio.preview.ensure" {
-				healthStatus, _ := task.Output["health_status"].(string)
+			output, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskOutput](task.Output)
+			if err != nil {
+				return err
+			}
+			runtime.InfraRuntimeID = output.InfraRuntimeID
+			runtime.EndpointRef = output.EndpointRef
+			if task.FunctionRef == iapiserver.AppStudioFunctionPreviewEnsure {
+				healthStatus := output.HealthStatus
 				if healthStatus != "" {
 					diagnostics := make(map[string]any)
 					if len(runtime.DiagnosticsSummary) > 0 {
@@ -527,54 +526,70 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 					}
 					runtime.DiagnosticsSummary = encoded
 				}
-				runtime.Status = "RUNNING"
+				runtime.Status = iapiserver.AppStudioPreviewStatusRunning
 			} else {
-				runtime.Status = "STOPPED"
+				runtime.Status = iapiserver.AppStudioPreviewStatusStopped
 			}
 		} else {
-			runtime.Status = "FAILED"
+			runtime.Status = iapiserver.AppStudioPreviewStatusFailed
 		}
-		_, err := s.UpdateStudioPreviewRuntime(ctx, &runtime)
+		_, err = s.UpdateStudioPreviewRuntime(ctx, &runtime)
 		return err
-	case "appstudio.build.execute":
-		id, _ := task.Arguments["studio_build_id"].(string)
+	case iapiserver.AppStudioFunctionBuildExecute:
+		arguments, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskProjectionArguments](task.Arguments)
+		if err != nil {
+			return err
+		}
+		id := arguments.StudioBuildID
 		var build iapiserver.StudioBuild
 		if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&build).Error; err != nil {
 			return err
 		}
 		if task.Status == iapiserver.AtomicTaskStatusSuccess {
-			build.ArtifactID, _ = task.Output["artifact_id"].(string)
-			build.ArtifactDigest, _ = task.Output["artifact_digest"].(string)
+			output, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskOutput](task.Output)
+			if err != nil {
+				return err
+			}
+			build.ArtifactID = output.ArtifactID
+			build.ArtifactDigest = output.ArtifactDigest
 			if build.ArtifactID != "" && build.ArtifactDigest != "" {
-				build.Status = "SUCCEEDED"
+				build.Status = iapiserver.AppStudioBuildStatusSucceeded
 			} else {
-				build.Status = "FAILED"
+				build.Status = iapiserver.AppStudioBuildStatusFailed
 			}
 		} else if task.Status == iapiserver.AtomicTaskStatusCanceled {
-			build.Status = "CANCELED"
+			build.Status = iapiserver.AppStudioBuildStatusCanceled
 		} else {
-			build.Status = "FAILED"
+			build.Status = iapiserver.AppStudioBuildStatusFailed
 		}
-		_, err := s.UpdateStudioBuild(ctx, &build)
+		_, err = s.UpdateStudioBuild(ctx, &build)
 		return err
-	case "appstudio.production.reconcile", "appstudio.production.stop":
-		id, _ := task.Arguments["studio_runtime_instance_id"].(string)
+	case iapiserver.AppStudioFunctionProductionEnsure, iapiserver.AppStudioFunctionProductionStop:
+		arguments, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskProjectionArguments](task.Arguments)
+		if err != nil {
+			return err
+		}
+		id := arguments.StudioRuntimeInstanceID
 		var runtime iapiserver.StudioRuntimeInstance
 		if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&runtime).Error; err != nil {
 			return err
 		}
 		if task.Status == iapiserver.AtomicTaskStatusSuccess {
-			runtime.InfraRuntimeID, _ = task.Output["infra_runtime_id"].(string)
-			runtime.EndpointRef, _ = task.Output["endpoint_ref"].(string)
-			if task.FunctionRef == "appstudio.production.reconcile" {
-				runtime.Status, runtime.HealthStatus, runtime.IsCurrent = "READY", "HEALTHY", true
+			output, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskOutput](task.Output)
+			if err != nil {
+				return err
+			}
+			runtime.InfraRuntimeID = output.InfraRuntimeID
+			runtime.EndpointRef = output.EndpointRef
+			if task.FunctionRef == iapiserver.AppStudioFunctionProductionEnsure {
+				runtime.Status, runtime.HealthStatus, runtime.IsCurrent = iapiserver.AppStudioRuntimeStatusReady, iapiserver.AppStudioRuntimeHealthHealthy, true
 			} else {
-				runtime.Status, runtime.HealthStatus, runtime.IsCurrent = "STOPPED", "UNKNOWN", false
+				runtime.Status, runtime.HealthStatus, runtime.IsCurrent = iapiserver.AppStudioRuntimeStatusStopped, iapiserver.AppStudioRuntimeHealthUnknown, false
 			}
 		} else {
-			runtime.Status, runtime.HealthStatus = "FAILED", "UNHEALTHY"
+			runtime.Status, runtime.HealthStatus = iapiserver.AppStudioRuntimeStatusFailed, iapiserver.AppStudioRuntimeHealthUnhealthy
 		}
-		_, err := s.UpdateStudioRuntimeInstance(ctx, &runtime)
+		_, err = s.UpdateStudioRuntimeInstance(ctx, &runtime)
 		if err != nil {
 			return err
 		}
@@ -582,10 +597,10 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 		if err := s.ds.db.WithContext(ctx).Where("id = ?", runtime.StudioReleaseID).First(&release).Error; err != nil {
 			return err
 		}
-		if runtime.Status == "READY" {
-			release.Status = "READY"
-		} else if runtime.Status == "FAILED" {
-			release.Status = "FAILED"
+		if runtime.Status == iapiserver.AppStudioRuntimeStatusReady {
+			release.Status = iapiserver.AppStudioReleaseStatusReady
+		} else if runtime.Status == iapiserver.AppStudioRuntimeStatusFailed {
+			release.Status = iapiserver.AppStudioReleaseStatusFailed
 		}
 		release.RuntimeInstanceID = runtime.ID
 		_, err = s.UpdateStudioRelease(ctx, &release)
@@ -593,6 +608,15 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 	default:
 		return nil
 	}
+}
+
+func decodeAppStudioTaskValue[T any](value map[string]any) (T, error) {
+	var result T
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{Result: &result, TagName: "json"})
+	if err != nil {
+		return result, err
+	}
+	return result, decoder.Decode(value)
 }
 
 func appStudioEventKey(eventType string, components ...any) string {
@@ -603,38 +627,55 @@ func appStudioEventKey(eventType string, components ...any) string {
 	return key
 }
 
-func marshalAppStudioEventPayload(payload map[string]any, version int64, occurredAt time.Time) ([]byte, error) {
-	payload["resource_version"] = version
-	payload["occurred_at"] = occurredAt.UTC().Format(time.RFC3339Nano)
+func marshalAppStudioEventPayload(payload any, version int64, occurredAt time.Time) ([]byte, error) {
+	metadata := iapiserver.AppStudioEventMetadata{ResourceVersion: version, OccurredAt: occurredAt.UTC().Format(time.RFC3339Nano)}
+	switch value := payload.(type) {
+	case *iapiserver.AppStudioApplicationLifecycleEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioSourceRevisionEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioSourceSnapshotEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioBuildEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioPreviewEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioReleaseEventPayload:
+		value.AppStudioEventMetadata = metadata
+	case *iapiserver.AppStudioRuntimeEventPayload:
+		value.AppStudioEventMetadata = metadata
+	default:
+		return nil, fmt.Errorf("unsupported appstudio event payload %T", payload)
+	}
 	return json.Marshal(payload)
 }
 
-func appendAppStudioOutbox(tx *gorm.DB, aggregateType, aggregateID, eventType, idempotencyKey string, version int64, payload map[string]any) error {
+func appendAppStudioOutbox(tx *gorm.DB, aggregateType, aggregateID, eventType, idempotencyKey string, version int64, payload any) error {
 	raw, err := marshalAppStudioEventPayload(payload, version, time.Now())
 	if err != nil {
 		return err
 	}
-	event := &iapiserver.AppStudioOutbox{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AggregateType: aggregateType, AggregateID: aggregateID, EventType: eventType, Payload: raw, IdempotencyKey: idempotencyKey, DeliveryStatus: "PENDING", NextAttemptAt: imachinery.Now()}
+	event := &iapiserver.AppStudioOutbox{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AggregateType: aggregateType, AggregateID: aggregateID, EventType: eventType, Payload: raw, IdempotencyKey: idempotencyKey, DeliveryStatus: iapiserver.AppStudioOutboxDeliveryPending, NextAttemptAt: imachinery.Now()}
 	return tx.Create(event).Error
 }
 
-func studioApplicationLifecyclePayload(app *iapiserver.StudioApplication, fromStatus any) map[string]any {
-	return map[string]any{"studio_application_id": app.ID, "owner_user_id": app.OwnerUserID, "from_status": fromStatus, "to_status": app.Status}
+func studioApplicationLifecyclePayload(app *iapiserver.StudioApplication, fromStatus any) *iapiserver.AppStudioApplicationLifecycleEventPayload {
+	return &iapiserver.AppStudioApplicationLifecycleEventPayload{StudioApplicationID: app.ID, OwnerUserID: app.OwnerUserID, FromStatus: appStudioNullableStatus(fromStatus), ToStatus: app.Status}
 }
 
-func studioSourceRevisionPayload(appID string, currentRevision int64, changeSet *iapiserver.StudioChangeSet) map[string]any {
-	payload := map[string]any{"studio_application_id": appID, "previous_revision": nil, "current_revision": currentRevision, "change_set_id": nil, "agent_id": nil, "agent_invocation_id": nil}
+func studioSourceRevisionPayload(appID string, currentRevision int64, changeSet *iapiserver.StudioChangeSet) *iapiserver.AppStudioSourceRevisionEventPayload {
+	payload := &iapiserver.AppStudioSourceRevisionEventPayload{StudioApplicationID: appID, CurrentRevision: currentRevision}
 	if changeSet != nil {
-		payload["previous_revision"] = changeSet.BaseRevision
-		payload["change_set_id"] = changeSet.ID
-		payload["agent_id"] = agentNullableString(changeSet.AgentID)
-		payload["agent_invocation_id"] = agentNullableString(changeSet.AgentInvocationID)
+		payload.PreviousRevision = &changeSet.BaseRevision
+		payload.ChangeSetID = appStudioNullableString(changeSet.ID)
+		payload.AgentID = appStudioNullableString(changeSet.AgentID)
+		payload.AgentInvocationID = appStudioNullableString(changeSet.AgentInvocationID)
 	}
 	return payload
 }
 
-func studioSourceSnapshotPayload(snapshot *iapiserver.StudioSourceSnapshot) map[string]any {
-	return map[string]any{"source_snapshot_id": snapshot.ID, "studio_application_id": snapshot.StudioApplicationID, "source_revision": snapshot.WorkspaceRevision, "content_digest": snapshot.ContentDigest, "manifest_digest": snapshot.ManifestDigest, "created_by": snapshot.CreatedBy}
+func studioSourceSnapshotPayload(snapshot *iapiserver.StudioSourceSnapshot) *iapiserver.AppStudioSourceSnapshotEventPayload {
+	return &iapiserver.AppStudioSourceSnapshotEventPayload{SourceSnapshotID: snapshot.ID, StudioApplicationID: snapshot.StudioApplicationID, SourceRevision: snapshot.WorkspaceRevision, ContentDigest: snapshot.ContentDigest, ManifestDigest: snapshot.ManifestDigest, CreatedBy: snapshot.CreatedBy}
 }
 
 func appendStudioBuildOutbox(tx *gorm.DB, previous, build *iapiserver.StudioBuild) error {
@@ -642,42 +683,57 @@ func appendStudioBuildOutbox(tx *gorm.DB, previous, build *iapiserver.StudioBuil
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioBuild", build.ID, studioBuildProjectionChangedEvent, appStudioEventKey(studioBuildProjectionChangedEvent, build.ID, build.ResourceVersion), build.ResourceVersion, studioBuildPayload(build, from))
+	return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeBuild, build.ID, iapiserver.AppStudioEventBuildProjectionChanged, appStudioEventKey(iapiserver.AppStudioEventBuildProjectionChanged, build.ID, build.ResourceVersion), build.ResourceVersion, studioBuildPayload(build, from))
 }
-func studioBuildPayload(build *iapiserver.StudioBuild, fromStatus any) map[string]any {
-	return map[string]any{"studio_build_id": build.ID, "studio_application_id": build.StudioApplicationID, "source_snapshot_id": build.SourceSnapshotID, "atomic_task_id": agentNullableString(build.AtomicTaskID), "artifact_id": agentNullableString(build.ArtifactID), "artifact_digest": agentNullableString(build.ArtifactDigest), "from_status": fromStatus, "to_status": build.Status, "error_code": nil}
+func studioBuildPayload(build *iapiserver.StudioBuild, fromStatus any) *iapiserver.AppStudioBuildEventPayload {
+	return &iapiserver.AppStudioBuildEventPayload{StudioBuildID: build.ID, StudioApplicationID: build.StudioApplicationID, SourceSnapshotID: build.SourceSnapshotID, AtomicTaskID: appStudioNullableString(build.AtomicTaskID), ArtifactID: appStudioNullableString(build.ArtifactID), ArtifactDigest: appStudioNullableString(build.ArtifactDigest), FromStatus: appStudioNullableStatus(fromStatus), ToStatus: build.Status}
 }
 func appendStudioPreviewOutbox(tx *gorm.DB, previous, runtime *iapiserver.StudioPreviewRuntime) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioPreviewRuntime", runtime.ID, studioPreviewRuntimeChangedEvent, appStudioEventKey(studioPreviewRuntimeChangedEvent, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioPreviewPayload(runtime, from))
+	return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypePreviewRuntime, runtime.ID, iapiserver.AppStudioEventPreviewRuntimeChanged, appStudioEventKey(iapiserver.AppStudioEventPreviewRuntimeChanged, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioPreviewPayload(runtime, from))
 }
-func studioPreviewPayload(runtime *iapiserver.StudioPreviewRuntime, fromStatus any) map[string]any {
+func studioPreviewPayload(runtime *iapiserver.StudioPreviewRuntime, fromStatus any) *iapiserver.AppStudioPreviewEventPayload {
 	diagnosticsSummary := runtime.DiagnosticsSummary
 	if len(diagnosticsSummary) == 0 {
 		diagnosticsSummary = json.RawMessage("{}")
 	}
-	return map[string]any{"preview_runtime_id": runtime.ID, "studio_application_id": runtime.StudioApplicationID, "source_revision": runtime.WorkspaceRevision, "from_status": fromStatus, "to_status": runtime.Status, "diagnostics_summary": diagnosticsSummary, "error_code": nil}
+	return &iapiserver.AppStudioPreviewEventPayload{PreviewRuntimeID: runtime.ID, StudioApplicationID: runtime.StudioApplicationID, SourceRevision: runtime.WorkspaceRevision, FromStatus: appStudioNullableStatus(fromStatus), ToStatus: runtime.Status, DiagnosticsSummary: diagnosticsSummary}
 }
 func appendStudioReleaseOutbox(tx *gorm.DB, previous, release *iapiserver.StudioRelease) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioRelease", release.ID, studioReleaseStatusChangedEvent, appStudioEventKey(studioReleaseStatusChangedEvent, release.ID, release.ResourceVersion), release.ResourceVersion, studioReleasePayload(release, from))
+	return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeRelease, release.ID, iapiserver.AppStudioEventReleaseStatusChanged, appStudioEventKey(iapiserver.AppStudioEventReleaseStatusChanged, release.ID, release.ResourceVersion), release.ResourceVersion, studioReleasePayload(release, from))
 }
-func studioReleasePayload(release *iapiserver.StudioRelease, fromStatus any) map[string]any {
-	return map[string]any{"studio_release_id": release.ID, "studio_application_id": release.StudioApplicationID, "studio_application_version_id": release.StudioApplicationVersionID, "studio_build_id": release.StudioBuildID, "runtime_config_id": release.RuntimeConfigID, "artifact_id": release.ArtifactID, "artifact_digest": release.ArtifactDigest, "environment": release.Environment, "runtime_instance_id": agentNullableString(release.RuntimeInstanceID), "rollback_of_release_id": agentNullableString(release.RollbackOfReleaseID), "from_status": fromStatus, "to_status": release.Status, "error_code": nil}
+func studioReleasePayload(release *iapiserver.StudioRelease, fromStatus any) *iapiserver.AppStudioReleaseEventPayload {
+	return &iapiserver.AppStudioReleaseEventPayload{StudioReleaseID: release.ID, StudioApplicationID: release.StudioApplicationID, StudioApplicationVersionID: release.StudioApplicationVersionID, StudioBuildID: release.StudioBuildID, RuntimeConfigID: release.RuntimeConfigID, ArtifactID: release.ArtifactID, ArtifactDigest: release.ArtifactDigest, Environment: release.Environment, RuntimeInstanceID: appStudioNullableString(release.RuntimeInstanceID), RollbackOfReleaseID: appStudioNullableString(release.RollbackOfReleaseID), FromStatus: appStudioNullableStatus(fromStatus), ToStatus: release.Status}
 }
 func appendStudioRuntimeOutbox(tx *gorm.DB, previous, runtime *iapiserver.StudioRuntimeInstance) error {
 	from := any(nil)
 	if previous != nil {
 		from = previous.Status
 	}
-	return appendAppStudioOutbox(tx, "StudioRuntimeInstance", runtime.ID, studioRuntimeInstanceChangedEvent, appStudioEventKey(studioRuntimeInstanceChangedEvent, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioRuntimePayload(runtime, from))
+	return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeRuntime, runtime.ID, iapiserver.AppStudioEventRuntimeInstanceChanged, appStudioEventKey(iapiserver.AppStudioEventRuntimeInstanceChanged, runtime.ID, runtime.ResourceVersion), runtime.ResourceVersion, studioRuntimePayload(runtime, from))
 }
-func studioRuntimePayload(runtime *iapiserver.StudioRuntimeInstance, fromStatus any) map[string]any {
-	return map[string]any{"runtime_instance_id": runtime.ID, "studio_release_id": runtime.StudioReleaseID, "studio_application_id": runtime.StudioApplicationID, "environment": runtime.Environment, "atomic_task_id": agentNullableString(runtime.AtomicTaskID), "infra_runtime_id": agentNullableString(runtime.InfraRuntimeID), "from_status": fromStatus, "to_status": runtime.Status, "health_status": runtime.HealthStatus, "is_current": runtime.IsCurrent, "error_code": agentNullableString(runtime.ErrorCode)}
+func studioRuntimePayload(runtime *iapiserver.StudioRuntimeInstance, fromStatus any) *iapiserver.AppStudioRuntimeEventPayload {
+	return &iapiserver.AppStudioRuntimeEventPayload{RuntimeInstanceID: runtime.ID, StudioReleaseID: runtime.StudioReleaseID, StudioApplicationID: runtime.StudioApplicationID, Environment: runtime.Environment, AtomicTaskID: appStudioNullableString(runtime.AtomicTaskID), InfraRuntimeID: appStudioNullableString(runtime.InfraRuntimeID), FromStatus: appStudioNullableStatus(fromStatus), ToStatus: runtime.Status, HealthStatus: runtime.HealthStatus, IsCurrent: runtime.IsCurrent, ErrorCode: appStudioNullableString(runtime.ErrorCode)}
+}
+
+func appStudioNullableString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func appStudioNullableStatus(value any) *string {
+	status, ok := value.(string)
+	if !ok || status == "" {
+		return nil
+	}
+	return &status
 }

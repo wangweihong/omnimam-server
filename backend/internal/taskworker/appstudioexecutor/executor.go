@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mitchellh/mapstructure"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -107,8 +108,8 @@ func ExecutePreviewEnsure(
 	if err != nil {
 		return nil, err
 	}
-	var arguments previewEnsureArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
+	arguments, err := decodeArguments[previewEnsureArguments](atomicTask.Arguments)
+	if err != nil {
 		return nil, errors.Wrap(err, "decode appstudio preview ensure arguments")
 	}
 	if arguments.StudioApplicationID == "" || arguments.PreviewRuntimeID == "" || arguments.WorkspaceID == "" || arguments.WorkspaceRevision < 0 || arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
@@ -135,12 +136,12 @@ func ExecutePreviewStop(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, raw, err := resolveArguments(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAppStudioPreviewStop)
+	contract, _, err := resolveArguments(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAppStudioPreviewStop)
 	if err != nil {
 		return nil, err
 	}
-	var arguments previewStopArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
+	arguments, err := decodeArguments[previewStopArguments](atomicTask.Arguments)
+	if err != nil {
 		return nil, errors.Wrap(err, "decode appstudio preview stop arguments")
 	}
 	if arguments.StudioApplicationID == "" || arguments.PreviewRuntimeID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant) {
@@ -165,8 +166,8 @@ func ExecuteBuild(
 	if err != nil {
 		return nil, err
 	}
-	var arguments buildArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
+	arguments, err := decodeArguments[buildArguments](atomicTask.Arguments)
+	if err != nil {
 		return nil, errors.Wrap(err, "decode appstudio build arguments")
 	}
 	if arguments.StudioApplicationID == "" || arguments.StudioBuildID == "" || arguments.SourceSnapshotID == "" || arguments.SourceSnapshotDigest == "" || arguments.RuntimeProfileRevision == "" || arguments.DependencyLockDigest == "" || arguments.ExpectedResourceVersion < 0 {
@@ -298,8 +299,8 @@ func ExecuteProductionReconcile(
 	if err != nil {
 		return nil, err
 	}
-	var arguments productionReconcileArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
+	arguments, err := decodeArguments[productionReconcileArguments](atomicTask.Arguments)
+	if err != nil {
 		return nil, errors.Wrap(err, "decode appstudio production reconcile arguments")
 	}
 	if arguments.StudioApplicationID == "" || arguments.StudioReleaseID == "" || arguments.StudioRuntimeInstanceID == "" || arguments.StudioApplicationVersionID == "" || arguments.RuntimeConfigID == "" || arguments.ArtifactID == "" || arguments.ArtifactDigest == "" || arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
@@ -335,12 +336,12 @@ func ExecuteProductionStop(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, raw, err := resolveArguments(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAppStudioProductionStop)
+	contract, _, err := resolveArguments(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAppStudioProductionStop)
 	if err != nil {
 		return nil, err
 	}
-	var arguments productionStopArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
+	arguments, err := decodeArguments[productionStopArguments](atomicTask.Arguments)
+	if err != nil {
 		return nil, errors.Wrap(err, "decode appstudio production stop arguments")
 	}
 	if arguments.StudioApplicationID == "" || arguments.StudioReleaseID == "" || arguments.StudioRuntimeInstanceID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAppStudioReleaseGrant) {
@@ -368,6 +369,15 @@ func resolveArguments(registry *taskfunctionregistry.Registry, workerTask workfl
 		return nil, nil, errors.Wrap(err, "encode appstudio arguments")
 	}
 	return contract, raw, nil
+}
+
+func decodeArguments[T any](arguments map[string]any) (T, error) {
+	var result T
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{Result: &result, TagName: "json"})
+	if err != nil {
+		return result, err
+	}
+	return result, decoder.Decode(arguments)
 }
 
 func ensureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime.WorkerTask, contract *taskfunctionregistry.Contract, raw []byte, existing *string, ownerReference, profileID, profileRevision, sourceRef, authorizationRef, endpointVisibility string, resource iapiserver.InfraResourceRequirement) *infrastructure.CommandRequest {
