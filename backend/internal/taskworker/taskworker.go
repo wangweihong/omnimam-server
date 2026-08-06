@@ -2,15 +2,11 @@ package apiserver
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"io"
-	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -38,8 +34,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
-	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/agentexecutor"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/appstudioexecutor"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/comfyuiexecutor"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/contracts"
 )
 
 const (
@@ -186,104 +185,54 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "reconcile required application platform bindings")
 	}
 	if err := reconcileRegistry.Register(engine.NewEngineHealthReconcileHandler(storeIns, applicationService)); err != nil {
-		return err
+		return errors.Wrap(err, "register engine health reconcile handler")
 	}
 	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationService)); err != nil {
-		return err
+		return errors.Wrap(err, "register ComfyUI object info reconcile handler")
 	}
 	if err := reconcileRegistry.Register(assetlibrarysvc.NewRepresentationBackfillHandler(storeIns, representationPolicy)); err != nil {
-		return err
+		return errors.Wrap(err, "register representation backfill handler")
 	}
 	comfyTestExecutor := comfyuiadapter.NewTestExecutor(storeIns)
-	if err := runtime.RegisterHandler("agent.runtime.ensure", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		atomicTask, loadErr := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
-		if loadErr != nil {
-			return nil, errors.Wrap(loadErr, "load agent runtime ensure atomic task")
-		}
-		return executeAgentRuntimeEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
-	}); err != nil {
-		return errors.Wrap(err, "register agent runtime ensure handler")
-	}
-	if err := runtime.RegisterHandler("agent.runtime.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		atomicTask, loadErr := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
-		if loadErr != nil {
-			return nil, errors.Wrap(loadErr, "load agent runtime stop atomic task")
-		}
-		return executeAgentRuntimeStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
-	}); err != nil {
-		return errors.Wrap(err, "register agent runtime stop handler")
-	}
-	for _, registration := range []struct {
-		functionRef string
-		handler     func(context.Context, workflowruntime.WorkerTask, *iapiserver.AtomicTask) (map[string]any, error)
-	}{
-		{"appstudio.preview.ensure", func(ctx context.Context, task workflowruntime.WorkerTask, atomic *iapiserver.AtomicTask) (map[string]any, error) {
-			return executeAppStudioPreviewEnsure(ctx, infrastructureClient, functionRegistry, task, atomic)
-		}},
-		{"appstudio.preview.stop", func(ctx context.Context, task workflowruntime.WorkerTask, atomic *iapiserver.AtomicTask) (map[string]any, error) {
-			return executeAppStudioPreviewStop(ctx, infrastructureClient, functionRegistry, task, atomic)
-		}},
-		{"appstudio.build.execute", func(ctx context.Context, task workflowruntime.WorkerTask, atomic *iapiserver.AtomicTask) (map[string]any, error) {
-			return executeAppStudioBuild(ctx, infrastructureClient, artifactLifecycle, functionRegistry, task, atomic)
-		}},
-		{"appstudio.production.reconcile", func(ctx context.Context, task workflowruntime.WorkerTask, atomic *iapiserver.AtomicTask) (map[string]any, error) {
-			return executeAppStudioProductionReconcile(ctx, infrastructureClient, functionRegistry, task, atomic)
-		}},
-		{"appstudio.production.stop", func(ctx context.Context, task workflowruntime.WorkerTask, atomic *iapiserver.AtomicTask) (map[string]any, error) {
-			return executeAppStudioProductionStop(ctx, infrastructureClient, functionRegistry, task, atomic)
-		}},
-	} {
-		registration := registration
-		if err := runtime.RegisterHandler(registration.functionRef, 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-			atomicTask, loadErr := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
-			if loadErr != nil {
-				return nil, errors.Wrap(loadErr, "load appstudio atomic task")
-			}
-			return registration.handler(ctx, task, atomicTask)
-		}); err != nil {
-			return errors.Wrap(err, "register appstudio handler")
-		}
-	}
-	if err := runtime.RegisterHandler("comfyui.submit", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		output, err := comfyTestExecutor.Submit(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
-		if err == nil {
-			task.Log(ctx, workflowruntime.WorkerLog("comfyui.submit.ready", workflowruntime.TaskLogLevelInfo, "External job is ready for polling."))
-		}
-		return output, err
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "agent.runtime.ensure", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return agentexecutor.ExecuteRuntimeEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler("comfyui.poll", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		output, err := comfyTestExecutor.Poll(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
-		if err == nil {
-			if waiting, _ := output["in_progress"].(bool); waiting {
-				key, message := "comfyui.poll.running", "External job is still running."
-				if output["queue_position"] != nil {
-					key, message = "comfyui.poll.queued", "External job is queued."
-				}
-				task.Log(ctx, workflowruntime.WorkerLog(key, workflowruntime.TaskLogLevelInfo, message))
-			} else {
-				task.Log(ctx, workflowruntime.WorkerLog("comfyui.poll.completed", workflowruntime.TaskLogLevelInfo, "External job completed."))
-			}
-		}
-		return output, err
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "agent.runtime.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return agentexecutor.ExecuteRuntimeStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler("comfyui.collect_preview", 8, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		output, err := comfyTestExecutor.Collect(ctx, fmt.Sprint(task.Arguments["test_run_id"]))
-		if err == nil {
-			task.Log(ctx, workflowruntime.WorkerLog("comfyui.preview.collected", workflowruntime.TaskLogLevelInfo, fmt.Sprintf("Collected %v preview outputs.", output["output_count"])))
-		}
-		return output, err
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.preview.ensure", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return appstudioexecutor.ExecutePreviewEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler("application-platform.run", 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		atomicTask, err := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
-		if err != nil {
-			return nil, err
-		}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.preview.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return appstudioexecutor.ExecutePreviewStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
+	}); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.build.execute", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return appstudioexecutor.ExecuteBuild(ctx, infrastructureClient, artifactLifecycle, functionRegistry, task, atomicTask)
+	}); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.production.reconcile", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return appstudioexecutor.ExecuteProductionReconcile(ctx, infrastructureClient, functionRegistry, task, atomicTask)
+	}); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.production.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		return appstudioexecutor.ExecuteProductionStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
+	}); err != nil {
+		return err
+	}
+	if err := comfyuiexecutor.RegisterHandlers(runtime, comfyTestExecutor); err != nil {
+		return errors.Wrap(err, "register comfyui handlers")
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "application-platform.run", 16, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		if atomicTask.CanvasRunID != "" {
 			run, ensureErr := applicationService.EnsureCanvasApplicationRun(ctx, &appsvc.CanvasApplicationRunRequest{
 				AtomicTaskID:         atomicTask.ID,
@@ -317,11 +266,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(appplatformsvc.FunctionAssetThumbnailGenerate, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		atomicTask, err := storeIns.TaskCenters().GetAtomicTask(ctx, task.AtomicTaskID)
-		if err != nil {
-			return nil, err
-		}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), appplatformsvc.FunctionAssetThumbnailGenerate, 16, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		output, err := thumbnailExecutor.Execute(ctx, atomicTask)
 		if err == nil {
 			message := "Thumbnail processing completed."
@@ -334,19 +279,19 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionArtifactProcess, 16, artifactProcessExecutor.Execute); err != nil {
+	if err := registerWorkerHandler(runtime, assetlibrarysvc.FunctionArtifactProcess, 16, artifactProcessExecutor.Execute); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationInspect, 16, representationInspectExecutor.Execute); err != nil {
+	if err := registerWorkerHandler(runtime, assetlibrarysvc.FunctionRepresentationInspect, 16, representationInspectExecutor.Execute); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationGenerate, 8, representationGenerateExecutor.Execute); err != nil {
+	if err := registerWorkerHandler(runtime, assetlibrarysvc.FunctionRepresentationGenerate, 8, representationGenerateExecutor.Execute); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(assetlibrarysvc.FunctionRepresentationFinalize, 16, representationFinalizeExecutor.Execute); err != nil {
+	if err := registerWorkerHandler(runtime, assetlibrarysvc.FunctionRepresentationFinalize, 16, representationFinalizeExecutor.Execute); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+	if err := registerWorkerHandler(runtime, taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
 		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments["scheduled_at"]))
 		if err == nil {
@@ -360,13 +305,13 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler(taskcentersvc.ManualScheduleControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+	if err := registerWorkerHandler(runtime, taskcentersvc.ManualScheduleControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		executionID, _ := task.Arguments["schedule_execution_id"].(string)
 		return tasks.RunManualScheduleExecution(ctx, executionID, task.WorkflowID)
 	}); err != nil {
 		return err
 	}
-	if err := runtime.RegisterHandler("task.schedule.acquire", 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+	if err := registerWorkerHandler(runtime, "task.schedule.acquire", 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.started", workflowruntime.TaskLogLevelInfo, "Evaluating scheduled execution ownership."))
 		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
 		schedule, err := storeIns.TaskCenters().GetTaskSchedule(ctx, scheduleID)
@@ -493,123 +438,11 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 }
 
-type infrastructureCommandExecutor interface {
-	Execute(context.Context, *infrastructure.CommandRequest) (*infrastructure.CommandResponse, error)
-}
+type infrastructureCommandExecutor = contracts.InfrastructureCommandExecutor
 
-type infrastructureBuildExecutor interface {
-	infrastructureCommandExecutor
-	ReadOutputContent(context.Context, string) (*infrastructure.OutputContent, error)
-	AttachOutputArtifact(context.Context, string, *iapiserver.InfraAttachArtifactRequest) (*iapiserver.InfraRuntimeOutput, error)
-}
+type infrastructureBuildExecutor = contracts.InfrastructureBuildExecutor
 
-type appStudioBuildArtifactLifecycle interface {
-	Prepare(context.Context, *iapiserver.Artifact) (*iapiserver.Artifact, bool, error)
-	StoreContent(context.Context, *iapiserver.Artifact, string, io.Reader) (*iapiserver.Artifact, error)
-}
-
-type agentRuntimeEnsureArguments struct {
-	AgentID                 string                              `json:"agent_id"`
-	AgentRuntimeID          string                              `json:"agent_runtime_id"`
-	ExistingInfraRuntimeID  *string                             `json:"existing_infra_runtime_id"`
-	Operation               string                              `json:"operation"`
-	AgentKind               string                              `json:"agent_kind"`
-	WorkspaceType           string                              `json:"workspace_type"`
-	WorkspaceID             string                              `json:"workspace_id"`
-	WorkspaceSourceRef      *string                             `json:"workspace_source_ref"`
-	RuntimeProfileID        string                              `json:"runtime_profile_id"`
-	RuntimeProfileRevision  string                              `json:"runtime_profile_revision"`
-	ModelAccessSpecRef      string                              `json:"model_access_spec_ref"`
-	RuntimeConfigurationRef string                              `json:"runtime_configuration_ref"`
-	AuthorizationRef        string                              `json:"authorization_ref"`
-	ExpectedResourceVersion int64                               `json:"expected_resource_version"`
-	ResourceRequirement     iapiserver.InfraResourceRequirement `json:"resource_requirement"`
-	LifecyclePolicy         agentRuntimeLifecyclePolicy         `json:"lifecycle_policy"`
-}
-
-type agentRuntimeLifecyclePolicy struct {
-	RestartPolicy          string `json:"restart_policy"`
-	IdleTimeoutSeconds     *int   `json:"idle_timeout_seconds"`
-	MaximumLifetimeSeconds *int   `json:"maximum_lifetime_seconds"`
-}
-
-type agentRuntimeStopArguments struct {
-	AgentID                 string `json:"agent_id"`
-	AgentRuntimeID          string `json:"agent_runtime_id"`
-	InfraRuntimeID          string `json:"infra_runtime_id"`
-	Action                  string `json:"action"`
-	AuthorizationRef        string `json:"authorization_ref"`
-	ExpectedResourceVersion int64  `json:"expected_resource_version"`
-}
-
-type appStudioPreviewEnsureArguments struct {
-	StudioApplicationID        string                              `json:"studio_application_id"`
-	PreviewRuntimeID           string                              `json:"preview_runtime_id"`
-	ExistingInfraRuntimeID     *string                             `json:"existing_infra_runtime_id"`
-	WorkspaceID                string                              `json:"workspace_id"`
-	WorkspaceRevision          int64                               `json:"workspace_revision"`
-	WorkspaceRevisionSourceRef string                              `json:"workspace_revision_source_ref"`
-	RuntimeProfileID           string                              `json:"runtime_profile_id"`
-	RuntimeProfileRevision     string                              `json:"runtime_profile_revision"`
-	EndpointVisibility         string                              `json:"endpoint_visibility"`
-	AuthorizationRef           string                              `json:"authorization_ref"`
-	ExpectedResourceVersion    int64                               `json:"expected_resource_version"`
-	ResourceRequirement        iapiserver.InfraResourceRequirement `json:"resource_requirement"`
-}
-
-type appStudioPreviewStopArguments struct {
-	StudioApplicationID     string `json:"studio_application_id"`
-	PreviewRuntimeID        string `json:"preview_runtime_id"`
-	InfraRuntimeID          string `json:"infra_runtime_id"`
-	Action                  string `json:"action"`
-	AuthorizationRef        string `json:"authorization_ref"`
-	ExpectedResourceVersion int64  `json:"expected_resource_version"`
-}
-
-type appStudioBuildArguments struct {
-	StudioApplicationID     string                              `json:"studio_application_id"`
-	StudioBuildID           string                              `json:"studio_build_id"`
-	SourceSnapshotID        string                              `json:"source_snapshot_id"`
-	SourceSnapshotDigest    string                              `json:"source_snapshot_digest"`
-	SourceSnapshotSourceRef string                              `json:"source_snapshot_source_ref"`
-	RuntimeProfileID        string                              `json:"runtime_profile_id"`
-	RuntimeProfileRevision  string                              `json:"runtime_profile_revision"`
-	BuildConfigRef          string                              `json:"build_config_ref"`
-	DependencyLockDigest    string                              `json:"dependency_lock_digest"`
-	AuthorizationRef        string                              `json:"authorization_ref"`
-	ExpectedResourceVersion int64                               `json:"expected_resource_version"`
-	ResourceRequirement     iapiserver.InfraResourceRequirement `json:"resource_requirement"`
-}
-
-type appStudioProductionReconcileArguments struct {
-	StudioApplicationID        string                              `json:"studio_application_id"`
-	StudioReleaseID            string                              `json:"studio_release_id"`
-	StudioRuntimeInstanceID    string                              `json:"studio_runtime_instance_id"`
-	ExistingInfraRuntimeID     *string                             `json:"existing_infra_runtime_id"`
-	StudioApplicationVersionID string                              `json:"studio_application_version_id"`
-	RuntimeConfigID            string                              `json:"runtime_config_id"`
-	ArtifactID                 string                              `json:"artifact_id"`
-	ArtifactDigest             string                              `json:"artifact_digest"`
-	ArtifactSourceRef          string                              `json:"artifact_source_ref"`
-	Environment                string                              `json:"environment"`
-	DeploymentReason           string                              `json:"deployment_reason"`
-	RuntimeProfileID           string                              `json:"runtime_profile_id"`
-	RuntimeProfileRevision     string                              `json:"runtime_profile_revision"`
-	HealthCheckRef             string                              `json:"health_check_ref"`
-	EndpointVisibility         string                              `json:"endpoint_visibility"`
-	AuthorizationRef           string                              `json:"authorization_ref"`
-	ExpectedResourceVersion    int64                               `json:"expected_resource_version"`
-	ResourceRequirement        iapiserver.InfraResourceRequirement `json:"resource_requirement"`
-}
-
-type appStudioProductionStopArguments struct {
-	StudioApplicationID     string `json:"studio_application_id"`
-	StudioReleaseID         string `json:"studio_release_id"`
-	StudioRuntimeInstanceID string `json:"studio_runtime_instance_id"`
-	InfraRuntimeID          string `json:"infra_runtime_id"`
-	AuthorizationRef        string `json:"authorization_ref"`
-	ExpectedResourceVersion int64  `json:"expected_resource_version"`
-}
+type appStudioBuildArtifactLifecycle = appstudioexecutor.BuildArtifactLifecycle
 
 func executeAgentRuntimeEnsure(
 	ctx context.Context,
@@ -618,88 +451,7 @@ func executeAgentRuntimeEnsure(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, err := resolveAgentRuntimeContract(registry, workerTask, atomicTask, "agent.runtime.ensure")
-	if err != nil {
-		return nil, err
-	}
-	rawArguments, err := json.Marshal(atomicTask.Arguments)
-	if err != nil {
-		return nil, errors.Wrap(err, "encode agent runtime ensure arguments")
-	}
-	var arguments agentRuntimeEnsureArguments
-	if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode agent runtime ensure arguments")
-	}
-	if err := validateAgentRuntimeEnsureArguments(arguments); err != nil {
-		return nil, err
-	}
-	if client == nil {
-		return nil, fmt.Errorf("infrastructure client is required")
-	}
-
-	command := &infrastructure.CommandRequest{}
-	if arguments.ExistingInfraRuntimeID != nil {
-		command.Operation = iapiserver.TaskWorkerInfrastructureOperationStart
-		command.RuntimeID = *arguments.ExistingInfraRuntimeID
-	} else {
-		sourceRef := ""
-		if arguments.WorkspaceSourceRef != nil {
-			sourceRef = *arguments.WorkspaceSourceRef
-		}
-		timeoutPolicy := iapiserver.InfraTimeoutPolicy{}
-		if arguments.LifecyclePolicy.IdleTimeoutSeconds != nil {
-			timeoutPolicy.IdleTimeoutSeconds = *arguments.LifecyclePolicy.IdleTimeoutSeconds
-		}
-		if arguments.LifecyclePolicy.MaximumLifetimeSeconds != nil {
-			timeoutPolicy.MaximumLifetimeSeconds = *arguments.LifecyclePolicy.MaximumLifetimeSeconds
-		}
-		command.Operation = iapiserver.TaskWorkerInfrastructureOperationCreate
-		command.Create = &iapiserver.InfraCreateRuntimeRequest{
-			RequestID:              fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1),
-			RequestingService:      "task-center",
-			OwnerDomain:            "agent",
-			OwnerReference:         arguments.AgentRuntimeID,
-			RequestUserID:          atomicTask.CreatedBy,
-			RuntimeMode:            iapiserver.TaskWorkerRuntimeModeService,
-			RuntimeProfileID:       arguments.RuntimeProfileID,
-			RuntimeProfileRevision: arguments.RuntimeProfileRevision,
-			SourceRef:              sourceRef,
-			ResourceRequirement:    arguments.ResourceRequirement,
-			TimeoutPolicy:          timeoutPolicy,
-			AuthorizationRef:       arguments.AuthorizationRef,
-			EndpointVisibility:     iapiserver.TaskWorkerEndpointVisibilityInternal,
-			FunctionRef:            contract.FunctionRef,
-			FunctionArguments:      rawArguments,
-		}
-	}
-	response, err := client.Execute(ctx, command)
-	if err != nil {
-		return nil, errors.Wrap(err, "execute agent runtime ensure infrastructure command")
-	}
-	runtime, err := requireInfrastructureRuntime(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "validate agent runtime ensure response")
-	}
-	if arguments.ExistingInfraRuntimeID != nil && runtime.ID != *arguments.ExistingInfraRuntimeID {
-		return nil, fmt.Errorf("agent runtime ensure returned unexpected infrastructure runtime %q", runtime.ID)
-	}
-	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusRunning {
-		return nil, fmt.Errorf("agent runtime ensure returned runtime status %q", runtime.Status)
-	}
-	if !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
-		return nil, fmt.Errorf("agent runtime ensure returned an invalid ready endpoint")
-	}
-	result := map[string]any{
-		"infra_runtime_id":    runtime.ID,
-		"runtime_status":      iapiserver.TaskWorkerRuntimeStatusRunning,
-		"health_status":       iapiserver.TaskWorkerRuntimeHealthStatusHealthy,
-		"endpoint_ref":        runtime.EndpointRef,
-		"diagnostics_summary": map[string]any{},
-	}
-	if err := registry.ValidateOutput(contract, result); err != nil {
-		return nil, errors.Wrap(err, "validate agent runtime ensure output")
-	}
-	return result, nil
+	return agentexecutor.ExecuteRuntimeEnsure(ctx, client, registry, workerTask, atomicTask)
 }
 
 func executeAgentRuntimeStop(
@@ -709,539 +461,98 @@ func executeAgentRuntimeStop(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, err := resolveAgentRuntimeContract(registry, workerTask, atomicTask, "agent.runtime.stop")
-	if err != nil {
-		return nil, err
-	}
-	rawArguments, err := json.Marshal(atomicTask.Arguments)
-	if err != nil {
-		return nil, errors.Wrap(err, "encode agent runtime stop arguments")
-	}
-	var arguments agentRuntimeStopArguments
-	if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode agent runtime stop arguments")
-	}
-	if err := validateAgentRuntimeStopArguments(arguments); err != nil {
-		return nil, err
-	}
-	if client == nil {
-		return nil, fmt.Errorf("infrastructure client is required")
-	}
-	response, err := client.Execute(ctx, &infrastructure.CommandRequest{
-		Operation: iapiserver.TaskWorkerInfrastructureOperationStop,
-		RuntimeID: arguments.InfraRuntimeID,
-		Delete:    arguments.Action == iapiserver.TaskWorkerActionDelete,
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "execute agent runtime stop infrastructure command")
-	}
-	runtime, err := requireInfrastructureRuntime(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "validate agent runtime stop response")
-	}
-	if runtime.ID != arguments.InfraRuntimeID {
-		return nil, fmt.Errorf("agent runtime stop returned unexpected infrastructure runtime %q", runtime.ID)
-	}
-	expectedStatus := iapiserver.TaskWorkerRuntimeStatusStopped
-	if arguments.Action == iapiserver.TaskWorkerActionDelete {
-		expectedStatus = iapiserver.TaskWorkerRuntimeStatusDeleted
-	}
-	if runtime.Status != expectedStatus {
-		return nil, fmt.Errorf("agent runtime stop returned runtime status %q, want %q", runtime.Status, expectedStatus)
-	}
-	result := map[string]any{
-		"infra_runtime_id": runtime.ID,
-		"runtime_status":   runtime.Status,
-		"completed_action": arguments.Action,
-	}
-	if err := registry.ValidateOutput(contract, result); err != nil {
-		return nil, errors.Wrap(err, "validate agent runtime stop output")
-	}
-	return result, nil
+	return agentexecutor.ExecuteRuntimeStop(ctx, client, registry, workerTask, atomicTask)
 }
 
-func executeAppStudioPreviewEnsure(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
-	contract, raw, err := resolveAppStudioArguments(registry, workerTask, atomicTask, "appstudio.preview.ensure")
-	if err != nil {
-		return nil, err
-	}
-	var arguments appStudioPreviewEnsureArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode appstudio preview ensure arguments")
-	}
-	if arguments.StudioApplicationID == "" || arguments.PreviewRuntimeID == "" || arguments.WorkspaceID == "" || arguments.WorkspaceRevision < 0 || arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
-		return nil, fmt.Errorf("appstudio preview ensure arguments are incomplete")
-	}
-	if !strings.HasPrefix(arguments.WorkspaceRevisionSourceRef, "studio-workspace-revision://") || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-preview-grant://") {
-		return nil, fmt.Errorf("appstudio preview ensure references are invalid")
-	}
-	if arguments.RuntimeProfileID != "appstudio.preview.static-web" && arguments.RuntimeProfileID != "appstudio.preview.web-backend" {
-		return nil, fmt.Errorf("appstudio preview ensure profile is invalid")
-	}
-	if arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || invalidResourceRequirement(arguments.ResourceRequirement) {
-		return nil, fmt.Errorf("appstudio preview ensure runtime configuration is invalid")
-	}
-	command := appStudioEnsureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.PreviewRuntimeID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.WorkspaceRevisionSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement)
-	return executeAppStudioReady(ctx, client, registry, contract, command, arguments.ExistingInfraRuntimeID, "preview ensure")
-}
-
-func executeAppStudioPreviewStop(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
-	contract, raw, err := resolveAppStudioArguments(registry, workerTask, atomicTask, "appstudio.preview.stop")
-	if err != nil {
-		return nil, err
-	}
-	var arguments appStudioPreviewStopArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode appstudio preview stop arguments")
-	}
-	if arguments.StudioApplicationID == "" || arguments.PreviewRuntimeID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-preview-grant://") {
-		return nil, fmt.Errorf("appstudio preview stop arguments are invalid")
-	}
-	if arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
-		return nil, fmt.Errorf("appstudio preview stop action is invalid")
-	}
-	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, arguments.Action, arguments.Action == iapiserver.TaskWorkerActionDelete, "preview stop")
-}
-
-func executeAppStudioBuild(ctx context.Context, client infrastructureBuildExecutor, lifecycle appStudioBuildArtifactLifecycle, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
-	contract, raw, err := resolveAppStudioArguments(registry, workerTask, atomicTask, "appstudio.build.execute")
-	if err != nil {
-		return nil, err
-	}
-	var arguments appStudioBuildArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode appstudio build arguments")
-	}
-	if arguments.StudioApplicationID == "" || arguments.StudioBuildID == "" || arguments.SourceSnapshotID == "" || arguments.SourceSnapshotDigest == "" || arguments.RuntimeProfileRevision == "" || arguments.DependencyLockDigest == "" || arguments.ExpectedResourceVersion < 0 {
-		return nil, fmt.Errorf("appstudio build arguments are incomplete")
-	}
-	if !strings.HasPrefix(arguments.SourceSnapshotSourceRef, "studio-snapshot://") || !strings.HasPrefix(arguments.BuildConfigRef, "appstudio-build-config://") || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-build-grant://") {
-		return nil, fmt.Errorf("appstudio build references are invalid")
-	}
-	if arguments.RuntimeProfileID != "appstudio.build.static-web" && arguments.RuntimeProfileID != "appstudio.build.web-backend" {
-		return nil, fmt.Errorf("appstudio build profile is invalid")
-	}
-	if invalidResourceRequirement(arguments.ResourceRequirement) {
-		return nil, fmt.Errorf("appstudio build resource requirement is invalid")
-	}
-	if client == nil || lifecycle == nil {
-		return nil, fmt.Errorf("appstudio build delivery dependencies are required")
-	}
-	registration := contract.ArtifactRegistration
-	if registration == nil || !registration.Enabled || registration.ProducerType != "studio_build" || registration.OutputKey == "" || registration.DeliveryPolicy == nil || !registration.DeliveryPolicy.AttachAfterComplete {
-		return nil, fmt.Errorf("appstudio build artifact delivery contract is invalid")
-	}
-	declarations := make([]iapiserver.InfraRuntimeOutputDeclaration, 0, len(contract.InfraAdapter.OutputDeclarations))
-	for _, declaration := range contract.InfraAdapter.OutputDeclarations {
-		declarations = append(declarations, iapiserver.InfraRuntimeOutputDeclaration{
-			OutputKey: declaration.OutputKey, RelativePath: declaration.RelativePath, MediaType: declaration.MediaType,
-		})
-	}
-	command := &infrastructure.CommandRequest{Operation: "create", Create: &iapiserver.InfraCreateRuntimeRequest{
-		RequestID: fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1), RequestingService: contract.InfraAdapter.RequestingService,
-		OwnerDomain: contract.InfraAdapter.OwnerDomain, OwnerReference: arguments.StudioBuildID, RequestUserID: atomicTask.CreatedBy,
-		RuntimeMode: contract.InfraAdapter.RuntimeMode, RuntimeProfileID: arguments.RuntimeProfileID, RuntimeProfileRevision: arguments.RuntimeProfileRevision,
-		SourceRef: arguments.SourceSnapshotSourceRef, OutputDeclarations: declarations, ResourceRequirement: arguments.ResourceRequirement,
-		AuthorizationRef: arguments.AuthorizationRef, FunctionRef: contract.FunctionRef, FunctionArguments: raw,
-	}}
-	response, err := client.Execute(ctx, command)
-	if err != nil {
-		return nil, errors.Wrap(err, "execute appstudio build infrastructure command")
-	}
-	runtime, err := requireInfrastructureRuntime(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "validate appstudio build infrastructure response")
-	}
-	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusSucceeded {
-		return nil, fmt.Errorf("appstudio build infrastructure runtime did not succeed")
-	}
-	output, err := requireCollectedBuildOutput(response, registration.OutputKey)
-	if err != nil {
-		return nil, err
-	}
-	artifact, _, err := lifecycle.Prepare(ctx, &iapiserver.Artifact{
-		OwnerUserID: atomicTask.CreatedBy, ProducerType: registration.ProducerType, ProducerID: arguments.StudioBuildID,
-		ProducerIdempotencyKey: "studio-build:" + arguments.StudioBuildID + ":" + registration.OutputKey,
-		AtomicTaskID:           atomicTask.ID, TaskAttemptID: workerTask.RuntimeTaskID, OutputKey: registration.OutputKey,
-		ArtifactType: "build_bundle", MediaType: "other", SavePolicy: iapiserver.ArtifactSaveAutomatic,
-		ProcessingProfileVersion: "appstudio-build-bundle-v1", Metadata: map[string]any{"content_type": output.MediaType},
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "prepare appstudio build artifact")
-	}
-	if artifact == nil || artifact.ID == "" {
-		return nil, fmt.Errorf("appstudio build artifact preparation returned no artifact")
-	}
-	if artifact.ProcessingStatus != iapiserver.ArtifactProcessingReady {
-		artifact, err = deliverBuildOutputContent(ctx, client, lifecycle, output, artifact)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if !artifactMatchesBuildOutput(artifact, output) {
-		return nil, errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "completed artifact does not match infra runtime output")
-	}
-	attached, err := client.AttachOutputArtifact(ctx, output.ID, &iapiserver.InfraAttachArtifactRequest{
-		ArtifactID: artifact.ID, SizeBytes: output.SizeBytes, ContentDigest: output.ContentDigest,
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "attach appstudio build artifact to infra output")
-	}
-	if attached == nil || attached.ArtifactID != artifact.ID {
-		return nil, fmt.Errorf("appstudio build output artifact attachment was not confirmed")
-	}
-	if workerTask.RuntimeTaskID == "" {
-		return nil, fmt.Errorf("appstudio build task attempt log identity is unavailable")
-	}
-	result := map[string]any{
-		"artifact_id": artifact.ID, "artifact_digest": output.ContentDigest,
-		"processing_status": artifact.ProcessingStatus, "validation_status": iapiserver.TaskWorkerBuildValidationStatusPassed,
-		"logs_ref": "task-attempt-log:" + workerTask.RuntimeTaskID,
-	}
-	if err := registry.ValidateOutput(contract, result); err != nil {
-		return nil, errors.Wrap(err, "validate appstudio build output")
-	}
-	return result, nil
-}
-
-func requireCollectedBuildOutput(response *infrastructure.CommandResponse, outputKey string) (*iapiserver.InfraRuntimeOutput, error) {
-	if response == nil || response.Result == nil {
-		return nil, fmt.Errorf("appstudio build infrastructure response is empty")
-	}
-	for _, output := range response.Result.Outputs {
-		if output == nil || output.OutputKey != outputKey {
-			continue
-		}
-		if output.ID == "" || output.Status != iapiserver.TaskWorkerRuntimeOutputStatusCollected || output.MediaType == "" || output.SizeBytes < 0 || !validBuildDigest(output.ContentDigest) || output.ContentRef != "infra-output://"+output.ID || output.CollectedAt == nil {
-			return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "appstudio build output descriptor is incomplete")
-		}
-		return output, nil
-	}
-	return nil, errors.NewStatus(code.ErrInfraOutputCollectionFailed, "appstudio build bundle output was not collected")
-}
-
-func deliverBuildOutputContent(ctx context.Context, client infrastructureBuildExecutor, lifecycle appStudioBuildArtifactLifecycle, output *iapiserver.InfraRuntimeOutput, artifact *iapiserver.Artifact) (*iapiserver.Artifact, error) {
-	content, err := client.ReadOutputContent(ctx, output.ID)
-	if err != nil {
-		return nil, errors.Wrap(err, "read appstudio build output content")
-	}
-	if content == nil || content.Body == nil {
-		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "appstudio build output content is unavailable")
-	}
-	defer content.Body.Close()
-	if content.MediaType != output.MediaType || content.SizeBytes != output.SizeBytes || content.ContentDigest != output.ContentDigest {
-		return nil, errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "infra output stream metadata does not match descriptor")
-	}
-	temporary, err := os.CreateTemp("", "omnimam-build-output-*")
-	if err != nil {
-		return nil, errors.Wrap(err, "create appstudio build output staging file")
-	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	defer temporary.Close()
-	digest := sha256.New()
-	size, err := io.Copy(io.MultiWriter(temporary, digest), content.Body)
-	if err != nil {
-		return nil, errors.Wrap(err, "stage appstudio build output content")
-	}
-	actualDigest := "sha256:" + hex.EncodeToString(digest.Sum(nil))
-	if size != output.SizeBytes || actualDigest != output.ContentDigest {
-		return nil, errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "infra output stream bytes do not match descriptor")
-	}
-	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
-		return nil, errors.Wrap(err, "rewind appstudio build output content")
-	}
-	completed, err := lifecycle.StoreContent(ctx, artifact, output.MediaType, temporary)
-	if err != nil {
-		return nil, errors.Wrap(err, "store appstudio build artifact content")
-	}
-	if !artifactMatchesBuildOutput(completed, output) {
-		return nil, errors.NewStatus(code.ErrInfraOutputIntegrityMismatch, "stored artifact content does not match infra output")
-	}
-	return completed, nil
-}
-
-func artifactMatchesBuildOutput(artifact *iapiserver.Artifact, output *iapiserver.InfraRuntimeOutput) bool {
-	if artifact == nil || output == nil || artifact.ProcessingStatus != iapiserver.ArtifactProcessingReady {
-		return false
-	}
-	digest, _ := artifact.Metadata["sha256"].(string)
-	size, ok := artifactMetadataSize(artifact.Metadata["size_bytes"])
-	mimeType, _ := artifact.Metadata["mime_type"].(string)
-	return ok && "sha256:"+strings.ToLower(digest) == output.ContentDigest && size == output.SizeBytes && mimeType == output.MediaType
-}
-
-func artifactMetadataSize(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int:
-		return int64(typed), true
-	case int64:
-		return typed, true
-	case float64:
-		if typed < 0 || typed != float64(int64(typed)) {
-			return 0, false
-		}
-		return int64(typed), true
-	default:
-		return 0, false
-	}
-}
-
-func validBuildDigest(value string) bool {
-	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
-		return false
-	}
-	for _, char := range value[len("sha256:"):] {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func executeAppStudioProductionReconcile(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
-	contract, raw, err := resolveAppStudioArguments(registry, workerTask, atomicTask, "appstudio.production.reconcile")
-	if err != nil {
-		return nil, err
-	}
-	var arguments appStudioProductionReconcileArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode appstudio production reconcile arguments")
-	}
-	if arguments.StudioApplicationID == "" || arguments.StudioReleaseID == "" || arguments.StudioRuntimeInstanceID == "" || arguments.StudioApplicationVersionID == "" || arguments.RuntimeConfigID == "" || arguments.ArtifactID == "" || arguments.ArtifactDigest == "" || arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
-		return nil, fmt.Errorf("appstudio production reconcile arguments are incomplete")
-	}
-	if !strings.HasPrefix(arguments.ArtifactSourceRef, "artifact://") || !strings.HasPrefix(arguments.HealthCheckRef, "appstudio-health-check://") || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-release-grant://") {
-		return nil, fmt.Errorf("appstudio production reconcile references are invalid")
-	}
-	if arguments.Environment != "preview" && arguments.Environment != "production" {
-		return nil, fmt.Errorf("appstudio production environment is invalid")
-	}
-	if arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonDeploy && arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonUpgrade && arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonRollback {
-		return nil, fmt.Errorf("appstudio production deployment reason is invalid")
-	}
-	if arguments.RuntimeProfileID != "studioapp.runtime.static-web" && arguments.RuntimeProfileID != "studioapp.runtime.web-backend" {
-		return nil, fmt.Errorf("appstudio production profile is invalid")
-	}
-	if arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityInternal && arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible {
-		return nil, fmt.Errorf("appstudio production endpoint visibility is invalid")
-	}
-	if invalidResourceRequirement(arguments.ResourceRequirement) {
-		return nil, fmt.Errorf("appstudio production resource requirement is invalid")
-	}
-	command := appStudioEnsureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.StudioRuntimeInstanceID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.ArtifactSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement)
-	return executeAppStudioReady(ctx, client, registry, contract, command, arguments.ExistingInfraRuntimeID, "production reconcile")
-}
-
-func executeAppStudioProductionStop(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
-	contract, raw, err := resolveAppStudioArguments(registry, workerTask, atomicTask, "appstudio.production.stop")
-	if err != nil {
-		return nil, err
-	}
-	var arguments appStudioProductionStopArguments
-	if err := json.Unmarshal(raw, &arguments); err != nil {
-		return nil, errors.Wrap(err, "decode appstudio production stop arguments")
-	}
-	if arguments.StudioApplicationID == "" || arguments.StudioReleaseID == "" || arguments.StudioRuntimeInstanceID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-release-grant://") {
-		return nil, fmt.Errorf("appstudio production stop arguments are invalid")
-	}
-	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, iapiserver.TaskWorkerActionStop, false, "production stop")
-}
-
-func resolveAppStudioArguments(registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask, expectedFunctionRef string) (*taskfunctionregistry.Contract, []byte, error) {
-	if registry == nil {
-		return nil, nil, fmt.Errorf("task function registry is required")
-	}
-	if atomicTask == nil || workerTask.AtomicTaskID == "" || atomicTask.ID != workerTask.AtomicTaskID {
-		return nil, nil, fmt.Errorf("appstudio atomic task identity is invalid")
-	}
-	if workerTask.RetryCount < 0 || atomicTask.FunctionRef != expectedFunctionRef || atomicTask.FunctionContractVersion == "" || atomicTask.FunctionContractDigest == "" || atomicTask.Arguments == nil {
-		return nil, nil, fmt.Errorf("appstudio atomic task contract pin is invalid")
-	}
-	contract, err := registry.Resolve(atomicTask.FunctionRef, atomicTask.FunctionContractVersion, atomicTask.FunctionContractDigest)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "resolve appstudio atomic task contract")
-	}
-	raw, err := json.Marshal(atomicTask.Arguments)
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "encode appstudio arguments")
-	}
-	return contract, raw, nil
-}
-
-func appStudioEnsureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime.WorkerTask, contract *taskfunctionregistry.Contract, raw []byte, existing *string, ownerReference, profileID, profileRevision, sourceRef, authorizationRef, endpointVisibility string, resource iapiserver.InfraResourceRequirement) *infrastructure.CommandRequest {
-	if existing != nil {
-		return &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationStart, RuntimeID: *existing}
-	}
-	return &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationCreate, Create: &iapiserver.InfraCreateRuntimeRequest{
-		RequestID: fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1), RequestingService: "task-center", OwnerDomain: "appstudio", OwnerReference: ownerReference, RequestUserID: atomicTask.CreatedBy,
-		RuntimeMode: iapiserver.TaskWorkerRuntimeModeService, RuntimeProfileID: profileID, RuntimeProfileRevision: profileRevision, SourceRef: sourceRef, ResourceRequirement: resource, AuthorizationRef: authorizationRef, EndpointVisibility: endpointVisibility, FunctionRef: contract.FunctionRef, FunctionArguments: raw,
-	}}
-}
-
-func executeAppStudioReady(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, contract *taskfunctionregistry.Contract, command *infrastructure.CommandRequest, existing *string, operation string) (map[string]any, error) {
-	if client == nil {
-		return nil, fmt.Errorf("infrastructure client is required")
-	}
-	response, err := client.Execute(ctx, command)
-	if err != nil {
-		return nil, errors.Wrap(err, "execute appstudio "+operation+" infrastructure command")
-	}
-	runtime, err := requireInfrastructureRuntime(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "validate appstudio "+operation+" response")
-	}
-	if existing != nil && runtime.ID != *existing {
-		return nil, fmt.Errorf("appstudio %s returned unexpected infrastructure runtime %q", operation, runtime.ID)
-	}
-	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusRunning || !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
-		return nil, fmt.Errorf("appstudio %s returned an invalid ready runtime", operation)
-	}
-	result := map[string]any{"infra_runtime_id": runtime.ID, "runtime_status": iapiserver.TaskWorkerRuntimeStatusRunning, "health_status": iapiserver.TaskWorkerRuntimeHealthStatusHealthy, "endpoint_ref": runtime.EndpointRef, "diagnostics_summary": map[string]any{}}
-	if err := registry.ValidateOutput(contract, result); err != nil {
-		return nil, errors.Wrap(err, "validate appstudio "+operation+" output")
-	}
-	return result, nil
-}
-
-func hasReadyInfrastructureEndpoint(runtime *iapiserver.InfraRuntime, endpoint *iapiserver.InfraRuntimeEndpoint) bool {
-	return runtime != nil && endpoint != nil && endpoint.ID != "" && endpoint.Status == iapiserver.TaskWorkerRuntimeEndpointStatusReady &&
-		runtime.EndpointRef == "infra-endpoint://"+endpoint.ID
-}
-
-func executeAppStudioStop(ctx context.Context, client infrastructureCommandExecutor, registry *taskfunctionregistry.Registry, contract *taskfunctionregistry.Contract, runtimeID, action string, deleteRuntime bool, operation string) (map[string]any, error) {
-	if client == nil {
-		return nil, fmt.Errorf("infrastructure client is required")
-	}
-	response, err := client.Execute(ctx, &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationStop, RuntimeID: runtimeID, Delete: deleteRuntime})
-	if err != nil {
-		return nil, errors.Wrap(err, "execute appstudio "+operation+" infrastructure command")
-	}
-	runtime, err := requireInfrastructureRuntime(response)
-	if err != nil {
-		return nil, errors.Wrap(err, "validate appstudio "+operation+" response")
-	}
-	wantStatus := iapiserver.TaskWorkerRuntimeStatusStopped
-	if deleteRuntime {
-		wantStatus = iapiserver.TaskWorkerRuntimeStatusDeleted
-	}
-	if runtime.ID != runtimeID || runtime.Status != wantStatus {
-		return nil, fmt.Errorf("appstudio %s returned unexpected runtime result", operation)
-	}
-	result := map[string]any{"infra_runtime_id": runtime.ID, "runtime_status": runtime.Status, "completed_action": action}
-	if err := registry.ValidateOutput(contract, result); err != nil {
-		return nil, errors.Wrap(err, "validate appstudio "+operation+" output")
-	}
-	return result, nil
-}
-
-func invalidResourceRequirement(resource iapiserver.InfraResourceRequirement) bool {
-	return resource.CPUCores < 0 || resource.MemoryMB < 0 || resource.DiskMB < 0 || resource.GPUCount < 0 || resource.GPUMemoryMB < 0
-}
-
-func resolveAgentRuntimeContract(
+func executeAppStudioPreviewEnsure(
+	ctx context.Context,
+	client infrastructureCommandExecutor,
 	registry *taskfunctionregistry.Registry,
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
-	expectedFunctionRef string,
-) (*taskfunctionregistry.Contract, error) {
-	if registry == nil {
-		return nil, fmt.Errorf("task function registry is required")
-	}
-	if atomicTask == nil {
-		return nil, fmt.Errorf("agent runtime atomic task is missing")
-	}
-	if workerTask.AtomicTaskID == "" || atomicTask.ID != workerTask.AtomicTaskID {
-		return nil, fmt.Errorf("agent runtime atomic task identity does not match worker task")
-	}
-	if workerTask.RetryCount < 0 {
-		return nil, fmt.Errorf("agent runtime worker retry count is invalid")
-	}
-	if atomicTask.FunctionRef != expectedFunctionRef {
-		return nil, fmt.Errorf("agent runtime atomic task function is %q, want %q", atomicTask.FunctionRef, expectedFunctionRef)
-	}
-	if atomicTask.FunctionContractVersion == "" || atomicTask.FunctionContractDigest == "" {
-		return nil, fmt.Errorf("agent runtime atomic task contract pin is missing")
-	}
-	if atomicTask.Arguments == nil {
-		return nil, fmt.Errorf("agent runtime atomic task arguments are missing")
-	}
-	contract, err := registry.Resolve(atomicTask.FunctionRef, atomicTask.FunctionContractVersion, atomicTask.FunctionContractDigest)
-	if err != nil {
-		return nil, errors.Wrap(err, "resolve agent runtime atomic task contract")
-	}
-	return contract, nil
+) (map[string]any, error) {
+	return appstudioexecutor.ExecutePreviewEnsure(ctx, client, registry, workerTask, atomicTask)
 }
 
-func validateAgentRuntimeEnsureArguments(arguments agentRuntimeEnsureArguments) error {
-	if arguments.AgentID == "" || arguments.AgentRuntimeID == "" || arguments.WorkspaceID == "" ||
-		arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
-		return fmt.Errorf("agent runtime ensure arguments are incomplete")
+func executeAppStudioPreviewStop(
+	ctx context.Context,
+	client infrastructureCommandExecutor,
+	registry *taskfunctionregistry.Registry,
+	workerTask workflowruntime.WorkerTask,
+	atomicTask *iapiserver.AtomicTask,
+) (map[string]any, error) {
+	return appstudioexecutor.ExecutePreviewStop(ctx, client, registry, workerTask, atomicTask)
+}
+
+func executeAppStudioBuild(
+	ctx context.Context,
+	client infrastructureBuildExecutor,
+	lifecycle appStudioBuildArtifactLifecycle,
+	registry *taskfunctionregistry.Registry,
+	workerTask workflowruntime.WorkerTask,
+	atomicTask *iapiserver.AtomicTask,
+) (map[string]any, error) {
+	return appstudioexecutor.ExecuteBuild(ctx, client, lifecycle, registry, workerTask, atomicTask)
+}
+
+func executeAppStudioProductionReconcile(
+	ctx context.Context,
+	client infrastructureCommandExecutor,
+	registry *taskfunctionregistry.Registry,
+	workerTask workflowruntime.WorkerTask,
+	atomicTask *iapiserver.AtomicTask,
+) (map[string]any, error) {
+	return appstudioexecutor.ExecuteProductionReconcile(ctx, client, registry, workerTask, atomicTask)
+}
+
+func executeAppStudioProductionStop(
+	ctx context.Context,
+	client infrastructureCommandExecutor,
+	registry *taskfunctionregistry.Registry,
+	workerTask workflowruntime.WorkerTask,
+	atomicTask *iapiserver.AtomicTask,
+) (map[string]any, error) {
+	return appstudioexecutor.ExecuteProductionStop(ctx, client, registry, workerTask, atomicTask)
+}
+
+func registerWorkerHandler(
+	runtime workflowruntime.WorkerRegistrar,
+	functionRef string,
+	concurrency int,
+	handler workflowruntime.Handler,
+) error {
+	if runtime == nil {
+		return fmt.Errorf("workflow runtime is required")
 	}
-	if arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationStart && arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationRecover {
-		return fmt.Errorf("agent runtime ensure operation %q is invalid", arguments.Operation)
-	}
-	if arguments.AgentKind != "platform" && arguments.AgentKind != "coding" {
-		return fmt.Errorf("agent runtime ensure agent kind %q is invalid", arguments.AgentKind)
-	}
-	if arguments.WorkspaceType != "agent" && arguments.WorkspaceType != "studio" {
-		return fmt.Errorf("agent runtime ensure workspace type %q is invalid", arguments.WorkspaceType)
-	}
-	if arguments.RuntimeProfileID != "agent.hermes" && arguments.RuntimeProfileID != "agent.coding" {
-		return fmt.Errorf("agent runtime ensure profile %q is invalid", arguments.RuntimeProfileID)
-	}
-	if !strings.HasPrefix(arguments.ModelAccessSpecRef, "model-access://") ||
-		!strings.HasPrefix(arguments.RuntimeConfigurationRef, "agent-runtime-config://") ||
-		!strings.HasPrefix(arguments.AuthorizationRef, "agent-runtime-grant://") {
-		return fmt.Errorf("agent runtime ensure references are invalid")
-	}
-	if arguments.ExistingInfraRuntimeID != nil && strings.TrimSpace(*arguments.ExistingInfraRuntimeID) == "" {
-		return fmt.Errorf("agent runtime ensure existing infrastructure runtime id is invalid")
-	}
-	if arguments.WorkspaceSourceRef != nil && !strings.HasPrefix(*arguments.WorkspaceSourceRef, "agent-workspace://") {
-		return fmt.Errorf("agent runtime ensure workspace source reference is invalid")
-	}
-	resource := arguments.ResourceRequirement
-	if resource.CPUCores < 0 || resource.MemoryMB < 0 || resource.DiskMB < 0 || resource.GPUCount < 0 || resource.GPUMemoryMB < 0 {
-		return fmt.Errorf("agent runtime ensure resource requirement is invalid")
-	}
-	lifecycle := arguments.LifecyclePolicy
-	if lifecycle.RestartPolicy != "" && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyNever && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyOnFailure && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyAlways {
-		return fmt.Errorf("agent runtime ensure restart policy %q is invalid", lifecycle.RestartPolicy)
-	}
-	if lifecycle.IdleTimeoutSeconds != nil && *lifecycle.IdleTimeoutSeconds < 0 {
-		return fmt.Errorf("agent runtime ensure idle timeout is invalid")
-	}
-	if lifecycle.MaximumLifetimeSeconds != nil && *lifecycle.MaximumLifetimeSeconds < 1 {
-		return fmt.Errorf("agent runtime ensure maximum lifetime is invalid")
+	if err := runtime.RegisterHandler(functionRef, concurrency, handler); err != nil {
+		return errors.Wrap(err, "register "+functionRef+" handler")
 	}
 	return nil
 }
 
-func validateAgentRuntimeStopArguments(arguments agentRuntimeStopArguments) error {
-	if arguments.AgentID == "" || arguments.AgentRuntimeID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 {
-		return fmt.Errorf("agent runtime stop arguments are incomplete")
+func registerAtomicTaskHandler(
+	runtime workflowruntime.WorkerRegistrar,
+	tasks store.TaskCenterStore,
+	functionRef string,
+	concurrency int,
+	executor func(context.Context, workflowruntime.WorkerTask, *iapiserver.AtomicTask) (map[string]any, error),
+) error {
+	if tasks == nil {
+		return fmt.Errorf("task center store is required")
 	}
-	if arguments.Action != iapiserver.TaskWorkerActionSuspend && arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
-		return fmt.Errorf("agent runtime stop action %q is invalid", arguments.Action)
+	if executor == nil {
+		return fmt.Errorf("atomic task executor is required")
 	}
-	if !strings.HasPrefix(arguments.AuthorizationRef, "agent-runtime-grant://") {
-		return fmt.Errorf("agent runtime stop authorization reference is invalid")
-	}
-	return nil
-}
-
-func requireInfrastructureRuntime(response *infrastructure.CommandResponse) (*iapiserver.InfraRuntime, error) {
-	if response == nil {
-		return nil, fmt.Errorf("infrastructure command response is missing")
-	}
-	if response.Result == nil {
-		return nil, fmt.Errorf("infrastructure command result is missing")
-	}
-	if response.Result.Runtime == nil || response.Result.Runtime.ID == "" {
-		return nil, fmt.Errorf("infrastructure runtime result is missing")
-	}
-	return response.Result.Runtime, nil
+	return registerWorkerHandler(runtime, functionRef, concurrency, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		atomicTask, err := tasks.GetAtomicTask(ctx, task.AtomicTaskID)
+		if err != nil {
+			return nil, errors.Wrap(err, "load "+functionRef+" atomic task")
+		}
+		if atomicTask == nil {
+			return nil, fmt.Errorf("atomic task %q is missing", task.AtomicTaskID)
+		}
+		return executor(ctx, task, atomicTask)
+	})
 }
 
 func reconcilePublishedApplicationCatalog(
