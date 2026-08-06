@@ -3,17 +3,14 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"io"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"github.com/wangweihong/gotoolbox/pkg/log"
 	"github.com/wangweihong/gotoolbox/pkg/timeutil"
 	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
@@ -40,42 +37,9 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/agentexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/appstudioexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/comfyuiexecutor"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/consumer"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/contracts"
 )
-
-type representationTaskCreator interface {
-	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
-}
-
-type applicationRunTerminalProjector interface {
-	Completed(context.Context, *iapiserver.AtomicTask) error
-}
-
-type reliablePayloadProjector interface {
-	Project(context.Context, []byte) error
-}
-
-type publishedCanvasApplicationLister interface {
-	ListPublishedCanvasApplicationVersions(context.Context) ([]*appsvc.CanvasApplicationVersion, error)
-}
-
-type representationRequestedEvent struct {
-	AssetID                  string                    `json:"asset_id"`
-	AssetVersionID           string                    `json:"asset_version_id"`
-	OwnerUserID              string                    `json:"owner_user_id"`
-	ProjectID                string                    `json:"project_id"`
-	Namespace                string                    `json:"namespace"`
-	MediaType                string                    `json:"media_type"`
-	ProfileVersion           string                    `json:"profile_version"`
-	RequestedRepresentations []requestedRepresentation `json:"requested_representations"`
-	IdempotencyKey           string                    `json:"idempotency_key"`
-}
-
-type requestedRepresentation struct {
-	RepresentationType string `json:"representation_type"`
-	Profile            string `json:"profile"`
-	Required           bool   `json:"required"`
-}
 
 // RunTaskWorker starts only Conductor AtomicTask handlers and runtime projection reconciliation.
 func RunTaskWorker(cfg *config.Config) error {
@@ -173,7 +137,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		return err
 	}
 	applicationCatalogProjector := workflowcanvassvc.NewApplicationCatalogProjector(storeIns.WorkflowCanvases())
-	if err := reconcilePublishedApplicationCatalog(ctx, applicationService, applicationCatalogProjector); err != nil {
+	if err := consumer.ReconcilePublishedApplicationCatalog(ctx, applicationService, applicationCatalogProjector); err != nil {
 		return errors.Wrap(err, "reconcile published application canvas catalog")
 	}
 	if err := applicationService.ReconcileRequiredEngineBindings(ctx); err != nil {
@@ -357,53 +321,22 @@ func RunTaskWorker(cfg *config.Config) error {
 	}); err != nil {
 		return err
 	}
-	if err := startAssetLibraryTaskConsumers(ctx, tasks, appsvc.NewApplicationArtifactProjector(storeIns.ApplicationPlatforms())); err != nil {
+	if err := consumer.StartAssetLibrary(ctx, tasks, appsvc.NewApplicationArtifactProjector(storeIns.ApplicationPlatforms())); err != nil {
 		return err
 	}
-	if err := startApplicationRunTerminalProjectionConsumer(ctx, storeIns.TaskCenters(), applicationExecutor); err != nil {
+	if err := consumer.StartApplicationRunTerminalProjection(ctx, storeIns.TaskCenters(), applicationExecutor); err != nil {
 		return err
 	}
-	if err := startCanvasApplicationConsumers(
+	if err := consumer.StartCanvasApplications(
 		ctx,
 		applicationCatalogProjector,
 		workflowcanvassvc.NewApplicationArtifactProjector(storeIns.TaskCenters(), storeIns.WorkflowCanvases()),
 	); err != nil {
 		return err
 	}
-	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, iapiserver.TaskWorkerConsumerGroupThumbnail)
-	if err != nil {
+	if err := consumer.StartThumbnail(ctx, tasks, storeIns.AssetThumbnails()); err != nil {
 		return err
 	}
-	go func() {
-		for msg := range messages {
-			var event struct {
-				AssetID        string `json:"asset_id"`
-				AssetVersionID string `json:"asset_version_id"`
-				OwnerUserID    string `json:"owner_user_id"`
-				ProjectID      string `json:"project_id"`
-				Namespace      string `json:"namespace"`
-				MediaType      string `json:"media_type"`
-				ProfileVersion string `json:"profile_version"`
-			}
-			if err := json.Unmarshal(msg.Payload, &event); err != nil {
-				msg.Nack()
-				continue
-			}
-			if event.AssetVersionID != "" {
-				msg.Ack()
-				continue
-			}
-			thumbnail, err := storeIns.AssetThumbnails().GetByAsset(ctx, event.AssetID)
-			if err == nil {
-				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: iapiserver.TaskWorkerTaskKeyThumbnail, Name: "Generate asset thumbnail", FunctionRef: appplatformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyThumbnailID: thumbnail.ID}, RequiredCapabilities: appplatformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeThumbnail, IdempotencyKey: iapiserver.TaskWorkerIdempotencyPrefixThumbnail + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
-			}
-			if err != nil {
-				msg.Nack()
-			} else {
-				msg.Ack()
-			}
-		}
-	}()
 	if err := ensureEngineHealthSchedule(ctx, tasks, cfg.ApplicationPlatformOptions.EngineHealthInterval); err != nil {
 		return err
 	}
@@ -548,320 +481,6 @@ func registerAtomicTaskHandler(
 		}
 		return executor(ctx, task, atomicTask)
 	})
-}
-
-func reconcilePublishedApplicationCatalog(
-	ctx context.Context,
-	applications publishedCanvasApplicationLister,
-	projector *workflowcanvassvc.ApplicationCatalogProjector,
-) error {
-	versions, err := applications.ListPublishedCanvasApplicationVersions(ctx)
-	if err != nil {
-		return err
-	}
-	for _, item := range versions {
-		if item == nil || item.Application == nil || item.Version == nil {
-			continue
-		}
-		err := projector.ProjectPublication(ctx, workflowcanvassvc.ApplicationVersionPublication{
-			ApplicationID:                item.Application.ID,
-			ApplicationVersionID:         item.Version.ID,
-			ApplicationTemplateVersionID: item.Version.ApplicationTemplateVersionID,
-			SemanticVersion:              item.Version.SemanticVersion,
-			ApplicationName:              item.Application.Name,
-			OwnerUserID:                  item.Application.OwnerUserID,
-			Visibility:                   item.Application.Visibility,
-			CanvasEnabled:                item.Application.CanvasEnabled,
-			RunEnabled:                   item.Application.RunEnabled,
-			InputSchema:                  item.Version.InputSchema,
-			OutputSchema:                 item.Version.OutputSchema,
-		})
-		var diagnostic *workflowcanvassvc.ApplicationCatalogDiagnosticError
-		if stderrors.As(err, &diagnostic) {
-			log.Warnf(
-				"application version omitted from canvas catalog: application_version_id=%s error=%v",
-				item.Version.ID,
-				err,
-			)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func startCanvasApplicationConsumers(
-	ctx context.Context,
-	catalog *workflowcanvassvc.ApplicationCatalogProjector,
-	artifacts reliablePayloadProjector,
-) error {
-	catalogMessages, err := postgresql.SubscribeOutbox(
-		ctx,
-		postgresql.OutboxTopicApplicationVersionPublished,
-		iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
-	)
-	if err != nil {
-		return err
-	}
-	go consumeApplicationCatalog(ctx, catalogMessages, catalog)
-	artifactMessages, err := postgresql.SubscribeOutbox(
-		ctx,
-		postgresql.OutboxTopicApplicationRunArtifactRefChanged,
-		iapiserver.TaskWorkerConsumerGroupApplicationArtifactProjection,
-	)
-	if err != nil {
-		return err
-	}
-	go consumeReliablePayloads(
-		ctx,
-		artifactMessages,
-		artifacts,
-		iapiserver.TaskWorkerConsumerGroupApplicationArtifactProjection,
-	)
-	return nil
-}
-
-func consumeApplicationCatalog(
-	ctx context.Context,
-	messages <-chan *message.Message,
-	projector *workflowcanvassvc.ApplicationCatalogProjector,
-) {
-	for msg := range messages {
-		err := projector.Project(ctx, msg.Payload)
-		var diagnostic *workflowcanvassvc.ApplicationCatalogDiagnosticError
-		if stderrors.As(err, &diagnostic) {
-			log.Warnf(
-				"application version omitted from canvas catalog: consumer_group=%s message_id=%s error=%v",
-				iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
-				msg.UUID,
-				err,
-			)
-			msg.Ack()
-			continue
-		}
-		if err != nil {
-			log.Errorf(
-				"application catalog projection failed: consumer_group=%s message_id=%s error=%v",
-				iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
-				msg.UUID,
-				err,
-			)
-			msg.Nack()
-		} else {
-			msg.Ack()
-		}
-	}
-}
-
-func consumeReliablePayloads(
-	ctx context.Context,
-	messages <-chan *message.Message,
-	projector reliablePayloadProjector,
-	consumerGroup string,
-) {
-	for msg := range messages {
-		if err := projector.Project(ctx, msg.Payload); err != nil {
-			log.Errorf(
-				"reliable projection failed: consumer_group=%s message_id=%s error=%v",
-				consumerGroup,
-				msg.UUID,
-				err,
-			)
-			msg.Nack()
-		} else {
-			msg.Ack()
-		}
-	}
-}
-
-// startApplicationRunTerminalProjectionConsumer 使用 Task Center outbox 的持久 offset 重试 ApplicationRun 终态投影。
-func startApplicationRunTerminalProjectionConsumer(
-	ctx context.Context,
-	tasks store.TaskCenterStore,
-	projector applicationRunTerminalProjector,
-) error {
-	messages, err := postgresql.SubscribeOutbox(
-		ctx,
-		postgresql.OutboxTopicAtomicTaskStatusChanged,
-		iapiserver.TaskWorkerConsumerGroupApplicationRunTerminal,
-	)
-	if err != nil {
-		return err
-	}
-	go consumeApplicationRunTerminalProjections(ctx, messages, tasks, projector)
-	return nil
-}
-
-func consumeApplicationRunTerminalProjections(
-	ctx context.Context,
-	messages <-chan *message.Message,
-	tasks store.TaskCenterStore,
-	projector applicationRunTerminalProjector,
-) {
-	for msg := range messages {
-		if err := handleApplicationRunTerminalProjection(ctx, tasks, projector, msg.Payload); err != nil {
-			log.Errorf(
-				"application run terminal projection failed: consumer_group=%s message_id=%s error=%v",
-				iapiserver.TaskWorkerConsumerGroupApplicationRunTerminal,
-				msg.UUID,
-				err,
-			)
-			msg.Nack()
-		} else {
-			msg.Ack()
-		}
-	}
-}
-
-func handleApplicationRunTerminalProjection(
-	ctx context.Context,
-	tasks store.TaskCenterStore,
-	projector applicationRunTerminalProjector,
-	payload []byte,
-) error {
-	var event struct {
-		AtomicTaskID     string `json:"atomic_task_id"`
-		ApplicationRunID string `json:"application_run_id"`
-		Status           string `json:"status"`
-		ToStatus         string `json:"to_status"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
-		return errors.Wrap(err, "decode atomic task status event")
-	}
-	if event.AtomicTaskID == "" {
-		return errors.Errorf("atomic task status event is incomplete")
-	}
-	status := event.ToStatus
-	if status == "" {
-		status = event.Status
-	}
-	if event.ApplicationRunID == "" || !iapiserver.IsAtomicTaskTerminal(status) {
-		return nil
-	}
-	task, err := tasks.GetAtomicTask(ctx, event.AtomicTaskID)
-	if err != nil {
-		return errors.Wrap(err, "load terminal application run atomic task")
-	}
-	if task == nil {
-		return errors.Errorf("terminal application run atomic task is missing")
-	}
-	if task.ApplicationRunID == "" || !iapiserver.IsAtomicTaskTerminal(task.Status) {
-		return nil
-	}
-	return errors.Wrap(projector.Completed(ctx, task), "project terminal application run")
-}
-
-func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.TaskCenterSrv, projector *appsvc.ApplicationArtifactProjector) error {
-	for _, topic := range []string{
-		postgresql.OutboxTopicArtifactCreated,
-		postgresql.OutboxTopicArtifactProcessingChanged,
-		postgresql.OutboxTopicArtifactRegistrationChanged,
-	} {
-		messages, err := postgresql.SubscribeOutbox(ctx, topic, iapiserver.TaskWorkerConsumerGroupArtifactProjection)
-		if err != nil {
-			return err
-		}
-		go func(topic string, messages <-chan *message.Message) {
-			for msg := range messages {
-				if err := projector.Project(ctx, msg.Payload); err != nil {
-					log.Errorf("application artifact projection failed: topic=%s message_id=%s error=%v", topic, msg.UUID, err)
-					msg.Nack()
-				} else {
-					msg.Ack()
-				}
-			}
-		}(topic, messages)
-	}
-	artifactMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicArtifactContentCompleted, iapiserver.TaskWorkerConsumerGroupArtifactProcess)
-	if err != nil {
-		return err
-	}
-	go func() {
-		for msg := range artifactMessages {
-			var event struct {
-				ArtifactID               string `json:"artifact_id"`
-				OwnerUserID              string `json:"owner_user_id"`
-				ProcessingProfileVersion string `json:"processing_profile_version"`
-			}
-			if err := json.Unmarshal(msg.Payload, &event); err != nil || event.ArtifactID == "" || event.OwnerUserID == "" {
-				msg.Nack()
-				continue
-			}
-			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
-				Key: iapiserver.TaskWorkerTaskKeyArtifactProcess, Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess, SystemName: iapiserver.SystemNameSpec{Key: taskname.ArtifactProcess},
-				Arguments:            map[string]any{iapiserver.TaskWorkerKeyArtifactID: event.ArtifactID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID},
-				RequiredCapabilities: assetlibrarysvc.FunctionArtifactProcess,
-				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
-				IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeArtifactProcess, IdempotencyKey: iapiserver.TaskWorkerIdempotencyScopeArtifactProcess + ":" + event.ArtifactID + ":" + event.ProcessingProfileVersion,
-			})
-			if err != nil {
-				msg.Nack()
-			} else {
-				msg.Ack()
-			}
-		}
-	}()
-
-	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, iapiserver.TaskWorkerConsumerGroupRepresentationOrchestrator)
-	if err != nil {
-		return err
-	}
-	go func() {
-		for msg := range representationMessages {
-			if err := handleRepresentationRequested(ctx, tasks, msg.Payload); err != nil {
-				log.Errorf("asset representation orchestration failed: consumer_group=%s message_id=%s error=%v", iapiserver.TaskWorkerConsumerGroupRepresentationOrchestrator, msg.UUID, err)
-				msg.Nack()
-			} else {
-				msg.Ack()
-			}
-		}
-	}()
-	return nil
-}
-
-func handleRepresentationRequested(ctx context.Context, tasks representationTaskCreator, payload []byte) error {
-	request, err := representationDAGRequest(payload)
-	if err != nil {
-		return err
-	}
-	_, err = tasks.CreateDAGTaskGroup(ctx, request)
-	return errors.Wrap(err, "create representation DAG task group")
-}
-
-func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateRequest, error) {
-	var event representationRequestedEvent
-	if err := json.Unmarshal(payload, &event); err != nil {
-		return nil, errors.Wrap(err, "decode representation requested event")
-	}
-	if event.AssetID == "" || event.AssetVersionID == "" || event.OwnerUserID == "" || event.ProjectID == "" || event.Namespace == "" || event.MediaType == "" || event.ProfileVersion == "" || event.IdempotencyKey == "" || event.RequestedRepresentations == nil {
-		return nil, errors.Errorf("representation requested event is incomplete")
-	}
-	nodes := []iapiserver.DAGNode{
-		{Key: iapiserver.TaskWorkerTaskKeyRepresentationInspect, Task: iapiserver.AtomicTaskTemplate{Key: iapiserver.TaskWorkerTaskKeyRepresentationInspect, Name: "Inspect AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationInspect}, FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID, iapiserver.TaskWorkerKeyMediaType: event.MediaType, iapiserver.TaskWorkerKeyProfileVersion: event.ProfileVersion}}},
-	}
-	for _, requested := range event.RequestedRepresentations {
-		if requested.RepresentationType == "" || requested.Profile == "" {
-			return nil, errors.Errorf("representation requested event contains an invalid representation")
-		}
-		childKey := requested.RepresentationType + iapiserver.TaskWorkerCompositeKeySeparator + requested.Profile
-		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{iapiserver.TaskWorkerKeyRepresentationType: requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID, iapiserver.TaskWorkerKeyMediaType: event.MediaType, iapiserver.TaskWorkerKeyRepresentationType: requested.RepresentationType, iapiserver.TaskWorkerKeyProfile: requested.Profile, iapiserver.TaskWorkerKeyProfileVersion: event.ProfileVersion, iapiserver.TaskWorkerKeyRequired: requested.Required, iapiserver.TaskWorkerKeyMaxAttempts: 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: iapiserver.TaskWorkerRetryBackoffExponential, MaxRetryDelaySeconds: 30}}})
-	}
-	nodes = append(nodes, iapiserver.DAGNode{Key: iapiserver.TaskWorkerTaskKeyRepresentationFinalize, Task: iapiserver.AtomicTaskTemplate{Key: iapiserver.TaskWorkerTaskKeyRepresentationFinalize, Name: "Finalize AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationFinalize}, FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID}}})
-	edges := make([]iapiserver.DAGEdge, 0, max(1, 2*len(event.RequestedRepresentations)))
-	for _, node := range nodes[1 : len(nodes)-1] {
-		edges = append(edges, iapiserver.DAGEdge{FromNode: iapiserver.TaskWorkerTaskKeyRepresentationInspect, ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: iapiserver.TaskWorkerTaskKeyRepresentationFinalize})
-	}
-	if len(nodes) == 2 {
-		edges = append(edges, iapiserver.DAGEdge{FromNode: iapiserver.TaskWorkerTaskKeyRepresentationInspect, ToNode: iapiserver.TaskWorkerTaskKeyRepresentationFinalize})
-	}
-	return &iapiserver.DAGTaskGroupCreateRequest{
-		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationBuild},
-		Input: map[string]any{iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID}, ProjectID: event.ProjectID,
-		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeRepresentations, IdempotencyKey: event.IdempotencyKey,
-		TriggerType: iapiserver.DAGTriggerDomainEvent, TriggerSourceID: event.AssetVersionID, TriggerSourceName: iapiserver.TaskWorkerRepresentationTriggerSourceName,
-	}, nil
 }
 
 type workerArtifactLifecycle struct {

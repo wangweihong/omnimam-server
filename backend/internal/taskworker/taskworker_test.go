@@ -21,6 +21,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/consumer"
 )
 
 type recordingInfrastructureExecutor struct {
@@ -247,17 +248,25 @@ func TestScheduleTargetOwnership(t *testing.T) {
 }
 
 func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
-	payload, err := json.Marshal(representationRequestedEvent{
-		AssetID: "asset-1", AssetVersionID: "version-1", OwnerUserID: "user-1",
-		ProjectID: "default", Namespace: "default", MediaType: iapiserver.AssetMediaTypeImage, ProfileVersion: "default-v1",
-		RequestedRepresentations: []requestedRepresentation{{RepresentationType: iapiserver.TaskWorkerTaskKeyThumbnail, Profile: "list-320"}},
-		IdempotencyKey:           iapiserver.TaskWorkerIdempotencyPrefixRepresentations + "version-1:default-v1",
+	payload, err := json.Marshal(map[string]any{
+		iapiserver.TaskWorkerKeyAssetID:        "asset-1",
+		iapiserver.TaskWorkerKeyAssetVersionID: "version-1",
+		iapiserver.TaskWorkerKeyOwnerUserID:    "user-1",
+		iapiserver.TaskWorkerKeyProjectID:      "default",
+		iapiserver.TaskWorkerKeyNamespace:      "default",
+		iapiserver.TaskWorkerKeyMediaType:      iapiserver.AssetMediaTypeImage,
+		iapiserver.TaskWorkerKeyProfileVersion: "default-v1",
+		iapiserver.TaskWorkerKeyRequestedRepresentations: []map[string]any{{
+			iapiserver.TaskWorkerKeyRepresentationType: iapiserver.TaskWorkerTaskKeyThumbnail,
+			iapiserver.TaskWorkerKeyProfile:            "list-320",
+		}},
+		iapiserver.TaskWorkerKeyIdempotencyKey: iapiserver.TaskWorkerIdempotencyPrefixRepresentations + "version-1:default-v1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	creator := &recordingRepresentationTaskCreator{}
-	if err := handleRepresentationRequested(context.Background(), creator, payload); err != nil {
+	if err := consumer.HandleRepresentationRequested(context.Background(), creator, payload); err != nil {
 		t.Fatalf("handleRepresentationRequested() error = %v", err)
 	}
 	request := creator.request
@@ -287,7 +296,7 @@ func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
 }
 
 func TestRepresentationDAGRequestRejectsLegacyEvent(t *testing.T) {
-	_, err := representationDAGRequest([]byte(`{"asset_id":"asset-1","asset_version_id":"version-1","owner_user_id":"user-1","profile_version":"default-v1"}`))
+	_, err := consumer.RepresentationDAGRequest([]byte(`{"asset_id":"asset-1","asset_version_id":"version-1","owner_user_id":"user-1","profile_version":"default-v1"}`))
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("representationDAGRequest() error = %v", err)
 	}
@@ -339,7 +348,7 @@ func TestHandleApplicationRunTerminalProjection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tasks := &terminalProjectionTaskStore{task: tt.task}
 			projector := &recordingTerminalProjector{}
-			err := handleApplicationRunTerminalProjection(
+			err := consumer.HandleApplicationRunTerminalProjection(
 				context.Background(),
 				tasks,
 				projector,
@@ -371,7 +380,7 @@ func TestConsumeApplicationRunTerminalProjectionAcknowledgement(t *testing.T) {
 		messages := make(chan *message.Message, 1)
 		messages <- msg
 		close(messages)
-		consumeApplicationRunTerminalProjections(
+		consumer.ConsumeApplicationRunTerminalProjections(
 			context.Background(),
 			messages,
 			&terminalProjectionTaskStore{task: task},
@@ -389,7 +398,7 @@ func TestConsumeApplicationRunTerminalProjectionAcknowledgement(t *testing.T) {
 		messages := make(chan *message.Message, 1)
 		messages <- msg
 		close(messages)
-		consumeApplicationRunTerminalProjections(
+		consumer.ConsumeApplicationRunTerminalProjections(
 			context.Background(),
 			messages,
 			&terminalProjectionTaskStore{task: task},
@@ -420,7 +429,7 @@ func TestConsumeReliablePayloadAcknowledgement(t *testing.T) {
 			messages <- msg
 			close(messages)
 			projector := &recordingPayloadProjector{err: tt.err}
-			consumeReliablePayloads(t.Context(), messages, projector, "test-consumer")
+			consumer.ConsumeReliablePayloads(t.Context(), messages, projector, "test-consumer")
 			if projector.calls != 1 || string(projector.payload) != string(payload) {
 				t.Fatalf("projector = %#v", projector)
 			}
@@ -459,7 +468,7 @@ func TestConsumeApplicationCatalogAcknowledgesLossySchemaDiagnostic(t *testing.T
 	messages <- msg
 	close(messages)
 	target := &taskworkerApplicationCatalogStore{}
-	consumeApplicationCatalog(
+	consumer.ConsumeApplicationCatalog(
 		t.Context(),
 		messages,
 		workflowcanvassvc.NewApplicationCatalogProjector(target),
@@ -502,7 +511,7 @@ func TestReconcilePublishedApplicationCatalogRepairsConvertibleVersions(t *testi
 		"properties": map[string]any{"choice": map[string]any{"oneOf": []any{map[string]any{"type": "string"}}}},
 	}
 	target := &taskworkerApplicationCatalogStore{}
-	err := reconcilePublishedApplicationCatalog(
+	err := consumer.ReconcilePublishedApplicationCatalog(
 		t.Context(),
 		&publishedCanvasApplicationListerStub{items: []*appsvc.CanvasApplicationVersion{
 			{Application: application, Version: valid},
