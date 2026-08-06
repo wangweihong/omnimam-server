@@ -639,7 +639,7 @@ func executeAgentRuntimeEnsure(
 
 	command := &infrastructure.CommandRequest{}
 	if arguments.ExistingInfraRuntimeID != nil {
-		command.Operation = "start"
+		command.Operation = iapiserver.TaskWorkerInfrastructureOperationStart
 		command.RuntimeID = *arguments.ExistingInfraRuntimeID
 	} else {
 		sourceRef := ""
@@ -653,21 +653,21 @@ func executeAgentRuntimeEnsure(
 		if arguments.LifecyclePolicy.MaximumLifetimeSeconds != nil {
 			timeoutPolicy.MaximumLifetimeSeconds = *arguments.LifecyclePolicy.MaximumLifetimeSeconds
 		}
-		command.Operation = "create"
+		command.Operation = iapiserver.TaskWorkerInfrastructureOperationCreate
 		command.Create = &iapiserver.InfraCreateRuntimeRequest{
 			RequestID:              fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1),
 			RequestingService:      "task-center",
 			OwnerDomain:            "agent",
 			OwnerReference:         arguments.AgentRuntimeID,
 			RequestUserID:          atomicTask.CreatedBy,
-			RuntimeMode:            "SERVICE",
+			RuntimeMode:            iapiserver.TaskWorkerRuntimeModeService,
 			RuntimeProfileID:       arguments.RuntimeProfileID,
 			RuntimeProfileRevision: arguments.RuntimeProfileRevision,
 			SourceRef:              sourceRef,
 			ResourceRequirement:    arguments.ResourceRequirement,
 			TimeoutPolicy:          timeoutPolicy,
 			AuthorizationRef:       arguments.AuthorizationRef,
-			EndpointVisibility:     "INTERNAL",
+			EndpointVisibility:     iapiserver.TaskWorkerEndpointVisibilityInternal,
 			FunctionRef:            contract.FunctionRef,
 			FunctionArguments:      rawArguments,
 		}
@@ -683,7 +683,7 @@ func executeAgentRuntimeEnsure(
 	if arguments.ExistingInfraRuntimeID != nil && runtime.ID != *arguments.ExistingInfraRuntimeID {
 		return nil, fmt.Errorf("agent runtime ensure returned unexpected infrastructure runtime %q", runtime.ID)
 	}
-	if runtime.Status != "RUNNING" {
+	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusRunning {
 		return nil, fmt.Errorf("agent runtime ensure returned runtime status %q", runtime.Status)
 	}
 	if !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
@@ -691,8 +691,8 @@ func executeAgentRuntimeEnsure(
 	}
 	result := map[string]any{
 		"infra_runtime_id":    runtime.ID,
-		"runtime_status":      "RUNNING",
-		"health_status":       "HEALTHY",
+		"runtime_status":      iapiserver.TaskWorkerRuntimeStatusRunning,
+		"health_status":       iapiserver.TaskWorkerRuntimeHealthStatusHealthy,
 		"endpoint_ref":        runtime.EndpointRef,
 		"diagnostics_summary": map[string]any{},
 	}
@@ -728,9 +728,9 @@ func executeAgentRuntimeStop(
 		return nil, fmt.Errorf("infrastructure client is required")
 	}
 	response, err := client.Execute(ctx, &infrastructure.CommandRequest{
-		Operation: "stop",
+		Operation: iapiserver.TaskWorkerInfrastructureOperationStop,
 		RuntimeID: arguments.InfraRuntimeID,
-		Delete:    arguments.Action == "DELETE",
+		Delete:    arguments.Action == iapiserver.TaskWorkerActionDelete,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "execute agent runtime stop infrastructure command")
@@ -742,9 +742,9 @@ func executeAgentRuntimeStop(
 	if runtime.ID != arguments.InfraRuntimeID {
 		return nil, fmt.Errorf("agent runtime stop returned unexpected infrastructure runtime %q", runtime.ID)
 	}
-	expectedStatus := "STOPPED"
-	if arguments.Action == "DELETE" {
-		expectedStatus = "DELETED"
+	expectedStatus := iapiserver.TaskWorkerRuntimeStatusStopped
+	if arguments.Action == iapiserver.TaskWorkerActionDelete {
+		expectedStatus = iapiserver.TaskWorkerRuntimeStatusDeleted
 	}
 	if runtime.Status != expectedStatus {
 		return nil, fmt.Errorf("agent runtime stop returned runtime status %q, want %q", runtime.Status, expectedStatus)
@@ -778,7 +778,7 @@ func executeAppStudioPreviewEnsure(ctx context.Context, client infrastructureCom
 	if arguments.RuntimeProfileID != "appstudio.preview.static-web" && arguments.RuntimeProfileID != "appstudio.preview.web-backend" {
 		return nil, fmt.Errorf("appstudio preview ensure profile is invalid")
 	}
-	if arguments.EndpointVisibility != "USER_ACCESSIBLE" || invalidResourceRequirement(arguments.ResourceRequirement) {
+	if arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || invalidResourceRequirement(arguments.ResourceRequirement) {
 		return nil, fmt.Errorf("appstudio preview ensure runtime configuration is invalid")
 	}
 	command := appStudioEnsureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.PreviewRuntimeID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.WorkspaceRevisionSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement)
@@ -797,10 +797,10 @@ func executeAppStudioPreviewStop(ctx context.Context, client infrastructureComma
 	if arguments.StudioApplicationID == "" || arguments.PreviewRuntimeID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-preview-grant://") {
 		return nil, fmt.Errorf("appstudio preview stop arguments are invalid")
 	}
-	if arguments.Action != "STOP" && arguments.Action != "DELETE" {
+	if arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
 		return nil, fmt.Errorf("appstudio preview stop action is invalid")
 	}
-	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, arguments.Action, arguments.Action == "DELETE", "preview stop")
+	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, arguments.Action, arguments.Action == iapiserver.TaskWorkerActionDelete, "preview stop")
 }
 
 func executeAppStudioBuild(ctx context.Context, client infrastructureBuildExecutor, lifecycle appStudioBuildArtifactLifecycle, registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
@@ -852,7 +852,7 @@ func executeAppStudioBuild(ctx context.Context, client infrastructureBuildExecut
 	if err != nil {
 		return nil, errors.Wrap(err, "validate appstudio build infrastructure response")
 	}
-	if runtime.Status != "SUCCEEDED" {
+	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusSucceeded {
 		return nil, fmt.Errorf("appstudio build infrastructure runtime did not succeed")
 	}
 	output, err := requireCollectedBuildOutput(response, registration.OutputKey)
@@ -895,7 +895,7 @@ func executeAppStudioBuild(ctx context.Context, client infrastructureBuildExecut
 	}
 	result := map[string]any{
 		"artifact_id": artifact.ID, "artifact_digest": output.ContentDigest,
-		"processing_status": artifact.ProcessingStatus, "validation_status": "PASSED",
+		"processing_status": artifact.ProcessingStatus, "validation_status": iapiserver.TaskWorkerBuildValidationStatusPassed,
 		"logs_ref": "task-attempt-log:" + workerTask.RuntimeTaskID,
 	}
 	if err := registry.ValidateOutput(contract, result); err != nil {
@@ -912,7 +912,7 @@ func requireCollectedBuildOutput(response *infrastructure.CommandResponse, outpu
 		if output == nil || output.OutputKey != outputKey {
 			continue
 		}
-		if output.ID == "" || output.Status != "COLLECTED" || output.MediaType == "" || output.SizeBytes < 0 || !validBuildDigest(output.ContentDigest) || output.ContentRef != "infra-output://"+output.ID || output.CollectedAt == nil {
+		if output.ID == "" || output.Status != iapiserver.TaskWorkerRuntimeOutputStatusCollected || output.MediaType == "" || output.SizeBytes < 0 || !validBuildDigest(output.ContentDigest) || output.ContentRef != "infra-output://"+output.ID || output.CollectedAt == nil {
 			return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "appstudio build output descriptor is incomplete")
 		}
 		return output, nil
@@ -1017,13 +1017,13 @@ func executeAppStudioProductionReconcile(ctx context.Context, client infrastruct
 	if arguments.Environment != "preview" && arguments.Environment != "production" {
 		return nil, fmt.Errorf("appstudio production environment is invalid")
 	}
-	if arguments.DeploymentReason != "DEPLOY" && arguments.DeploymentReason != "UPGRADE" && arguments.DeploymentReason != "ROLLBACK" {
+	if arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonDeploy && arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonUpgrade && arguments.DeploymentReason != iapiserver.TaskWorkerDeploymentReasonRollback {
 		return nil, fmt.Errorf("appstudio production deployment reason is invalid")
 	}
 	if arguments.RuntimeProfileID != "studioapp.runtime.static-web" && arguments.RuntimeProfileID != "studioapp.runtime.web-backend" {
 		return nil, fmt.Errorf("appstudio production profile is invalid")
 	}
-	if arguments.EndpointVisibility != "INTERNAL" && arguments.EndpointVisibility != "USER_ACCESSIBLE" {
+	if arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityInternal && arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible {
 		return nil, fmt.Errorf("appstudio production endpoint visibility is invalid")
 	}
 	if invalidResourceRequirement(arguments.ResourceRequirement) {
@@ -1045,7 +1045,7 @@ func executeAppStudioProductionStop(ctx context.Context, client infrastructureCo
 	if arguments.StudioApplicationID == "" || arguments.StudioReleaseID == "" || arguments.StudioRuntimeInstanceID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 || !strings.HasPrefix(arguments.AuthorizationRef, "appstudio-release-grant://") {
 		return nil, fmt.Errorf("appstudio production stop arguments are invalid")
 	}
-	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, "STOP", false, "production stop")
+	return executeAppStudioStop(ctx, client, registry, contract, arguments.InfraRuntimeID, iapiserver.TaskWorkerActionStop, false, "production stop")
 }
 
 func resolveAppStudioArguments(registry *taskfunctionregistry.Registry, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask, expectedFunctionRef string) (*taskfunctionregistry.Contract, []byte, error) {
@@ -1071,11 +1071,11 @@ func resolveAppStudioArguments(registry *taskfunctionregistry.Registry, workerTa
 
 func appStudioEnsureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime.WorkerTask, contract *taskfunctionregistry.Contract, raw []byte, existing *string, ownerReference, profileID, profileRevision, sourceRef, authorizationRef, endpointVisibility string, resource iapiserver.InfraResourceRequirement) *infrastructure.CommandRequest {
 	if existing != nil {
-		return &infrastructure.CommandRequest{Operation: "start", RuntimeID: *existing}
+		return &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationStart, RuntimeID: *existing}
 	}
-	return &infrastructure.CommandRequest{Operation: "create", Create: &iapiserver.InfraCreateRuntimeRequest{
+	return &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationCreate, Create: &iapiserver.InfraCreateRuntimeRequest{
 		RequestID: fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1), RequestingService: "task-center", OwnerDomain: "appstudio", OwnerReference: ownerReference, RequestUserID: atomicTask.CreatedBy,
-		RuntimeMode: "SERVICE", RuntimeProfileID: profileID, RuntimeProfileRevision: profileRevision, SourceRef: sourceRef, ResourceRequirement: resource, AuthorizationRef: authorizationRef, EndpointVisibility: endpointVisibility, FunctionRef: contract.FunctionRef, FunctionArguments: raw,
+		RuntimeMode: iapiserver.TaskWorkerRuntimeModeService, RuntimeProfileID: profileID, RuntimeProfileRevision: profileRevision, SourceRef: sourceRef, ResourceRequirement: resource, AuthorizationRef: authorizationRef, EndpointVisibility: endpointVisibility, FunctionRef: contract.FunctionRef, FunctionArguments: raw,
 	}}
 }
 
@@ -1094,10 +1094,10 @@ func executeAppStudioReady(ctx context.Context, client infrastructureCommandExec
 	if existing != nil && runtime.ID != *existing {
 		return nil, fmt.Errorf("appstudio %s returned unexpected infrastructure runtime %q", operation, runtime.ID)
 	}
-	if runtime.Status != "RUNNING" || !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
+	if runtime.Status != iapiserver.TaskWorkerRuntimeStatusRunning || !hasReadyInfrastructureEndpoint(runtime, response.Result.Endpoint) {
 		return nil, fmt.Errorf("appstudio %s returned an invalid ready runtime", operation)
 	}
-	result := map[string]any{"infra_runtime_id": runtime.ID, "runtime_status": "RUNNING", "health_status": "HEALTHY", "endpoint_ref": runtime.EndpointRef, "diagnostics_summary": map[string]any{}}
+	result := map[string]any{"infra_runtime_id": runtime.ID, "runtime_status": iapiserver.TaskWorkerRuntimeStatusRunning, "health_status": iapiserver.TaskWorkerRuntimeHealthStatusHealthy, "endpoint_ref": runtime.EndpointRef, "diagnostics_summary": map[string]any{}}
 	if err := registry.ValidateOutput(contract, result); err != nil {
 		return nil, errors.Wrap(err, "validate appstudio "+operation+" output")
 	}
@@ -1105,7 +1105,7 @@ func executeAppStudioReady(ctx context.Context, client infrastructureCommandExec
 }
 
 func hasReadyInfrastructureEndpoint(runtime *iapiserver.InfraRuntime, endpoint *iapiserver.InfraRuntimeEndpoint) bool {
-	return runtime != nil && endpoint != nil && endpoint.ID != "" && endpoint.Status == "READY" &&
+	return runtime != nil && endpoint != nil && endpoint.ID != "" && endpoint.Status == iapiserver.TaskWorkerRuntimeEndpointStatusReady &&
 		runtime.EndpointRef == "infra-endpoint://"+endpoint.ID
 }
 
@@ -1113,7 +1113,7 @@ func executeAppStudioStop(ctx context.Context, client infrastructureCommandExecu
 	if client == nil {
 		return nil, fmt.Errorf("infrastructure client is required")
 	}
-	response, err := client.Execute(ctx, &infrastructure.CommandRequest{Operation: "stop", RuntimeID: runtimeID, Delete: deleteRuntime})
+	response, err := client.Execute(ctx, &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationStop, RuntimeID: runtimeID, Delete: deleteRuntime})
 	if err != nil {
 		return nil, errors.Wrap(err, "execute appstudio "+operation+" infrastructure command")
 	}
@@ -1121,9 +1121,9 @@ func executeAppStudioStop(ctx context.Context, client infrastructureCommandExecu
 	if err != nil {
 		return nil, errors.Wrap(err, "validate appstudio "+operation+" response")
 	}
-	wantStatus := "STOPPED"
+	wantStatus := iapiserver.TaskWorkerRuntimeStatusStopped
 	if deleteRuntime {
-		wantStatus = "DELETED"
+		wantStatus = iapiserver.TaskWorkerRuntimeStatusDeleted
 	}
 	if runtime.ID != runtimeID || runtime.Status != wantStatus {
 		return nil, fmt.Errorf("appstudio %s returned unexpected runtime result", operation)
@@ -1178,7 +1178,7 @@ func validateAgentRuntimeEnsureArguments(arguments agentRuntimeEnsureArguments) 
 		arguments.RuntimeProfileRevision == "" || arguments.ExpectedResourceVersion < 0 {
 		return fmt.Errorf("agent runtime ensure arguments are incomplete")
 	}
-	if arguments.Operation != "START" && arguments.Operation != "RECOVER" {
+	if arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationStart && arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationRecover {
 		return fmt.Errorf("agent runtime ensure operation %q is invalid", arguments.Operation)
 	}
 	if arguments.AgentKind != "platform" && arguments.AgentKind != "coding" {
@@ -1206,7 +1206,7 @@ func validateAgentRuntimeEnsureArguments(arguments agentRuntimeEnsureArguments) 
 		return fmt.Errorf("agent runtime ensure resource requirement is invalid")
 	}
 	lifecycle := arguments.LifecyclePolicy
-	if lifecycle.RestartPolicy != "" && lifecycle.RestartPolicy != "NEVER" && lifecycle.RestartPolicy != "ON_FAILURE" && lifecycle.RestartPolicy != "ALWAYS" {
+	if lifecycle.RestartPolicy != "" && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyNever && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyOnFailure && lifecycle.RestartPolicy != iapiserver.TaskWorkerAgentRuntimeRestartPolicyAlways {
 		return fmt.Errorf("agent runtime ensure restart policy %q is invalid", lifecycle.RestartPolicy)
 	}
 	if lifecycle.IdleTimeoutSeconds != nil && *lifecycle.IdleTimeoutSeconds < 0 {
@@ -1222,7 +1222,7 @@ func validateAgentRuntimeStopArguments(arguments agentRuntimeStopArguments) erro
 	if arguments.AgentID == "" || arguments.AgentRuntimeID == "" || arguments.InfraRuntimeID == "" || arguments.ExpectedResourceVersion < 0 {
 		return fmt.Errorf("agent runtime stop arguments are incomplete")
 	}
-	if arguments.Action != "SUSPEND" && arguments.Action != "STOP" && arguments.Action != "DELETE" {
+	if arguments.Action != iapiserver.TaskWorkerActionSuspend && arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
 		return fmt.Errorf("agent runtime stop action %q is invalid", arguments.Action)
 	}
 	if !strings.HasPrefix(arguments.AuthorizationRef, "agent-runtime-grant://") {
@@ -1540,7 +1540,7 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 			return nil, errors.Errorf("representation requested event contains an invalid representation")
 		}
 		childKey := requested.RepresentationType + ":" + requested.Profile
-		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{"representation_type": requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required, "max_attempts": 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: "EXPONENTIAL_BACKOFF", MaxRetryDelaySeconds: 30}}})
+		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{"representation_type": requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required, "max_attempts": 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: iapiserver.TaskWorkerRetryBackoffExponential, MaxRetryDelaySeconds: 30}}})
 	}
 	nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationFinalize}, FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
 	edges := make([]iapiserver.DAGEdge, 0, max(1, 2*len(event.RequestedRepresentations)))
