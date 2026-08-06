@@ -17,11 +17,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
 
-const (
-	FunctionRuntimeEnsure = "agent.runtime.ensure"
-	FunctionRuntimeStop   = "agent.runtime.stop"
-)
-
 // TaskClient 是 Agent 消费的 Task Center 小接口，只允许创建和操作受控任务。
 type TaskClient interface {
 	CreateDomainAtomicTask(context.Context, string, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
@@ -66,15 +61,15 @@ func New(deps Dependencies) (*Service, error) {
 
 func defaultProfiles() map[string]iapiserver.AgentProfile {
 	return map[string]iapiserver.AgentProfile{
-		"agent.hermes": {ID: "agent.hermes", Name: "Hermes Agent", Revision: "1.0", Status: "ACTIVE", SupportedAgentKinds: []string{iapiserver.AgentKindPlatform}, Description: "Platform Agent runtime profile."},
-		"agent.coding": {ID: "agent.coding", Name: "Coding Agent", Revision: "1.0", Status: "ACTIVE", SupportedAgentKinds: []string{iapiserver.AgentKindCoding}, Description: "OpenCode-compatible Coding Agent runtime profile."},
+		iapiserver.AgentProfileIDHermes: {ID: iapiserver.AgentProfileIDHermes, Name: "Hermes Agent", Revision: iapiserver.AgentProfileRevisionInitial, Status: iapiserver.AgentProfileStatusActive, SupportedAgentKinds: []string{iapiserver.AgentKindPlatform}, Description: "Platform Agent runtime profile."},
+		iapiserver.AgentProfileIDCoding: {ID: iapiserver.AgentProfileIDCoding, Name: "Coding Agent", Revision: iapiserver.AgentProfileRevisionInitial, Status: iapiserver.AgentProfileStatusActive, SupportedAgentKinds: []string{iapiserver.AgentKindCoding}, Description: "OpenCode-compatible Coding Agent runtime profile."},
 	}
 }
 
 // ListProfiles 返回当前启用的只读 AgentProfile。
 func (s *Service) ListProfiles(context.Context) (*iapiserver.AgentProfileListResponse, error) {
 	items := make([]*iapiserver.AgentProfile, 0, len(s.profiles))
-	for _, id := range []string{"agent.hermes"} {
+	for _, id := range []string{iapiserver.AgentProfileIDHermes} {
 		profile := s.profiles[id]
 		copy := profile
 		items = append(items, &copy)
@@ -100,31 +95,31 @@ func (s *Service) CreateAgent(ctx context.Context, req *iapiserver.AgentCreateRe
 		return nil, err
 	}
 	profile, ok := s.profiles[req.AgentProfileID]
-	if !ok || profile.Status != "ACTIVE" || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindPlatform) {
+	if !ok || profile.Status != iapiserver.AgentProfileStatusActive || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindPlatform) {
 		return nil, errors.NewStatus(code.ErrAgentProfileInvalid, "agent profile is unavailable for platform agents")
 	}
 	if req.AgentProfileRevision != "" && req.AgentProfileRevision != profile.Revision {
 		return nil, errors.NewStatus(code.ErrAgentProfileInvalid, "agent profile revision is unavailable")
 	}
 	workspaceID := uuid.NewString()
-	authorization := iapiserver.AgentAuthorizationSummary{Source: "agent", ValidatedAt: imachinery.Now()}
+	authorization := iapiserver.AgentAuthorizationSummary{Source: iapiserver.AgentAuthorizationSourceAgent, ValidatedAt: imachinery.Now()}
 	agentID, sessionID := uuid.NewString(), uuid.NewString()
 	agent := &iapiserver.Agent{
 		ObjectMeta:  imachinery.ObjectMeta{ID: agentID, Name: req.Name, Description: req.Description},
 		OwnerUserID: owner, Kind: iapiserver.AgentKindPlatform, AgentProfileID: profile.ID, AgentProfileRevision: profile.Revision,
-		WorkspaceType: iapiserver.AgentWorkspaceTypeAgent, WorkspaceID: workspaceID, Status: "READY", RuntimePolicy: req.RuntimePolicy,
+		WorkspaceType: iapiserver.AgentWorkspaceTypeAgent, WorkspaceID: workspaceID, Status: iapiserver.AgentStatusReady, RuntimePolicy: req.RuntimePolicy,
 	}
-	session := &iapiserver.AgentSession{ObjectMeta: imachinery.ObjectMeta{ID: sessionID}, AgentID: agentID, OwnerUserID: owner, Title: req.Name, Status: "OPEN"}
+	session := &iapiserver.AgentSession{ObjectMeta: imachinery.ObjectMeta{ID: sessionID}, AgentID: agentID, OwnerUserID: owner, Title: req.Name, Status: iapiserver.AgentSessionStatusOpen}
 	binding := &iapiserver.AgentWorkspaceBinding{
 		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeAgent,
-		WorkspaceID: workspaceID, AccessMode: "READ_WRITE", AuthorizationSummary: authorization,
+		WorkspaceID: workspaceID, AccessMode: iapiserver.AgentWorkspaceAccessModeReadWrite, AuthorizationSummary: authorization,
 	}
 	var model *iapiserver.AgentModelBinding
 	if req.ModelBinding != nil {
 		model = modelBinding(agentID, "primary-model", req.ModelBinding)
 	} else {
 		model = modelBinding(agentID, "primary-model", &iapiserver.AgentModelBindingInput{
-			SourceType: "USER_DEFAULT_MODEL", SourceRef: "user-default", Purpose: defaultPurpose(iapiserver.AgentKindPlatform),
+			SourceType: iapiserver.AgentModelBindingSourceTypeUserDefault, SourceRef: iapiserver.AgentModelBindingSourceRefUserDefault, Purpose: defaultPurpose(iapiserver.AgentKindPlatform),
 		})
 	}
 	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
@@ -147,8 +142,8 @@ func (s *Service) CreateCodingAgentForStudio(
 	if s.workspaces == nil {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "appstudio workspace validation is unavailable")
 	}
-	profile, ok := s.profiles["agent.coding"]
-	if !ok || profile.Status != "ACTIVE" || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindCoding) {
+	profile, ok := s.profiles[iapiserver.AgentProfileIDCoding]
+	if !ok || profile.Status != iapiserver.AgentProfileStatusActive || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindCoding) {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent profile is unavailable")
 	}
 	authorization, err := generic.GetValueOrZero(s.workspaces.ValidateAgentWorkspaceBinding(ctx, ownerUserID, workspaceID))
@@ -176,21 +171,21 @@ func (s *Service) CreateCodingAgentForStudio(
 		AgentProfileRevision: profile.Revision,
 		WorkspaceType:        iapiserver.AgentWorkspaceTypeStudio,
 		WorkspaceID:          workspaceID,
-		Status:               "READY",
+		Status:               iapiserver.AgentStatusReady,
 	}
 	session := &iapiserver.AgentSession{
 		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "session")},
-		AgentID:    agentID, OwnerUserID: ownerUserID, Title: "Coding Session", Status: "OPEN",
+		AgentID:    agentID, OwnerUserID: ownerUserID, Title: "Coding Session", Status: iapiserver.AgentSessionStatusOpen,
 	}
 	binding := &iapiserver.AgentWorkspaceBinding{
 		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "workspace-binding")},
 		AgentID:    agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeStudio, WorkspaceID: workspaceID,
-		AccessMode: "READ_WRITE", AuthorizationSummary: authorization,
+		AccessMode: iapiserver.AgentWorkspaceAccessModeReadWrite, AuthorizationSummary: authorization,
 	}
 	model := &iapiserver.AgentModelBinding{
 		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "primary-model"), Name: "primary-model"},
-		AgentID:    agentID, SourceType: "USER_DEFAULT_MODEL", SourceRef: "user-default",
-		Purpose: defaultPurpose(iapiserver.AgentKindCoding), Status: "ACTIVE", IsPrimary: true,
+		AgentID:    agentID, SourceType: iapiserver.AgentModelBindingSourceTypeUserDefault, SourceRef: iapiserver.AgentModelBindingSourceRefUserDefault,
+		Purpose: defaultPurpose(iapiserver.AgentKindCoding), Status: iapiserver.AgentModelBindingStatusActive, IsPrimary: true,
 	}
 	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
 		existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID)
@@ -243,11 +238,11 @@ func (s *Service) DeleteAgent(ctx context.Context, id string) (*iapiserver.Agent
 		return nil, err
 	}
 	if runtime, runtimeErr := s.currentRuntime(ctx, agent); runtimeErr == nil && runtime != nil {
-		if _, stopErr := s.stopRuntime(ctx, agent, runtime, "DELETE", "agent deletion"); stopErr != nil {
+		if _, stopErr := s.stopRuntime(ctx, agent, runtime, iapiserver.AgentRuntimeActionDelete, "agent deletion"); stopErr != nil {
 			return nil, stopErr
 		}
 	}
-	agent.Status, agent.Disabled = "DELETING", true
+	agent.Status, agent.Disabled = iapiserver.AgentStatusDeleting, true
 	return s.store.UpdateAgent(ctx, agent, agent.ResourceVersion)
 }
 
@@ -257,10 +252,10 @@ func (s *Service) EnableAgent(ctx context.Context, id string) (*iapiserver.Agent
 	if err != nil {
 		return nil, err
 	}
-	if !agent.Disabled && agent.Status != "DISABLED" {
+	if !agent.Disabled && agent.Status != iapiserver.AgentStatusDisabled {
 		return nil, errors.NewStatus(code.ErrAgentStateInvalid, "agent is not disabled")
 	}
-	agent.Disabled, agent.Status = false, "READY"
+	agent.Disabled, agent.Status = false, iapiserver.AgentStatusReady
 	return s.store.UpdateAgent(ctx, agent, agent.ResourceVersion)
 }
 
@@ -271,11 +266,11 @@ func (s *Service) DisableAgent(ctx context.Context, id string, req *iapiserver.A
 		return nil, err
 	}
 	if runtime, runtimeErr := s.currentRuntime(ctx, agent); runtimeErr == nil && runtime != nil {
-		if _, stopErr := s.stopRuntime(ctx, agent, runtime, "SUSPEND", req.Reason); stopErr != nil {
+		if _, stopErr := s.stopRuntime(ctx, agent, runtime, iapiserver.AgentRuntimeActionSuspend, req.Reason); stopErr != nil {
 			return nil, stopErr
 		}
 	}
-	agent.Disabled, agent.Status = true, "DISABLED"
+	agent.Disabled, agent.Status = true, iapiserver.AgentStatusDisabled
 	return s.store.UpdateAgent(ctx, agent, agent.ResourceVersion)
 }
 
@@ -302,7 +297,7 @@ func (s *Service) CreateSession(ctx context.Context, agentID string, req *iapise
 	if _, err := s.store.GetAgent(ctx, agentID, owner); err != nil {
 		return nil, err
 	}
-	return s.store.CreateAgentSession(ctx, &iapiserver.AgentSession{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agentID, OwnerUserID: owner, Title: req.Title, Status: "OPEN"})
+	return s.store.CreateAgentSession(ctx, &iapiserver.AgentSession{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agentID, OwnerUserID: owner, Title: req.Title, Status: iapiserver.AgentSessionStatusOpen})
 }
 
 func (s *Service) GetSession(ctx context.Context, id string) (*iapiserver.AgentSession, error) {
@@ -318,7 +313,7 @@ func (s *Service) UpdateSession(ctx context.Context, id string, req *iapiserver.
 	if err != nil {
 		return nil, err
 	}
-	if session.Status != "OPEN" {
+	if session.Status != iapiserver.AgentSessionStatusOpen {
 		return nil, errors.NewStatus(code.ErrAgentSessionClosed, "closed session cannot be updated")
 	}
 	session.Title = req.Title
@@ -326,10 +321,10 @@ func (s *Service) UpdateSession(ctx context.Context, id string, req *iapiserver.
 }
 
 func (s *Service) CloseSession(ctx context.Context, id string) (*iapiserver.AgentSession, error) {
-	return s.setSessionStatus(ctx, id, "CLOSED")
+	return s.setSessionStatus(ctx, id, iapiserver.AgentSessionStatusClosed)
 }
 func (s *Service) ArchiveSession(ctx context.Context, id string) (*iapiserver.AgentSession, error) {
-	return s.setSessionStatus(ctx, id, "ARCHIVED")
+	return s.setSessionStatus(ctx, id, iapiserver.AgentSessionStatusArchived)
 }
 
 func (s *Service) setSessionStatus(ctx context.Context, id, status string) (*iapiserver.AgentSession, error) {
@@ -340,7 +335,7 @@ func (s *Service) setSessionStatus(ctx context.Context, id, status string) (*iap
 	if session.Status == status {
 		return session, nil
 	}
-	if session.Status != "OPEN" && status == "CLOSED" {
+	if session.Status != iapiserver.AgentSessionStatusOpen && status == iapiserver.AgentSessionStatusClosed {
 		return nil, errors.NewStatus(code.ErrAgentSessionClosed, "session is not open")
 	}
 	session.Status = status
@@ -357,30 +352,30 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	if err != nil {
 		return nil, err
 	}
-	if session.Status != "OPEN" {
+	if session.Status != iapiserver.AgentSessionStatusOpen {
 		return nil, errors.NewStatus(code.ErrAgentSessionClosed, "session cannot accept messages")
 	}
 	agent, err := s.store.GetAgent(ctx, session.AgentID, owner)
 	if err != nil {
 		return nil, err
 	}
-	if agent.Disabled || agent.Status == "DISABLED" || agent.Status == "DELETING" {
+	if agent.Disabled || agent.Status == iapiserver.AgentStatusDisabled || agent.Status == iapiserver.AgentStatusDeleting {
 		return nil, errors.NewStatus(code.ErrAgentStateInvalid, "agent cannot accept messages")
 	}
 	idempotency := req.IdempotencyKey
 	if idempotency == "" {
 		idempotency = uuid.NewString()
 	}
-	typeName := "CHAT"
+	typeName := iapiserver.AgentInvocationTypeChat
 	if agent.Kind == iapiserver.AgentKindCoding {
-		typeName = "CODING"
+		typeName = iapiserver.AgentInvocationTypeCoding
 	}
-	if typeName != "CHAT" {
+	if typeName != iapiserver.AgentInvocationTypeChat {
 		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "Released SSOT has no canonical non-runtime Agent Invocation functionRef.")
 	}
 	messageID, invocationID := uuid.NewString(), uuid.NewString()
-	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: "USER", Content: req.Content, Attachments: req.Attachments}
-	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: typeName, Status: "QUEUED", UserMessageID: messageID, IdempotencyKey: idempotency}
+	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.Content, Attachments: req.Attachments}
+	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: typeName, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID, IdempotencyKey: idempotency}
 	created, err := s.store.CreateAgentInvocation(ctx, message, invocation)
 	if err != nil {
 		return nil, err
@@ -388,8 +383,8 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	if created.ID != invocationID {
 		return created, nil
 	}
-	created.Status = "FAILED"
-	created.FailureCode = "ERR_AGENT_INVOCATION_TASK_UNAVAILABLE"
+	created.Status = iapiserver.AgentInvocationStatusFailed
+	created.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
 	created.FailureMessage = "Agent execution adapter is unavailable for " + typeName + " invocation."
 	created.CompletedAt = imachinery.Now()
 	if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
@@ -440,7 +435,7 @@ func (s *Service) CancelInvocation(ctx context.Context, id string, req *iapiserv
 	if isInvocationTerminal(invocation.Status) {
 		return invocation, nil
 	}
-	invocation.Status = "CANCELING"
+	invocation.Status = iapiserver.AgentInvocationStatusCanceling
 	if _, err := s.store.UpdateAgentInvocation(ctx, invocation); err != nil {
 		return nil, err
 	}
@@ -452,7 +447,7 @@ func (s *Service) CancelInvocation(ctx context.Context, id string, req *iapiserv
 			return nil, err
 		}
 	}
-	invocation.Status, invocation.CompletedAt = "CANCELED", imachinery.Now()
+	invocation.Status, invocation.CompletedAt = iapiserver.AgentInvocationStatusCanceled, imachinery.Now()
 	return s.store.UpdateAgentInvocation(ctx, invocation)
 }
 
@@ -569,10 +564,10 @@ func (s *Service) CreateMCPBinding(ctx context.Context, agentID string, req *iap
 }
 
 func (s *Service) StartRuntime(ctx context.Context, agentID string, req *iapiserver.AgentRuntimeActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
-	return s.ensureRuntime(ctx, agentID, "START", req)
+	return s.ensureRuntime(ctx, agentID, iapiserver.AgentRuntimeOperationStart, req)
 }
 func (s *Service) RecoverRuntime(ctx context.Context, agentID string, req *iapiserver.AgentRuntimeActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
-	return s.ensureRuntime(ctx, agentID, "RECOVER", req)
+	return s.ensureRuntime(ctx, agentID, iapiserver.AgentRuntimeOperationRecover, req)
 }
 
 func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, req *iapiserver.AgentRuntimeActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
@@ -580,7 +575,7 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 	if err != nil {
 		return nil, err
 	}
-	if agent.Disabled || agent.Status == "DISABLED" || agent.Status == "DELETING" {
+	if agent.Disabled || agent.Status == iapiserver.AgentStatusDisabled || agent.Status == iapiserver.AgentStatusDeleting {
 		return nil, errors.NewStatus(code.ErrAgentStateInvalid, "agent runtime operation is blocked")
 	}
 	if s.tasks == nil {
@@ -591,12 +586,12 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 		return nil, err
 	}
 	if runtime == nil {
-		runtime = &iapiserver.AgentRuntimeBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agent.ID, RuntimeProfileID: agent.AgentProfileID, RuntimeProfileRevision: agent.AgentProfileRevision, State: "STARTING", ActivityState: "IDLE", HealthStatus: "UNKNOWN"}
+		runtime = &iapiserver.AgentRuntimeBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agent.ID, RuntimeProfileID: agent.AgentProfileID, RuntimeProfileRevision: agent.AgentProfileRevision, State: iapiserver.AgentRuntimeStateStarting, ActivityState: iapiserver.AgentRuntimeActivityIdle, HealthStatus: iapiserver.AgentRuntimeHealthUnknown}
 		if _, err := s.store.CreateAgentRuntime(ctx, agent.OwnerUserID, runtime); err != nil {
 			return nil, err
 		}
 	} else {
-		runtime.State = "STARTING"
+		runtime.State = iapiserver.AgentRuntimeStateStarting
 		if _, err := s.store.UpdateAgentRuntime(ctx, runtime); err != nil {
 			return nil, err
 		}
@@ -630,26 +625,26 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 	if runtime.InfraRuntimeID != "" {
 		arguments["existing_infra_runtime_id"] = runtime.InfraRuntimeID
 	}
-	task, err := s.tasks.CreateDomainAtomicTask(ctx, "agent", &iapiserver.AtomicTaskCreateRequest{
-		Key: "runtime-" + runtime.ID, Name: "Agent runtime " + strings.ToLower(operation), FunctionRef: FunctionRuntimeEnsure,
+	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
+		Key: "runtime-" + runtime.ID, Name: "Agent runtime " + strings.ToLower(operation), FunctionRef: iapiserver.AgentRuntimeFunctionEnsure,
 		Arguments: arguments, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
 	})
 	if err != nil {
-		runtime.State = "FAILED"
+		runtime.State = iapiserver.AgentRuntimeStateFailed
 		_, _ = s.store.UpdateAgentRuntime(ctx, runtime)
 		return nil, err
 	}
-	agent.Status = "STARTING"
+	agent.Status = iapiserver.AgentStatusStarting
 	_, _ = s.store.UpdateAgent(ctx, agent, agent.ResourceVersion)
 	_ = task
 	return runtime, nil
 }
 
 func (s *Service) SuspendRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
-	return s.stopRuntimeAction(ctx, agentID, "SUSPEND", req)
+	return s.stopRuntimeAction(ctx, agentID, iapiserver.AgentRuntimeActionSuspend, req)
 }
 func (s *Service) StopRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
-	return s.stopRuntimeAction(ctx, agentID, "STOP", req)
+	return s.stopRuntimeAction(ctx, agentID, iapiserver.AgentRuntimeActionStop, req)
 }
 
 func (s *Service) stopRuntimeAction(ctx context.Context, agentID, action string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
@@ -674,15 +669,15 @@ func (s *Service) stopRuntime(ctx context.Context, agent *iapiserver.Agent, runt
 	if runtime.InfraRuntimeID == "" {
 		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "infra runtime reference is unavailable")
 	}
-	_, err := s.tasks.CreateDomainAtomicTask(ctx, "agent", &iapiserver.AtomicTaskCreateRequest{
-		Key: "runtime-stop-" + runtime.ID, Name: "Agent runtime stop", FunctionRef: FunctionRuntimeStop,
+	_, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
+		Key: "runtime-stop-" + runtime.ID, Name: "Agent runtime stop", FunctionRef: iapiserver.AgentRuntimeFunctionStop,
 		Arguments: map[string]any{"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "infra_runtime_id": runtime.InfraRuntimeID, "action": action, "reason": reason, "authorization_ref": fmt.Sprintf("agent-runtime-grant://%s/%s/%d", agent.ID, runtime.ID, agent.ResourceVersion), "expected_resource_version": runtime.ResourceVersion},
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
 	})
 	if err != nil {
 		return nil, err
 	}
-	runtime.State = "STOPPING"
+	runtime.State = iapiserver.AgentRuntimeStateStopping
 	return s.store.UpdateAgentRuntime(ctx, runtime)
 }
 
@@ -692,7 +687,7 @@ func (s *Service) currentRuntime(ctx context.Context, agent *iapiserver.Agent) (
 
 // ProjectTaskTerminal 按固定 registry output 单调投影 AgentRuntime，不写 Infra 或 Task 私表。
 func (s *Service) ProjectTaskTerminal(ctx context.Context, task *iapiserver.AtomicTask) error {
-	if task == nil || (task.FunctionRef != FunctionRuntimeEnsure && task.FunctionRef != FunctionRuntimeStop) {
+	if task == nil || (task.FunctionRef != iapiserver.AgentRuntimeFunctionEnsure && task.FunctionRef != iapiserver.AgentRuntimeFunctionStop) {
 		return nil
 	}
 	runtimeID, _ := task.Arguments["agent_runtime_id"].(string)
@@ -703,24 +698,24 @@ func (s *Service) ProjectTaskTerminal(ctx context.Context, task *iapiserver.Atom
 	if err != nil {
 		return err
 	}
-	agentStatus := "ERROR"
+	agentStatus := iapiserver.AgentStatusError
 	if task.Status == iapiserver.AtomicTaskStatusSuccess {
 		runtime.InfraRuntimeID, _ = task.Output["infra_runtime_id"].(string)
 		runtime.EndpointRef, _ = task.Output["endpoint_ref"].(string)
-		if task.FunctionRef == FunctionRuntimeEnsure {
-			runtime.State, runtime.ActivityState, runtime.HealthStatus, runtime.StartedAt = "READY", "IDLE", "HEALTHY", imachinery.Now()
-			agentStatus = "IDLE"
+		if task.FunctionRef == iapiserver.AgentRuntimeFunctionEnsure {
+			runtime.State, runtime.ActivityState, runtime.HealthStatus, runtime.StartedAt = iapiserver.AgentRuntimeStateReady, iapiserver.AgentRuntimeActivityIdle, iapiserver.AgentRuntimeHealthHealthy, imachinery.Now()
+			agentStatus = iapiserver.AgentStatusIdle
 		} else {
-			runtime.State, runtime.ActivityState, runtime.HealthStatus, runtime.StoppedAt = "STOPPED", "SUSPENDED", "UNKNOWN", imachinery.Now()
+			runtime.State, runtime.ActivityState, runtime.HealthStatus, runtime.StoppedAt = iapiserver.AgentRuntimeStateStopped, iapiserver.AgentRuntimeActivitySuspended, iapiserver.AgentRuntimeHealthUnknown, imachinery.Now()
 			action, _ := task.Arguments["action"].(string)
-			if action == "DELETE" {
-				agentStatus = "DELETING"
+			if action == iapiserver.AgentRuntimeActionDelete {
+				agentStatus = iapiserver.AgentStatusDeleting
 			} else {
-				agentStatus = "SUSPENDED"
+				agentStatus = iapiserver.AgentStatusSuspended
 			}
 		}
 	} else if iapiserver.IsAtomicTaskTerminal(task.Status) {
-		runtime.State, runtime.HealthStatus = "FAILED", "UNHEALTHY"
+		runtime.State, runtime.HealthStatus = iapiserver.AgentRuntimeStateFailed, iapiserver.AgentRuntimeHealthUnhealthy
 	}
 	_, err = s.store.ProjectAgentRuntime(ctx, runtime, agentStatus)
 	return err
@@ -735,12 +730,12 @@ func currentUserID(ctx context.Context) (string, error) {
 }
 
 func modelBinding(agentID, name string, input *iapiserver.AgentModelBindingInput) *iapiserver.AgentModelBinding {
-	return &iapiserver.AgentModelBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: name}, AgentID: agentID, SourceType: input.SourceType, SourceRef: input.SourceRef, Purpose: input.Purpose, Status: "ACTIVE", IsPrimary: true}
+	return &iapiserver.AgentModelBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: name}, AgentID: agentID, SourceType: input.SourceType, SourceRef: input.SourceRef, Purpose: input.Purpose, Status: iapiserver.AgentModelBindingStatusActive, IsPrimary: true}
 }
 
 func primaryModel(bindings []*iapiserver.AgentModelBinding) *iapiserver.AgentModelBinding {
 	for _, binding := range bindings {
-		if binding != nil && binding.IsPrimary && binding.Status == "ACTIVE" {
+		if binding != nil && binding.IsPrimary && binding.Status == iapiserver.AgentModelBindingStatusActive {
 			return binding
 		}
 	}
@@ -748,9 +743,9 @@ func primaryModel(bindings []*iapiserver.AgentModelBinding) *iapiserver.AgentMod
 }
 func defaultPurpose(kind string) string {
 	if kind == iapiserver.AgentKindCoding {
-		return "CODING"
+		return iapiserver.AgentModelBindingPurposeCoding
 	}
-	return "CHAT"
+	return iapiserver.AgentModelBindingPurposeChat
 }
 
 func stableCodingAgentID(idempotencyKey string) string {
@@ -767,5 +762,5 @@ func codingAgentMatchesStudio(agent *iapiserver.Agent, workspaceID string) bool 
 }
 
 func isInvocationTerminal(status string) bool {
-	return status == "SUCCEEDED" || status == "FAILED" || status == "CANCELED"
+	return status == iapiserver.AgentInvocationStatusSucceeded || status == iapiserver.AgentInvocationStatusFailed || status == iapiserver.AgentInvocationStatusCanceled
 }

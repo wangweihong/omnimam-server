@@ -1,0 +1,121 @@
+package iapiserver
+
+const (
+	// AgentProfileIDHermes 是 Platform Agent 使用的内置 Hermes Profile 标识。
+	AgentProfileIDHermes = "agent.hermes"
+	// AgentProfileIDCoding 是 Studio Coding Agent 使用的内置 Profile 标识。
+	AgentProfileIDCoding = "agent.coding"
+	// AgentProfileRevisionInitial 是内置 Agent Profile 的初始固定修订。
+	AgentProfileRevisionInitial = "1.0"
+	// AgentProfileStatusActive 表示 Profile 可用于创建 Agent。
+	AgentProfileStatusActive = "ACTIVE"
+)
+
+const (
+	// AgentStatusReady 表示 Agent 已完成初始化并可接受操作。
+	AgentStatusReady = "READY"
+	// AgentStatusStarting 表示 Agent Runtime 正在启动或恢复。
+	AgentStatusStarting = "STARTING"
+	// AgentStatusIdle 表示 Agent Runtime 已就绪且当前空闲。
+	AgentStatusIdle = "IDLE"
+	// AgentStatusSuspended 表示 Agent Runtime 已挂起。
+	AgentStatusSuspended = "SUSPENDED"
+	// AgentStatusDisabled 表示 Agent 已禁用并拒绝新 Invocation。
+	AgentStatusDisabled = "DISABLED"
+	// AgentStatusDeleting 表示 Agent 正在停止 Runtime 并进入删除流程。
+	AgentStatusDeleting = "DELETING"
+	// AgentStatusError 表示 Agent Runtime 投影进入错误状态。
+	AgentStatusError = "ERROR"
+)
+
+const (
+	// AgentSessionStatusOpen 表示 Session 可更新并接受消息。
+	AgentSessionStatusOpen = "OPEN"
+	// AgentSessionStatusClosed 表示 Session 已关闭但仍保留历史。
+	AgentSessionStatusClosed = "CLOSED"
+	// AgentSessionStatusArchived 表示 Session 已归档。
+	AgentSessionStatusArchived = "ARCHIVED"
+)
+
+const (
+	// AgentWorkspaceAccessModeReadWrite 允许 Agent 读写其固定 Workspace。
+	AgentWorkspaceAccessModeReadWrite = "READ_WRITE"
+	// AgentAuthorizationSourceAgent 表示授权摘要由 Agent 固定绑定流程产生。
+	AgentAuthorizationSourceAgent = "agent"
+)
+
+const (
+	// AgentModelBindingSourceTypeUserDefault 选择当前用户的默认模型。
+	AgentModelBindingSourceTypeUserDefault = "USER_DEFAULT_MODEL"
+	// AgentModelBindingSourceRefUserDefault 是用户默认模型的稳定来源引用。
+	AgentModelBindingSourceRefUserDefault = "user-default"
+	// AgentModelBindingPurposeChat 表示模型用于 Platform Agent 对话。
+	AgentModelBindingPurposeChat = "CHAT"
+	// AgentModelBindingPurposeCoding 表示模型用于 Coding Agent 操作。
+	AgentModelBindingPurposeCoding = "CODING"
+	// AgentModelBindingStatusActive 表示模型绑定可被 Runtime 使用。
+	AgentModelBindingStatusActive = "ACTIVE"
+)
+
+const (
+	// AgentMessageRoleUser 表示消息由当前用户提交。
+	AgentMessageRoleUser = "USER"
+	// AgentInvocationTypeChat 表示普通对话 Invocation。
+	AgentInvocationTypeChat = "CHAT"
+	// AgentInvocationTypeCoding 表示 Coding Agent Invocation。
+	AgentInvocationTypeCoding = "CODING"
+	// AgentInvocationStatusQueued 表示 Invocation 已持久化并等待执行。
+	AgentInvocationStatusQueued = "QUEUED"
+	// AgentInvocationStatusCanceling 表示 Invocation 正在请求取消关联任务。
+	AgentInvocationStatusCanceling = "CANCELING"
+	// AgentInvocationStatusSucceeded 表示 Invocation 已成功完成。
+	AgentInvocationStatusSucceeded = "SUCCEEDED"
+	// AgentInvocationStatusFailed 表示 Invocation 已失败终止。
+	AgentInvocationStatusFailed = "FAILED"
+	// AgentInvocationStatusCanceled 表示 Invocation 已取消终止。
+	AgentInvocationStatusCanceled = "CANCELED"
+	// AgentInvocationFailureCodeTaskUnavailable 表示缺少可执行 Invocation 的任务适配器。
+	AgentInvocationFailureCodeTaskUnavailable = "ERR_AGENT_INVOCATION_TASK_UNAVAILABLE"
+)
+
+const (
+	// AgentRuntimeOperationStart 请求首次启动 Agent Runtime。
+	AgentRuntimeOperationStart = "START"
+	// AgentRuntimeOperationRecover 请求恢复已有 Agent Runtime。
+	AgentRuntimeOperationRecover = "RECOVER"
+	// AgentRuntimeActionSuspend 请求停止 Runtime 并保留挂起语义。
+	AgentRuntimeActionSuspend = "SUSPEND"
+	// AgentRuntimeActionStop 请求停止当前 Runtime。
+	AgentRuntimeActionStop = "STOP"
+	// AgentRuntimeActionDelete 请求为删除 Agent 停止 Runtime。
+	AgentRuntimeActionDelete = "DELETE"
+	// AgentRuntimeStateStarting 表示 Runtime 正在启动或恢复。
+	AgentRuntimeStateStarting = "STARTING"
+	// AgentRuntimeStateReady 表示 Runtime 已成功建立。
+	AgentRuntimeStateReady = "READY"
+	// AgentRuntimeStateStopping 表示 Runtime 正在停止。
+	AgentRuntimeStateStopping = "STOPPING"
+	// AgentRuntimeStateStopped 表示 Runtime 已停止。
+	AgentRuntimeStateStopped = "STOPPED"
+	// AgentRuntimeStateFailed 表示 Runtime 操作失败。
+	AgentRuntimeStateFailed = "FAILED"
+	// AgentRuntimeActivityIdle 表示 Runtime 已就绪且无活动 Invocation。
+	AgentRuntimeActivityIdle = "IDLE"
+	// AgentRuntimeActivitySuspended 表示 Runtime 活动已挂起。
+	AgentRuntimeActivitySuspended = "SUSPENDED"
+	// AgentRuntimeHealthUnknown 表示尚无可用 Runtime 健康结论。
+	AgentRuntimeHealthUnknown = "UNKNOWN"
+	// AgentRuntimeHealthHealthy 表示 Runtime 健康可用。
+	AgentRuntimeHealthHealthy = "HEALTHY"
+	// AgentRuntimeHealthUnhealthy 表示 Runtime 健康检查失败。
+	AgentRuntimeHealthUnhealthy = "UNHEALTHY"
+)
+
+const (
+	// AgentRuntimeFunctionEnsure 是 Agent 启动与恢复任务的 functionRef。
+	AgentRuntimeFunctionEnsure = "agent.runtime.ensure"
+	// AgentRuntimeFunctionStop 是 Agent 停止任务的 functionRef。
+	AgentRuntimeFunctionStop = "agent.runtime.stop"
+	// AgentTaskDomain 是 Agent 向 Task Center 创建任务时使用的领域标识。
+	AgentTaskDomain = "agent"
+)
