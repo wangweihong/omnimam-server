@@ -62,7 +62,7 @@ func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error
 	if err := d.request(ctx, http.MethodGet, "/info", nil, &info); err != nil {
 		return nil, err
 	}
-	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: iapiserver.InfraNodeStatusOnline, CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
+	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraNodeIDDockerLocal, Name: iapiserver.InfraNodeNameDockerLocal}, ProviderType: iapiserver.InfraProviderTypeDocker, Status: iapiserver.InfraNodeStatusOnline, CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
 }
 func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderRequest) (*providers.ProviderResult, error) {
 	if d.images == nil {
@@ -77,7 +77,7 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	}
 	env := make([]string, 0, len(input.Request.ConfigurationBindings))
 	for _, binding := range input.Request.ConfigurationBindings {
-		if binding.BindingType != "PLAIN_CONFIG" {
+		if binding.BindingType != iapiserver.InfraConfigBindingTypePlainConfig {
 			return nil, fmt.Errorf("binding %s requires a configured secret/model resolver", binding.Name)
 		}
 		env = append(env, normalizedEnvName(binding.Name)+"="+binding.Reference)
@@ -117,7 +117,7 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
 	}
-	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: iapiserver.InfraEndpointDisplayRefPrefix + input.RuntimeID}, nil
 }
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
@@ -184,7 +184,7 @@ func (d *DockerProvider) Logs(ctx context.Context, ref string, limit int) ([]*ia
 				message = line[index+1:]
 			}
 		}
-		items = append(items, &iapiserver.InfraRuntimeLogEntry{OccurredAt: occurred, Level: "INFO", Message: message, Source: "docker"})
+		items = append(items, &iapiserver.InfraRuntimeLogEntry{OccurredAt: occurred, Level: iapiserver.InfraRuntimeLogLevelInfo, Message: message, Source: iapiserver.InfraRuntimeLogSourceDocker})
 	}
 	return items, scanner.Err()
 }

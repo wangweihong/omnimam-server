@@ -84,7 +84,7 @@ func (c *Client) ReadOutputContent(ctx context.Context, outputID string) (*Outpu
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode != http.StatusOK || response.Header.Get("X-Content-Digest") == "" {
+	if response.StatusCode != http.StatusOK || response.Header.Get(iapiserver.InfraHeaderContentDigest) == "" {
 		defer response.Body.Close()
 		return nil, decodeInfraError(response)
 	}
@@ -93,7 +93,7 @@ func (c *Client) ReadOutputContent(ctx context.Context, outputID string) (*Outpu
 		response.Body.Close()
 		return nil, fmt.Errorf("infrastructure output content length is invalid")
 	}
-	digest := response.Header.Get("X-Content-Digest")
+	digest := response.Header.Get(iapiserver.InfraHeaderContentDigest)
 	if !validSHA256(digest) {
 		response.Body.Close()
 		return nil, fmt.Errorf("infrastructure output content digest is invalid")

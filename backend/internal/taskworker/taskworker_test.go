@@ -57,7 +57,7 @@ func appStudioReadyResponse(runtimeID, endpointID string) *infrastructure.Comman
 	runtime := &iapiserver.InfraRuntime{}
 	runtime.ID = runtimeID
 	runtime.Status = iapiserver.TaskWorkerRuntimeStatusRunning
-	runtime.EndpointRef = "infra-endpoint://" + endpointID
+	runtime.EndpointRef = iapiserver.TaskWorkerRefPrefixInfraEndpoint + endpointID
 	endpoint := &iapiserver.InfraRuntimeEndpoint{}
 	endpoint.ID = endpointID
 	endpoint.RuntimeID = runtimeID
@@ -74,14 +74,14 @@ func appStudioStopResponse(runtimeID, status string) *infrastructure.CommandResp
 
 func appStudioBuildResponse(content []byte) (*infrastructure.CommandResponse, *iapiserver.InfraRuntimeOutput) {
 	sum := sha256.Sum256(content)
-	digest := "sha256:" + hex.EncodeToString(sum[:])
+	digest := iapiserver.TaskWorkerContentDigestSHA256Prefix + hex.EncodeToString(sum[:])
 	collectedAt := imachinery.Now()
 	runtime := &iapiserver.InfraRuntime{}
 	runtime.ID = "infra-build-1"
 	runtime.Status = iapiserver.TaskWorkerRuntimeStatusSucceeded
 	output := &iapiserver.InfraRuntimeOutput{
-		ObjectMeta: imachinery.ObjectMeta{ID: "output-1"}, RuntimeID: runtime.ID, OutputKey: "bundle", Status: iapiserver.TaskWorkerRuntimeOutputStatusCollected,
-		MediaType: "application/gzip", SizeBytes: int64(len(content)), ContentDigest: digest, ContentRef: "infra-output://output-1", CollectedAt: &collectedAt,
+		ObjectMeta: imachinery.ObjectMeta{ID: "output-1"}, RuntimeID: runtime.ID, OutputKey: iapiserver.TaskWorkerArtifactOutputKeyBuildBundle, Status: iapiserver.TaskWorkerRuntimeOutputStatusCollected,
+		MediaType: iapiserver.TaskWorkerArtifactMediaTypeBuildBundle, SizeBytes: int64(len(content)), ContentDigest: digest, ContentRef: iapiserver.TaskWorkerRefPrefixInfraOutput + "output-1", CollectedAt: &collectedAt,
 	}
 	return &infrastructure.CommandResponse{Result: &iapiserver.InfraOperationResult{Runtime: runtime, Outputs: []*iapiserver.InfraRuntimeOutput{output}}}, output
 }
@@ -115,7 +115,7 @@ func (l *recordingBuildArtifactLifecycle) StoreContent(_ context.Context, artifa
 	sum := sha256.Sum256(raw)
 	completed := artifact.DeepCopy()
 	completed.ProcessingStatus = iapiserver.ArtifactProcessingReady
-	completed.Metadata = map[string]any{"sha256": hex.EncodeToString(sum[:]), "size_bytes": int64(len(raw)), "mime_type": mimeType}
+	completed.Metadata = map[string]any{iapiserver.TaskWorkerKeySHA256: hex.EncodeToString(sum[:]), iapiserver.TaskWorkerKeySizeBytes: int64(len(raw)), iapiserver.TaskWorkerKeyMIMEType: mimeType}
 	return completed, nil
 }
 
@@ -125,7 +125,7 @@ func appStudioTask(t *testing.T, functionRef string, arguments map[string]any) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	contract, err := registry.Active(functionRef, "appstudio", arguments)
+	contract, err := registry.Active(functionRef, iapiserver.TaskWorkerOwnerDomainAppStudio, arguments)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,22 +137,22 @@ func appStudioTask(t *testing.T, functionRef string, arguments map[string]any) (
 
 func appStudioPreviewEnsureTestArguments(existing any) map[string]any {
 	return map[string]any{
-		"studio_application_id": "application-1", "preview_runtime_id": "preview-1", "existing_infra_runtime_id": existing,
-		"workspace_id": "workspace-1", "workspace_revision": 7, "workspace_revision_source_ref": "studio-workspace-revision://workspace-1/7",
-		"runtime_profile_id": "appstudio.preview.static-web", "runtime_profile_revision": "profile-rev-1", "endpoint_visibility": iapiserver.TaskWorkerEndpointVisibilityUserAccessible,
-		"authorization_ref": "appstudio-preview-grant://grant-1", "expected_resource_version": 3,
-		"resource_requirement": map[string]any{"cpu_cores": 1.5, "memory_mb": 512, "disk_mb": 1024},
+		iapiserver.TaskWorkerKeyStudioApplicationID: "application-1", iapiserver.TaskWorkerKeyPreviewRuntimeID: "preview-1", iapiserver.TaskWorkerKeyExistingInfraRuntimeID: existing,
+		iapiserver.TaskWorkerKeyWorkspaceID: "workspace-1", iapiserver.TaskWorkerKeyWorkspaceRevision: 7, iapiserver.TaskWorkerKeyWorkspaceRevisionSourceRef: iapiserver.TaskWorkerRefPrefixStudioWorkspaceRevision + "workspace-1/7",
+		iapiserver.TaskWorkerKeyRuntimeProfileID: iapiserver.TaskWorkerAppStudioPreviewProfileStaticWeb, iapiserver.TaskWorkerKeyRuntimeProfileRevision: "profile-rev-1", iapiserver.TaskWorkerKeyEndpointVisibility: iapiserver.TaskWorkerEndpointVisibilityUserAccessible,
+		iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 3,
+		iapiserver.TaskWorkerKeyResourceRequirement: map[string]any{"cpu_cores": 1.5, "memory_mb": 512, "disk_mb": 1024},
 	}
 }
 
 func appStudioProductionReconcileTestArguments(existing any) map[string]any {
 	return map[string]any{
-		"studio_application_id": "application-1", "studio_release_id": "release-1", "studio_runtime_instance_id": "runtime-1", "existing_infra_runtime_id": existing,
-		"studio_application_version_id": "version-1", "runtime_config_id": "config-1", "artifact_id": "artifact-1", "artifact_digest": "sha256:artifact",
-		"artifact_source_ref": "artifact://artifact-1@sha256:artifact", "environment": "production", "deployment_reason": iapiserver.TaskWorkerDeploymentReasonDeploy,
-		"runtime_profile_id": "studioapp.runtime.web-backend", "runtime_profile_revision": "profile-rev-2", "health_check_ref": "appstudio-health-check://check-1",
-		"endpoint_visibility": iapiserver.TaskWorkerEndpointVisibilityInternal, "authorization_ref": "appstudio-release-grant://grant-1", "expected_resource_version": 4,
-		"resource_requirement": map[string]any{"cpu_cores": 2, "memory_mb": 1024, "disk_mb": 2048, "gpu_count": 0, "gpu_memory_mb": 0},
+		iapiserver.TaskWorkerKeyStudioApplicationID: "application-1", iapiserver.TaskWorkerKeyStudioReleaseID: "release-1", iapiserver.TaskWorkerKeyStudioRuntimeInstanceID: "runtime-1", iapiserver.TaskWorkerKeyExistingInfraRuntimeID: existing,
+		iapiserver.TaskWorkerKeyStudioApplicationVersionID: "version-1", iapiserver.TaskWorkerKeyRuntimeConfigID: "config-1", iapiserver.TaskWorkerKeyArtifactID: "artifact-1", iapiserver.TaskWorkerKeyArtifactDigest: iapiserver.TaskWorkerContentDigestSHA256Prefix + "artifact",
+		iapiserver.TaskWorkerKeyArtifactSourceRef: iapiserver.TaskWorkerRefPrefixArtifact + "artifact-1@" + iapiserver.TaskWorkerContentDigestSHA256Prefix + "artifact", iapiserver.TaskWorkerKeyEnvironment: iapiserver.TaskWorkerEnvironmentProduction, iapiserver.TaskWorkerKeyDeploymentReason: iapiserver.TaskWorkerDeploymentReasonDeploy,
+		iapiserver.TaskWorkerKeyRuntimeProfileID: iapiserver.TaskWorkerAppStudioProductionProfileWebBackend, iapiserver.TaskWorkerKeyRuntimeProfileRevision: "profile-rev-2", iapiserver.TaskWorkerKeyHealthCheckRef: iapiserver.TaskWorkerRefPrefixAppStudioHealthCheck + "check-1",
+		iapiserver.TaskWorkerKeyEndpointVisibility: iapiserver.TaskWorkerEndpointVisibilityInternal, iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioReleaseGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 4,
+		iapiserver.TaskWorkerKeyResourceRequirement: map[string]any{"cpu_cores": 2, "memory_mb": 1024, "disk_mb": 2048, "gpu_count": 0, "gpu_memory_mb": 0},
 	}
 }
 
@@ -275,9 +275,9 @@ func TestScheduleTimeReadsConductorMilliseconds(t *testing.T) {
 func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
 	payload, err := json.Marshal(representationRequestedEvent{
 		AssetID: "asset-1", AssetVersionID: "version-1", OwnerUserID: "user-1",
-		ProjectID: "default", Namespace: "default", MediaType: "image", ProfileVersion: "default-v1",
-		RequestedRepresentations: []requestedRepresentation{{RepresentationType: "thumbnail", Profile: "list-320"}},
-		IdempotencyKey:           "asset-representations:version-1:default-v1",
+		ProjectID: "default", Namespace: "default", MediaType: iapiserver.AssetMediaTypeImage, ProfileVersion: "default-v1",
+		RequestedRepresentations: []requestedRepresentation{{RepresentationType: iapiserver.TaskWorkerTaskKeyThumbnail, Profile: "list-320"}},
+		IdempotencyKey:           iapiserver.TaskWorkerIdempotencyPrefixRepresentations + "version-1:default-v1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,10 +290,11 @@ func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
 	if request == nil || request.ProjectID != "default" || request.Namespace != "default" || request.CreatedBy != "user-1" {
 		t.Fatalf("request ownership = %#v", request)
 	}
-	if request.IdempotencyScope != "asset-representations" || request.IdempotencyKey != "asset-representations:version-1:default-v1" {
+	if request.IdempotencyScope != iapiserver.TaskWorkerIdempotencyScopeRepresentations || request.IdempotencyKey != iapiserver.TaskWorkerIdempotencyPrefixRepresentations+"version-1:default-v1" {
 		t.Fatalf("request idempotency = %q/%q", request.IdempotencyScope, request.IdempotencyKey)
 	}
-	wantKeys := []string{"inspect", "thumbnail:list-320", "finalize"}
+	thumbnailKey := iapiserver.TaskWorkerTaskKeyThumbnail + iapiserver.TaskWorkerCompositeKeySeparator + "list-320"
+	wantKeys := []string{iapiserver.TaskWorkerTaskKeyRepresentationInspect, thumbnailKey, iapiserver.TaskWorkerTaskKeyRepresentationFinalize}
 	if len(request.Nodes) != len(wantKeys) {
 		t.Fatalf("node count = %d, want %d", len(request.Nodes), len(wantKeys))
 	}
@@ -303,10 +304,10 @@ func TestRepresentationDAGRequestCreatesImageThumbnailPlan(t *testing.T) {
 		}
 	}
 	generate := request.Nodes[1].Task
-	if generate.Arguments["media_type"] != "image" || generate.Arguments["max_attempts"] != 3 || generate.RetryPolicy.MaxAttempts != 3 || generate.RetryPolicy.BackoffType != iapiserver.TaskWorkerRetryBackoffExponential {
+	if generate.Arguments[iapiserver.TaskWorkerKeyMediaType] != iapiserver.AssetMediaTypeImage || generate.Arguments[iapiserver.TaskWorkerKeyMaxAttempts] != 3 || generate.RetryPolicy.MaxAttempts != 3 || generate.RetryPolicy.BackoffType != iapiserver.TaskWorkerRetryBackoffExponential {
 		t.Fatalf("generate task = %#v", generate)
 	}
-	if len(request.Edges) != 2 || request.Edges[0].FromNode != "inspect" || request.Edges[0].ToNode != "thumbnail:list-320" || request.Edges[1].FromNode != "thumbnail:list-320" || request.Edges[1].ToNode != "finalize" {
+	if len(request.Edges) != 2 || request.Edges[0].FromNode != iapiserver.TaskWorkerTaskKeyRepresentationInspect || request.Edges[0].ToNode != thumbnailKey || request.Edges[1].FromNode != thumbnailKey || request.Edges[1].ToNode != iapiserver.TaskWorkerTaskKeyRepresentationFinalize {
 		t.Fatalf("edges = %#v", request.Edges)
 	}
 }
@@ -315,27 +316,6 @@ func TestRepresentationDAGRequestRejectsLegacyEvent(t *testing.T) {
 	_, err := representationDAGRequest([]byte(`{"asset_id":"asset-1","asset_version_id":"version-1","owner_user_id":"user-1","profile_version":"default-v1"}`))
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("representationDAGRequest() error = %v", err)
-	}
-}
-
-func TestRepresentationOrchestratorConsumerGroupIsStable(t *testing.T) {
-	if representationOrchestratorConsumerGroup != "task-center-representation-orchestrator" {
-		t.Fatalf("consumer group = %q", representationOrchestratorConsumerGroup)
-	}
-}
-
-func TestApplicationRunTerminalProjectionConsumerGroupIsStable(t *testing.T) {
-	if applicationRunTerminalProjectionConsumerGroup != "application-platform-terminal-projection" {
-		t.Fatalf("consumer group = %q", applicationRunTerminalProjectionConsumerGroup)
-	}
-}
-
-func TestCanvasApplicationConsumerGroupsAreStable(t *testing.T) {
-	if applicationCatalogConsumerGroup != "workflow-canvas-application-catalog" {
-		t.Fatalf("catalog consumer group = %q", applicationCatalogConsumerGroup)
-	}
-	if applicationArtifactProjectionConsumerGroup != "workflow-canvas-application-artifact-projection" {
-		t.Fatalf("artifact consumer group = %q", applicationArtifactProjectionConsumerGroup)
 	}
 }
 
@@ -566,7 +546,7 @@ func TestReconcilePublishedApplicationCatalogRepairsConvertibleVersions(t *testi
 
 func TestExecuteAppStudioPreviewEnsureCreatesRuntime(t *testing.T) {
 	arguments := appStudioPreviewEnsureTestArguments(nil)
-	registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-preview-1", "endpoint-1")}
 	result, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
@@ -582,17 +562,17 @@ func TestExecuteAppStudioPreviewEnsureCreatesRuntime(t *testing.T) {
 	if request.Create.RequestID != "atomic-1:2" || request.Create.OwnerReference != "preview-1" || request.Create.RuntimeMode != iapiserver.TaskWorkerRuntimeModeService || request.Create.SourceRef != arguments["workspace_revision_source_ref"] {
 		t.Fatalf("create request identity/source = %#v", request.Create)
 	}
-	if request.Create.RuntimeProfileID != "appstudio.preview.static-web" || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || request.Create.AuthorizationRef != "appstudio-preview-grant://grant-1" {
+	if request.Create.RuntimeProfileID != iapiserver.TaskWorkerAppStudioPreviewProfileStaticWeb || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || request.Create.AuthorizationRef != iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant+"grant-1" {
 		t.Fatalf("create request profile/security = %#v", request.Create)
 	}
-	if result["infra_runtime_id"] != "infra-preview-1" || result["runtime_status"] != iapiserver.TaskWorkerRuntimeStatusRunning || result["health_status"] != iapiserver.TaskWorkerRuntimeHealthStatusHealthy || result["endpoint_ref"] != "infra-endpoint://endpoint-1" {
+	if result[iapiserver.TaskWorkerKeyInfraRuntimeID] != "infra-preview-1" || result[iapiserver.TaskWorkerKeyRuntimeStatus] != iapiserver.TaskWorkerRuntimeStatusRunning || result[iapiserver.TaskWorkerKeyHealthStatus] != iapiserver.TaskWorkerRuntimeHealthStatusHealthy || result[iapiserver.TaskWorkerKeyEndpointRef] != iapiserver.TaskWorkerRefPrefixInfraEndpoint+"endpoint-1" {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
 func TestExecuteAppStudioPreviewEnsureStartsExistingRuntime(t *testing.T) {
 	arguments := appStudioPreviewEnsureTestArguments("infra-preview-existing")
-	registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-preview-existing", "endpoint-2")}
 	if _, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic); err != nil {
 		t.Fatal(err)
@@ -604,10 +584,10 @@ func TestExecuteAppStudioPreviewEnsureStartsExistingRuntime(t *testing.T) {
 
 func TestExecuteAppStudioPreviewStopDelete(t *testing.T) {
 	arguments := map[string]any{
-		"studio_application_id": "application-1", "preview_runtime_id": "preview-1", "infra_runtime_id": "infra-preview-1",
-		"action": iapiserver.TaskWorkerActionDelete, "authorization_ref": "appstudio-preview-grant://grant-1", "expected_resource_version": 5,
+		iapiserver.TaskWorkerKeyStudioApplicationID: "application-1", iapiserver.TaskWorkerKeyPreviewRuntimeID: "preview-1", iapiserver.TaskWorkerKeyInfraRuntimeID: "infra-preview-1",
+		iapiserver.TaskWorkerKeyAction: iapiserver.TaskWorkerActionDelete, iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 5,
 	}
-	registry, worker, atomic := appStudioTask(t, "appstudio.preview.stop", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioPreviewStop, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioStopResponse("infra-preview-1", iapiserver.TaskWorkerRuntimeStatusDeleted)}
 	result, err := executeAppStudioPreviewStop(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
@@ -617,14 +597,14 @@ func TestExecuteAppStudioPreviewStopDelete(t *testing.T) {
 	if request.Operation != iapiserver.TaskWorkerInfrastructureOperationStop || request.RuntimeID != "infra-preview-1" || !request.Delete {
 		t.Fatalf("request = %#v, want delete stop", request)
 	}
-	if result["runtime_status"] != iapiserver.TaskWorkerRuntimeStatusDeleted || result["completed_action"] != iapiserver.TaskWorkerActionDelete {
+	if result[iapiserver.TaskWorkerKeyRuntimeStatus] != iapiserver.TaskWorkerRuntimeStatusDeleted || result[iapiserver.TaskWorkerKeyCompletedAction] != iapiserver.TaskWorkerActionDelete {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
 func TestExecuteAppStudioBuildDeliversArtifact(t *testing.T) {
 	arguments := appStudioBuildTestArguments()
-	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioBuildExecute, arguments)
 	content := []byte("build bundle bytes")
 	response, output := appStudioBuildResponse(content)
 	executor := &recordingInfrastructureExecutor{response: response, outputContent: &infrastructure.OutputContent{
@@ -639,16 +619,16 @@ func TestExecuteAppStudioBuildDeliversArtifact(t *testing.T) {
 		t.Fatalf("infrastructure requests = %#v, want one create", executor.requests)
 	}
 	create := executor.requests[0].Create
-	if create.RuntimeMode != iapiserver.TaskWorkerRuntimeModeJob || create.OwnerReference != "build-1" || len(create.OutputDeclarations) != 1 || create.OutputDeclarations[0].OutputKey != "bundle" || create.OutputDeclarations[0].RelativePath != "bundle.tar.gz" {
+	if create.RuntimeMode != iapiserver.TaskWorkerRuntimeModeJob || create.OwnerReference != "build-1" || len(create.OutputDeclarations) != 1 || create.OutputDeclarations[0].OutputKey != iapiserver.TaskWorkerArtifactOutputKeyBuildBundle || create.OutputDeclarations[0].RelativePath != iapiserver.TaskWorkerArtifactRelativePathBuildBundle {
 		t.Fatalf("build create request = %#v", create)
 	}
-	if lifecycle.prepared == nil || lifecycle.prepared.ProducerType != "studio_build" || lifecycle.prepared.ProducerIdempotencyKey != "studio-build:build-1:bundle" || lifecycle.prepared.OutputKey != "bundle" {
+	if lifecycle.prepared == nil || lifecycle.prepared.ProducerType != iapiserver.TaskWorkerArtifactProducerTypeStudioBuild || lifecycle.prepared.ProducerIdempotencyKey != iapiserver.TaskWorkerBuildIdempotencyPrefix+"build-1"+iapiserver.TaskWorkerCompositeKeySeparator+iapiserver.TaskWorkerArtifactOutputKeyBuildBundle || lifecycle.prepared.OutputKey != iapiserver.TaskWorkerArtifactOutputKeyBuildBundle {
 		t.Fatalf("prepared artifact = %#v", lifecycle.prepared)
 	}
 	if !bytes.Equal(lifecycle.storedBytes, content) || len(executor.attachRequests) != 1 || executor.attachRequests[0].ArtifactID != "artifact-build-1" || executor.attachRequests[0].ContentDigest != output.ContentDigest {
 		t.Fatalf("delivery state bytes=%q attach=%#v", lifecycle.storedBytes, executor.attachRequests)
 	}
-	if result["artifact_id"] != "artifact-build-1" || result["artifact_digest"] != output.ContentDigest || result["processing_status"] != iapiserver.ArtifactProcessingReady || result["validation_status"] != iapiserver.TaskWorkerBuildValidationStatusPassed || result["logs_ref"] != "task-attempt-log:runtime-task-1" {
+	if result[iapiserver.TaskWorkerKeyArtifactID] != "artifact-build-1" || result[iapiserver.TaskWorkerKeyArtifactDigest] != output.ContentDigest || result[iapiserver.TaskWorkerKeyProcessingStatus] != iapiserver.ArtifactProcessingReady || result[iapiserver.TaskWorkerKeyValidationStatus] != iapiserver.TaskWorkerBuildValidationStatusPassed || result[iapiserver.TaskWorkerKeyLogsRef] != iapiserver.TaskWorkerTaskAttemptLogRefPrefix+"runtime-task-1" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -661,12 +641,12 @@ func TestExecuteAppStudioBuildRejectsContentMismatch(t *testing.T) {
 	}{
 		{name: "size", mutate: func(output *iapiserver.InfraRuntimeOutput) { output.SizeBytes++ }, contentBody: []byte("build bundle bytes")},
 		{name: "digest", mutate: func(output *iapiserver.InfraRuntimeOutput) {
-			output.ContentDigest = "sha256:" + strings.Repeat("0", 64)
+			output.ContentDigest = iapiserver.TaskWorkerContentDigestSHA256Prefix + strings.Repeat("0", 64)
 		}, contentBody: []byte("build bundle bytes")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			arguments := appStudioBuildTestArguments()
-			registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+			registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioBuildExecute, arguments)
 			response, output := appStudioBuildResponse(test.contentBody)
 			test.mutate(output)
 			executor := &recordingInfrastructureExecutor{response: response, outputContent: &infrastructure.OutputContent{
@@ -685,11 +665,11 @@ func TestExecuteAppStudioBuildRejectsContentMismatch(t *testing.T) {
 
 func TestExecuteAppStudioBuildReusesReadyArtifact(t *testing.T) {
 	arguments := appStudioBuildTestArguments()
-	registry, worker, atomic := appStudioTask(t, "appstudio.build.execute", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioBuildExecute, arguments)
 	content := []byte("build bundle bytes")
 	response, output := appStudioBuildResponse(content)
 	existing := &iapiserver.Artifact{ProcessingStatus: iapiserver.ArtifactProcessingReady, Metadata: map[string]any{
-		"sha256": strings.TrimPrefix(output.ContentDigest, "sha256:"), "size_bytes": output.SizeBytes, "mime_type": output.MediaType,
+		iapiserver.TaskWorkerKeySHA256: strings.TrimPrefix(output.ContentDigest, iapiserver.TaskWorkerContentDigestSHA256Prefix), iapiserver.TaskWorkerKeySizeBytes: output.SizeBytes, iapiserver.TaskWorkerKeyMIMEType: output.MediaType,
 	}}
 	existing.ID = "artifact-existing"
 	executor := &recordingInfrastructureExecutor{response: response}
@@ -701,35 +681,35 @@ func TestExecuteAppStudioBuildReusesReadyArtifact(t *testing.T) {
 	if executor.readCalls != 0 || lifecycle.storeCalls != 0 || len(executor.attachRequests) != 1 {
 		t.Fatalf("read=%d store=%d attach=%d", executor.readCalls, lifecycle.storeCalls, len(executor.attachRequests))
 	}
-	if result["artifact_id"] != "artifact-existing" {
+	if result[iapiserver.TaskWorkerKeyArtifactID] != "artifact-existing" {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
 func appStudioBuildTestArguments() map[string]any {
 	return map[string]any{
-		"studio_application_id": "application-1", "studio_build_id": "build-1", "source_snapshot_id": "snapshot-1", "source_snapshot_digest": "sha256:snapshot",
-		"source_snapshot_source_ref": "studio-snapshot://snapshot-1", "runtime_profile_id": "appstudio.build.static-web", "runtime_profile_revision": "profile-rev-1",
-		"build_config_ref": "appstudio-build-config://config-1", "dependency_lock_digest": "sha256:lock", "authorization_ref": "appstudio-build-grant://grant-1", "expected_resource_version": 1,
+		iapiserver.TaskWorkerKeyStudioApplicationID: "application-1", iapiserver.TaskWorkerKeyStudioBuildID: "build-1", iapiserver.TaskWorkerKeySourceSnapshotID: "snapshot-1", iapiserver.TaskWorkerKeySourceSnapshotDigest: iapiserver.TaskWorkerContentDigestSHA256Prefix + "snapshot",
+		iapiserver.TaskWorkerKeySourceSnapshotSourceRef: iapiserver.TaskWorkerRefPrefixStudioSnapshot + "snapshot-1", iapiserver.TaskWorkerKeyRuntimeProfileID: iapiserver.TaskWorkerAppStudioBuildProfileStaticWeb, iapiserver.TaskWorkerKeyRuntimeProfileRevision: "profile-rev-1",
+		iapiserver.TaskWorkerKeyBuildConfigRef: iapiserver.TaskWorkerRefPrefixAppStudioBuildConfig + "config-1", iapiserver.TaskWorkerKeyDependencyLockDigest: iapiserver.TaskWorkerContentDigestSHA256Prefix + "lock", iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioBuildGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 1,
 	}
 }
 
 func TestExecuteAppStudioProductionReconcileCreatesArtifactRuntime(t *testing.T) {
 	arguments := appStudioProductionReconcileTestArguments(nil)
-	registry, worker, atomic := appStudioTask(t, "appstudio.production.reconcile", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioProductionReconcile, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-production-1", "endpoint-production-1")}
 	result, err := executeAppStudioProductionReconcile(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := executor.requests[0]
-	if request.Operation != iapiserver.TaskWorkerInfrastructureOperationCreate || request.Create == nil || request.Create.SourceRef != "artifact://artifact-1@sha256:artifact" || request.Create.OwnerReference != "runtime-1" {
+	if request.Operation != iapiserver.TaskWorkerInfrastructureOperationCreate || request.Create == nil || request.Create.SourceRef != iapiserver.TaskWorkerRefPrefixArtifact+"artifact-1@"+iapiserver.TaskWorkerContentDigestSHA256Prefix+"artifact" || request.Create.OwnerReference != "runtime-1" {
 		t.Fatalf("request = %#v, want artifact create", request)
 	}
-	if request.Create.RuntimeProfileID != "studioapp.runtime.web-backend" || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityInternal {
+	if request.Create.RuntimeProfileID != iapiserver.TaskWorkerAppStudioProductionProfileWebBackend || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityInternal {
 		t.Fatalf("request profile/visibility = %#v", request.Create)
 	}
-	if result["infra_runtime_id"] != "infra-production-1" || result["endpoint_ref"] != "infra-endpoint://endpoint-production-1" {
+	if result[iapiserver.TaskWorkerKeyInfraRuntimeID] != "infra-production-1" || result[iapiserver.TaskWorkerKeyEndpointRef] != iapiserver.TaskWorkerRefPrefixInfraEndpoint+"endpoint-production-1" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -737,9 +717,9 @@ func TestExecuteAppStudioProductionReconcileCreatesArtifactRuntime(t *testing.T)
 func TestExecuteAppStudioProductionStopUsesStopWithoutDelete(t *testing.T) {
 	arguments := map[string]any{
 		"studio_application_id": "application-1", "studio_release_id": "release-1", "studio_runtime_instance_id": "runtime-1", "infra_runtime_id": "infra-production-1",
-		"authorization_ref": "appstudio-release-grant://grant-1", "expected_resource_version": 6,
+		iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioReleaseGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 6,
 	}
-	registry, worker, atomic := appStudioTask(t, "appstudio.production.stop", arguments)
+	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioProductionStop, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioStopResponse("infra-production-1", iapiserver.TaskWorkerRuntimeStatusStopped)}
 	result, err := executeAppStudioProductionStop(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
@@ -749,7 +729,7 @@ func TestExecuteAppStudioProductionStopUsesStopWithoutDelete(t *testing.T) {
 	if request.Operation != iapiserver.TaskWorkerInfrastructureOperationStop || request.RuntimeID != "infra-production-1" || request.Delete {
 		t.Fatalf("request = %#v, want non-delete stop", request)
 	}
-	if result["runtime_status"] != iapiserver.TaskWorkerRuntimeStatusStopped || result["completed_action"] != iapiserver.TaskWorkerActionStop {
+	if result[iapiserver.TaskWorkerKeyRuntimeStatus] != iapiserver.TaskWorkerRuntimeStatusStopped || result[iapiserver.TaskWorkerKeyCompletedAction] != iapiserver.TaskWorkerActionStop {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -759,12 +739,14 @@ func TestExecuteAppStudioRejectsIncorrectContractPinBeforeInfrastructure(t *test
 		name   string
 		mutate func(*iapiserver.AtomicTask)
 	}{
-		{name: "digest", mutate: func(task *iapiserver.AtomicTask) { task.FunctionContractDigest = "sha256:wrong" }},
+		{name: "digest", mutate: func(task *iapiserver.AtomicTask) {
+			task.FunctionContractDigest = iapiserver.TaskWorkerContentDigestSHA256Prefix + "wrong"
+		}},
 		{name: "version", mutate: func(task *iapiserver.AtomicTask) { task.FunctionContractVersion = "9.9" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			arguments := appStudioPreviewEnsureTestArguments(nil)
-			registry, worker, atomic := appStudioTask(t, "appstudio.preview.ensure", arguments)
+			registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure, arguments)
 			test.mutate(atomic)
 			executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("unused", "unused")}
 			if _, err := executeAppStudioPreviewEnsure(t.Context(), executor, registry, worker, atomic); err == nil || !strings.Contains(err.Error(), "contract") {

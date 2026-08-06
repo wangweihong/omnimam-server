@@ -48,6 +48,77 @@ const (
 	InfraRuntimeOutputStatusCollected = "COLLECTED"
 )
 
+const (
+	// InfraOperationCreate/Start/Stop/Cancel/Reconcile 是 Infrastructure 内部命令操作。
+	InfraOperationCreate    = "create"
+	InfraOperationStart     = "start"
+	InfraOperationStop      = "stop"
+	InfraOperationCancel    = "cancel"
+	InfraOperationReconcile = "reconcile"
+
+	// InfraEndpointVisibilityInternal 表示仅允许受控内部调用访问 Endpoint。
+	InfraEndpointVisibilityInternal = "INTERNAL"
+	// InfraEndpointVisibilityUserAccessible 表示 Endpoint 可返回给用户侧流程。
+	InfraEndpointVisibilityUserAccessible = "USER_ACCESSIBLE"
+
+	// Infrastructure 支持的受控挂载类型。
+	InfraMountKindAgentWorkspace          = "AGENT_WORKSPACE"
+	InfraMountKindStudioWorkspaceRevision = "STUDIO_WORKSPACE_REVISION"
+	InfraMountKindStudioSnapshot          = "STUDIO_SNAPSHOT"
+	InfraMountKindArtifact                = "ARTIFACT"
+	InfraMountKindTemporary               = "TEMPORARY"
+
+	// Infrastructure 支持的配置绑定类型。
+	InfraConfigBindingTypePlainConfig    = "PLAIN_CONFIG"
+	InfraConfigBindingTypeModelAccess    = "MODEL_ACCESS"
+	InfraConfigBindingTypeSecretRef      = "SECRET_REF"
+	InfraConfigBindingTypeIntegrationRef = "INTEGRATION_REF"
+
+	// InfraResolveEndpointPurposeAgentRuntimeAdapter 是 Agent Runtime 解析 Endpoint 的用途。
+	InfraResolveEndpointPurposeAgentRuntimeAdapter = "AGENT_RUNTIME_ADAPTER"
+
+	// Infrastructure 受控引用前缀。
+	InfraRefPrefixAgentWorkspace          = "agent-workspace://"
+	InfraRefPrefixStudioWorkspaceRevision = "studio-workspace-revision://"
+	InfraRefPrefixStudioSnapshot          = "studio-snapshot://"
+	InfraRefPrefixArtifact                = "artifact://"
+	InfraRefPrefixTemporary               = "temporary://"
+	InfraRefPrefixEndpoint                = "infra-endpoint://"
+	InfraRefPrefixOutput                  = "infra-output://"
+	InfraEndpointDisplayRefPrefix         = "infra-runtime://"
+
+	// InfraContentDigestSHA256Prefix 是内容指纹的固定编码前缀。
+	InfraContentDigestSHA256Prefix = "sha256:"
+
+	// Infrastructure Provider 和默认 Profile 使用的固定标识。
+	InfraProviderTypeDocker                     = "docker"
+	InfraNodeIDDockerLocal                      = "docker-local"
+	InfraNodeNameDockerLocal                    = "Docker Local"
+	InfraRuntimeProfileRevisionInitial          = "1.0"
+	InfraRuntimeProfileIDAgentHermes            = "agent.hermes"
+	InfraRuntimeProfileIDAgentCoding            = "agent.coding"
+	InfraRuntimeProfileIDAppStudioPreviewWeb    = "appstudio.preview.static-web"
+	InfraRuntimeProfileIDAppStudioPreviewAPI    = "appstudio.preview.web-backend"
+	InfraRuntimeProfileIDAppStudioBuildWeb      = "appstudio.build.static-web"
+	InfraRuntimeProfileIDAppStudioBuildAPI      = "appstudio.build.web-backend"
+	InfraRuntimeProfileIDAppStudioProductionWeb = "appstudio.production.static-web"
+	InfraRuntimeProfileIDAppStudioProductionAPI = "appstudio.production.web-backend"
+	InfraRuntimeCapabilityCPU                   = "cpu"
+	InfraRuntimeCapabilityNetwork               = "network"
+	InfraRuntimeCapabilityPersistentWorkspace   = "persistent_workspace"
+	InfraRuntimeCapabilityWorkspaceTool         = "workspace_tool"
+	InfraRuntimeCapabilityEndpoint              = "endpoint"
+	InfraRuntimeCapabilityArtifactOutput        = "artifact_output"
+
+	// Infrastructure endpoint 解析和内容响应使用的协议标识。
+	InfraProtocolHTTP                 = "http"
+	InfraProtocolHTTPS                = "https"
+	InfraHeaderContentDigest          = "X-Content-Digest"
+	InfraRuntimeLogLevelInfo          = "INFO"
+	InfraRuntimeLogSourceDocker       = "docker"
+	InfraRuntimeEventReasonReconciled = "infra_runtime_reconciled"
+)
+
 // +k8s:deepcopy-gen=true
 type InfraRuntimeMountInput struct {
 	SourceRef        string `json:"source_ref" binding:"required,max=2048"`
@@ -145,7 +216,7 @@ func (r *InfraCreateRuntimeRequest) Validate() error {
 	}
 	outputKeys := make(map[string]struct{}, len(r.OutputDeclarations))
 	for _, mount := range r.Mounts {
-		if !strings.HasPrefix(mount.SourceRef, "agent-workspace://") && !strings.HasPrefix(mount.SourceRef, "studio-workspace-revision://") && !strings.HasPrefix(mount.SourceRef, "studio-snapshot://") && !strings.HasPrefix(mount.SourceRef, "artifact://") && !strings.HasPrefix(mount.SourceRef, "temporary://") {
+		if !strings.HasPrefix(mount.SourceRef, InfraRefPrefixAgentWorkspace) && !strings.HasPrefix(mount.SourceRef, InfraRefPrefixStudioWorkspaceRevision) && !strings.HasPrefix(mount.SourceRef, InfraRefPrefixStudioSnapshot) && !strings.HasPrefix(mount.SourceRef, InfraRefPrefixArtifact) && !strings.HasPrefix(mount.SourceRef, InfraRefPrefixTemporary) {
 			return fmt.Errorf("unsupported mount source reference")
 		}
 		if !strings.HasPrefix(mount.TargetPath, "/") || strings.Contains(mount.TargetPath, "..") {
@@ -249,10 +320,10 @@ func normalizeInfraPaging(params *imachinery.PagingParams) error {
 }
 
 func validInfraContentDigest(value string) bool {
-	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+	if len(value) != len(InfraContentDigestSHA256Prefix)+64 || !strings.HasPrefix(value, InfraContentDigestSHA256Prefix) {
 		return false
 	}
-	for _, char := range value[len("sha256:"):] {
+	for _, char := range value[len(InfraContentDigestSHA256Prefix):] {
 		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
 			return false
 		}

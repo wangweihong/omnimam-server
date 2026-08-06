@@ -41,13 +41,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/contracts"
 )
 
-const (
-	representationOrchestratorConsumerGroup       = "task-center-representation-orchestrator"
-	applicationRunTerminalProjectionConsumerGroup = "application-platform-terminal-projection"
-	applicationCatalogConsumerGroup               = "workflow-canvas-application-catalog"
-	applicationArtifactProjectionConsumerGroup    = "workflow-canvas-application-artifact-projection"
-)
-
 type representationTaskCreator interface {
 	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
 }
@@ -134,8 +127,8 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "load task center function registry")
 	}
 	tasks := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, runtime, reconcileRegistry, functionRegistry, nil,
-		appplatformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
-		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
+		appplatformsvc.FunctionAssetThumbnailGenerate, iapiserver.TaskWorkerFunctionApplicationRun, iapiserver.TaskWorkerFunctionScheduleAcquire,
+		iapiserver.TaskWorkerFunctionComfyUISubmit, iapiserver.TaskWorkerFunctionComfyUIPoll, iapiserver.TaskWorkerFunctionComfyUICollectPreview,
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
 	agentProjector, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents()})
@@ -194,37 +187,37 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "register representation backfill handler")
 	}
 	comfyTestExecutor := comfyuiadapter.NewTestExecutor(storeIns)
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "agent.runtime.ensure", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAgentRuntimeEnsure, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return agentexecutor.ExecuteRuntimeEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "agent.runtime.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAgentRuntimeStop, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return agentexecutor.ExecuteRuntimeStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.preview.ensure", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecutePreviewEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.preview.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioPreviewStop, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecutePreviewStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.build.execute", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioBuildExecute, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecuteBuild(ctx, infrastructureClient, artifactLifecycle, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.production.reconcile", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioProductionReconcile, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecuteProductionReconcile(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "appstudio.production.stop", 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioProductionStop, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecuteProductionStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
 		return err
@@ -232,16 +225,16 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := comfyuiexecutor.RegisterHandlers(runtime, comfyTestExecutor); err != nil {
 		return errors.Wrap(err, "register comfyui handlers")
 	}
-	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), "application-platform.run", 16, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionApplicationRun, 16, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		if atomicTask.CanvasRunID != "" {
 			run, ensureErr := applicationService.EnsureCanvasApplicationRun(ctx, &appsvc.CanvasApplicationRunRequest{
 				AtomicTaskID:         atomicTask.ID,
 				CanvasRunID:          atomicTask.CanvasRunID,
 				CanvasNodeRunID:      atomicTask.CanvasNodeRunID,
 				ExecutionKey:         atomicTask.ChildKey,
-				ApplicationVersionID: fmt.Sprint(task.Arguments["application_version_id"]),
+				ApplicationVersionID: fmt.Sprint(task.Arguments[iapiserver.TaskWorkerKeyApplicationVersionID]),
 				OwnerUserID:          atomicTask.CreatedBy,
-				Inputs:               workerMap(task.Arguments["resolved_inputs"]),
+				Inputs:               workerMap(task.Arguments[iapiserver.TaskWorkerKeyResolvedInputs]),
 				Arguments:            task.Arguments,
 			})
 			if ensureErr != nil {
@@ -256,10 +249,10 @@ func RunTaskWorker(cfg *config.Config) error {
 		}
 		output, err := applicationExecutor.ExecuteWithCheckpoint(ctx, atomicTask, checkpoint)
 		if err == nil {
-			if inProgress, _ := output["in_progress"].(bool); inProgress {
-				task.Log(ctx, workflowruntime.WorkerLog("application.execution.waiting", workflowruntime.TaskLogLevelInfo, "External application job is waiting for the next callback."))
+			if inProgress, _ := output[iapiserver.TaskWorkerKeyInProgress].(bool); inProgress {
+				task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogApplicationExecutionWaiting, workflowruntime.TaskLogLevelInfo, "External application job is waiting for the next callback."))
 			} else {
-				task.Log(ctx, workflowruntime.WorkerLog("application.execution.completed", workflowruntime.TaskLogLevelInfo, "Application provider execution returned a result."))
+				task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogApplicationExecutionCompleted, workflowruntime.TaskLogLevelInfo, "Application provider execution returned a result."))
 			}
 		}
 		return output, err
@@ -270,10 +263,10 @@ func RunTaskWorker(cfg *config.Config) error {
 		output, err := thumbnailExecutor.Execute(ctx, atomicTask)
 		if err == nil {
 			message := "Thumbnail processing completed."
-			if output["thumbnail_status"] == iapiserver.ThumbnailStatusUnsupported {
+			if output[iapiserver.TaskWorkerKeyThumbnailStatus] == iapiserver.ThumbnailStatusUnsupported {
 				message = "Thumbnail generation is unsupported for this asset."
 			}
-			task.Log(ctx, workflowruntime.WorkerLog("asset.thumbnail.completed", workflowruntime.TaskLogLevelInfo, message))
+			task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogAssetThumbnailCompleted, workflowruntime.TaskLogLevelInfo, message))
 		}
 		return output, err
 	}); err != nil {
@@ -292,44 +285,44 @@ func RunTaskWorker(cfg *config.Config) error {
 		return err
 	}
 	if err := registerWorkerHandler(runtime, taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
-		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments["scheduled_at"]))
+		scheduleID, _ := task.Arguments[iapiserver.TaskWorkerKeyTaskScheduleID].(string)
+		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt]))
 		if err == nil {
 			message := "Reconcile cycle completed."
-			if summary, ok := output["reconcile_summary"].(iapiserver.ReconcileSummary); ok {
+			if summary, ok := output[iapiserver.TaskWorkerKeyReconcileSummary].(iapiserver.ReconcileSummary); ok {
 				message = fmt.Sprintf("Reconcile cycle completed with %d scanned, %d findings, %d actions, and %d deferred.", summary.Scanned, summary.Findings, summary.ActionsCreated, summary.Deferred)
 			}
-			task.Log(ctx, workflowruntime.WorkerLog("schedule.reconcile.completed", workflowruntime.TaskLogLevelInfo, message))
+			task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogScheduleReconcileCompleted, workflowruntime.TaskLogLevelInfo, message))
 		}
 		return output, err
 	}); err != nil {
 		return err
 	}
 	if err := registerWorkerHandler(runtime, taskcentersvc.ManualScheduleControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		executionID, _ := task.Arguments["schedule_execution_id"].(string)
+		executionID, _ := task.Arguments[iapiserver.TaskWorkerKeyScheduleExecutionID].(string)
 		return tasks.RunManualScheduleExecution(ctx, executionID, task.WorkflowID)
 	}); err != nil {
 		return err
 	}
-	if err := registerWorkerHandler(runtime, "task.schedule.acquire", 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
-		task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.started", workflowruntime.TaskLogLevelInfo, "Evaluating scheduled execution ownership."))
-		scheduleID, _ := task.Arguments["task_schedule_id"].(string)
+	if err := registerWorkerHandler(runtime, iapiserver.TaskWorkerFunctionScheduleAcquire, 1, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
+		task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogScheduleAcquireStarted, workflowruntime.TaskLogLevelInfo, "Evaluating scheduled execution ownership."))
+		scheduleID, _ := task.Arguments[iapiserver.TaskWorkerKeyTaskScheduleID].(string)
 		schedule, err := storeIns.TaskCenters().GetTaskSchedule(ctx, scheduleID)
 		if err != nil {
 			return nil, err
 		}
-		scheduledAt := scheduleTime(task.Arguments["scheduled_at"])
+		scheduledAt := scheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt])
 		if taskcentersvc.ScheduleTriggerMisfired(scheduledAt, time.Now()) {
 			existing, getErr := storeIns.TaskCenters().GetScheduleExecutionAt(ctx, schedule.ID, scheduledAt)
 			if getErr != nil {
 				return nil, getErr
 			}
 			if existing == nil {
-				task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.misfire", workflowruntime.TaskLogLevelWarn, "Delayed schedule trigger was skipped by misfire policy."))
+				task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogScheduleAcquireMisfire, workflowruntime.TaskLogLevelWarn, "Delayed schedule trigger was skipped by misfire policy."))
 				return map[string]any{
-					"status":       iapiserver.TaskSchedulePolicySkip,
-					"scheduled_at": scheduledAt.UTC().Format(time.RFC3339Nano),
-					"reason":       "misfire policy skipped delayed schedule trigger",
+					iapiserver.TaskWorkerKeyStatus:      iapiserver.TaskSchedulePolicySkip,
+					iapiserver.TaskWorkerKeyScheduledAt: scheduledAt.UTC().Format(time.RFC3339Nano),
+					iapiserver.TaskWorkerKeyReason:      iapiserver.TaskWorkerScheduleReasonMisfire,
 				}, nil
 			}
 		}
@@ -341,8 +334,8 @@ func RunTaskWorker(cfg *config.Config) error {
 			return nil, err
 		}
 		if !acquired {
-			task.Log(ctx, workflowruntime.WorkerLog("schedule.acquire.overlap", workflowruntime.TaskLogLevelWarn, "Schedule trigger reused an existing execution record."))
-			return map[string]any{"schedule_execution_id": record.ID, "status": record.Status}, nil
+			task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogScheduleAcquireOverlap, workflowruntime.TaskLogLevelWarn, "Schedule trigger reused an existing execution record."))
+			return map[string]any{iapiserver.TaskWorkerKeyScheduleExecutionID: record.ID, iapiserver.TaskWorkerKeyStatus: record.Status}, nil
 		}
 		targetID, err := createScheduleTarget(ctx, tasks, schedule, record.TriggeredAt)
 		if err != nil {
@@ -356,9 +349,9 @@ func RunTaskWorker(cfg *config.Config) error {
 		record.Status = iapiserver.ScheduleExecutionStatusRunning
 		_, err = storeIns.TaskCenters().UpdateScheduleExecution(ctx, record)
 		if err == nil {
-			task.Log(ctx, workflowruntime.WorkerLog("schedule.target.created", workflowruntime.TaskLogLevelInfo, "Scheduled target was created and started."))
+			task.Log(ctx, workflowruntime.WorkerLog(iapiserver.TaskWorkerLogScheduleTargetCreated, workflowruntime.TaskLogLevelInfo, "Scheduled target was created and started."))
 		}
-		return map[string]any{"schedule_execution_id": record.ID, "target_id": targetID, "status": record.Status}, err
+		return map[string]any{iapiserver.TaskWorkerKeyScheduleExecutionID: record.ID, iapiserver.TaskWorkerKeyTargetID: targetID, iapiserver.TaskWorkerKeyStatus: record.Status}, err
 	}); err != nil {
 		return err
 	}
@@ -375,7 +368,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	); err != nil {
 		return err
 	}
-	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, "task-center-thumbnail")
+	messages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetUploaded, iapiserver.TaskWorkerConsumerGroupThumbnail)
 	if err != nil {
 		return err
 	}
@@ -400,7 +393,7 @@ func RunTaskWorker(cfg *config.Config) error {
 			}
 			thumbnail, err := storeIns.AssetThumbnails().GetByAsset(ctx, event.AssetID)
 			if err == nil {
-				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: "thumbnail", Name: "Generate asset thumbnail", FunctionRef: appplatformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "thumbnail_id": thumbnail.ID}, RequiredCapabilities: appplatformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: "asset-thumbnail", IdempotencyKey: "thumbnail:" + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
+				_, err = tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{Key: iapiserver.TaskWorkerTaskKeyThumbnail, Name: "Generate asset thumbnail", FunctionRef: appplatformsvc.FunctionAssetThumbnailGenerate, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyThumbnailID: thumbnail.ID}, RequiredCapabilities: appplatformsvc.CapabilityAssetThumbnail, ProjectID: event.ProjectID, Namespace: event.Namespace, IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeThumbnail, IdempotencyKey: iapiserver.TaskWorkerIdempotencyPrefixThumbnail + event.AssetID + ":" + event.ProfileVersion, SystemName: iapiserver.SystemNameSpec{Key: taskname.AssetThumbnail}})
 			}
 			if err != nil {
 				msg.Nack()
@@ -605,7 +598,7 @@ func startCanvasApplicationConsumers(
 	catalogMessages, err := postgresql.SubscribeOutbox(
 		ctx,
 		postgresql.OutboxTopicApplicationVersionPublished,
-		applicationCatalogConsumerGroup,
+		iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
 	)
 	if err != nil {
 		return err
@@ -614,7 +607,7 @@ func startCanvasApplicationConsumers(
 	artifactMessages, err := postgresql.SubscribeOutbox(
 		ctx,
 		postgresql.OutboxTopicApplicationRunArtifactRefChanged,
-		applicationArtifactProjectionConsumerGroup,
+		iapiserver.TaskWorkerConsumerGroupApplicationArtifactProjection,
 	)
 	if err != nil {
 		return err
@@ -623,7 +616,7 @@ func startCanvasApplicationConsumers(
 		ctx,
 		artifactMessages,
 		artifacts,
-		applicationArtifactProjectionConsumerGroup,
+		iapiserver.TaskWorkerConsumerGroupApplicationArtifactProjection,
 	)
 	return nil
 }
@@ -639,7 +632,7 @@ func consumeApplicationCatalog(
 		if stderrors.As(err, &diagnostic) {
 			log.Warnf(
 				"application version omitted from canvas catalog: consumer_group=%s message_id=%s error=%v",
-				applicationCatalogConsumerGroup,
+				iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
 				msg.UUID,
 				err,
 			)
@@ -649,7 +642,7 @@ func consumeApplicationCatalog(
 		if err != nil {
 			log.Errorf(
 				"application catalog projection failed: consumer_group=%s message_id=%s error=%v",
-				applicationCatalogConsumerGroup,
+				iapiserver.TaskWorkerConsumerGroupApplicationCatalog,
 				msg.UUID,
 				err,
 			)
@@ -690,7 +683,7 @@ func startApplicationRunTerminalProjectionConsumer(
 	messages, err := postgresql.SubscribeOutbox(
 		ctx,
 		postgresql.OutboxTopicAtomicTaskStatusChanged,
-		applicationRunTerminalProjectionConsumerGroup,
+		iapiserver.TaskWorkerConsumerGroupApplicationRunTerminal,
 	)
 	if err != nil {
 		return err
@@ -709,7 +702,7 @@ func consumeApplicationRunTerminalProjections(
 		if err := handleApplicationRunTerminalProjection(ctx, tasks, projector, msg.Payload); err != nil {
 			log.Errorf(
 				"application run terminal projection failed: consumer_group=%s message_id=%s error=%v",
-				applicationRunTerminalProjectionConsumerGroup,
+				iapiserver.TaskWorkerConsumerGroupApplicationRunTerminal,
 				msg.UUID,
 				err,
 			)
@@ -764,7 +757,7 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 		postgresql.OutboxTopicArtifactProcessingChanged,
 		postgresql.OutboxTopicArtifactRegistrationChanged,
 	} {
-		messages, err := postgresql.SubscribeOutbox(ctx, topic, "application-platform-artifact-projection")
+		messages, err := postgresql.SubscribeOutbox(ctx, topic, iapiserver.TaskWorkerConsumerGroupArtifactProjection)
 		if err != nil {
 			return err
 		}
@@ -779,7 +772,7 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 			}
 		}(topic, messages)
 	}
-	artifactMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicArtifactContentCompleted, "task-center-artifact-process")
+	artifactMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicArtifactContentCompleted, iapiserver.TaskWorkerConsumerGroupArtifactProcess)
 	if err != nil {
 		return err
 	}
@@ -795,11 +788,11 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 				continue
 			}
 			_, err := tasks.CreateAtomicTask(ctx, &iapiserver.AtomicTaskCreateRequest{
-				Key: "artifact-process", Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess, SystemName: iapiserver.SystemNameSpec{Key: taskname.ArtifactProcess},
-				Arguments:            map[string]any{"artifact_id": event.ArtifactID, "owner_user_id": event.OwnerUserID},
+				Key: iapiserver.TaskWorkerTaskKeyArtifactProcess, Name: "Process uploaded Artifact", FunctionRef: assetlibrarysvc.FunctionArtifactProcess, SystemName: iapiserver.SystemNameSpec{Key: taskname.ArtifactProcess},
+				Arguments:            map[string]any{iapiserver.TaskWorkerKeyArtifactID: event.ArtifactID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID},
 				RequiredCapabilities: assetlibrarysvc.FunctionArtifactProcess,
 				ProjectID:            iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: event.OwnerUserID,
-				IdempotencyScope: "artifact-process", IdempotencyKey: "artifact-process:" + event.ArtifactID + ":" + event.ProcessingProfileVersion,
+				IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeArtifactProcess, IdempotencyKey: iapiserver.TaskWorkerIdempotencyScopeArtifactProcess + ":" + event.ArtifactID + ":" + event.ProcessingProfileVersion,
 			})
 			if err != nil {
 				msg.Nack()
@@ -809,14 +802,14 @@ func startAssetLibraryTaskConsumers(ctx context.Context, tasks taskcentersvc.Tas
 		}
 	}()
 
-	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, representationOrchestratorConsumerGroup)
+	representationMessages, err := postgresql.SubscribeOutbox(ctx, postgresql.OutboxTopicAssetVersionRepresentationRequested, iapiserver.TaskWorkerConsumerGroupRepresentationOrchestrator)
 	if err != nil {
 		return err
 	}
 	go func() {
 		for msg := range representationMessages {
 			if err := handleRepresentationRequested(ctx, tasks, msg.Payload); err != nil {
-				log.Errorf("asset representation orchestration failed: consumer_group=%s message_id=%s error=%v", representationOrchestratorConsumerGroup, msg.UUID, err)
+				log.Errorf("asset representation orchestration failed: consumer_group=%s message_id=%s error=%v", iapiserver.TaskWorkerConsumerGroupRepresentationOrchestrator, msg.UUID, err)
 				msg.Nack()
 			} else {
 				msg.Ack()
@@ -844,28 +837,28 @@ func representationDAGRequest(payload []byte) (*iapiserver.DAGTaskGroupCreateReq
 		return nil, errors.Errorf("representation requested event is incomplete")
 	}
 	nodes := []iapiserver.DAGNode{
-		{Key: "inspect", Task: iapiserver.AtomicTaskTemplate{Key: "inspect", Name: "Inspect AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationInspect}, FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "profile_version": event.ProfileVersion}}},
+		{Key: iapiserver.TaskWorkerTaskKeyRepresentationInspect, Task: iapiserver.AtomicTaskTemplate{Key: iapiserver.TaskWorkerTaskKeyRepresentationInspect, Name: "Inspect AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationInspect}, FunctionRef: assetlibrarysvc.FunctionRepresentationInspect, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationInspect, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID, iapiserver.TaskWorkerKeyMediaType: event.MediaType, iapiserver.TaskWorkerKeyProfileVersion: event.ProfileVersion}}},
 	}
 	for _, requested := range event.RequestedRepresentations {
 		if requested.RepresentationType == "" || requested.Profile == "" {
 			return nil, errors.Errorf("representation requested event contains an invalid representation")
 		}
-		childKey := requested.RepresentationType + ":" + requested.Profile
-		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{"representation_type": requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{"asset_id": event.AssetID, "asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID, "media_type": event.MediaType, "representation_type": requested.RepresentationType, "profile": requested.Profile, "profile_version": event.ProfileVersion, "required": requested.Required, "max_attempts": 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: iapiserver.TaskWorkerRetryBackoffExponential, MaxRetryDelaySeconds: 30}}})
+		childKey := requested.RepresentationType + iapiserver.TaskWorkerCompositeKeySeparator + requested.Profile
+		nodes = append(nodes, iapiserver.DAGNode{Key: childKey, Task: iapiserver.AtomicTaskTemplate{Key: childKey, Name: "Generate " + requested.RepresentationType, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationGenerate, Params: map[string]string{iapiserver.TaskWorkerKeyRepresentationType: requested.RepresentationType}}, FunctionRef: assetlibrarysvc.FunctionRepresentationGenerate, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationGenerate, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetID: event.AssetID, iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID, iapiserver.TaskWorkerKeyMediaType: event.MediaType, iapiserver.TaskWorkerKeyRepresentationType: requested.RepresentationType, iapiserver.TaskWorkerKeyProfile: requested.Profile, iapiserver.TaskWorkerKeyProfileVersion: event.ProfileVersion, iapiserver.TaskWorkerKeyRequired: requested.Required, iapiserver.TaskWorkerKeyMaxAttempts: 3}, RetryPolicy: iapiserver.RetryPolicy{MaxAttempts: 3, RetryDelaySeconds: 5, BackoffType: iapiserver.TaskWorkerRetryBackoffExponential, MaxRetryDelaySeconds: 30}}})
 	}
-	nodes = append(nodes, iapiserver.DAGNode{Key: "finalize", Task: iapiserver.AtomicTaskTemplate{Key: "finalize", Name: "Finalize AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationFinalize}, FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{"asset_version_id": event.AssetVersionID, "owner_user_id": event.OwnerUserID}}})
+	nodes = append(nodes, iapiserver.DAGNode{Key: iapiserver.TaskWorkerTaskKeyRepresentationFinalize, Task: iapiserver.AtomicTaskTemplate{Key: iapiserver.TaskWorkerTaskKeyRepresentationFinalize, Name: "Finalize AssetVersion representations", SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationFinalize}, FunctionRef: assetlibrarysvc.FunctionRepresentationFinalize, RequiredCapabilities: assetlibrarysvc.FunctionRepresentationFinalize, Arguments: map[string]any{iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID, iapiserver.TaskWorkerKeyOwnerUserID: event.OwnerUserID}}})
 	edges := make([]iapiserver.DAGEdge, 0, max(1, 2*len(event.RequestedRepresentations)))
 	for _, node := range nodes[1 : len(nodes)-1] {
-		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: "finalize"})
+		edges = append(edges, iapiserver.DAGEdge{FromNode: iapiserver.TaskWorkerTaskKeyRepresentationInspect, ToNode: node.Key}, iapiserver.DAGEdge{FromNode: node.Key, ToNode: iapiserver.TaskWorkerTaskKeyRepresentationFinalize})
 	}
 	if len(nodes) == 2 {
-		edges = append(edges, iapiserver.DAGEdge{FromNode: "inspect", ToNode: "finalize"})
+		edges = append(edges, iapiserver.DAGEdge{FromNode: iapiserver.TaskWorkerTaskKeyRepresentationInspect, ToNode: iapiserver.TaskWorkerTaskKeyRepresentationFinalize})
 	}
 	return &iapiserver.DAGTaskGroupCreateRequest{
 		Name: "Build AssetVersion representations", Nodes: nodes, Edges: edges, SystemName: iapiserver.SystemNameSpec{Key: taskname.RepresentationBuild},
-		Input: map[string]any{"asset_version_id": event.AssetVersionID}, ProjectID: event.ProjectID,
-		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: "asset-representations", IdempotencyKey: event.IdempotencyKey,
-		TriggerType: iapiserver.DAGTriggerDomainEvent, TriggerSourceID: event.AssetVersionID, TriggerSourceName: "asset_version_representation_requested",
+		Input: map[string]any{iapiserver.TaskWorkerKeyAssetVersionID: event.AssetVersionID}, ProjectID: event.ProjectID,
+		Namespace: event.Namespace, CreatedBy: event.OwnerUserID, IdempotencyScope: iapiserver.TaskWorkerIdempotencyScopeRepresentations, IdempotencyKey: event.IdempotencyKey,
+		TriggerType: iapiserver.DAGTriggerDomainEvent, TriggerSourceID: event.AssetVersionID, TriggerSourceName: iapiserver.TaskWorkerRepresentationTriggerSourceName,
 	}, nil
 }
 
@@ -897,14 +890,14 @@ func (l *workerArtifactLifecycle) StoreContent(ctx context.Context, artifact *ia
 	}
 	readyAt := imachinery.Now()
 	return l.store.UpdateArtifactProcessing(ctx, current.ID, current.OwnerUserID, current.ResourceVersion, store.ArtifactProcessingMutation{
-		ChangeType: "ready", ProcessingStatus: iapiserver.ArtifactProcessingReady, ReadyAt: &readyAt,
+		ChangeType: iapiserver.TaskWorkerArtifactProcessingChangeTypeReady, ProcessingStatus: iapiserver.ArtifactProcessingReady, ReadyAt: &readyAt,
 	})
 }
 
 func (l *workerArtifactLifecycle) Register(ctx context.Context, artifact *iapiserver.Artifact, existingAssetID string) (*iapiserver.Artifact, error) {
-	request := &iapiserver.RegisterArtifactRequest{Mode: "create_asset", Name: artifact.OutputKey, ProfileVersion: artifact.ProcessingProfileVersion}
+	request := &iapiserver.RegisterArtifactRequest{Mode: iapiserver.TaskWorkerArtifactRegisterModeCreateAsset, Name: artifact.OutputKey, ProfileVersion: artifact.ProcessingProfileVersion}
 	if existingAssetID != "" {
-		request.Mode, request.AssetID = "append_version", existingAssetID
+		request.Mode, request.AssetID = iapiserver.TaskWorkerArtifactRegisterModeAppendVersion, existingAssetID
 	}
 	plan := l.policy.Plan(artifact.MediaType, artifact.ProcessingProfileVersion)
 	if _, err := l.store.RegisterArtifactLifecycleWithPlan(ctx, artifact.OwnerUserID, artifact.ID, request, plan); err != nil {
@@ -922,7 +915,7 @@ func (l *workerArtifactLifecycle) FailProcessing(ctx context.Context, artifact *
 		return current, nil
 	}
 	return l.store.UpdateArtifactProcessing(ctx, current.ID, current.OwnerUserID, current.ResourceVersion, store.ArtifactProcessingMutation{
-		ChangeType: "failed", ProcessingStatus: iapiserver.ArtifactProcessingFailed,
+		ChangeType: iapiserver.TaskWorkerArtifactProcessingChangeTypeFailed, ProcessingStatus: iapiserver.ArtifactProcessingFailed,
 		ProcessingErrorCode: errorCode, ProcessingErrorDetail: detail, Retryable: true,
 	})
 }
@@ -1016,17 +1009,17 @@ func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCen
 		interval = 30 * time.Second
 	}
 	cron := healthCron(interval)
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.engine-health", Description: "Periodic EngineInstance health reconcile"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.EngineHealthReconcile}, SystemKey: engine.EngineHealthReconcileRef, CronExpression: cron, TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: engine.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: iapiserver.TaskWorkerScheduleNameEngineHealth, Description: "Periodic EngineInstance health reconcile"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.EngineHealthReconcile}, SystemKey: engine.EngineHealthReconcileRef, CronExpression: cron, TimeZone: iapiserver.TaskWorkerTimeZoneUTC, ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: engine.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 
 func ensureComfyUIObjectInfoSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: "application-platform.comfyui-object-info-refresh", Description: "Daily ComfyUI object_info refresh"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.ObjectInfoRefresh}, SystemKey: comfyuiadapter.ComfyUIObjectInfoReconcileRef, CronExpression: "0 0 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: comfyuiadapter.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: iapiserver.TaskWorkerScheduleNameComfyUIObjectInfoRefresh, Description: "Daily ComfyUI object_info refresh"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.ObjectInfoRefresh}, SystemKey: comfyuiadapter.ComfyUIObjectInfoReconcileRef, CronExpression: iapiserver.TaskWorkerScheduleCronComfyUIObjectInfoRefresh, TimeZone: iapiserver.TaskWorkerTimeZoneUTC, ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: comfyuiadapter.ComfyUIObjectInfoReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 
 func ensureRepresentationBackfillSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
-	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: assetlibrarysvc.RepresentationBackfillRef, Description: "Daily AssetVersion representation backfill"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.RepresentationBackfill}, SystemKey: assetlibrarysvc.RepresentationBackfillRef, CronExpression: "0 30 3 * * *", TimeZone: "UTC", ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: assetlibrarysvc.RepresentationBackfillRef, Config: map[string]any{"max_actions_per_run": 100}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
+	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: assetlibrarysvc.RepresentationBackfillRef, Description: "Daily AssetVersion representation backfill"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.RepresentationBackfill}, SystemKey: assetlibrarysvc.RepresentationBackfillRef, CronExpression: iapiserver.TaskWorkerScheduleCronRepresentationBackfill, TimeZone: iapiserver.TaskWorkerTimeZoneUTC, ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: assetlibrarysvc.RepresentationBackfillRef, Config: map[string]any{iapiserver.TaskWorkerKeyMaxActionsPerRun: 100}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
 

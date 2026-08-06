@@ -57,7 +57,7 @@ func ExecuteRuntimeEnsure(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, err := resolveRuntimeContract(registry, workerTask, atomicTask, "agent.runtime.ensure")
+	contract, err := resolveRuntimeContract(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAgentRuntimeEnsure)
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +95,8 @@ func ExecuteRuntimeEnsure(
 		command.Operation = iapiserver.TaskWorkerInfrastructureOperationCreate
 		command.Create = &iapiserver.InfraCreateRuntimeRequest{
 			RequestID:              fmt.Sprintf("%s:%d", atomicTask.ID, workerTask.RetryCount+1),
-			RequestingService:      "task-center",
-			OwnerDomain:            "agent",
+			RequestingService:      iapiserver.TaskWorkerRequestingServiceTaskCenter,
+			OwnerDomain:            iapiserver.TaskWorkerOwnerDomainAgent,
 			OwnerReference:         arguments.AgentRuntimeID,
 			RequestUserID:          atomicTask.CreatedBy,
 			RuntimeMode:            iapiserver.TaskWorkerRuntimeModeService,
@@ -129,11 +129,11 @@ func ExecuteRuntimeEnsure(
 		return nil, fmt.Errorf("agent runtime ensure returned an invalid ready endpoint")
 	}
 	result := map[string]any{
-		"infra_runtime_id":    runtime.ID,
-		"runtime_status":      iapiserver.TaskWorkerRuntimeStatusRunning,
-		"health_status":       iapiserver.TaskWorkerRuntimeHealthStatusHealthy,
-		"endpoint_ref":        runtime.EndpointRef,
-		"diagnostics_summary": map[string]any{},
+		iapiserver.TaskWorkerKeyInfraRuntimeID:     runtime.ID,
+		iapiserver.TaskWorkerKeyRuntimeStatus:      iapiserver.TaskWorkerRuntimeStatusRunning,
+		iapiserver.TaskWorkerKeyHealthStatus:       iapiserver.TaskWorkerRuntimeHealthStatusHealthy,
+		iapiserver.TaskWorkerKeyEndpointRef:        runtime.EndpointRef,
+		iapiserver.TaskWorkerKeyDiagnosticsSummary: map[string]any{},
 	}
 	if err := registry.ValidateOutput(contract, result); err != nil {
 		return nil, errors.Wrap(err, "validate agent runtime ensure output")
@@ -149,7 +149,7 @@ func ExecuteRuntimeStop(
 	workerTask workflowruntime.WorkerTask,
 	atomicTask *iapiserver.AtomicTask,
 ) (map[string]any, error) {
-	contract, err := resolveRuntimeContract(registry, workerTask, atomicTask, "agent.runtime.stop")
+	contract, err := resolveRuntimeContract(registry, workerTask, atomicTask, iapiserver.TaskWorkerFunctionAgentRuntimeStop)
 	if err != nil {
 		return nil, err
 	}
@@ -190,9 +190,9 @@ func ExecuteRuntimeStop(
 		return nil, fmt.Errorf("agent runtime stop returned runtime status %q, want %q", runtime.Status, expectedStatus)
 	}
 	result := map[string]any{
-		"infra_runtime_id": runtime.ID,
-		"runtime_status":   runtime.Status,
-		"completed_action": arguments.Action,
+		iapiserver.TaskWorkerKeyInfraRuntimeID:  runtime.ID,
+		iapiserver.TaskWorkerKeyRuntimeStatus:   runtime.Status,
+		iapiserver.TaskWorkerKeyCompletedAction: arguments.Action,
 	}
 	if err := registry.ValidateOutput(contract, result); err != nil {
 		return nil, errors.Wrap(err, "validate agent runtime stop output")
@@ -242,24 +242,24 @@ func validateRuntimeEnsureArguments(arguments runtimeEnsureArguments) error {
 	if arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationStart && arguments.Operation != iapiserver.TaskWorkerAgentRuntimeOperationRecover {
 		return fmt.Errorf("agent runtime ensure operation %q is invalid", arguments.Operation)
 	}
-	if arguments.AgentKind != "platform" && arguments.AgentKind != "coding" {
+	if arguments.AgentKind != iapiserver.TaskWorkerAgentKindPlatform && arguments.AgentKind != iapiserver.TaskWorkerAgentKindCoding {
 		return fmt.Errorf("agent runtime ensure agent kind %q is invalid", arguments.AgentKind)
 	}
-	if arguments.WorkspaceType != "agent" && arguments.WorkspaceType != "studio" {
+	if arguments.WorkspaceType != iapiserver.TaskWorkerWorkspaceTypeAgent && arguments.WorkspaceType != iapiserver.TaskWorkerWorkspaceTypeStudio {
 		return fmt.Errorf("agent runtime ensure workspace type %q is invalid", arguments.WorkspaceType)
 	}
-	if arguments.RuntimeProfileID != "agent.hermes" && arguments.RuntimeProfileID != "agent.coding" {
+	if arguments.RuntimeProfileID != iapiserver.TaskWorkerAgentRuntimeProfileHermes && arguments.RuntimeProfileID != iapiserver.TaskWorkerAgentRuntimeProfileCoding {
 		return fmt.Errorf("agent runtime ensure profile %q is invalid", arguments.RuntimeProfileID)
 	}
-	if !strings.HasPrefix(arguments.ModelAccessSpecRef, "model-access://") ||
-		!strings.HasPrefix(arguments.RuntimeConfigurationRef, "agent-runtime-config://") ||
-		!strings.HasPrefix(arguments.AuthorizationRef, "agent-runtime-grant://") {
+	if !strings.HasPrefix(arguments.ModelAccessSpecRef, iapiserver.TaskWorkerRefPrefixModelAccessSpec) ||
+		!strings.HasPrefix(arguments.RuntimeConfigurationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeConfig) ||
+		!strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeGrant) {
 		return fmt.Errorf("agent runtime ensure references are invalid")
 	}
 	if arguments.ExistingInfraRuntimeID != nil && strings.TrimSpace(*arguments.ExistingInfraRuntimeID) == "" {
 		return fmt.Errorf("agent runtime ensure existing infrastructure runtime id is invalid")
 	}
-	if arguments.WorkspaceSourceRef != nil && !strings.HasPrefix(*arguments.WorkspaceSourceRef, "agent-workspace://") {
+	if arguments.WorkspaceSourceRef != nil && !strings.HasPrefix(*arguments.WorkspaceSourceRef, iapiserver.TaskWorkerRefPrefixAgentWorkspace) {
 		return fmt.Errorf("agent runtime ensure workspace source reference is invalid")
 	}
 	resource := arguments.ResourceRequirement
@@ -286,7 +286,7 @@ func validateRuntimeStopArguments(arguments runtimeStopArguments) error {
 	if arguments.Action != iapiserver.TaskWorkerActionSuspend && arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
 		return fmt.Errorf("agent runtime stop action %q is invalid", arguments.Action)
 	}
-	if !strings.HasPrefix(arguments.AuthorizationRef, "agent-runtime-grant://") {
+	if !strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeGrant) {
 		return fmt.Errorf("agent runtime stop authorization reference is invalid")
 	}
 	return nil

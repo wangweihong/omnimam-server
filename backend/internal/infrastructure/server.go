@@ -389,18 +389,18 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dispatch(ctx context.Context, c *CommandRequest) (*iapiserver.InfraOperationResult, error) {
 	switch c.Operation {
-	case "create":
+	case iapiserver.InfraOperationCreate:
 		if c.Create == nil {
 			return nil, fmt.Errorf("create request is required")
 		}
 		return s.service.CreateRuntime(ctx, c.Create)
-	case "start":
+	case iapiserver.InfraOperationStart:
 		return s.service.Start(ctx, c.RuntimeID)
-	case "stop":
+	case iapiserver.InfraOperationStop:
 		return s.service.Stop(ctx, c.RuntimeID, c.Delete)
-	case "cancel":
+	case iapiserver.InfraOperationCancel:
 		return s.service.Cancel(ctx, c.RuntimeID)
-	case "reconcile":
+	case iapiserver.InfraOperationReconcile:
 		return s.service.Reconcile(ctx, c.RuntimeID)
 	default:
 		return nil, fmt.Errorf("unsupported infrastructure operation")

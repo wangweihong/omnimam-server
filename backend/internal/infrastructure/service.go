@@ -60,7 +60,7 @@ func (s *Service) getOutput(id string) (providers.ProviderOutputContent, bool) {
 func (s *Service) ReconcileCatalog(ctx context.Context) error {
 	node, err := s.provider.Info(ctx)
 	if err != nil {
-		node = &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: iapiserver.InfraNodeStatusOffline}
+		node = &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraNodeIDDockerLocal, Name: iapiserver.InfraNodeNameDockerLocal}, ProviderType: iapiserver.InfraProviderTypeDocker, Status: iapiserver.InfraNodeStatusOffline}
 	}
 	items := make([]*iapiserver.InfraRuntimeProfile, 0, len(s.profiles))
 	for _, profile := range s.profiles {
@@ -74,17 +74,17 @@ func defaultProfiles() map[string]*iapiserver.InfraRuntimeProfile {
 		id, mode string
 		caps     []string
 	}{
-		{"agent.hermes", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "persistent_workspace"}},
-		{"agent.coding", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "workspace_tool"}},
-		{"appstudio.preview.static-web", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
-		{"appstudio.preview.web-backend", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
-		{"appstudio.build.static-web", iapiserver.InfraRuntimeModeJob, []string{"cpu", "artifact_output"}},
-		{"appstudio.build.web-backend", iapiserver.InfraRuntimeModeJob, []string{"cpu", "artifact_output"}},
-		{"appstudio.production.static-web", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
-		{"appstudio.production.web-backend", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}}}
+		{iapiserver.InfraRuntimeProfileIDAgentHermes, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityPersistentWorkspace}},
+		{iapiserver.InfraRuntimeProfileIDAgentCoding, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityWorkspaceTool}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb, iapiserver.InfraRuntimeModeJob, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityArtifactOutput}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioBuildAPI, iapiserver.InfraRuntimeModeJob, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityArtifactOutput}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioProductionWeb, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}},
+		{iapiserver.InfraRuntimeProfileIDAppStudioProductionAPI, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}}}
 	result := make(map[string]*iapiserver.InfraRuntimeProfile, len(definitions))
 	for _, item := range definitions {
-		result[item.id] = &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: item.id, Name: item.id}, Revision: "1.0", RuntimeMode: item.mode, ProviderType: "docker", Capabilities: item.caps, Status: iapiserver.InfraRuntimeProfileStatusActive}
+		result[item.id] = &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: item.id, Name: item.id}, Revision: iapiserver.InfraRuntimeProfileRevisionInitial, RuntimeMode: item.mode, ProviderType: iapiserver.InfraProviderTypeDocker, Capabilities: item.caps, Status: iapiserver.InfraRuntimeProfileStatusActive}
 	}
 	return result
 }
@@ -136,12 +136,12 @@ func (s *Service) ResolveEndpoint(ctx context.Context, id string, req *iapiserve
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is unavailable")
 	}
 	parsed, err := url.Parse(target.BaseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Scheme != target.Protocol {
+	if err != nil || (parsed.Scheme != iapiserver.InfraProtocolHTTP && parsed.Scheme != iapiserver.InfraProtocolHTTPS) || parsed.Host == "" || parsed.Scheme != target.Protocol {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is invalid")
 	}
 	resolvedAt := imachinery.NewTime(now)
 	validUntil := imachinery.NewTime(target.ValidUntil)
-	return &iapiserver.InfraResolvedEndpoint{EndpointRef: "infra-endpoint://" + endpoint.ID, RuntimeID: runtime.ID, Protocol: target.Protocol, BaseURL: target.BaseURL, ResolvedAt: resolvedAt, ValidUntil: validUntil}, nil
+	return &iapiserver.InfraResolvedEndpoint{EndpointRef: iapiserver.InfraRefPrefixEndpoint + endpoint.ID, RuntimeID: runtime.ID, Protocol: target.Protocol, BaseURL: target.BaseURL, ResolvedAt: resolvedAt, ValidUntil: validUntil}, nil
 }
 
 // ListOutputs 返回 Runtime 输出引用的分页结果。
@@ -236,7 +236,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
 	}
 	runtimeID := uuid.NewString()
-	runtime := &iapiserver.InfraRuntime{ObjectMeta: imachinery.ObjectMeta{ID: runtimeID}, RuntimeMode: req.RuntimeMode, Status: iapiserver.InfraRuntimeStatusAccepted, RequestingService: req.RequestingService, OwnerDomain: req.OwnerDomain, OwnerReference: req.OwnerReference, RequestUserID: req.RequestUserID, RequestID: req.RequestID, RequestFingerprint: fingerprint, RuntimeProfileID: req.RuntimeProfileID, RuntimeProfileRevision: req.RuntimeProfileRevision, ProviderType: "docker", SourceRef: req.SourceRef}
+	runtime := &iapiserver.InfraRuntime{ObjectMeta: imachinery.ObjectMeta{ID: runtimeID}, RuntimeMode: req.RuntimeMode, Status: iapiserver.InfraRuntimeStatusAccepted, RequestingService: req.RequestingService, OwnerDomain: req.OwnerDomain, OwnerReference: req.OwnerReference, RequestUserID: req.RequestUserID, RequestID: req.RequestID, RequestFingerprint: fingerprint, RuntimeProfileID: req.RuntimeProfileID, RuntimeProfileRevision: req.RuntimeProfileRevision, ProviderType: iapiserver.InfraProviderTypeDocker, SourceRef: req.SourceRef}
 	timeout, _ := json.Marshal(req.TimeoutPolicy)
 	runtime.TimeoutPolicy = timeout
 	mounts := make([]*iapiserver.InfraRuntimeMount, 0, len(req.Mounts))
@@ -283,7 +283,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	endpoint := endpointFromResult(created, req, providerResult)
 	created.EndpointRef = ""
 	if endpoint != nil {
-		created.EndpointRef = "infra-endpoint://" + endpoint.ID
+		created.EndpointRef = iapiserver.InfraRefPrefixEndpoint + endpoint.ID
 	}
 	created, err = s.store.UpdateInfraRuntime(ctx, created, endpoint, providerResult.Outputs, "")
 	if err != nil {
@@ -393,7 +393,7 @@ func (s *Service) Reconcile(ctx context.Context, id string) (*iapiserver.InfraOp
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
 	runtime.Status = result.Status
-	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, "infra_runtime_reconciled")
+	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, iapiserver.InfraRuntimeEventReasonReconciled)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +425,7 @@ func requestFingerprint(req *iapiserver.InfraCreateRuntimeRequest) (string, erro
 		return "", err
 	}
 	sum := sha256.Sum256(raw)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return iapiserver.InfraContentDigestSHA256Prefix + hex.EncodeToString(sum[:]), nil
 }
 func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraCreateRuntimeRequest, result *providers.ProviderResult) *iapiserver.InfraRuntimeEndpoint {
 	if result.EndpointDisplayRef == "" && result.Endpoint == nil {
@@ -433,7 +433,7 @@ func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraC
 	}
 	visibility := req.EndpointVisibility
 	if visibility == "" {
-		visibility = "INTERNAL"
+		visibility = iapiserver.InfraEndpointVisibilityInternal
 	}
 	endpointName := ""
 	if req.EndpointRequest != nil {
@@ -533,7 +533,7 @@ func (s *Service) rememberProviderState(endpoint *iapiserver.InfraRuntimeEndpoin
 		if !ok {
 			continue
 		}
-		output.ContentRef = "infra-output://" + output.ID
+		output.ContentRef = iapiserver.InfraRefPrefixOutput + output.ID
 		s.outputs[output.ID] = content
 	}
 }
@@ -555,7 +555,7 @@ func (s *Service) enrichOutput(output *iapiserver.InfraRuntimeOutput) {
 	output.MediaType = content.MediaType
 	output.SizeBytes = content.SizeBytes
 	output.ContentDigest = content.ContentDigest
-	output.ContentRef = "infra-output://" + output.ID
+	output.ContentRef = iapiserver.InfraRefPrefixOutput + output.ID
 	if !content.CollectedAt.IsZero() {
 		collectedAt := imachinery.NewTime(content.CollectedAt)
 		output.CollectedAt = &collectedAt
@@ -563,10 +563,10 @@ func (s *Service) enrichOutput(output *iapiserver.InfraRuntimeOutput) {
 }
 
 func validSHA256(value string) bool {
-	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+	if len(value) != len(iapiserver.InfraContentDigestSHA256Prefix)+64 || !strings.HasPrefix(value, iapiserver.InfraContentDigestSHA256Prefix) {
 		return false
 	}
-	for _, char := range value[len("sha256:"):] {
+	for _, char := range value[len(iapiserver.InfraContentDigestSHA256Prefix):] {
 		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
 			return false
 		}

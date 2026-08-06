@@ -37,5 +37,5 @@ func RequireInfrastructureRuntime(response *infrastructure.CommandResponse) (*ia
 // HasReadyInfrastructureEndpoint verifies the endpoint returned with a ready runtime.
 func HasReadyInfrastructureEndpoint(runtime *iapiserver.InfraRuntime, endpoint *iapiserver.InfraRuntimeEndpoint) bool {
 	return runtime != nil && endpoint != nil && endpoint.ID != "" && endpoint.Status == iapiserver.TaskWorkerRuntimeEndpointStatusReady &&
-		runtime.EndpointRef == "infra-endpoint://"+endpoint.ID
+		runtime.EndpointRef == iapiserver.TaskWorkerRefPrefixInfraEndpoint+endpoint.ID
 }
