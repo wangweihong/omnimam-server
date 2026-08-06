@@ -3,7 +3,7 @@
 ## Current goal and status
 
 - Goal: replace Task Worker status, mode, action, and policy string literals with existing iapiserver constants.
-- Status: implementation and target-package verification are complete; commit is pending.
+- Status: implementation, target-package verification, and implementation commit `9262ac9` are complete.
 - SSOT: `spec-v1.17.2` at `5990e6054ec8b79a342ef6e979b6522b855378aa`, matching `SSOT_VERSION` and the `ssot` submodule.
 
 ## Work completed in this session
@@ -24,10 +24,11 @@
 - Added independent Task Worker contract constants to `backend/apis/iapiserver/request_task_worker.go`; these deliberately do not reuse `InfraRuntime*` constants.
 - Replaced Task Worker operation, mode, status, visibility, action, deployment reason, restart policy, health, validation, and retry backoff literals in production code and direct tests.
 - Replaced Task Center status values in direct JSON test fixtures with existing Task Center constants.
+- Created commit `9262ac9` (`refactor: centralize task worker constants`).
 
 ## Current in-progress work
 
-- Commit the completed Task Worker constant refactor.
+- None.
 
 ## Files modified
 
@@ -61,7 +62,7 @@ Completed checks: `go test ./internal/taskworker`, `gofmt -d` on the changed Go 
 
 ## Outstanding tasks
 
-- Stage and commit the verified Task Worker constant replacement.
+- None.
 
 ## Known issues and risks
 
@@ -69,7 +70,7 @@ Completed checks: `go test ./internal/taskworker`, `gofmt -d` on the changed Go 
 
 ## Exact recommended next step
 
-Run `git add` for the three Task Worker files and this handoff, then commit the verified refactor; record the commit hash here.
+No outstanding implementation work remains. The next task should begin by reading this handoff and verifying the current repository state.
 
 Next Prompt:
 
