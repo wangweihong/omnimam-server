@@ -21,6 +21,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/appstudioexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/consumer"
 )
 
@@ -594,7 +595,7 @@ func TestExecuteAppStudioBuildDeliversArtifact(t *testing.T) {
 		Body: io.NopCloser(bytes.NewReader(content)), MediaType: output.MediaType, SizeBytes: output.SizeBytes, ContentDigest: output.ContentDigest,
 	}}
 	lifecycle := &recordingBuildArtifactLifecycle{}
-	result, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
+	result, err := appstudioexecutor.ExecuteBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +637,7 @@ func TestExecuteAppStudioBuildRejectsContentMismatch(t *testing.T) {
 				Body: io.NopCloser(bytes.NewReader(test.contentBody)), MediaType: output.MediaType, SizeBytes: output.SizeBytes, ContentDigest: output.ContentDigest,
 			}}
 			lifecycle := &recordingBuildArtifactLifecycle{}
-			if _, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic); err == nil {
+			if _, err := appstudioexecutor.ExecuteBuild(t.Context(), executor, lifecycle, registry, worker, atomic); err == nil {
 				t.Fatal("expected content integrity failure")
 			}
 			if lifecycle.storeCalls != 0 || len(executor.attachRequests) != 0 {
@@ -657,7 +658,7 @@ func TestExecuteAppStudioBuildReusesReadyArtifact(t *testing.T) {
 	existing.ID = "artifact-existing"
 	executor := &recordingInfrastructureExecutor{response: response}
 	lifecycle := &recordingBuildArtifactLifecycle{existing: existing}
-	result, err := executeAppStudioBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
+	result, err := appstudioexecutor.ExecuteBuild(t.Context(), executor, lifecycle, registry, worker, atomic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +682,7 @@ func TestExecuteAppStudioProductionReconcileCreatesArtifactRuntime(t *testing.T)
 	arguments := appStudioProductionReconcileTestArguments(nil)
 	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioProductionReconcile, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioReadyResponse("infra-production-1", "endpoint-production-1")}
-	result, err := executeAppStudioProductionReconcile(t.Context(), executor, registry, worker, atomic)
+	result, err := appstudioexecutor.ExecuteProductionReconcile(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +705,7 @@ func TestExecuteAppStudioProductionStopUsesStopWithoutDelete(t *testing.T) {
 	}
 	registry, worker, atomic := appStudioTask(t, iapiserver.TaskWorkerFunctionAppStudioProductionStop, arguments)
 	executor := &recordingInfrastructureExecutor{response: appStudioStopResponse("infra-production-1", iapiserver.TaskWorkerRuntimeStatusStopped)}
-	result, err := executeAppStudioProductionStop(t.Context(), executor, registry, worker, atomic)
+	result, err := appstudioexecutor.ExecuteProductionStop(t.Context(), executor, registry, worker, atomic)
 	if err != nil {
 		t.Fatal(err)
 	}

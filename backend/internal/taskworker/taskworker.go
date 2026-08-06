@@ -412,37 +412,6 @@ func executeAppStudioPreviewStop(
 	return appstudioexecutor.ExecutePreviewStop(ctx, client, registry, workerTask, atomicTask)
 }
 
-func executeAppStudioBuild(
-	ctx context.Context,
-	client infrastructureBuildExecutor,
-	lifecycle appStudioBuildArtifactLifecycle,
-	registry *taskfunctionregistry.Registry,
-	workerTask workflowruntime.WorkerTask,
-	atomicTask *iapiserver.AtomicTask,
-) (map[string]any, error) {
-	return appstudioexecutor.ExecuteBuild(ctx, client, lifecycle, registry, workerTask, atomicTask)
-}
-
-func executeAppStudioProductionReconcile(
-	ctx context.Context,
-	client infrastructureCommandExecutor,
-	registry *taskfunctionregistry.Registry,
-	workerTask workflowruntime.WorkerTask,
-	atomicTask *iapiserver.AtomicTask,
-) (map[string]any, error) {
-	return appstudioexecutor.ExecuteProductionReconcile(ctx, client, registry, workerTask, atomicTask)
-}
-
-func executeAppStudioProductionStop(
-	ctx context.Context,
-	client infrastructureCommandExecutor,
-	registry *taskfunctionregistry.Registry,
-	workerTask workflowruntime.WorkerTask,
-	atomicTask *iapiserver.AtomicTask,
-) (map[string]any, error) {
-	return appstudioexecutor.ExecuteProductionStop(ctx, client, registry, workerTask, atomicTask)
-}
-
 func registerWorkerHandler(
 	runtime workflowruntime.WorkerRegistrar,
 	functionRef string,
