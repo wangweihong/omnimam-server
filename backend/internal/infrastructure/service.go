@@ -60,7 +60,7 @@ func (s *Service) getOutput(id string) (providers.ProviderOutputContent, bool) {
 func (s *Service) ReconcileCatalog(ctx context.Context) error {
 	node, err := s.provider.Info(ctx)
 	if err != nil {
-		node = &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: "OFFLINE"}
+		node = &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: iapiserver.InfraNodeStatusOffline}
 	}
 	items := make([]*iapiserver.InfraRuntimeProfile, 0, len(s.profiles))
 	for _, profile := range s.profiles {
@@ -74,17 +74,17 @@ func defaultProfiles() map[string]*iapiserver.InfraRuntimeProfile {
 		id, mode string
 		caps     []string
 	}{
-		{"agent.hermes", "SERVICE", []string{"cpu", "network", "persistent_workspace"}},
-		{"agent.coding", "SERVICE", []string{"cpu", "network", "workspace_tool"}},
-		{"appstudio.preview.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}},
-		{"appstudio.preview.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}},
-		{"appstudio.build.static-web", "JOB", []string{"cpu", "artifact_output"}},
-		{"appstudio.build.web-backend", "JOB", []string{"cpu", "artifact_output"}},
-		{"appstudio.production.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}},
-		{"appstudio.production.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}}}
+		{"agent.hermes", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "persistent_workspace"}},
+		{"agent.coding", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "workspace_tool"}},
+		{"appstudio.preview.static-web", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
+		{"appstudio.preview.web-backend", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
+		{"appstudio.build.static-web", iapiserver.InfraRuntimeModeJob, []string{"cpu", "artifact_output"}},
+		{"appstudio.build.web-backend", iapiserver.InfraRuntimeModeJob, []string{"cpu", "artifact_output"}},
+		{"appstudio.production.static-web", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}},
+		{"appstudio.production.web-backend", iapiserver.InfraRuntimeModeService, []string{"cpu", "network", "endpoint"}}}
 	result := make(map[string]*iapiserver.InfraRuntimeProfile, len(definitions))
 	for _, item := range definitions {
-		result[item.id] = &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: item.id, Name: item.id}, Revision: "1.0", RuntimeMode: item.mode, ProviderType: "docker", Capabilities: item.caps, Status: "ACTIVE"}
+		result[item.id] = &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: item.id, Name: item.id}, Revision: "1.0", RuntimeMode: item.mode, ProviderType: "docker", Capabilities: item.caps, Status: iapiserver.InfraRuntimeProfileStatusActive}
 	}
 	return result
 }
@@ -128,7 +128,7 @@ func (s *Service) ResolveEndpoint(ctx context.Context, id string, req *iapiserve
 		return nil, errors.NewStatus(code.ErrInfraEndpointAccessDenied, "infra endpoint owner does not match")
 	}
 	now := time.Now()
-	if endpoint.Status != "READY" || runtime.Status != "RUNNING" || !endpoint.RevokedAt.IsZero() || (!endpoint.ExpiresAt.IsZero() && !endpoint.ExpiresAt.Time.After(now)) {
+	if endpoint.Status != iapiserver.InfraRuntimeEndpointStatusReady || runtime.Status != iapiserver.InfraRuntimeStatusRunning || !endpoint.RevokedAt.IsZero() || (!endpoint.ExpiresAt.IsZero() && !endpoint.ExpiresAt.Time.After(now)) {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint is not ready")
 	}
 	target, ok := s.getEndpoint(id)
@@ -174,7 +174,7 @@ func (s *Service) ReadOutputContent(ctx context.Context, id string) (*RuntimeOut
 		return nil, err
 	}
 	content, ok := s.getOutput(id)
-	if output.Status != "COLLECTED" || !ok || content.Open == nil {
+	if output.Status != iapiserver.InfraRuntimeOutputStatusCollected || !ok || content.Open == nil {
 		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
 	}
 	reader, err := content.Open(ctx)
@@ -190,7 +190,7 @@ func (s *Service) AttachOutputArtifact(ctx context.Context, id string, req *iapi
 		return nil, err
 	}
 	content, ok := s.getOutput(id)
-	if output.Status != "COLLECTED" || !ok {
+	if output.Status != iapiserver.InfraRuntimeOutputStatusCollected || !ok {
 		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
 	}
 	if content.SizeBytes != req.SizeBytes || content.ContentDigest != req.ContentDigest {
@@ -225,7 +225,7 @@ func (s *Service) Logs(ctx context.Context, id string, req *iapiserver.InfraBasi
 }
 func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreateRuntimeRequest) (*iapiserver.InfraOperationResult, error) {
 	profile, ok := s.profiles[req.RuntimeProfileID]
-	if !ok || profile.Status != "ACTIVE" || profile.Revision != req.RuntimeProfileRevision {
+	if !ok || profile.Status != iapiserver.InfraRuntimeProfileStatusActive || profile.Revision != req.RuntimeProfileRevision {
 		return nil, errors.NewStatus(code.ErrInfraRuntimeProfileNotFound, "infra runtime profile is unavailable")
 	}
 	if profile.RuntimeMode != req.RuntimeMode {
@@ -236,7 +236,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
 	}
 	runtimeID := uuid.NewString()
-	runtime := &iapiserver.InfraRuntime{ObjectMeta: imachinery.ObjectMeta{ID: runtimeID}, RuntimeMode: req.RuntimeMode, Status: "ACCEPTED", RequestingService: req.RequestingService, OwnerDomain: req.OwnerDomain, OwnerReference: req.OwnerReference, RequestUserID: req.RequestUserID, RequestID: req.RequestID, RequestFingerprint: fingerprint, RuntimeProfileID: req.RuntimeProfileID, RuntimeProfileRevision: req.RuntimeProfileRevision, ProviderType: "docker", SourceRef: req.SourceRef}
+	runtime := &iapiserver.InfraRuntime{ObjectMeta: imachinery.ObjectMeta{ID: runtimeID}, RuntimeMode: req.RuntimeMode, Status: iapiserver.InfraRuntimeStatusAccepted, RequestingService: req.RequestingService, OwnerDomain: req.OwnerDomain, OwnerReference: req.OwnerReference, RequestUserID: req.RequestUserID, RequestID: req.RequestID, RequestFingerprint: fingerprint, RuntimeProfileID: req.RuntimeProfileID, RuntimeProfileRevision: req.RuntimeProfileRevision, ProviderType: "docker", SourceRef: req.SourceRef}
 	timeout, _ := json.Marshal(req.TimeoutPolicy)
 	runtime.TimeoutPolicy = timeout
 	mounts := make([]*iapiserver.InfraRuntimeMount, 0, len(req.Mounts))
@@ -245,7 +245,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	}
 	bindings := make([]*iapiserver.InfraRuntimeConfigBinding, 0, len(req.ConfigurationBindings))
 	for _, input := range req.ConfigurationBindings {
-		bindings = append(bindings, &iapiserver.InfraRuntimeConfigBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: input.Name}, RuntimeID: runtimeID, BindingType: input.BindingType, Reference: input.Reference, InjectionStatus: "PENDING"})
+		bindings = append(bindings, &iapiserver.InfraRuntimeConfigBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: input.Name}, RuntimeID: runtimeID, BindingType: input.BindingType, Reference: input.Reference, InjectionStatus: iapiserver.InfraRuntimeConfigBindingStatusPending})
 	}
 	created, err := s.store.CreateInfraRuntimeAggregate(ctx, runtime, mounts, bindings)
 	if err != nil {
@@ -254,17 +254,17 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	if created.ID != runtimeID {
 		return s.result(ctx, created, nil)
 	}
-	created.Status = "PREPARING"
+	created.Status = iapiserver.InfraRuntimeStatusPreparing
 	_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 	providerResult, err := s.provider.Ensure(ctx, providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req})
 	if err != nil {
-		created.Status = "FAILED"
+		created.Status = iapiserver.InfraRuntimeStatusFailed
 		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
 	if providerResult == nil {
-		created.Status = "FAILED"
+		created.Status = iapiserver.InfraRuntimeStatusFailed
 		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "provider returned no runtime result")
@@ -272,10 +272,10 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	created.ProviderRuntimeRef = providerResult.ProviderRuntimeRef
 	created.Status = providerResult.Status
 	if created.Status == "" {
-		created.Status = "RUNNING"
+		created.Status = iapiserver.InfraRuntimeStatusRunning
 	}
 	if err := prepareProviderOutputs(created.ID, providerResult, req.OutputDeclarations); err != nil {
-		created.Status = "FAILED"
+		created.Status = iapiserver.InfraRuntimeStatusFailed
 		created.FailureCode = "ERR_INFRA_OUTPUT_COLLECTION_FAILED"
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 		return nil, errors.NewStatus(code.ErrInfraOutputCollectionFailed, err.Error())
@@ -306,7 +306,7 @@ func (s *Service) Start(ctx context.Context, id string) (*iapiserver.InfraOperat
 	}
 	runtime.Status = result.Status
 	if runtime.Status == "" {
-		runtime.Status = "RUNNING"
+		runtime.Status = iapiserver.InfraRuntimeStatusRunning
 	}
 	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, "")
 	if err != nil {
@@ -321,14 +321,14 @@ func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iap
 	if err != nil {
 		return nil, err
 	}
-	if runtime.Status == "DELETED" {
+	if runtime.Status == iapiserver.InfraRuntimeStatusDeleted {
 		return s.result(ctx, runtime, nil)
 	}
 	if !deleteRuntime {
-		if runtime.RuntimeMode == "JOB" && runtime.Status == "CANCELED" {
+		if runtime.RuntimeMode == iapiserver.InfraRuntimeModeJob && runtime.Status == iapiserver.InfraRuntimeStatusCanceled {
 			return s.result(ctx, runtime, nil)
 		}
-		if runtime.RuntimeMode == "SERVICE" && runtime.Status == "STOPPED" {
+		if runtime.RuntimeMode == iapiserver.InfraRuntimeModeService && runtime.Status == iapiserver.InfraRuntimeStatusStopped {
 			return s.result(ctx, runtime, nil)
 		}
 	}
@@ -337,11 +337,11 @@ func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iap
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
 	if deleteRuntime {
-		runtime.Status = "DELETED"
-	} else if runtime.RuntimeMode == "JOB" {
-		runtime.Status = "CANCELED"
+		runtime.Status = iapiserver.InfraRuntimeStatusDeleted
+	} else if runtime.RuntimeMode == iapiserver.InfraRuntimeModeJob {
+		runtime.Status = iapiserver.InfraRuntimeStatusCanceled
 	} else {
-		runtime.Status = "STOPPED"
+		runtime.Status = iapiserver.InfraRuntimeStatusStopped
 	}
 	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, "")
 	if err != nil {
@@ -366,17 +366,17 @@ func (s *Service) Cancel(ctx context.Context, id string) (*iapiserver.InfraOpera
 	if err != nil {
 		return nil, err
 	}
-	if runtime.RuntimeMode != "JOB" {
+	if runtime.RuntimeMode != iapiserver.InfraRuntimeModeJob {
 		return nil, errors.NewStatus(code.ErrInfraRuntimeStateConflict, "only jobs can be canceled")
 	}
-	if runtime.Status == "CANCELED" {
+	if runtime.Status == iapiserver.InfraRuntimeStatusCanceled {
 		return s.result(ctx, runtime, nil)
 	}
 	result, err := s.provider.Stop(ctx, runtime.ProviderRuntimeRef, false)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
-	runtime.Status = "CANCELED"
+	runtime.Status = iapiserver.InfraRuntimeStatusCanceled
 	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, "")
 	if err != nil {
 		return nil, err
@@ -439,7 +439,7 @@ func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraC
 	if req.EndpointRequest != nil {
 		endpointName = req.EndpointRequest.EndpointName
 	}
-	return &iapiserver.InfraRuntimeEndpoint{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtime.ID, EndpointName: endpointName, Visibility: visibility, Status: "READY", DisplayRef: result.EndpointDisplayRef}
+	return &iapiserver.InfraRuntimeEndpoint{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtime.ID, EndpointName: endpointName, Visibility: visibility, Status: iapiserver.InfraRuntimeEndpointStatusReady, DisplayRef: result.EndpointDisplayRef}
 }
 
 func prepareProviderOutputs(runtimeID string, result *providers.ProviderResult, declarations []iapiserver.InfraRuntimeOutputDeclaration) error {
@@ -472,7 +472,7 @@ func prepareProviderOutputs(runtimeID string, result *providers.ProviderResult, 
 		}
 		output.RuntimeID = runtimeID
 		if output.Status == "" {
-			output.Status = "PENDING"
+			output.Status = iapiserver.InfraRuntimeOutputStatusPending
 		}
 		byKey[output.OutputKey] = output
 	}
@@ -482,7 +482,7 @@ func prepareProviderOutputs(runtimeID string, result *providers.ProviderResult, 
 		}
 		output := &iapiserver.InfraRuntimeOutput{
 			ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtimeID,
-			OutputKey: declaration.OutputKey, Status: "PENDING", MediaType: declaration.MediaType,
+			OutputKey: declaration.OutputKey, Status: iapiserver.InfraRuntimeOutputStatusPending, MediaType: declaration.MediaType,
 		}
 		result.Outputs = append(result.Outputs, output)
 		byKey[declaration.OutputKey] = output
@@ -500,13 +500,13 @@ func prepareProviderOutputs(runtimeID string, result *providers.ProviderResult, 
 			result.OutputContents[key] = content
 		}
 		collectedAt := imachinery.NewTime(content.CollectedAt)
-		output.Status = "COLLECTED"
+		output.Status = iapiserver.InfraRuntimeOutputStatusCollected
 		output.MediaType = content.MediaType
 		output.SizeBytes = content.SizeBytes
 		output.ContentDigest = content.ContentDigest
 		output.CollectedAt = &collectedAt
 	}
-	if result.Status == "SUCCEEDED" {
+	if result.Status == iapiserver.InfraRuntimeStatusSucceeded {
 		for _, declaration := range declarations {
 			if _, ok := result.OutputContents[declaration.OutputKey]; !ok {
 				return fmt.Errorf("declared output %q was not collected", declaration.OutputKey)

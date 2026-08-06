@@ -8,6 +8,44 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 )
 
+const (
+	// InfraRuntimeModeJob 表示执行完成后结束的 Runtime 模式。
+	InfraRuntimeModeJob = "JOB"
+	// InfraRuntimeModeService 表示持续提供服务的 Runtime 模式。
+	InfraRuntimeModeService = "SERVICE"
+)
+
+const (
+	// InfraNodeStatusOffline 表示 Infrastructure 节点当前不可用。
+	InfraNodeStatusOffline = "OFFLINE"
+	// InfraRuntimeProfileStatusActive 表示 Runtime Profile 可被新请求选用。
+	InfraRuntimeProfileStatusActive = "ACTIVE"
+	// InfraRuntimeStatusAccepted 表示 Runtime 请求已接受但尚未准备完成。
+	InfraRuntimeStatusAccepted = "ACCEPTED"
+	// InfraRuntimeStatusPreparing 表示 Runtime 正在准备 Provider 资源。
+	InfraRuntimeStatusPreparing = "PREPARING"
+	// InfraRuntimeStatusRunning 表示 Runtime 正在运行。
+	InfraRuntimeStatusRunning = "RUNNING"
+	// InfraRuntimeStatusSucceeded 表示 Runtime 已成功完成。
+	InfraRuntimeStatusSucceeded = "SUCCEEDED"
+	// InfraRuntimeStatusFailed 表示 Runtime 执行失败。
+	InfraRuntimeStatusFailed = "FAILED"
+	// InfraRuntimeStatusDeleted 表示 Runtime 资源已删除。
+	InfraRuntimeStatusDeleted = "DELETED"
+	// InfraRuntimeStatusCanceled 表示 JOB Runtime 已取消。
+	InfraRuntimeStatusCanceled = "CANCELED"
+	// InfraRuntimeStatusStopped 表示 SERVICE Runtime 已停止。
+	InfraRuntimeStatusStopped = "STOPPED"
+	// InfraRuntimeEndpointStatusReady 表示 Endpoint 可以被解析使用。
+	InfraRuntimeEndpointStatusReady = "READY"
+	// InfraRuntimeConfigBindingStatusPending 表示配置绑定尚未完成注入。
+	InfraRuntimeConfigBindingStatusPending = "PENDING"
+	// InfraRuntimeOutputStatusPending 表示输出已声明但内容尚未收集。
+	InfraRuntimeOutputStatusPending = "PENDING"
+	// InfraRuntimeOutputStatusCollected 表示输出内容已经收集并可读取。
+	InfraRuntimeOutputStatusCollected = "COLLECTED"
+)
+
 // +k8s:deepcopy-gen=true
 type InfraRuntimeMountInput struct {
 	SourceRef        string `json:"source_ref" binding:"required,max=2048"`
@@ -97,10 +135,10 @@ type InfraCreateRuntimeRequest struct {
 }
 
 func (r *InfraCreateRuntimeRequest) Validate() error {
-	if r.EndpointRequest != nil && r.RuntimeMode != "SERVICE" {
+	if r.EndpointRequest != nil && r.RuntimeMode != InfraRuntimeModeService {
 		return fmt.Errorf("endpoint request is only supported for service runtimes")
 	}
-	if len(r.OutputDeclarations) > 0 && r.RuntimeMode != "JOB" {
+	if len(r.OutputDeclarations) > 0 && r.RuntimeMode != InfraRuntimeModeJob {
 		return fmt.Errorf("output declarations are only supported for job runtimes")
 	}
 	outputKeys := make(map[string]struct{}, len(r.OutputDeclarations))
