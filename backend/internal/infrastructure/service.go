@@ -18,29 +18,45 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type Service struct {
-	store     store.InfrastructureStore
-	provider  RuntimeProvider
-	profiles  map[string]*iapiserver.InfraRuntimeProfile
-	stateMu   sync.RWMutex
-	endpoints map[string]ProviderEndpoint
-	outputs   map[string]ProviderOutputContent
+	store     store.InfrastructureStore                  // 持久化存储层
+	provider  providers.RuntimeProvider                  // 运行时提供者接口
+	profiles  map[string]*iapiserver.InfraRuntimeProfile // 内存中的运行时配置模板
+	stateMu   sync.RWMutex                               // 保护 endpoints/outputs 的读写锁
+	endpoints map[string]providers.ProviderEndpoint      // 内存中的端点缓存
+	outputs   map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
 }
 
-func NewService(storage store.InfrastructureStore, provider RuntimeProvider) (*Service, error) {
+func NewService(storage store.InfrastructureStore, provider providers.RuntimeProvider) (*Service, error) {
 	if storage == nil {
 		return nil, fmt.Errorf("infrastructure store is required")
 	}
 	if provider == nil {
-		provider = UnavailableProvider{}
+		provider = providers.UnavailableProvider{}
 	}
 	profiles := defaultProfiles()
-	service := &Service{store: storage, provider: provider, profiles: profiles, endpoints: make(map[string]ProviderEndpoint), outputs: make(map[string]ProviderOutputContent)}
+	service := &Service{store: storage, provider: provider, profiles: profiles, endpoints: make(map[string]providers.ProviderEndpoint), outputs: make(map[string]providers.ProviderOutputContent)}
 	return service, nil
 }
+
+func (s *Service) getEndpoint(id string) (providers.ProviderEndpoint, bool) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	endpoint, ok := s.endpoints[id]
+	return endpoint, ok
+}
+
+func (s *Service) getOutput(id string) (providers.ProviderOutputContent, bool) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	output, ok := s.outputs[id]
+	return output, ok
+}
+
 func (s *Service) ReconcileCatalog(ctx context.Context) error {
 	node, err := s.provider.Info(ctx)
 	if err != nil {
@@ -57,7 +73,15 @@ func defaultProfiles() map[string]*iapiserver.InfraRuntimeProfile {
 	definitions := []struct {
 		id, mode string
 		caps     []string
-	}{{"agent.hermes", "SERVICE", []string{"cpu", "network", "persistent_workspace"}}, {"agent.coding", "SERVICE", []string{"cpu", "network", "workspace_tool"}}, {"appstudio.preview.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}}, {"appstudio.preview.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}}, {"appstudio.build.static-web", "JOB", []string{"cpu", "artifact_output"}}, {"appstudio.build.web-backend", "JOB", []string{"cpu", "artifact_output"}}, {"appstudio.production.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}}, {"appstudio.production.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}}}
+	}{
+		{"agent.hermes", "SERVICE", []string{"cpu", "network", "persistent_workspace"}},
+		{"agent.coding", "SERVICE", []string{"cpu", "network", "workspace_tool"}},
+		{"appstudio.preview.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}},
+		{"appstudio.preview.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}},
+		{"appstudio.build.static-web", "JOB", []string{"cpu", "artifact_output"}},
+		{"appstudio.build.web-backend", "JOB", []string{"cpu", "artifact_output"}},
+		{"appstudio.production.static-web", "SERVICE", []string{"cpu", "network", "endpoint"}},
+		{"appstudio.production.web-backend", "SERVICE", []string{"cpu", "network", "endpoint"}}}
 	result := make(map[string]*iapiserver.InfraRuntimeProfile, len(definitions))
 	for _, item := range definitions {
 		result[item.id] = &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: item.id, Name: item.id}, Revision: "1.0", RuntimeMode: item.mode, ProviderType: "docker", Capabilities: item.caps, Status: "ACTIVE"}
@@ -107,9 +131,7 @@ func (s *Service) ResolveEndpoint(ctx context.Context, id string, req *iapiserve
 	if endpoint.Status != "READY" || runtime.Status != "RUNNING" || !endpoint.RevokedAt.IsZero() || (!endpoint.ExpiresAt.IsZero() && !endpoint.ExpiresAt.Time.After(now)) {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint is not ready")
 	}
-	s.stateMu.RLock()
-	target, ok := s.endpoints[id]
-	s.stateMu.RUnlock()
+	target, ok := s.getEndpoint(id)
 	if !ok || target.BaseURL == "" || (target.ValidUntil.Before(now)) {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is unavailable")
 	}
@@ -151,9 +173,7 @@ func (s *Service) ReadOutputContent(ctx context.Context, id string) (*RuntimeOut
 	if err != nil {
 		return nil, err
 	}
-	s.stateMu.RLock()
-	content, ok := s.outputs[id]
-	s.stateMu.RUnlock()
+	content, ok := s.getOutput(id)
 	if output.Status != "COLLECTED" || !ok || content.Open == nil {
 		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
 	}
@@ -169,9 +189,7 @@ func (s *Service) AttachOutputArtifact(ctx context.Context, id string, req *iapi
 	if err != nil {
 		return nil, err
 	}
-	s.stateMu.RLock()
-	content, ok := s.outputs[id]
-	s.stateMu.RUnlock()
+	content, ok := s.getOutput(id)
 	if output.Status != "COLLECTED" || !ok {
 		return nil, errors.NewStatus(code.ErrInfraOutputContentUnavailable, "infra runtime output content is unavailable")
 	}
@@ -238,7 +256,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	}
 	created.Status = "PREPARING"
 	_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
-	providerResult, err := s.provider.Ensure(ctx, ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req})
+	providerResult, err := s.provider.Ensure(ctx, providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req})
 	if err != nil {
 		created.Status = "FAILED"
 		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
@@ -381,7 +399,7 @@ func (s *Service) Reconcile(ctx context.Context, id string) (*iapiserver.InfraOp
 	}
 	return s.result(ctx, runtime, result)
 }
-func (s *Service) result(ctx context.Context, runtime *iapiserver.InfraRuntime, provider *ProviderResult) (*iapiserver.InfraOperationResult, error) {
+func (s *Service) result(ctx context.Context, runtime *iapiserver.InfraRuntime, provider *providers.ProviderResult) (*iapiserver.InfraOperationResult, error) {
 	result := &iapiserver.InfraOperationResult{Runtime: runtime}
 	if endpoint, err := s.store.GetInfraRuntimeEndpoint(ctx, runtime.ID); err == nil {
 		result.Endpoint = endpoint
@@ -409,7 +427,7 @@ func requestFingerprint(req *iapiserver.InfraCreateRuntimeRequest) (string, erro
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
-func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraCreateRuntimeRequest, result *ProviderResult) *iapiserver.InfraRuntimeEndpoint {
+func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraCreateRuntimeRequest, result *providers.ProviderResult) *iapiserver.InfraRuntimeEndpoint {
 	if result.EndpointDisplayRef == "" && result.Endpoint == nil {
 		return nil
 	}
@@ -424,7 +442,7 @@ func endpointFromResult(runtime *iapiserver.InfraRuntime, req *iapiserver.InfraC
 	return &iapiserver.InfraRuntimeEndpoint{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, RuntimeID: runtime.ID, EndpointName: endpointName, Visibility: visibility, Status: "READY", DisplayRef: result.EndpointDisplayRef}
 }
 
-func prepareProviderOutputs(runtimeID string, result *ProviderResult, declarations []iapiserver.InfraRuntimeOutputDeclaration) error {
+func prepareProviderOutputs(runtimeID string, result *providers.ProviderResult, declarations []iapiserver.InfraRuntimeOutputDeclaration) error {
 	if result == nil {
 		return fmt.Errorf("provider returned no runtime result")
 	}
@@ -498,7 +516,7 @@ func prepareProviderOutputs(runtimeID string, result *ProviderResult, declaratio
 	return nil
 }
 
-func (s *Service) rememberProviderState(endpoint *iapiserver.InfraRuntimeEndpoint, result *ProviderResult) {
+func (s *Service) rememberProviderState(endpoint *iapiserver.InfraRuntimeEndpoint, result *providers.ProviderResult) {
 	if result == nil {
 		return
 	}
@@ -530,9 +548,7 @@ func (s *Service) enrichOutput(output *iapiserver.InfraRuntimeOutput) {
 	if output == nil {
 		return
 	}
-	s.stateMu.RLock()
-	content, ok := s.outputs[output.ID]
-	s.stateMu.RUnlock()
+	content, ok := s.getOutput(output.ID)
 	if !ok {
 		return
 	}

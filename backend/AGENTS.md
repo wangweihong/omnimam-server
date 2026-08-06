@@ -70,3 +70,6 @@
 - 只有确认 `github.com/wangweihong/gotoolbox`、仓库 `/pkg`、`backend/pkg`、`backend/internal/pkg` 都没有合适公共函数后，才允许新增本地 helper；必须先判断能否做成可复用通用泛型函数，避免只服务单个业务场景。
 - 新增 HTTP client 请求、外部 API 调用封装、provider 或 gateway 调用时，必须优先使用 `github.com/wangweihong/gotoolbox` 的 `httpcli` 包；只有 `httpcli` 不能满足明确需求时，才允许使用标准库或其他 HTTP client，并在实现前说明原因和 trade-off。
 - 除了pkg/的公共包允许增加单元测试外。其余包禁止私自添加_test.go进行测试
+
+## 常量
+- 状态如DELETED, 模式比如AGENT之类的应使用常量定义，禁止直接使用字符串

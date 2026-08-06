@@ -1,4 +1,4 @@
-package infrastructure
+package dockerruntime
 
 import (
 	"bufio"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
 )
 
 type ProfileImageResolver interface {
@@ -34,7 +35,7 @@ type DockerProvider struct {
 	apiVersion string
 }
 
-func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver) (*DockerProvider, error) {
+func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver) (providers.RuntimeProvider, error) {
 	if socketPath == "" {
 		socketPath = "/var/run/docker.sock"
 	}
@@ -63,7 +64,7 @@ func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error
 	}
 	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: "ONLINE", CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
 }
-func (d *DockerProvider) Ensure(ctx context.Context, input ProviderRequest) (*ProviderResult, error) {
+func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderRequest) (*providers.ProviderResult, error) {
 	if d.images == nil {
 		return nil, fmt.Errorf("docker profile image catalog is unavailable")
 	}
@@ -105,7 +106,7 @@ func (d *DockerProvider) Ensure(ctx context.Context, input ProviderRequest) (*Pr
 		if status != 0 {
 			return nil, fmt.Errorf("docker job exited with code %d", status)
 		}
-		return &ProviderResult{ProviderRuntimeRef: created.ID, Status: "SUCCEEDED"}, nil
+		return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: "SUCCEEDED"}, nil
 	}
 	state, err := d.Inspect(ctx, created.ID)
 	if err != nil {
@@ -116,15 +117,15 @@ func (d *DockerProvider) Ensure(ctx context.Context, input ProviderRequest) (*Pr
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
 	}
-	return &ProviderResult{ProviderRuntimeRef: created.ID, Status: "RUNNING", EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: "RUNNING", EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
 }
-func (d *DockerProvider) Start(ctx context.Context, ref string) (*ProviderResult, error) {
+func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
 		return nil, err
 	}
-	return &ProviderResult{ProviderRuntimeRef: ref, Status: "RUNNING"}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "RUNNING"}, nil
 }
-func (d *DockerProvider) Stop(ctx context.Context, ref string, deleteRuntime bool) (*ProviderResult, error) {
+func (d *DockerProvider) Stop(ctx context.Context, ref string, deleteRuntime bool) (*providers.ProviderResult, error) {
 	if ref == "" {
 		return nil, fmt.Errorf("docker runtime reference is empty")
 	}
@@ -133,14 +134,14 @@ func (d *DockerProvider) Stop(ctx context.Context, ref string, deleteRuntime boo
 		if err := d.Delete(ctx, ref); err != nil {
 			return nil, err
 		}
-		return &ProviderResult{ProviderRuntimeRef: ref, Status: "DELETED"}, nil
+		return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "DELETED"}, nil
 	}
-	return &ProviderResult{ProviderRuntimeRef: ref, Status: "STOPPED"}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "STOPPED"}, nil
 }
 func (d *DockerProvider) Delete(ctx context.Context, ref string) error {
 	return d.request(ctx, http.MethodDelete, "/containers/"+ref+"?force=true&v=true", nil, nil)
 }
-func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*ProviderResult, error) {
+func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	var data struct {
 		State struct {
 			Status   string `json:"Status"`
@@ -159,7 +160,7 @@ func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*ProviderResu
 	} else {
 		status = "FAILED"
 	}
-	return &ProviderResult{ProviderRuntimeRef: ref, Status: status}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: status}, nil
 }
 func (d *DockerProvider) Logs(ctx context.Context, ref string, limit int) ([]*iapiserver.InfraRuntimeLogEntry, error) {
 	if limit <= 0 || limit > 5000 {
@@ -268,4 +269,4 @@ func sanitizeLogLine(value string) string {
 	return value
 }
 
-var _ RuntimeProvider = (*DockerProvider)(nil)
+var _ providers.RuntimeProvider = (*DockerProvider)(nil)

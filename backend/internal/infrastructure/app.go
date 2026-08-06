@@ -16,6 +16,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers/dockerruntime"
 	"github.com/wangweihong/omnimam/backend/pkg/app"
 )
 
@@ -36,14 +37,16 @@ func Run(cfg *config.Config) error {
 	if err := apiserver.InitializeStore(cfg); err != nil {
 		return err
 	}
-	var images MapProfileImages
+	// 加载工作镜像
+	var images dockerruntime.MapProfileImages
 	if err := json.Unmarshal([]byte(os.Getenv("OMNIMAM_INFRA_PROFILE_IMAGES")), &images); err != nil || len(images) == 0 {
 		return fmt.Errorf("OMNIMAM_INFRA_PROFILE_IMAGES must be a non-empty JSON object")
 	}
-	provider, err := NewDockerProvider(os.Getenv("OMNIMAM_DOCKER_SOCKET"), os.Getenv("OMNIMAM_DOCKER_API_VERSION"), images)
+	provider, err := dockerruntime.NewDockerProvider(os.Getenv("OMNIMAM_DOCKER_SOCKET"), os.Getenv("OMNIMAM_DOCKER_API_VERSION"), images)
 	if err != nil {
 		return err
 	}
+
 	service, err := NewService(store.Client().Infrastructure(), provider)
 	if err != nil {
 		return err
