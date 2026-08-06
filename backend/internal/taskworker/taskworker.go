@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/gotoolbox/pkg/log"
+	"github.com/wangweihong/gotoolbox/pkg/timeutil"
+	"github.com/wangweihong/gotoolbox/pkg/typeutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -234,7 +236,7 @@ func RunTaskWorker(cfg *config.Config) error {
 				ExecutionKey:         atomicTask.ChildKey,
 				ApplicationVersionID: fmt.Sprint(task.Arguments[iapiserver.TaskWorkerKeyApplicationVersionID]),
 				OwnerUserID:          atomicTask.CreatedBy,
-				Inputs:               workerMap(task.Arguments[iapiserver.TaskWorkerKeyResolvedInputs]),
+				Inputs:               typeutil.AnyToMapAny(task.Arguments[iapiserver.TaskWorkerKeyResolvedInputs]),
 				Arguments:            task.Arguments,
 			})
 			if ensureErr != nil {
@@ -286,7 +288,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	if err := registerWorkerHandler(runtime, taskcentersvc.ReconcileControllerTask, 16, func(ctx context.Context, task workflowruntime.WorkerTask) (map[string]any, error) {
 		scheduleID, _ := task.Arguments[iapiserver.TaskWorkerKeyTaskScheduleID].(string)
-		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, scheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt]))
+		output, err := tasks.RunScheduleReconcile(ctx, scheduleID, task.WorkflowID, timeutil.ScheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt]))
 		if err == nil {
 			message := "Reconcile cycle completed."
 			if summary, ok := output[iapiserver.TaskWorkerKeyReconcileSummary].(iapiserver.ReconcileSummary); ok {
@@ -311,7 +313,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		if err != nil {
 			return nil, err
 		}
-		scheduledAt := scheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt])
+		scheduledAt := timeutil.ScheduleTime(task.Arguments[iapiserver.TaskWorkerKeyScheduledAt])
 		if taskcentersvc.ScheduleTriggerMisfired(scheduledAt, time.Now()) {
 			existing, getErr := storeIns.TaskCenters().GetScheduleExecutionAt(ctx, schedule.ID, scheduledAt)
 			if getErr != nil {
@@ -1008,7 +1010,7 @@ func ensureEngineHealthSchedule(ctx context.Context, tasks taskcentersvc.TaskCen
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	cron := healthCron(interval)
+	cron := timeutil.DurtionToCron(interval)
 	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: iapiserver.TaskWorkerScheduleNameEngineHealth, Description: "Periodic EngineInstance health reconcile"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.EngineHealthReconcile}, SystemKey: engine.EngineHealthReconcileRef, CronExpression: cron, TimeZone: iapiserver.TaskWorkerTimeZoneUTC, ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: engine.EngineHealthReconcileRef, Config: map[string]any{}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 4, OverallTimeoutSeconds: 5}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
 }
@@ -1021,48 +1023,4 @@ func ensureComfyUIObjectInfoSchedule(ctx context.Context, tasks taskcentersvc.Ta
 func ensureRepresentationBackfillSchedule(ctx context.Context, tasks taskcentersvc.TaskCenterSrv) error {
 	_, err := tasks.EnsureSystemReconcileSchedule(ctx, &iapiserver.TaskSchedule{ObjectMeta: imachinery.ObjectMeta{Name: assetlibrarysvc.RepresentationBackfillRef, Description: "Daily AssetVersion representation backfill"}, TaskNameMeta: iapiserver.TaskNameMeta{NameSource: iapiserver.TaskNameSourceSystem, SystemNameKey: taskname.RepresentationBackfill}, SystemKey: assetlibrarysvc.RepresentationBackfillRef, CronExpression: iapiserver.TaskWorkerScheduleCronRepresentationBackfill, TimeZone: iapiserver.TaskWorkerTimeZoneUTC, ReconcileSpec: &iapiserver.ReconcileSpec{ReconcileRef: assetlibrarysvc.RepresentationBackfillRef, Config: map[string]any{iapiserver.TaskWorkerKeyMaxActionsPerRun: 100}, MaxParallelism: 16, MaxItemsPerRun: 1000, PerItemTimeoutSeconds: 5, OverallTimeoutSeconds: 300}, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy})
 	return err
-}
-
-func scheduleTime(value any) time.Time {
-	var milliseconds int64
-	switch typed := value.(type) {
-	case float64:
-		milliseconds = int64(typed)
-	case int64:
-		milliseconds = typed
-	case json.Number:
-		milliseconds, _ = typed.Int64()
-	case string:
-		if parsed, err := time.Parse(time.RFC3339Nano, typed); err == nil {
-			return parsed.UTC()
-		}
-		_, _ = fmt.Sscan(typed, &milliseconds)
-	}
-	if milliseconds > 0 {
-		return time.UnixMilli(milliseconds).UTC()
-	}
-	return time.Now().UTC()
-}
-
-func workerMap(value any) map[string]any {
-	result, _ := value.(map[string]any)
-	if result == nil {
-		return map[string]any{}
-	}
-	return result
-}
-
-func healthCron(interval time.Duration) string {
-	seconds := int(interval / time.Second)
-	if seconds > 0 && seconds < 60 {
-		return fmt.Sprintf("*/%d * * * * *", seconds)
-	}
-	minutes := int(interval / time.Minute)
-	if minutes < 1 {
-		minutes = 1
-	}
-	if minutes > 59 {
-		minutes = 59
-	}
-	return fmt.Sprintf("0 */%d * * * *", minutes)
 }
