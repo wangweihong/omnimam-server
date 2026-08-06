@@ -62,7 +62,7 @@ func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error
 	if err := d.request(ctx, http.MethodGet, "/info", nil, &info); err != nil {
 		return nil, err
 	}
-	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: "ONLINE", CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
+	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: "docker-local", Name: "Docker Local"}, ProviderType: "docker", Status: iapiserver.InfraNodeStatusOnline, CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
 }
 func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderRequest) (*providers.ProviderResult, error) {
 	if d.images == nil {
@@ -98,7 +98,7 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, err
 	}
-	if input.Request.RuntimeMode == "JOB" {
+	if input.Request.RuntimeMode == iapiserver.InfraRuntimeModeJob {
 		status, err := d.wait(ctx, created.ID)
 		if err != nil {
 			return nil, err
@@ -106,24 +106,24 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		if status != 0 {
 			return nil, fmt.Errorf("docker job exited with code %d", status)
 		}
-		return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: "SUCCEEDED"}, nil
+		return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusSucceeded}, nil
 	}
 	state, err := d.Inspect(ctx, created.ID)
 	if err != nil {
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, fmt.Errorf("inspect docker runtime after start: %w", err)
 	}
-	if state.Status != "RUNNING" {
+	if state.Status != iapiserver.InfraRuntimeStatusRunning {
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
 	}
-	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: "RUNNING", EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: "infra-runtime://" + input.RuntimeID}, nil
 }
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
 		return nil, err
 	}
-	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "RUNNING"}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: iapiserver.InfraRuntimeStatusRunning}, nil
 }
 func (d *DockerProvider) Stop(ctx context.Context, ref string, deleteRuntime bool) (*providers.ProviderResult, error) {
 	if ref == "" {
@@ -134,9 +134,9 @@ func (d *DockerProvider) Stop(ctx context.Context, ref string, deleteRuntime boo
 		if err := d.Delete(ctx, ref); err != nil {
 			return nil, err
 		}
-		return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "DELETED"}, nil
+		return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: iapiserver.InfraRuntimeStatusDeleted}, nil
 	}
-	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: "STOPPED"}, nil
+	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: iapiserver.InfraRuntimeStatusStopped}, nil
 }
 func (d *DockerProvider) Delete(ctx context.Context, ref string) error {
 	return d.request(ctx, http.MethodDelete, "/containers/"+ref+"?force=true&v=true", nil, nil)
@@ -152,13 +152,13 @@ func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*providers.Pr
 	if err := d.request(ctx, http.MethodGet, "/containers/"+ref+"/json", nil, &data); err != nil {
 		return nil, err
 	}
-	status := "STOPPED"
+	status := iapiserver.InfraRuntimeStatusStopped
 	if data.State.Running {
-		status = "RUNNING"
+		status = iapiserver.InfraRuntimeStatusRunning
 	} else if data.State.ExitCode == 0 {
-		status = "SUCCEEDED"
+		status = iapiserver.InfraRuntimeStatusSucceeded
 	} else {
-		status = "FAILED"
+		status = iapiserver.InfraRuntimeStatusFailed
 	}
 	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: status}, nil
 }

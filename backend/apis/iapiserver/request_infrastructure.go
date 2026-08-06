@@ -16,6 +16,8 @@ const (
 )
 
 const (
+	// InfraNodeStatusOnline 表示 Infrastructure 节点当前可用。
+	InfraNodeStatusOnline = "ONLINE"
 	// InfraNodeStatusOffline 表示 Infrastructure 节点当前不可用。
 	InfraNodeStatusOffline = "OFFLINE"
 	// InfraRuntimeProfileStatusActive 表示 Runtime Profile 可被新请求选用。
