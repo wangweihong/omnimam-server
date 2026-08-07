@@ -19,7 +19,6 @@ type Factory interface {
 
 	// canvases
 	Projects() ProjectStore
-	Canvases() CanvasStore
 	WorkflowCanvases() WorkflowCanvasStore
 
 	// platform contracts

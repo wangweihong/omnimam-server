@@ -165,6 +165,13 @@ DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task') THEN
     ALTER TABLE agent_invocations DROP CONSTRAINT ck_agent_invocations_task;
   END IF;
+  UPDATE agent_invocations
+  SET status = 'FAILED',
+      failure_code = 'ERR_AGENT_INVOCATION_TASK_UNAVAILABLE',
+      failure_message = COALESCE(NULLIF(failure_message, ''), 'invocation task unavailable during contract migration')
+  WHERE atomic_task_id IS NULL
+    AND status <> 'QUEUED'
+    AND NOT (status = 'FAILED' AND failure_code = 'ERR_AGENT_INVOCATION_TASK_UNAVAILABLE');
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task_binding') THEN
     ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_task_binding CHECK (atomic_task_id IS NOT NULL OR status = 'QUEUED' OR (status = 'FAILED' AND failure_code = 'ERR_AGENT_INVOCATION_TASK_UNAVAILABLE'));
   END IF;
@@ -585,10 +592,6 @@ func (ds *datastore) PromptItems() store.PromptItemStore {
 /* ------ canvas ------- */
 func (ds *datastore) Projects() store.ProjectStore {
 	return newProject(ds)
-}
-
-func (ds *datastore) Canvases() store.CanvasStore {
-	return newCanvas(ds)
 }
 
 func (ds *datastore) WorkflowCanvases() store.WorkflowCanvasStore {

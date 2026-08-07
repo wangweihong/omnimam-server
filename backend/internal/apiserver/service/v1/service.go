@@ -4,7 +4,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
 	appplatform "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/asset"
-	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/canvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/prompt"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
@@ -14,7 +13,6 @@ import (
 type Service interface {
 	Assets() asset.AssetSrv
 	Prompts() prompt.PromptSrv
-	Canvases() canvas.CanvasSrv
 	Platforms() appplatform.PlatformSrv
 	TaskCenters() taskcenter.TaskCenterSrv
 	AIChat() aichat.AIChatSrv
@@ -40,10 +38,6 @@ func (s *service) Assets() asset.AssetSrv {
 
 func (s *service) Prompts() prompt.PromptSrv {
 	return prompt.NewService(s.store)
-}
-
-func (s *service) Canvases() canvas.CanvasSrv {
-	return canvas.NewService(s.store)
 }
 
 func (s *service) Platforms() appplatform.PlatformSrv {

@@ -135,6 +135,7 @@ func (s *Service) CreateCodingAgentForStudio(
 	workspaceID string,
 	ownerUserID string,
 	idempotencyKey string,
+	modelBindingInput *iapiserver.AgentModelBindingInput,
 ) (*iapiserver.Agent, error) {
 	if studioApplicationID == "" || workspaceID == "" || ownerUserID == "" || idempotencyKey == "" {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization context is incomplete")
@@ -182,11 +183,15 @@ func (s *Service) CreateCodingAgentForStudio(
 		AgentID:    agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeStudio, WorkspaceID: workspaceID,
 		AccessMode: iapiserver.AgentWorkspaceAccessModeReadWrite, AuthorizationSummary: authorization,
 	}
-	model := &iapiserver.AgentModelBinding{
-		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "primary-model"), Name: "primary-model"},
-		AgentID:    agentID, SourceType: iapiserver.AgentModelBindingSourceTypeUserDefault, SourceRef: iapiserver.AgentModelBindingSourceRefUserDefault,
-		Purpose: defaultPurpose(iapiserver.AgentKindCoding), Status: iapiserver.AgentModelBindingStatusActive, IsPrimary: true,
+	if modelBindingInput == nil {
+		modelBindingInput = &iapiserver.AgentModelBindingInput{
+			SourceType: iapiserver.AgentModelBindingSourceTypeUserDefault,
+			SourceRef:  iapiserver.AgentModelBindingSourceRefUserDefault,
+			Purpose:    defaultPurpose(iapiserver.AgentKindCoding),
+		}
 	}
+	model := modelBinding(agentID, "primary-model", modelBindingInput)
+	model.ID = stableCodingAgentChildID(agentID, "primary-model")
 	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
 		existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID)
 		if getErr == nil && codingAgentMatchesStudio(existing, workspaceID) {

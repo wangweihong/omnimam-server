@@ -1,6 +1,6 @@
 $schema: https://json-schema.org/draft/2020-12/schema
 $id: https://omnimam.local/schemas/task-center/function-registry.schema.yaml
-title: OmniMAM Task Center Infra-backed Function Registry
+title: OmniMAM Task Center Agent/AppStudio Function Registry
 x-s1-refs:
   user_stories: [US-TASK-026]
   business_rules: [BR-TASK-148, BR-TASK-153]
@@ -20,9 +20,9 @@ properties:
     type: string
     pattern: '^[0-9]+\.[0-9]+$'
   registry_id:
-    const: task-center.infra-backed
+    const: task-center.agent-appstudio
   scope:
-    const: INFRA_BACKED_V1
+    const: AGENT_APPSTUDIO_V1
   description:
     type: string
     minLength: 1
@@ -146,12 +146,7 @@ $defs:
           required: [output_key, relative_path, media_type]
           properties:
             output_key: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
-            relative_path:
-              type: string
-              minLength: 1
-              allOf:
-                - pattern: '^[^/]'
-                - not: {pattern: '(^|/)\.\.(/|$)'}
+            relative_path: {type: string, minLength: 1, pattern: '^(?:[^./][^/]*|\.[^./][^/]*|\.\.[^/]+)(?:/(?:[^./][^/]*|\.[^./][^/]*|\.\.[^/]+))*$'}
             media_type: {type: string, minLength: 1}
       constants:
         type: object
@@ -192,7 +187,7 @@ $defs:
     required: [consumer_domain, aggregate_type, aggregate_id_path, update_mode, field_mappings]
     properties:
       consumer_domain: {enum: [agent, appstudio]}
-      aggregate_type: {enum: [AgentRuntime, StudioPreviewRuntime, StudioBuild, StudioRuntimeInstance]}
+      aggregate_type: {enum: [AgentInvocation, AgentRuntime, StudioPreviewRuntime, StudioBuild, StudioRuntimeInstance]}
       aggregate_id_path: {type: string, pattern: '^arguments\.[a-z][a-z0-9_]*$'}
       update_mode: {const: SOURCE_DOMAIN_CONSUMES_TASK_RESULT}
       field_mappings:
@@ -206,6 +201,16 @@ $defs:
             from: {type: string, minLength: 1}
             to: {type: string, minLength: 1}
             transform: {type: string, pattern: '^[A-Z][A-Z0-9_]*$'}
+  executionAdapter:
+    type: object
+    additionalProperties: false
+    required: [adapter_type, profile_source, endpoint_resolution, event_projection, terminal_observer]
+    properties:
+      adapter_type: {const: AGENT_RUNTIME_PROFILE}
+      profile_source: {const: AGENT_RUNTIME_BINDING}
+      endpoint_resolution: {const: INFRA_READY_ENDPOINT_BY_AGENT_WORKLOAD_IDENTITY}
+      event_projection: {const: MONOTONIC_SEQUENCE}
+      terminal_observer: {const: AGENT_INVOCATION}
   security:
     type: object
     additionalProperties: false
@@ -244,7 +249,6 @@ $defs:
       - retry_policy
       - cancel_policy
       - timeout_policy
-      - infra_adapter
       - result_projection
       - security
       - x-s1-refs
@@ -254,7 +258,7 @@ $defs:
       contract_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
       status: {enum: [ACTIVE, RETAINED, DISABLED]}
       owning_domain: {enum: [agent, appstudio]}
-      handler: {const: task-center.infra-adapter}
+      handler: {enum: [task-center.infra-adapter, task-worker.agent-executor]}
       execution_mode: {enum: [JOB, SERVICE]}
       required_capabilities:
         type: array
@@ -268,7 +272,15 @@ $defs:
       cancel_policy: {$ref: '#/$defs/cancelPolicy'}
       timeout_policy: {$ref: '#/$defs/timeoutPolicy'}
       infra_adapter: {$ref: '#/$defs/infraAdapter'}
+      execution_adapter: {$ref: '#/$defs/executionAdapter'}
       artifact_registration: {$ref: '#/$defs/artifactRegistration'}
       result_projection: {$ref: '#/$defs/resultProjection'}
       security: {$ref: '#/$defs/security'}
       x-s1-refs: {$ref: '#/$defs/s1Refs'}
+    allOf:
+      - if: {properties: {handler: {const: task-center.infra-adapter}}}
+        then: {required: [infra_adapter]}
+      - if: {properties: {handler: {const: task-worker.agent-executor}}}
+        then:
+          required: [execution_adapter]
+          not: {required: [infra_adapter]}

@@ -2,12 +2,20 @@
 
 ## Current goal and status
 
-- Goal: implement the released Agent business-flow closure after publishing the coordinated `spec-v1.18.0` SSOT update.
-- Status: Agent Invocation persistence and Task submission reconciliation is in progress; the Agent service now compiles against the released function contract.
+- Goal: restore `make compose` while preserving the in-progress Agent business-flow work against `spec-v1.18.0`.
+- Status: Complete. `make compose` exits successfully and all Compose services are running; Agent business-flow reconciliation remains the next feature task.
 - Current SSOT: `spec-v1.18.0` at `b0de28e6b6d9462d95ae8e59a8412640047a218e`; `SSOT_VERSION` matches the submodule commit.
 
 ## Work completed in this session
 
+- Reproduced `make compose`; the `apiserver` build failed on the nonexistent legacy `service/v1/canvas` import.
+- Confirmed the replacement `workflowcanvas` service is wired independently with Task Center dependencies and no code calls the stale aggregate `Canvases()` method.
+- Removed the stale `canvas` import, `Service.Canvases()` declaration, and implementation from the v1 service aggregator.
+- The next `make compose` run passed the service aggregator and exposed the matching stale PostgreSQL `Canvases()` factory method; confirmed it has no callers, then removed it from both `store.Factory` and the PostgreSQL datastore while retaining the unused legacy type to keep the change narrow.
+- The following `make compose` run reached APIServer wiring and exposed an AppStudio/Agent interface mismatch; updated `CreateCodingAgentForStudio` to accept the released optional model binding and persist it through the existing binding helper, with the Coding default retained when omitted.
+- The next build produced the APIServer, Infrastructure, and Notification Worker images, then found the missing checksum for the version-pinned `chinese-calendar-golang` transitive dependency used by local `third_party/gotoolbox`; added the existing pinned version to the main module graph and its checksums without upgrading dependencies.
+- Compose then reached runtime startup but APIServer rejected one legacy no-Task `CANCELED` Invocation while installing the released Task-binding constraint; added an idempotent compatibility backfill that projects any invalid legacy no-Task terminal row to `FAILED / ERR_AGENT_INVOCATION_TASK_UNAVAILABLE` before adding the constraint.
+- APIServer then rejected the released registry YAML against a stale infra-only embedded schema; regenerated the target assets from pinned `spec-v1.18.0`, adding the Agent execution adapter schema, current retryability entries, and correct `SOURCE` commit/hash.
 - Confirmed the released S1/S2 gaps for Agent execution, AppStudio Coding Agent projection, model access, deletion finalization, and Task terminal projection.
 - Confirmed public `/api/v1/agents` must remain Platform-only.
 - Confirmed Task Center already owns retry, cancellation, and timeout; Agent must not add a watchdog.
@@ -22,15 +30,22 @@
 
 ## Current in-progress work
 
-- Agent service reconciliation is in progress: centralize generation-aware task submission, submit queued Invocations after Runtime READY, and add fenced terminal projection.
+- None for the Compose repair. Agent service reconciliation remains paused at generation-aware Task binding and fenced terminal projection.
 
 ## Files changed
 
+- Modified: `backend/internal/apiserver/service/v1/service.go` to remove the stale legacy Canvas aggregate dependency.
+- Modified: `backend/internal/apiserver/store/postgresql/0_pg.go` to remove the stale legacy Canvas factory method.
+- Modified: `backend/internal/apiserver/store/postgresql/0_pg.go` to migrate legacy no-Task Invocation terminal rows before enforcing the released binding constraint.
+- Modified: `backend/internal/apiserver/store/factory.go` to remove the matching stale factory contract method.
+- Modified: `backend/internal/apiserver/service/v1/agent/service.go` to complete the AppStudio Coding Agent model-binding interface implementation.
+- Modified: `go.mod` and `go.sum` to record the existing pinned calendar dependency required by `taskworker`.
 - Modified: `SSOT_VERSION`, `docs/HANDOFF.md`, and `backend/internal/taskfunctionregistry/registry.go`.
 - Modified: `backend/internal/taskfunctionregistry/registry.go` to model optional Infra and Agent execution adapters without injecting absent fields into canonical digest payloads.
 - Temporary validation `backend/internal/taskfunctionregistry/upstream_tmp_test.go` was removed after its passing run.
 - Pre-existing user changes to preserve: `backend/apis/iapiserver/meta_agent.go`, `backend/apis/iapiserver/request_appstudio.go`, `backend/internal/apiserver/service/v1/agent/service.go`, `backend/internal/apiserver/service/v1/appstudio/service.go`, `backend/internal/taskfunctionregistry/assets/function-registry.yaml`.
 - Modified: `backend/internal/taskfunctionregistry/assets/function-registry.yaml` to match the released nine-function registry contract.
+- Modified generated assets: `backend/internal/taskfunctionregistry/assets/function-registry.schema.yaml`, `error-retryability.json`, and `SOURCE` to match the same released registry.
 - Modified Agent API models, Agent store interface/PostgreSQL implementation, PostgreSQL constraints, and Agent service task submission/cancellation behavior.
 
 ## Key decisions
@@ -54,6 +69,12 @@
 - After optional adapter modeling and loading the referenced Asset Library retry catalog, the same focused test passed with all nine calculated digests matching their declarations.
 - `git submodule status ssot` and `SSOT_VERSION` both resolve to `b0de28e6b6d9462d95ae8e59a8412640047a218e` (`spec-v1.18.0`).
 - `go test ./internal/apiserver/service/v1/agent` passes after replacing the stale nonexistent `CreateAtomicTask` call with the domain Task API.
+- `go test ./backend/internal/apiserver/service/v1`, `go test ./backend/internal/apiserver/store/postgresql`, and `go test ./backend/internal/apiserver/service/v1/agent` pass for the Compose fixes.
+- `go test -mod=mod ./backend/internal/taskworker` compiles and runs but fails existing AppStudio tests because their embedded registry fixture still enforces the old infra-only registry schema; no unrelated fixture changes were made for the Compose build repair.
+- `go test ./backend/internal/taskfunctionregistry` passes after regenerating the released registry schema assets.
+- Final `make compose` exits 0 and starts PostgreSQL, Redis, Conductor, APIServer, Infraserver, Notification Worker, and Taskworker.
+- Final `docker compose -f deployments/docker-compose.yaml ps` shows all services running, declared health checks healthy, and restart count 0 for all four OmniMAM backend processes.
+- `git diff --check` passes.
 
 ## Outstanding tasks
 
@@ -65,10 +86,11 @@
 - The current model access reference is only a string and is not resolved into an injectable ModelAccessSpec.
 - `taskcenter.Reconciler` exists but is not wired into APIServer startup.
 - The complete `agent.invocation.execute@1.0` and changed runtime grant digests passed focused validation; queued-after-runtime submission, Task terminal projection, runtime adapters, and AppStudio facade remain to implement.
+- `go generate ./backend/internal/taskfunctionregistry` currently resolves its root one directory too high; use `go run ./backend/internal/taskfunctionregistry/internal/generate -root .` until the directive is corrected in a separate scoped change.
 
 ## Exact recommended next step
 
-Complete generation-aware Invocation Task binding and fenced terminal projection in `backend/internal/apiserver/service/v1/agent/service.go`, then run the focused Agent and registry package tests.
+Correct the stale registry fixtures in the focused Taskworker tests, then complete generation-aware Invocation Task binding and fenced terminal projection in `backend/internal/apiserver/service/v1/agent/service.go`.
 
 Next Prompt:
 
