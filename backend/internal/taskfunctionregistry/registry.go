@@ -79,7 +79,8 @@ type Contract struct {
 	RetryPolicy          RetryPolicy           `json:"retry_policy" yaml:"retry_policy"`
 	CancelPolicy         CancelPolicy          `json:"cancel_policy" yaml:"cancel_policy"`
 	TimeoutPolicy        TimeoutPolicy         `json:"timeout_policy" yaml:"timeout_policy"`
-	InfraAdapter         InfraAdapter          `json:"infra_adapter" yaml:"infra_adapter"`
+	InfraAdapter         *InfraAdapter         `json:"infra_adapter,omitempty" yaml:"infra_adapter,omitempty"`
+	ExecutionAdapter     *ExecutionAdapter     `json:"execution_adapter,omitempty" yaml:"execution_adapter,omitempty"`
 	ArtifactRegistration *ArtifactRegistration `json:"artifact_registration,omitempty" yaml:"artifact_registration,omitempty"`
 	ResultProjection     ResultProjection      `json:"result_projection" yaml:"result_projection"`
 	Security             Security              `json:"security" yaml:"security"`
@@ -127,6 +128,14 @@ type InfraAdapter struct {
 	SourcePolicy               string              `json:"source_policy,omitempty" yaml:"source_policy,omitempty"`
 	OutputDeclarations         []OutputDeclaration `json:"output_declarations,omitempty" yaml:"output_declarations,omitempty"`
 	Constants                  map[string]any      `json:"constants" yaml:"constants"`
+}
+
+type ExecutionAdapter struct {
+	AdapterType        string `json:"adapter_type" yaml:"adapter_type"`
+	ProfileSource      string `json:"profile_source" yaml:"profile_source"`
+	EndpointResolution string `json:"endpoint_resolution" yaml:"endpoint_resolution"`
+	EventProjection    string `json:"event_projection" yaml:"event_projection"`
+	TerminalObserver   string `json:"terminal_observer" yaml:"terminal_observer"`
 }
 
 type OutputDeclaration struct {

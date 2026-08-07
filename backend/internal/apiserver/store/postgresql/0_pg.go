@@ -99,6 +99,7 @@ DO $$ BEGIN
       function_ref NOT IN (
         'agent.runtime.ensure',
         'agent.runtime.stop',
+        'agent.invocation.execute',
         'appstudio.preview.ensure',
         'appstudio.preview.stop',
         'appstudio.build.execute',
@@ -127,6 +128,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_workspace_binding_agent ON agent_wor
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skill_binding_agent_skill ON agent_skill_bindings(agent_id, skill_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runtime_current ON agent_runtime_bindings(agent_id)
 WHERE state NOT IN ('DELETED', 'STOPPED', 'FAILED');
+CREATE INDEX IF NOT EXISTS idx_agent_runtime_current_task ON agent_runtime_bindings(current_task_id) WHERE current_task_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_operation_event_sequence ON agent_operation_events(invocation_id, sequence_no);
 CREATE INDEX IF NOT EXISTS idx_agent_outbox_delivery ON agent_outbox(delivery_status, next_attempt_at);
 DO $$ BEGIN
@@ -151,8 +153,29 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_status') THEN
     ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_status CHECK (status IN ('QUEUED','STARTING','RUNNING','WAITING_FOR_TOOL','WAITING_FOR_USER','SUCCEEDED','FAILED','CANCELING','CANCELED'));
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task') THEN
-    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_task CHECK (type='CHAT' OR atomic_task_id IS NOT NULL);
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS runtime_binding_id TEXT;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS runtime_session_ref TEXT;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS runtime_invocation_ref TEXT;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS last_event_sequence INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS submission_generation INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS task_expected_resource_version INTEGER;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS terminal_projected_task_id TEXT;
+  ALTER TABLE agent_invocations ADD COLUMN IF NOT EXISTS terminal_projected_at TIMESTAMPTZ;
+  CREATE INDEX IF NOT EXISTS idx_agent_invocations_runtime_binding ON agent_invocations(runtime_binding_id) WHERE runtime_binding_id IS NOT NULL;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task') THEN
+    ALTER TABLE agent_invocations DROP CONSTRAINT ck_agent_invocations_task;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task_binding') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_task_binding CHECK (atomic_task_id IS NOT NULL OR status = 'QUEUED' OR (status = 'FAILED' AND failure_code = 'ERR_AGENT_INVOCATION_TASK_UNAVAILABLE'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_task_resource_version') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_task_resource_version CHECK (atomic_task_id IS NULL OR task_expected_resource_version IS NOT NULL);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_terminal_task') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_terminal_task CHECK (terminal_projected_task_id IS NULL OR terminal_projected_task_id = atomic_task_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_invocations_sequences') THEN
+    ALTER TABLE agent_invocations ADD CONSTRAINT ck_agent_invocations_sequences CHECK (last_event_sequence >= 0 AND submission_generation >= 0);
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_memories_scope') THEN
     ALTER TABLE agent_memories ADD CONSTRAINT ck_agent_memories_scope CHECK (scope IN ('AGENT','SESSION'));
@@ -189,6 +212,12 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_runtime_bindings_health') THEN
     ALTER TABLE agent_runtime_bindings ADD CONSTRAINT ck_agent_runtime_bindings_health CHECK (health_status IN ('UNKNOWN','HEALTHY','UNHEALTHY'));
+  END IF;
+  ALTER TABLE agent_runtime_bindings ADD COLUMN IF NOT EXISTS current_task_id TEXT;
+  ALTER TABLE agent_runtime_bindings ADD COLUMN IF NOT EXISTS current_operation TEXT;
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_current_task ON agent_runtime_bindings(current_task_id) WHERE current_task_id IS NOT NULL;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_runtime_bindings_current_operation') THEN
+    ALTER TABLE agent_runtime_bindings ADD CONSTRAINT ck_agent_runtime_bindings_current_operation CHECK (current_operation IS NULL OR current_operation IN ('START','RECOVER','SUSPEND','STOP','DELETE'));
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_agent_outbox_delivery') THEN
     ALTER TABLE agent_outbox ADD CONSTRAINT ck_agent_outbox_delivery CHECK (delivery_status IN ('PENDING','DELIVERED','FAILED'));

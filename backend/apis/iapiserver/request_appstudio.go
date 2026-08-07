@@ -264,8 +264,9 @@ type StudioApplicationListRequest struct {
 
 // +k8s:deepcopy-gen=true
 type StudioApplicationCreateRequest struct {
-	Name        string `json:"name" binding:"required,min=1,max=200"`
-	Description string `json:"description,omitempty" binding:"omitempty,max=2000"`
+	Name         string                  `json:"name" binding:"required,min=1,max=200"`
+	Description  string                  `json:"description,omitempty" binding:"omitempty,max=2000"`
+	ModelBinding *AgentModelBindingInput `json:"model_binding,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

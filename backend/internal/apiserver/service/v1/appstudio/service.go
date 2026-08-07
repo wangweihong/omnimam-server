@@ -35,7 +35,7 @@ type ArtifactReader interface {
 }
 
 type CodingAgentCreator interface {
-	CreateCodingAgentForStudio(context.Context, string, string, string, string) (*iapiserver.Agent, error)
+	CreateCodingAgentForStudio(context.Context, string, string, string, string, *iapiserver.AgentModelBindingInput) (*iapiserver.Agent, error)
 }
 
 type Service struct {
@@ -96,7 +96,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization is unavailable")
 	}
-	if _, err := s.agents.CreateCodingAgentForStudio(ctx, appID, workspaceID, owner, appID); err != nil {
+	if _, err := s.agents.CreateCodingAgentForStudio(ctx, appID, workspaceID, owner, appID, req.ModelBinding); err != nil {
 		app.Status = iapiserver.AppStudioApplicationStatusError
 		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
@@ -669,6 +669,7 @@ func (s *Service) loadRevision(ctx context.Context, workspaceID string, revision
 	}
 	return result, nil
 }
+
 func applyOperations(files map[string][]byte, operations []iapiserver.StudioChangeOperation) error {
 	for _, op := range operations {
 		path, err := cleanSourcePath(op.Path)

@@ -66,6 +66,14 @@ const (
 	AgentInvocationTypeCoding = "CODING"
 	// AgentInvocationStatusQueued 表示 Invocation 已持久化并等待执行。
 	AgentInvocationStatusQueued = "QUEUED"
+	// AgentInvocationStatusStarting 表示 Worker 正在建立或恢复 Runtime 会话。
+	AgentInvocationStatusStarting = "STARTING"
+	// AgentInvocationStatusRunning 表示 Runtime 正在执行 Invocation。
+	AgentInvocationStatusRunning = "RUNNING"
+	// AgentInvocationStatusWaitingForTool 表示 Invocation 正在等待工具结果。
+	AgentInvocationStatusWaitingForTool = "WAITING_FOR_TOOL"
+	// AgentInvocationStatusWaitingForUser 表示 Invocation 正在等待用户输入。
+	AgentInvocationStatusWaitingForUser = "WAITING_FOR_USER"
 	// AgentInvocationStatusCanceling 表示 Invocation 正在请求取消关联任务。
 	AgentInvocationStatusCanceling = "CANCELING"
 	// AgentInvocationStatusSucceeded 表示 Invocation 已成功完成。
@@ -116,6 +124,21 @@ const (
 	AgentRuntimeFunctionEnsure = "agent.runtime.ensure"
 	// AgentRuntimeFunctionStop 是 Agent 停止任务的 functionRef。
 	AgentRuntimeFunctionStop = "agent.runtime.stop"
+	// AgentInvocationFunctionExecute 是 CHAT/CODING Invocation 共用的执行 functionRef。
+	AgentInvocationFunctionExecute = "agent.invocation.execute"
 	// AgentTaskDomain 是 Agent 向 Task Center 创建任务时使用的领域标识。
 	AgentTaskDomain = "agent"
+)
+
+const (
+	AgentInvocationTaskKeyAgentID                    = "agent_id"
+	AgentInvocationTaskKeySessionID                  = "session_id"
+	AgentInvocationTaskKeyInvocationID               = "invocation_id"
+	AgentInvocationTaskKeyRuntimeBindingID           = "runtime_binding_id"
+	AgentInvocationTaskKeyInvocationType             = "invocation_type"
+	AgentInvocationTaskKeyAuthorizationRef           = "authorization_ref"
+	AgentInvocationTaskKeyExpectedResourceVersion    = "expected_resource_version"
+	AgentInvocationTaskKeyResumeRuntimeSessionRef    = "resume_runtime_session_ref"
+	AgentInvocationTaskKeyResumeRuntimeInvocationRef = "resume_runtime_invocation_ref"
+	AgentInvocationTaskKeyEventSequenceAfter         = "event_sequence_after"
 )

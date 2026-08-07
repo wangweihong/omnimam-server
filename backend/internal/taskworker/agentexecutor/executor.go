@@ -26,7 +26,7 @@ type runtimeEnsureArguments struct {
 	WorkspaceSourceRef      *string                             `json:"workspace_source_ref"`
 	RuntimeProfileID        string                              `json:"runtime_profile_id"`
 	RuntimeProfileRevision  string                              `json:"runtime_profile_revision"`
-	ModelAccessSpecRef      string                              `json:"model_access_spec_ref"`
+	ModelAccessGrantRef     string                              `json:"model_access_grant_ref"`
 	RuntimeConfigurationRef string                              `json:"runtime_configuration_ref"`
 	AuthorizationRef        string                              `json:"authorization_ref"`
 	ExpectedResourceVersion int64                               `json:"expected_resource_version"`
@@ -251,7 +251,7 @@ func validateRuntimeEnsureArguments(arguments runtimeEnsureArguments) error {
 	if arguments.RuntimeProfileID != iapiserver.TaskWorkerAgentRuntimeProfileHermes && arguments.RuntimeProfileID != iapiserver.TaskWorkerAgentRuntimeProfileCoding {
 		return fmt.Errorf("agent runtime ensure profile %q is invalid", arguments.RuntimeProfileID)
 	}
-	if !strings.HasPrefix(arguments.ModelAccessSpecRef, iapiserver.TaskWorkerRefPrefixModelAccessSpec) ||
+	if !strings.HasPrefix(arguments.ModelAccessGrantRef, iapiserver.TaskWorkerRefPrefixAgentModelAccessGrant) ||
 		!strings.HasPrefix(arguments.RuntimeConfigurationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeConfig) ||
 		!strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeGrant) {
 		return fmt.Errorf("agent runtime ensure references are invalid")

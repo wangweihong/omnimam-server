@@ -1,8 +1,8 @@
-schema_version: "1.1"
-registry_id: task-center.infra-backed
-scope: INFRA_BACKED_V1
+schema_version: "1.2"
+registry_id: task-center.agent-appstudio
+scope: AGENT_APPSTUDIO_V1
 description: >-
-  Task Center 第一阶段只读 Infra-backed Function Registry。该文件是 S2 实现合同，
+  Task Center 第一阶段只读 Agent/AppStudio Function Registry。该文件是 S2 实现合同，
   不是运行时配置或用户可写目录；input_schema 校验 AtomicTask arguments，
   output_schema 校验 TaskOutput.result。TaskOutput.artifact_refs 仍使用 Task Center OpenAPI 通用结构。
 contract_digest:
@@ -11,9 +11,39 @@ contract_digest:
   payload: function_entry_with_status_normalized_to_active_without_contract_digest_and_x_s1_refs_plus_resolved_input_output_schemas
 x-s1-refs:
   user_stories: [US-TASK-026, US-AGENT-001, US-APPSTUDIO-001, US-INFRA-001]
-  business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-150, BR-TASK-151, BR-TASK-152, BR-TASK-153]
+  business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-149, BR-TASK-150, BR-TASK-151, BR-TASK-152, BR-TASK-153, BR-TASK-155]
 
 schemas:
+  agent_invocation_execute_input:
+    type: object
+    additionalProperties: false
+    required: [agent_id, session_id, invocation_id, runtime_binding_id, invocation_type, authorization_ref, expected_resource_version]
+    properties:
+      agent_id: {type: string, minLength: 1}
+      session_id: {type: string, minLength: 1}
+      invocation_id: {type: string, minLength: 1}
+      runtime_binding_id: {type: string, minLength: 1}
+      invocation_type: {type: string, enum: [CHAT, CODING]}
+      authorization_ref: {type: string, pattern: '^agent-invocation-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resume_runtime_session_ref: {type: [string, 'null'], minLength: 1}
+      resume_runtime_invocation_ref: {type: [string, 'null'], minLength: 1}
+      event_sequence_after: {type: integer, minimum: 0}
+
+  agent_invocation_execute_output:
+    type: object
+    additionalProperties: false
+    required: [invocation_id, invocation_status, last_event_sequence]
+    properties:
+      invocation_id: {type: string, minLength: 1}
+      runtime_session_ref: {type: [string, 'null'], minLength: 1}
+      runtime_invocation_ref: {type: [string, 'null'], minLength: 1}
+      invocation_status: {type: string, enum: [SUCCEEDED, FAILED, CANCELED]}
+      assistant_message_id: {type: [string, 'null'], minLength: 1}
+      last_event_sequence: {type: integer, minimum: 0}
+      failure_code: {type: [string, 'null'], maxLength: 200}
+      failure_message: {type: [string, 'null'], maxLength: 2000}
+
   agent_runtime_ensure_input:
     type: object
     additionalProperties: false
@@ -27,7 +57,7 @@ schemas:
       - workspace_source_ref
       - runtime_profile_id
       - runtime_profile_revision
-      - model_access_spec_ref
+      - model_access_grant_ref
       - runtime_configuration_ref
       - authorization_ref
       - expected_resource_version
@@ -42,7 +72,7 @@ schemas:
       workspace_source_ref: {type: [string, 'null'], pattern: '^agent-workspace://'}
       runtime_profile_id: {type: string, enum: [agent.hermes, agent.coding]}
       runtime_profile_revision: {type: string, minLength: 1}
-      model_access_spec_ref: {type: string, pattern: '^model-access://'}
+      model_access_grant_ref: {type: string, pattern: '^agent-model-access-grant://'}
       runtime_configuration_ref: {type: string, pattern: '^agent-runtime-config://'}
       authorization_ref: {type: string, pattern: '^agent-runtime-grant://'}
       expected_resource_version: {type: integer, minimum: 0}
@@ -331,9 +361,58 @@ schemas:
           warnings: {type: array, maxItems: 100, items: {type: string, maxLength: 500}}
 
 functions:
+  - function_ref: agent.invocation.execute
+    contract_version: "1.0"
+    contract_digest: sha256:7e076a03a291c331443bc9f8638ab355b2a4ac0c71711a148c9b1065a67e0868
+    status: ACTIVE
+    owning_domain: agent
+    handler: task-worker.agent-executor
+    execution_mode: SERVICE
+    required_capabilities: [agent.runtime.adapter, agent.invocation.events, infra.endpoint.resolve]
+    input_schema_ref: '#/schemas/agent_invocation_execute_input'
+    output_schema_ref: '#/schemas/agent_invocation_execute_output'
+    task_idempotency:
+      scope_template: 'agent-invocation:{arguments.invocation_id}'
+      key_template: '{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 3
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 2
+      max_delay_seconds: 30
+      retryable_error_codes: [ERR_AGENT_RUNTIME_OPERATION_FAILED, ERR_AGENT_RUNTIME_UNHEALTHY, ERR_AGENT_INVOCATION_TASK_UNAVAILABLE]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_CANCEL, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 60, per_attempt_timeout_seconds: 1800, overall_timeout_seconds: 3600}
+    execution_adapter:
+      adapter_type: AGENT_RUNTIME_PROFILE
+      profile_source: AGENT_RUNTIME_BINDING
+      endpoint_resolution: INFRA_READY_ENDPOINT_BY_AGENT_WORKLOAD_IDENTITY
+      event_projection: MONOTONIC_SEQUENCE
+      terminal_observer: AGENT_INVOCATION
+    result_projection:
+      consumer_domain: agent
+      aggregate_type: AgentInvocation
+      aggregate_id_path: arguments.invocation_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.invocation_status, to: status}
+        - {from: result.runtime_session_ref, to: runtime_session_ref}
+        - {from: result.runtime_invocation_ref, to: runtime_invocation_ref}
+        - {from: result.assistant_message_id, to: assistant_message_id}
+        - {from: result.last_event_sequence, to: last_event_sequence}
+        - {from: result.failure_code, to: failure_code}
+        - {from: result.failure_message, to: failure_message}
+    security:
+      allowed_callers: [agent]
+      forbidden_argument_fields: [message_id, message_content, user_content, owner_user_id, workspace_id, workspace_path, base_url, runtime_endpoint, endpoint, model_access_spec, user_key, secret, credential, provider_config, provider_payload]
+      forbidden_output_fields: [message_content, workspace_id, base_url, endpoint, secret, credential, provider_response, raw_events, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-AGENT-001]
+      business_rules: [BR-TASK-153, BR-TASK-155, R-AGENT-014, R-AGENT-020, R-AGENT-021, R-AGENT-022]
+
   - function_ref: agent.runtime.ensure
     contract_version: "1.0"
-    contract_digest: sha256:33f2f7c3f865d348cb06e97c03f36471db620cd55f61343fc036c7dfdc61e3ad
+    contract_digest: sha256:5fff8cdcec364fea4c8d833b6c625b43c4e93c6b65bb46fb170f9d951eb8a4ec
     status: ACTIVE
     owning_domain: agent
     handler: task-center.infra-adapter

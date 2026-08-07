@@ -26,6 +26,20 @@ type IdentityRegistrationApplicationView struct {
 	User        *iapiserver.IdentityUser
 }
 
+// AgentInvocationTerminalProjection 是 Task Center 终态观察者允许写回的 Invocation 小型投影。
+// Store 必须使用 AtomicTask ID 与预期资源版本做并发栅栏，旧任务和重复通知不得覆盖当前事实。
+type AgentInvocationTerminalProjection struct {
+	TaskID                  string
+	ExpectedResourceVersion int64
+	Status                  string
+	RuntimeSessionRef       string
+	RuntimeInvocationRef    string
+	AssistantMessageID      string
+	LastEventSequence       int
+	FailureCode             string
+	FailureMessage          string
+}
+
 type UserStore interface {
 	List(ctx context.Context, req *iapiserver.UserListRequest) ([]*iapiserver.User, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.User, error)
@@ -96,7 +110,9 @@ type AgentStore interface {
 	ListAgentMessages(context.Context, *iapiserver.AgentMessageListRequest, string) ([]*iapiserver.AgentMessage, int64, error)
 	ListAgentInvocations(context.Context, *iapiserver.AgentInvocationListRequest, string) ([]*iapiserver.AgentInvocation, int64, error)
 	GetAgentInvocation(context.Context, string, string) (*iapiserver.AgentInvocation, error)
+	ListQueuedAgentInvocationsByAgent(context.Context, string) ([]*iapiserver.AgentInvocation, error)
 	UpdateAgentInvocation(context.Context, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	ProjectAgentInvocationTerminal(context.Context, string, AgentInvocationTerminalProjection) (*iapiserver.AgentInvocation, bool, error)
 	ListAgentMemories(context.Context, *iapiserver.AgentMemoryListRequest, string) ([]*iapiserver.AgentMemory, int64, error)
 	CreateAgentMemory(context.Context, *iapiserver.AgentMemory) (*iapiserver.AgentMemory, error)
 	GetAgentMemory(context.Context, string, string) (*iapiserver.AgentMemory, error)

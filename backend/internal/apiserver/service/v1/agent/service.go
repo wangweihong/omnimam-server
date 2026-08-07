@@ -342,7 +342,7 @@ func (s *Service) setSessionStatus(ctx context.Context, id, status string) (*iap
 	return s.store.UpdateAgentSession(ctx, session, session.ResourceVersion)
 }
 
-// SendMessage 持久化消息和 Invocation；执行适配器不可用时立即进入失败终态。
+// SendMessage 持久化消息和 Invocation，并提交到 Task Center 执行。
 func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapiserver.AgentMessageRequest) (*iapiserver.AgentInvocation, error) {
 	owner, err := currentUserID(ctx)
 	if err != nil {
@@ -370,8 +370,12 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	if agent.Kind == iapiserver.AgentKindCoding {
 		typeName = iapiserver.AgentInvocationTypeCoding
 	}
-	if typeName != iapiserver.AgentInvocationTypeChat {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "Released SSOT has no canonical non-runtime Agent Invocation functionRef.")
+	bindings, err := s.store.ListAgentModelBindings(ctx, agent.ID, owner)
+	if err != nil {
+		return nil, err
+	}
+	if primaryModel(bindings) == nil {
+		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, "an ACTIVE primary model binding is required")
 	}
 	messageID, invocationID := uuid.NewString(), uuid.NewString()
 	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.Content, Attachments: req.Attachments}
@@ -381,16 +385,99 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 		return nil, err
 	}
 	if created.ID != invocationID {
+		if created.Status != iapiserver.AgentInvocationStatusFailed ||
+			created.FailureCode != iapiserver.AgentInvocationFailureCodeTaskUnavailable || created.AtomicTaskID != nil {
+			return created, nil
+		}
+		created.Status = iapiserver.AgentInvocationStatusQueued
+		created.FailureCode = ""
+		created.FailureMessage = ""
+		created.CompletedAt = imachinery.Time{}
+		created.SubmissionGeneration++
+		created, err = s.store.UpdateAgentInvocation(ctx, created)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.tasks == nil {
+		created.Status = iapiserver.AgentInvocationStatusFailed
+		created.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
+		created.FailureMessage = "Agent execution adapter is unavailable for " + typeName + " invocation."
+		created.CompletedAt = imachinery.Now()
+		if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
+			return nil, err
+		}
 		return created, nil
 	}
-	created.Status = iapiserver.AgentInvocationStatusFailed
-	created.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
-	created.FailureMessage = "Agent execution adapter is unavailable for " + typeName + " invocation."
-	created.CompletedAt = imachinery.Now()
-	if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
+	runtime, runtimeErr := s.currentRuntime(ctx, agent)
+	if runtimeErr != nil {
+		return nil, runtimeErr
+	}
+	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
+		if runtime == nil {
+			runtime, runtimeErr = s.ensureRuntime(ctx, agent.ID, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+			if runtimeErr != nil {
+				return nil, runtimeErr
+			}
+		}
+		created.RuntimeBindingID = runtime.ID
+		if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
+			return nil, err
+		}
+		return created, nil
+	}
+	return s.submitInvocationTask(ctx, agent, created, runtime)
+}
+
+// submitInvocationTask 只向 Task Center 传递 released registry 允许的引用和恢复游标。
+func (s *Service) submitInvocationTask(
+	ctx context.Context,
+	agent *iapiserver.Agent,
+	invocation *iapiserver.AgentInvocation,
+	runtime *iapiserver.AgentRuntimeBinding,
+) (*iapiserver.AgentInvocation, error) {
+	if invocation == nil || runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady || runtime.AgentID != agent.ID {
+		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation runtime binding is not ready")
+	}
+	expectedVersion := invocation.ResourceVersion + 1
+	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
+		Key:  "agent-invocation-" + invocation.ID + "-" + fmt.Sprint(invocation.SubmissionGeneration),
+		Name: "Agent " + invocation.Type + " Invocation", FunctionRef: iapiserver.AgentInvocationFunctionExecute,
+		Arguments: map[string]any{
+			iapiserver.AgentInvocationTaskKeyAgentID:                    agent.ID,
+			iapiserver.AgentInvocationTaskKeySessionID:                  invocation.SessionID,
+			iapiserver.AgentInvocationTaskKeyInvocationID:               invocation.ID,
+			iapiserver.AgentInvocationTaskKeyRuntimeBindingID:           runtime.ID,
+			iapiserver.AgentInvocationTaskKeyInvocationType:             invocation.Type,
+			iapiserver.AgentInvocationTaskKeyAuthorizationRef:           fmt.Sprintf("agent-invocation-grant://%s/%s/%d", agent.ID, invocation.ID, expectedVersion),
+			iapiserver.AgentInvocationTaskKeyExpectedResourceVersion:    expectedVersion,
+			iapiserver.AgentInvocationTaskKeyResumeRuntimeSessionRef:    nullableString(invocation.RuntimeSessionRef),
+			iapiserver.AgentInvocationTaskKeyResumeRuntimeInvocationRef: nullableString(invocation.RuntimeInvocationRef),
+			iapiserver.AgentInvocationTaskKeyEventSequenceAfter:         invocation.LastEventSequence,
+		},
+		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: agent.OwnerUserID,
+	})
+	if err != nil {
+		invocation.Status = iapiserver.AgentInvocationStatusFailed
+		invocation.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
+		invocation.FailureMessage = "task center submission failed: " + err.Error()
+		invocation.CompletedAt = imachinery.Now()
+		return s.store.UpdateAgentInvocation(ctx, invocation)
+	}
+
+	invocation.RuntimeBindingID = runtime.ID
+	invocation.AtomicTaskID = &task.ID
+	invocation.TaskExpectedResourceVersion = &expectedVersion
+	invocation.TerminalProjectedTaskID = ""
+	invocation.TerminalProjectedAt = imachinery.Time{}
+	bound, err := s.store.UpdateAgentInvocation(ctx, invocation)
+	if err != nil {
 		return nil, err
 	}
-	return created, nil
+	if bound.ResourceVersion != expectedVersion {
+		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task binding resource version changed")
+	}
+	return bound, nil
 }
 
 func (s *Service) ListMessages(ctx context.Context, sessionID string, req *iapiserver.AgentMessageListRequest) (*iapiserver.AgentMessageListResponse, error) {
@@ -447,8 +534,7 @@ func (s *Service) CancelInvocation(ctx context.Context, id string, req *iapiserv
 			return nil, err
 		}
 	}
-	invocation.Status, invocation.CompletedAt = iapiserver.AgentInvocationStatusCanceled, imachinery.Now()
-	return s.store.UpdateAgentInvocation(ctx, invocation)
+	return invocation, nil
 }
 
 func (s *Service) ListInvocationEvents(ctx context.Context, id string, afterSequence int) ([]*iapiserver.AgentOperationEvent, error) {
@@ -601,14 +687,15 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 		return nil, err
 	}
 	primary := primaryModel(bindings)
-	modelAccessRef := "model-access://user-default/" + strings.ToLower(defaultPurpose(agent.Kind))
+	if primary == nil {
+		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, "an ACTIVE primary model binding is required before runtime startup")
+	}
+	modelAccessRef := "agent-model-access-grant://" + agent.ID + "/" + primary.ID
 	if s.models != nil {
 		modelAccessRef, err = s.models.ResolveAgentModelAccess(ctx, agent.OwnerUserID, primary)
 		if err != nil {
 			return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error())
 		}
-	} else if primary != nil {
-		modelAccessRef = "model-access://" + primary.SourceType + "/" + primary.SourceRef
 	}
 	workspaceSource := any(nil)
 	if agent.Kind == iapiserver.AgentKindPlatform {
@@ -618,7 +705,7 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 		"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "operation": operation, "agent_kind": agent.Kind,
 		"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID, "workspace_source_ref": workspaceSource,
 		"runtime_profile_id": runtime.RuntimeProfileID, "runtime_profile_revision": runtime.RuntimeProfileRevision,
-		"model_access_spec_ref": modelAccessRef, "runtime_configuration_ref": "agent-runtime-config://" + agent.ID,
+		"model_access_grant_ref": modelAccessRef, "runtime_configuration_ref": "agent-runtime-config://" + agent.ID,
 		"authorization_ref":         fmt.Sprintf("agent-runtime-grant://%s/%s/%d", agent.ID, runtime.ID, agent.ResourceVersion),
 		"expected_resource_version": runtime.ResourceVersion,
 	}
@@ -763,4 +850,11 @@ func codingAgentMatchesStudio(agent *iapiserver.Agent, workspaceID string) bool 
 
 func isInvocationTerminal(status string) bool {
 	return status == iapiserver.AgentInvocationStatusSucceeded || status == iapiserver.AgentInvocationStatusFailed || status == iapiserver.AgentInvocationStatusCanceled
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }

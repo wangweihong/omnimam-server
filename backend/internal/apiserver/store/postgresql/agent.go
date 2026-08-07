@@ -13,6 +13,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -194,6 +195,12 @@ func (s *agentStore) GetAgentInvocation(ctx context.Context, id, ownerUserID str
 	return &item, nil
 }
 
+func (s *agentStore) ListQueuedAgentInvocationsByAgent(ctx context.Context, agentID string) ([]*iapiserver.AgentInvocation, error) {
+	var items []*iapiserver.AgentInvocation
+	err := s.ds.db.WithContext(ctx).Where("agent_id = ? AND status = ? AND atomic_task_id IS NULL", agentID, iapiserver.AgentInvocationStatusQueued).Order("created_at ASC").Find(&items).Error
+	return items, err
+}
+
 func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.AgentInvocation
@@ -210,6 +217,57 @@ func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapi
 		})
 	})
 	return invocation, err
+}
+
+// ProjectAgentInvocationTerminal 使用当前 Task 绑定和资源版本栅栏投影终态；旧任务与重复终态返回 applied=false。
+func (s *agentStore) ProjectAgentInvocationTerminal(
+	ctx context.Context,
+	invocationID string,
+	projection store.AgentInvocationTerminalProjection,
+) (*iapiserver.AgentInvocation, bool, error) {
+	var result iapiserver.AgentInvocation
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocationID).First(&result).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+		if result.AtomicTaskID == nil || *result.AtomicTaskID != projection.TaskID ||
+			result.TaskExpectedResourceVersion == nil || *result.TaskExpectedResourceVersion != projection.ExpectedResourceVersion ||
+			result.ResourceVersion != projection.ExpectedResourceVersion {
+			return nil
+		}
+		if result.TerminalProjectedTaskID != "" || agentInvocationTerminal(result.Status) {
+			return nil
+		}
+
+		previous := result
+		result.Status = projection.Status
+		result.RuntimeSessionRef = projection.RuntimeSessionRef
+		result.RuntimeInvocationRef = projection.RuntimeInvocationRef
+		result.AssistantMessageID = projection.AssistantMessageID
+		result.LastEventSequence = projection.LastEventSequence
+		result.FailureCode = projection.FailureCode
+		result.FailureMessage = projection.FailureMessage
+		result.TerminalProjectedTaskID = projection.TaskID
+		result.TerminalProjectedAt = imachinery.Now()
+		result.CompletedAt = imachinery.Now()
+		if err := tx.Save(&result).Error; err != nil {
+			return err
+		}
+		applied = true
+		return appendAgentOutbox(tx, "AgentInvocation", result.ID, "agent_invocation_status_changed", result.ResourceVersion, map[string]any{
+			"invocation_id": result.ID, "agent_id": result.AgentID, "session_id": result.SessionID,
+			"atomic_task_id": projection.TaskID, "from_status": previous.Status, "to_status": result.Status,
+			"error_code": agentNullableString(result.FailureCode),
+		})
+	})
+	return &result, applied, err
+}
+
+func agentInvocationTerminal(status string) bool {
+	return status == iapiserver.AgentInvocationStatusSucceeded ||
+		status == iapiserver.AgentInvocationStatusFailed ||
+		status == iapiserver.AgentInvocationStatusCanceled
 }
 
 func (s *agentStore) ListAgentMemories(ctx context.Context, req *iapiserver.AgentMemoryListRequest, ownerUserID string) ([]*iapiserver.AgentMemory, int64, error) {

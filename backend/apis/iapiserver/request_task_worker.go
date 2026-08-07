@@ -4,6 +4,7 @@ const (
 	// Task Worker 注册使用的 functionRef。
 	TaskWorkerFunctionAgentRuntimeEnsure           = "agent.runtime.ensure"
 	TaskWorkerFunctionAgentRuntimeStop             = "agent.runtime.stop"
+	TaskWorkerFunctionAgentInvocationExecute       = "agent.invocation.execute"
 	TaskWorkerFunctionAppStudioPreviewEnsure       = "appstudio.preview.ensure"
 	TaskWorkerFunctionAppStudioPreviewStop         = "appstudio.preview.stop"
 	TaskWorkerFunctionAppStudioBuildExecute        = "appstudio.build.execute"
@@ -77,7 +78,8 @@ const (
 	TaskWorkerAppStudioProductionProfileWebBackend = "studioapp.runtime.web-backend"
 
 	// Task Worker 处理的受控跨模块引用前缀。
-	TaskWorkerRefPrefixModelAccessSpec         = "model-access://"
+	TaskWorkerRefPrefixAgentModelAccessGrant   = "agent-model-access-grant://"
+	TaskWorkerRefPrefixAgentInvocationGrant    = "agent-invocation-grant://"
 	TaskWorkerRefPrefixAgentRuntimeConfig      = "agent-runtime-config://"
 	TaskWorkerRefPrefixAgentRuntimeGrant       = "agent-runtime-grant://"
 	TaskWorkerRefPrefixAgentWorkspace          = "agent-workspace://"
@@ -144,7 +146,7 @@ const (
 	TaskWorkerKeyWorkspaceSourceRef         = "workspace_source_ref"
 	TaskWorkerKeyRuntimeProfileID           = "runtime_profile_id"
 	TaskWorkerKeyRuntimeProfileRevision     = "runtime_profile_revision"
-	TaskWorkerKeyModelAccessSpecRef         = "model_access_spec_ref"
+	TaskWorkerKeyModelAccessGrantRef        = "model_access_grant_ref"
 	TaskWorkerKeyRuntimeConfigurationRef    = "runtime_configuration_ref"
 	TaskWorkerKeyAuthorizationRef           = "authorization_ref"
 	TaskWorkerKeyExpectedResourceVersion    = "expected_resource_version"

@@ -84,9 +84,10 @@ func (a *Agent) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type AgentSession struct {
 	imachinery.ObjectMeta
-	AgentID           string          `json:"agent_id" gorm:"column:agent_id;type:text;not null;index:idx_agent_sessions_agent_status,priority:1"`
-	OwnerUserID       string          `json:"-" gorm:"column:owner_user_id;type:text;not null"`
-	Title             string          `json:"title" gorm:"column:title;type:text;not null;default:''"`
+	AgentID     string `json:"agent_id" gorm:"column:agent_id;type:text;not null;index:idx_agent_sessions_agent_status,priority:1"`
+	OwnerUserID string `json:"-" gorm:"column:owner_user_id;type:text;not null"`
+	Title       string `json:"title" gorm:"column:title;type:text;not null;default:''"`
+	// OPEN ──[Close]──> CLOSED ──[Archive]──> ARCHIVED
 	Status            string          `json:"status" gorm:"column:status;type:text;not null;index:idx_agent_sessions_agent_status,priority:2"`
 	RuntimeSessionRef string          `json:"runtime_session_ref,omitempty" gorm:"column:runtime_session_ref;type:text"`
 	LastMessageAt     imachinery.Time `json:"last_message_at,omitempty" gorm:"column:last_message_at"`
@@ -131,19 +132,26 @@ func (m *AgentMessage) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type AgentInvocation struct {
 	imachinery.ObjectMeta
-	AgentID             string          `json:"agent_id" gorm:"column:agent_id;type:text;not null;uniqueIndex:idx_agent_invocations_idempotency,priority:1"`
-	SessionID           string          `json:"session_id" gorm:"column:session_id;type:text;not null;index:idx_agent_invocations_session_status,priority:1"`
-	Type                string          `json:"type" gorm:"column:type;type:text;not null"`
-	Status              string          `json:"status" gorm:"column:status;type:text;not null;index:idx_agent_invocations_session_status,priority:2"`
-	UserMessageID       string          `json:"user_message_id,omitempty" gorm:"column:user_message_id;type:text"`
-	AssistantMessageID  string          `json:"assistant_message_id,omitempty" gorm:"column:assistant_message_id;type:text"`
-	AtomicTaskID        *string         `json:"atomic_task_id,omitempty" gorm:"column:atomic_task_id;type:text;index"`
-	RuntimeOperationRef string          `json:"runtime_operation_ref,omitempty" gorm:"column:runtime_operation_ref;type:text"`
-	FailureCode         string          `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
-	FailureMessage      string          `json:"failure_message,omitempty" gorm:"column:failure_message;type:text;not null;default:''"`
-	StartedAt           imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
-	CompletedAt         imachinery.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
-	IdempotencyKey      string          `json:"-" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:idx_agent_invocations_idempotency,priority:2"`
+	AgentID                     string          `json:"agent_id" gorm:"column:agent_id;type:text;not null;uniqueIndex:idx_agent_invocations_idempotency,priority:1"`
+	SessionID                   string          `json:"session_id" gorm:"column:session_id;type:text;not null;index:idx_agent_invocations_session_status,priority:1"`
+	Type                        string          `json:"type" gorm:"column:type;type:text;not null"`
+	Status                      string          `json:"status" gorm:"column:status;type:text;not null;index:idx_agent_invocations_session_status,priority:2"`
+	UserMessageID               string          `json:"user_message_id,omitempty" gorm:"column:user_message_id;type:text"`
+	AssistantMessageID          string          `json:"assistant_message_id,omitempty" gorm:"column:assistant_message_id;type:text"`
+	AtomicTaskID                *string         `json:"atomic_task_id,omitempty" gorm:"column:atomic_task_id;type:text;index"`
+	RuntimeBindingID            string          `json:"runtime_binding_id,omitempty" gorm:"column:runtime_binding_id;type:text;index"`
+	RuntimeSessionRef           string          `json:"runtime_session_ref,omitempty" gorm:"column:runtime_session_ref;type:text"`
+	RuntimeInvocationRef        string          `json:"runtime_invocation_ref,omitempty" gorm:"column:runtime_invocation_ref;type:text"`
+	LastEventSequence           int             `json:"last_event_sequence" gorm:"column:last_event_sequence;not null;default:0"`
+	SubmissionGeneration        int             `json:"submission_generation" gorm:"column:submission_generation;not null;default:0"`
+	TaskExpectedResourceVersion *int64          `json:"task_expected_resource_version,omitempty" gorm:"column:task_expected_resource_version"`
+	TerminalProjectedTaskID     string          `json:"terminal_projected_task_id,omitempty" gorm:"column:terminal_projected_task_id;type:text"`
+	TerminalProjectedAt         imachinery.Time `json:"terminal_projected_at,omitempty" gorm:"column:terminal_projected_at"`
+	FailureCode                 string          `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
+	FailureMessage              string          `json:"failure_message,omitempty" gorm:"column:failure_message;type:text;not null;default:''"`
+	StartedAt                   imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
+	CompletedAt                 imachinery.Time `json:"completed_at,omitempty" gorm:"column:completed_at"`
+	IdempotencyKey              string          `json:"-" gorm:"column:idempotency_key;type:text;not null;uniqueIndex:idx_agent_invocations_idempotency,priority:2"`
 }
 
 func (AgentInvocation) TableName() string { return "agent_invocations" }
@@ -312,6 +320,8 @@ type AgentRuntimeBinding struct {
 	State                  string          `json:"state" gorm:"column:state;type:text;not null"`
 	ActivityState          string          `json:"activity_state" gorm:"column:activity_state;type:text;not null"`
 	HealthStatus           string          `json:"health_status" gorm:"column:health_status;type:text;not null"`
+	CurrentTaskID          string          `json:"current_task_id,omitempty" gorm:"column:current_task_id;type:text"`
+	CurrentOperation       string          `json:"current_operation,omitempty" gorm:"column:current_operation;type:text"`
 	LastHealthAt           imachinery.Time `json:"last_health_at,omitempty" gorm:"column:last_health_at"`
 	StartedAt              imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
 	StoppedAt              imachinery.Time `json:"stopped_at,omitempty" gorm:"column:stopped_at"`
