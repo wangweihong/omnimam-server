@@ -271,6 +271,31 @@ DO $$ BEGIN
 END $$;
 `
 
+const appStudioConstraintsSQL = `
+ALTER TABLE studio_applications ADD COLUMN IF NOT EXISTS coding_agent_id TEXT;
+ALTER TABLE studio_applications ADD COLUMN IF NOT EXISTS coding_session_id TEXT;
+ALTER TABLE studio_applications ADD COLUMN IF NOT EXISTS coding_agent_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE studio_applications ADD COLUMN IF NOT EXISTS create_idempotency_key TEXT;
+UPDATE studio_applications
+SET create_idempotency_key = 'legacy:' || id
+WHERE create_idempotency_key IS NULL OR create_idempotency_key = '';
+ALTER TABLE studio_applications ALTER COLUMN create_idempotency_key SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_applications_owner_create_key
+ON studio_applications(owner_user_id, create_idempotency_key);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_studio_applications_coding_agent_generation') THEN
+    ALTER TABLE studio_applications ADD CONSTRAINT ck_studio_applications_coding_agent_generation
+      CHECK (coding_agent_generation >= 0);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_studio_applications_coding_agent_binding') THEN
+    ALTER TABLE studio_applications ADD CONSTRAINT ck_studio_applications_coding_agent_binding CHECK (
+      (coding_agent_id IS NULL AND coding_session_id IS NULL) OR
+      (coding_agent_id IS NOT NULL AND coding_session_id IS NOT NULL AND coding_agent_generation > 0)
+    );
+  END IF;
+END $$;
+`
+
 const mcpTaskBindingConstraintsSQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_binding_principal_run
 ON mcp_task_bindings(principal_id, application_run_id);
@@ -493,6 +518,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.ensureAgentScheme(); err != nil {
 		return err
 	}
+	if err := ds.ensureAppStudioScheme(); err != nil {
+		return err
+	}
 	if err := ds.ensureApplicationPlatformScheme(); err != nil {
 		return err
 	}
@@ -513,6 +541,10 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 
 func (ds *datastore) ensureAgentScheme() error {
 	return ds.db.Exec(agentConstraintsSQL).Error
+}
+
+func (ds *datastore) ensureAppStudioScheme() error {
+	return ds.db.Exec(appStudioConstraintsSQL).Error
 }
 
 func (ds *datastore) ensureMCPScheme() error {

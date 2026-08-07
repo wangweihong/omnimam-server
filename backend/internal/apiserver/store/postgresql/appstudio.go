@@ -15,6 +15,7 @@ import (
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
@@ -22,18 +23,62 @@ type appStudioStore struct{ ds *datastore }
 
 func newAppStudioStore(ds *datastore) *appStudioStore { return &appStudioStore{ds: ds} }
 
-func (s *appStudioStore) CreateStudioApplicationAggregate(ctx context.Context, app *iapiserver.StudioApplication, repository *iapiserver.StudioSourceRepository, workspace *iapiserver.StudioWorkspace, revision *iapiserver.StudioWorkspaceRevision) error {
-	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, value := range []any{app, repository, workspace, revision} {
+func (s *appStudioStore) CreateStudioApplicationInitialization(ctx context.Context, initialization *store.StudioApplicationInitialization) (bool, error) {
+	created := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "owner_user_id"}, {Name: "create_idempotency_key"}},
+			DoNothing: true,
+		}).Create(initialization.Application)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		created = true
+		for _, value := range []any{
+			initialization.Repository,
+			initialization.Workspace,
+			initialization.Revision,
+			initialization.Agent,
+			initialization.Session,
+			initialization.WorkspaceBinding,
+			initialization.ModelBinding,
+			initialization.UserMessage,
+			initialization.InitialInvocation,
+		} {
 			if err := tx.Create(value).Error; err != nil {
 				return err
 			}
 		}
+		app, revision := initialization.Application, initialization.Revision
 		if err := appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil)); err != nil {
 			return err
 		}
 		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventSourceRevisionChanged, appStudioEventKey(iapiserver.AppStudioEventSourceRevisionChanged, app.ID, revision.Revision), revision.ResourceVersion, studioSourceRevisionPayload(app.ID, revision.Revision, nil))
 	})
+	return created, err
+}
+
+func (s *appStudioStore) GetStudioApplicationInitialization(ctx context.Context, owner, idempotencyKey string) (*store.StudioApplicationInitialization, error) {
+	var app iapiserver.StudioApplication
+	if err := s.ds.db.WithContext(ctx).Where("owner_user_id = ? AND create_idempotency_key = ?", owner, idempotencyKey).First(&app).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application not visible")
+	}
+	var agent iapiserver.Agent
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ?", app.CodingAgentID, owner).First(&agent).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "coding agent initialization is incomplete")
+	}
+	var session iapiserver.AgentSession
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ? AND agent_id = ?", app.CodingSessionID, owner, app.CodingAgentID).First(&session).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "coding agent session initialization is incomplete")
+	}
+	var invocation iapiserver.AgentInvocation
+	if err := s.ds.db.WithContext(ctx).Where("agent_id = ? AND session_id = ?", app.CodingAgentID, app.CodingSessionID).Order("created_at ASC").First(&invocation).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "initial coding invocation is incomplete")
+	}
+	return &store.StudioApplicationInitialization{Application: &app, Agent: &agent, Session: &session, InitialInvocation: &invocation}, nil
 }
 
 func (s *appStudioStore) ListStudioApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error) {
@@ -79,6 +124,46 @@ func (s *appStudioStore) UpdateStudioApplication(ctx context.Context, app *iapis
 		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, previous.Status))
 	})
 	return app, err
+}
+
+// ReplaceStudioCodingAgent 创建新 Agent 聚合并在同一事务中切换应用当前 generation。
+func (s *appStudioStore) ReplaceStudioCodingAgent(ctx context.Context, appID, owner string, replacement *store.StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error) {
+	var app iapiserver.StudioApplication
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", appID, owner).First(&app).Error; err != nil {
+			return mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application not visible")
+		}
+		if app.CodingAgentID == replacement.Agent.ID {
+			return nil
+		}
+		var existing int64
+		if err := tx.Model(&iapiserver.Agent{}).Where("id = ?", replacement.Agent.ID).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != 0 {
+			return errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "coding agent replacement idempotency key was already used")
+		}
+		if replacement.Agent.OwnerUserID != owner || replacement.Agent.WorkspaceID != app.DefaultWorkspaceID || replacement.Session.AgentID != replacement.Agent.ID || replacement.WorkspaceBinding.AgentID != replacement.Agent.ID || replacement.ModelBinding.AgentID != replacement.Agent.ID {
+			return errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "coding agent replacement binding is invalid")
+		}
+		for _, value := range []any{replacement.Agent, replacement.Session, replacement.WorkspaceBinding, replacement.ModelBinding} {
+			if err := tx.Create(value).Error; err != nil {
+				return err
+			}
+		}
+		previousStatus := app.Status
+		app.CodingAgentID = replacement.Agent.ID
+		app.CodingSessionID = replacement.Session.ID
+		app.CodingAgentGeneration++
+		if err := tx.Save(&app).Error; err != nil {
+			return err
+		}
+		if err := appendAgentOutbox(tx, "Agent", replacement.Agent.ID, "agent_lifecycle_changed", replacement.Agent.ResourceVersion, map[string]any{"agent_id": replacement.Agent.ID, "status": replacement.Agent.Status}); err != nil {
+			return err
+		}
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(&app, previousStatus))
+	})
+	return &app, err
 }
 
 func (s *appStudioStore) GetStudioWorkspaceByApplication(ctx context.Context, appID, owner string) (*iapiserver.StudioWorkspace, error) {

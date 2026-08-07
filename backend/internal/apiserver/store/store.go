@@ -133,12 +133,35 @@ type AgentStore interface {
 	ListAgentOperationEvents(context.Context, string, int) ([]*iapiserver.AgentOperationEvent, error)
 }
 
+type StudioApplicationInitialization struct {
+	Application       *iapiserver.StudioApplication
+	Repository        *iapiserver.StudioSourceRepository
+	Workspace         *iapiserver.StudioWorkspace
+	Revision          *iapiserver.StudioWorkspaceRevision
+	Agent             *iapiserver.Agent
+	Session           *iapiserver.AgentSession
+	WorkspaceBinding  *iapiserver.AgentWorkspaceBinding
+	ModelBinding      *iapiserver.AgentModelBinding
+	UserMessage       *iapiserver.AgentMessage
+	InitialInvocation *iapiserver.AgentInvocation
+}
+
+// StudioCodingAgentReplacement 是 AppStudio 切换当前 Coding Agent generation 的原子写入集合。
+type StudioCodingAgentReplacement struct {
+	Agent            *iapiserver.Agent
+	Session          *iapiserver.AgentSession
+	WorkspaceBinding *iapiserver.AgentWorkspaceBinding
+	ModelBinding     *iapiserver.AgentModelBinding
+}
+
 // AppStudioStore 是 StudioApplication 源码谱系、构建、发布和 Runtime 投影的事实边界。
 type AppStudioStore interface {
-	CreateStudioApplicationAggregate(context.Context, *iapiserver.StudioApplication, *iapiserver.StudioSourceRepository, *iapiserver.StudioWorkspace, *iapiserver.StudioWorkspaceRevision) error
+	CreateStudioApplicationInitialization(context.Context, *StudioApplicationInitialization) (bool, error)
+	GetStudioApplicationInitialization(context.Context, string, string) (*StudioApplicationInitialization, error)
 	ListStudioApplications(context.Context, *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error)
 	GetStudioApplication(context.Context, string, string) (*iapiserver.StudioApplication, error)
 	UpdateStudioApplication(context.Context, *iapiserver.StudioApplication, int64) (*iapiserver.StudioApplication, error)
+	ReplaceStudioCodingAgent(context.Context, string, string, *StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error)
 	GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
 	GetStudioWorkspace(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
 	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)

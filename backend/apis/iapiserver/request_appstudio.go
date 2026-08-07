@@ -47,6 +47,8 @@ const (
 	AppStudioOutboxDeliveryPending     = "PENDING"
 
 	AppStudioSourceProviderBuiltIn    = "BUILT_IN"
+	AppStudioApplicationTypeStaticWeb = "STATIC_WEB"
+	AppStudioApplicationTypeLightWeb  = "WEB_WITH_LIGHT_BACKEND"
 	AppStudioChangeOperationCreate    = "create"
 	AppStudioChangeOperationUpdate    = "update"
 	AppStudioChangeOperationDelete    = "delete"
@@ -264,9 +266,49 @@ type StudioApplicationListRequest struct {
 
 // +k8s:deepcopy-gen=true
 type StudioApplicationCreateRequest struct {
-	Name         string                  `json:"name" binding:"required,min=1,max=200"`
-	Description  string                  `json:"description,omitempty" binding:"omitempty,max=2000"`
-	ModelBinding *AgentModelBindingInput `json:"model_binding,omitempty"`
+	Name                 string                     `json:"name" binding:"required,min=1,max=200"`
+	Description          string                     `json:"description,omitempty" binding:"omitempty,max=2000"`
+	InitialRequirement   string                     `json:"initial_requirement" binding:"required,min=1,max=20000"`
+	ApplicationType      string                     `json:"application_type,omitempty" binding:"omitempty,oneof=STATIC_WEB WEB_WITH_LIGHT_BACKEND"`
+	BackendRequired      bool                       `json:"backend_required,omitempty"`
+	CodingAgentProfile   string                     `json:"coding_agent_profile,omitempty" binding:"omitempty,max=200"`
+	CodingModelSelection StudioCodingModelSelection `json:"coding_model_selection" binding:"required"`
+	Attachments          []StudioAgentAttachment    `json:"attachments,omitempty" binding:"omitempty,max=50,dive"`
+	IdempotencyKey       string                     `json:"idempotency_key" binding:"required,min=1,max=200"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioCodingModelSelection struct {
+	SourceType string `json:"source_type" binding:"required,oneof=USER_DEFAULT_MODEL USER_PROVIDER_MODEL PLATFORM_MODEL"`
+	SourceRef  string `json:"source_ref" binding:"required,min=1,max=500"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioAgentAttachment struct {
+	Type        string `json:"type" binding:"required,oneof=ASSET ARTIFACT SOURCE_FILE BUILD_LOG PREVIEW_LOG"`
+	ReferenceID string `json:"reference_id" binding:"required,min=1"`
+}
+
+// StudioAgentMessageRequest 通过应用级 facade 向当前 generation 的 Coding Agent 发送开发指令。
+// +k8s:deepcopy-gen=true
+type StudioAgentMessageRequest struct {
+	// Instruction 是本次应用开发指令，不得包含模型凭证。
+	Instruction string `json:"instruction" binding:"required,min=1,max=20000"`
+	// IdempotencyKey 在当前 Coding Agent 范围内防止重复创建 Invocation。
+	IdempotencyKey string `json:"idempotency_key" binding:"required,min=1,max=200"`
+	// Attachments 只接受契约允许的稳定资源引用。
+	Attachments []StudioAgentAttachment `json:"attachments,omitempty" binding:"omitempty,max=50,dive"`
+}
+
+// StudioAgentReplaceRequest 原子切换应用当前 Coding Agent generation，旧历史保持可审计。
+// +k8s:deepcopy-gen=true
+type StudioAgentReplaceRequest struct {
+	// IdempotencyKey 确保同一次替换不会创建多个 Agent generation。
+	IdempotencyKey string `json:"idempotency_key" binding:"required,min=1,max=200"`
+	// CodingAgentProfile 可选替换 Runtime profile；为空时沿用当前 profile。
+	CodingAgentProfile string `json:"coding_agent_profile,omitempty" binding:"omitempty,max=200"`
+	// CodingModelSelection 可选替换模型引用；为空时沿用当前 ModelBinding 来源。
+	CodingModelSelection string `json:"coding_model_selection,omitempty" binding:"omitempty,max=500"`
 }
 
 // +k8s:deepcopy-gen=true

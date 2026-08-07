@@ -1,6 +1,10 @@
 package iapiserver
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+)
 
 // AppStudioEventMetadata 是所有 AppStudio outbox 事件共享的版本与时间元数据。
 type AppStudioEventMetadata struct {
@@ -103,6 +107,51 @@ type AppStudioRuntimeEventPayload struct {
 type StudioApplicationListResponse struct {
 	Total int64                `json:"total"`
 	Items []*StudioApplication `json:"items"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioApplicationCreateResponse struct {
+	Application       *StudioApplication     `json:"application"`
+	CodingAgent       *StudioAgentStatus     `json:"coding_agent"`
+	InitialInvocation *StudioAgentInvocation `json:"initial_invocation"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioAgentStatus struct {
+	StudioApplicationID string  `json:"studio_application_id"`
+	AgentID             string  `json:"agent_id"`
+	SessionID           string  `json:"session_id"`
+	Generation          int     `json:"generation"`
+	Status              string  `json:"status"`
+	CurrentInvocationID *string `json:"current_invocation_id,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioAgentInvocation struct {
+	ID                      string          `json:"id"`
+	AgentID                 string          `json:"agent_id"`
+	SessionID               string          `json:"session_id"`
+	Generation              int             `json:"generation"`
+	Type                    string          `json:"type"`
+	Status                  string          `json:"status"`
+	AtomicTaskID            *string         `json:"atomic_task_id,omitempty"`
+	RuntimeBindingID        string          `json:"runtime_binding_id,omitempty"`
+	RuntimeSessionRef       string          `json:"runtime_session_ref,omitempty"`
+	RuntimeInvocationRef    string          `json:"runtime_invocation_ref,omitempty"`
+	LastEventSequence       int             `json:"last_event_sequence"`
+	ResultingChangeSetID    *string         `json:"resulting_change_set_id,omitempty"`
+	ResultingSourceRevision *int64          `json:"resulting_source_revision,omitempty"`
+	FailureCode             string          `json:"failure_code,omitempty"`
+	FailureMessage          string          `json:"failure_message,omitempty"`
+	CompletedAt             imachinery.Time `json:"completed_at,omitempty"`
+	CreatedAt               imachinery.Time `json:"created_at"`
+	UpdatedAt               imachinery.Time `json:"updated_at"`
+}
+
+// +k8s:deepcopy-gen=true
+type StudioAgentInvocationListResponse struct {
+	Total int64                    `json:"total"`
+	Items []*StudioAgentInvocation `json:"items"`
 }
 
 // +k8s:deepcopy-gen=true

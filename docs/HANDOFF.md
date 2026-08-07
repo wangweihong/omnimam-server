@@ -2,8 +2,8 @@
 
 ## Current goal and status
 
-- Goal: restore `make compose` while preserving the in-progress Agent business-flow work against `spec-v1.18.0`.
-- Status: Complete. `make compose` exits successfully and all Compose services are running; Agent business-flow reconciliation remains the next feature task.
+- Goal: implement the released `spec-v1.18.0` AppStudio end-to-end workflow for static Web applications: idempotent aggregate creation, Coding Agent chat/Invocation execution, source iteration, preview, publication, and history-preserving source restoration.
+- Status: In progress. Milestones 1-2 (released create DTO/schema and idempotent aggregate initialization, plus the AppStudio-owned Coding Agent facade) are implemented and pass focused package compilation. The current milestone is fail-closed model/tool authorization.
 - Current SSOT: `spec-v1.18.0` at `b0de28e6b6d9462d95ae8e59a8412640047a218e`; `SSOT_VERSION` matches the submodule commit.
 
 ## Work completed in this session
@@ -27,10 +27,25 @@
 - Reconciled the server Task Function Registry asset with released `spec-v1.18.0`: added `agent.invocation.execute@1.0`, changed `agent.runtime.ensure@1.0` to `model_access_grant_ref`, removed the unpublished `agent.coding.execute` function/schema, and removed its `TBD` digest.
 - Added released Invocation runtime/recovery/concurrency fields and Runtime current-task fields to API models and PostgreSQL compatibility constraints/indexes.
 - Unified CHAT/CODING submission on `agent.invocation.execute`, removed message/owner content from Task arguments, enforced an ACTIVE primary model binding, changed runtime startup to `model_access_grant_ref`, and corrected API cancellation to remain `CANCELING`.
+- Assessed the requested AppStudio flow end to end without changing product code. Application/repository/default source creation, source revision restore, preview/build task submission, release/rollback resources, worker executors, and terminal projection are present.
+- Confirmed Coding Agent chat is not usable: AppStudio returns no Coding Agent/Session projection, Coding Agents are hidden from public Agent listing/get, first-message runtime startup calls the Platform-only `GetAgent`, `agent.invocation.execute` has no registered worker handler, and `ProjectTaskTerminal` ignores Invocation tasks.
+- Confirmed no Agent execution path applies an AppStudio ChangeSet or records a resulting source revision, so chat cannot currently iterate application source.
+- Confirmed source restore creates a new revision from an explicitly supplied historical source revision, but there is no public revision-history/conversation-checkpoint facade and no session rollback operation.
+- Confirmed production release submission and the worker disagree on two contract values: `RELEASE` versus `DEPLOY`, and `appstudio.production.static-web` versus `studioapp.runtime.static-web`; production reconcile therefore rejects current release tasks.
+- Replaced the legacy AppStudio create DTO with the released `initial_requirement`, `coding_model_selection`, optional profile/application fields, attachments, and required create idempotency key; added the released composite create response projections.
+- Added the current Coding Agent/Session/generation/create-key fields and PostgreSQL compatibility constraints to `studio_applications`.
+- Implemented one PostgreSQL transaction for Application, Repository, Workspace revision 0, Coding Agent, Session, Workspace/Model bindings, first user Message, and first QUEUED CODING Invocation. Stable IDs plus `(owner_user_id, create_idempotency_key)` conflict handling make concurrent replay return the canonical first result.
+- Removed the Coding Agent default-model fallback from the initialization path and require an explicit CODING model selection. The first Runtime ensure is triggered only after commit; Task delivery failure leaves the Invocation QUEUED for later scheduling.
+- Added the complete AppStudio Agent facade with `appstudio.agent.read`/`appstudio.agent.operate` routes for status, message send, Invocation list/detail/cancel/SSE, suspend, resume, and replace. Every operation validates the current application owner, Agent/Session, Coding kind, and fixed Workspace before delegation; public `/agents` remains Platform-only.
+- Added an atomic Coding Agent replacement transaction that creates the new Agent/Session/WorkspaceBinding/ModelBinding and increments/switches the application generation while retaining old history. Replays of the same current replacement are idempotent; reuse of an old replacement key after a later generation is rejected.
 
 ## Current in-progress work
 
-- None for the Compose repair. Agent service reconciliation remains paused at generation-aware Task binding and fenced terminal projection.
+- Milestone 3: inject the existing user model execution resolver, issue short-lived per-Invocation model/workspace grants, and remove string fallback grants. `PLATFORM_MODEL` must remain fail-closed unless the released platform resolver exists.
+- Authorization implementation checkpoint: add an encrypted, short-lived `agent-model-access-grant://` reference shared by APIServer and Infrastructure. Plaintext claims bind owner, Agent, ModelBinding, purpose, source selection, issue time, and expiry, while Task/database only see authenticated ciphertext. APIServer performs User Model eligibility preflight before creating RuntimeBinding/Task; Infrastructure verifies the grant and re-resolves current User Model facts into an in-memory provider binding.
+- Exact next files for this checkpoint: `backend/internal/pkg/agentgrant/model.go`, `backend/internal/apiserver/service/v1/agent/model_access.go`, `backend/internal/apiserver/service/v1/agent/service.go`, `backend/internal/apiserver/server.go`, `backend/internal/taskworker/agentexecutor/executor.go`, `backend/internal/infrastructure/service.go`, `backend/internal/infrastructure/app.go`, and provider request/Docker adapter files.
+- Current authorization finding: `usermodel.CredentialBroker` and `UserModelExecutionContext` are process-local, while Task Worker runs separately. They cannot serve as a cross-process Task grant registry. Runtime startup can still be corrected to perform released preflight resolution before creating the RuntimeBinding/Task; Invocation authorization must reuse an existing service-identity resolution boundary or stop rather than introduce an unpublished durable grant protocol.
+- Next milestones: Runtime READY queue submission; Invocation Worker adapters and terminal projection; source revision projection; release identifier alignment; focused verification.
 
 ## Files changed
 
@@ -47,6 +62,10 @@
 - Modified: `backend/internal/taskfunctionregistry/assets/function-registry.yaml` to match the released nine-function registry contract.
 - Modified generated assets: `backend/internal/taskfunctionregistry/assets/function-registry.schema.yaml`, `error-retryability.json`, and `SOURCE` to match the same released registry.
 - Modified Agent API models, Agent store interface/PostgreSQL implementation, PostgreSQL constraints, and Agent service task submission/cancellation behavior.
+- Modified `backend/apis/iapiserver/meta_appstudio.go`, `request_appstudio.go`, and `response_appstudio.go` for the released create and Agent projection contracts.
+- Modified `backend/internal/apiserver/store/store.go` and `store/postgresql/appstudio.go` for atomic cross-aggregate initialization and idempotent canonical replay.
+- Modified `backend/internal/apiserver/store/postgresql/0_pg.go` for AppStudio compatibility columns, backfill, unique index, and Coding Agent binding constraints.
+- Modified `backend/internal/apiserver/service/v1/appstudio/service.go` and `service/v1/agent/service.go` for explicit model selection, stable initialization, first Invocation persistence, post-commit Runtime ensure, and internal Coding Agent startup.
 
 ## Key decisions
 
@@ -75,22 +94,32 @@
 - Final `make compose` exits 0 and starts PostgreSQL, Redis, Conductor, APIServer, Infraserver, Notification Worker, and Taskworker.
 - Final `docker compose -f deployments/docker-compose.yaml ps` shows all services running, declared health checks healthy, and restart count 0 for all four OmniMAM backend processes.
 - `git diff --check` passes.
+- Assessment verification: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker` passes; the two service packages report no test files, while focused Task Worker tests pass.
+- Milestone 1 verification: `go test ./backend/apis/iapiserver ./backend/internal/apiserver/store/postgresql ./backend/internal/apiserver/service/v1/agent ./backend/internal/apiserver/service/v1/appstudio` passes.
 
 ## Outstanding tasks
 
-- Complete generation-aware Task binding and fenced terminal projection, then implement the worker/runtime adapter and AppStudio facade against the released SSOT.
+- Replace placeholder model/workspace grant strings with short-lived, fail-closed authorization resolved across APIServer, Task Worker, and Infrastructure; keep `PLATFORM_MODEL` unavailable until a released resolver exists.
+- Allow the internal Coding Agent runtime lifecycle path to load Coding Agents, submit queued Invocations after runtime readiness, register `agent.invocation.execute`, implement Hermes/OpenCode execution adapters, and project fenced terminal results/messages.
+- Apply successful Coding Invocation edits through AppStudio ChangeSets and record the resulting application source revision/checkpoint.
+- Add revision/checkpoint history and a conversation-stage restore operation, or clarify that the product only supports explicit source revision restore.
+- Align production deployment reason and runtime profile identifiers between AppStudio submission, the registry, and Task Worker.
+- Add focused service/integration tests for create-to-chat-to-source, preview, release, and restore/rollback paths.
 
 ## Known issues and risks
 
 - Hermes and OpenCode expose different control protocols, so a false shared REST abstraction would be incompatible.
 - The current model access reference is only a string and is not resolved into an injectable ModelAccessSpec.
 - `taskcenter.Reconciler` exists but is not wired into APIServer startup.
-- The complete `agent.invocation.execute@1.0` and changed runtime grant digests passed focused validation; queued-after-runtime submission, Task terminal projection, runtime adapters, and AppStudio facade remain to implement.
+- The complete `agent.invocation.execute@1.0` and changed runtime grant digests passed focused validation; queued-after-runtime submission, Task terminal projection, and runtime adapters remain to implement.
+- `ssot/02_architecture/domains/appstudio.md` says the current S1/S2 are unreleased drafts even though the repository is pinned and marked released at `spec-v1.18.0`; this release-state wording must be reconciled upstream before formal acceptance.
+- Production release tasks currently fail Task Worker validation because API Server and Worker use different deployment reason and runtime profile values.
+- The current initialization source-content write precedes the database transaction because source bytes are outside PostgreSQL; stable workspace IDs make replay idempotent, but source storage and SQL cannot provide a distributed atomic commit.
 - `go generate ./backend/internal/taskfunctionregistry` currently resolves its root one directory too high; use `go run ./backend/internal/taskfunctionregistry/internal/generate -root .` until the directive is corrected in a separate scoped change.
 
 ## Exact recommended next step
 
-Correct the stale registry fixtures in the focused Taskworker tests, then complete generation-aware Invocation Task binding and fenced terminal projection in `backend/internal/apiserver/service/v1/agent/service.go`.
+Implement fail-closed model/workspace authorization first, then complete the Coding Agent execution spine: register `agent.invocation.execute`, submit queued Invocations when runtime ensure becomes READY, project fenced terminal messages/results, and apply successful edits as AppStudio ChangeSets. Release identifier corrections follow that working core.
 
 Next Prompt:
 

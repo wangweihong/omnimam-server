@@ -10,10 +10,14 @@ import (
 // +k8s:deepcopy-gen=true
 type StudioApplication struct {
 	imachinery.ObjectMeta
-	OwnerUserID        string `json:"-" gorm:"column:owner_user_id;type:text;not null"`
-	Status             string `json:"status" gorm:"column:status;type:text;not null"`
-	DefaultWorkspaceID string `json:"-" gorm:"column:default_workspace_id;type:text"`
-	CurrentVersionID   string `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text"`
+	OwnerUserID           string `json:"-" gorm:"column:owner_user_id;type:text;not null;uniqueIndex:idx_studio_applications_owner_create_key,priority:1"`
+	Status                string `json:"status" gorm:"column:status;type:text;not null"`
+	DefaultWorkspaceID    string `json:"-" gorm:"column:default_workspace_id;type:text"`
+	CurrentVersionID      string `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text"`
+	CodingAgentID         string `json:"-" gorm:"column:coding_agent_id;type:text"`
+	CodingSessionID       string `json:"-" gorm:"column:coding_session_id;type:text"`
+	CodingAgentGeneration int    `json:"-" gorm:"column:coding_agent_generation;not null;default:0"`
+	CreateIdempotencyKey  string `json:"-" gorm:"column:create_idempotency_key;type:text;uniqueIndex:idx_studio_applications_owner_create_key,priority:2"`
 }
 
 func (StudioApplication) TableName() string { return "studio_applications" }

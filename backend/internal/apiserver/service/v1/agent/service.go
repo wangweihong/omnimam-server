@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
-	"github.com/wangweihong/gotoolbox/pkg/generic"
 	"github.com/wangweihong/gotoolbox/pkg/sets"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -128,38 +127,35 @@ func (s *Service) CreateAgent(ctx context.Context, req *iapiserver.AgentCreateRe
 	return agent, nil
 }
 
-// CreateCodingAgentForStudio 仅供 AppStudio 在应用初始化期间创建固定 Coding Agent。
-func (s *Service) CreateCodingAgentForStudio(
+// PrepareCodingAgentForStudio 仅校验并构造 AppStudio 初始化事务需要的 Agent 聚合。
+func (s *Service) PrepareCodingAgentForStudio(
 	ctx context.Context,
 	studioApplicationID string,
 	workspaceID string,
 	ownerUserID string,
 	idempotencyKey string,
+	profileID string,
 	modelBindingInput *iapiserver.AgentModelBindingInput,
-) (*iapiserver.Agent, error) {
+	authorization *iapiserver.AgentAuthorizationSummary,
+) (*iapiserver.Agent, *iapiserver.AgentSession, *iapiserver.AgentWorkspaceBinding, *iapiserver.AgentModelBinding, error) {
 	if studioApplicationID == "" || workspaceID == "" || ownerUserID == "" || idempotencyKey == "" {
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization context is incomplete")
+		return nil, nil, nil, nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization context is incomplete")
 	}
-	if s.workspaces == nil {
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "appstudio workspace validation is unavailable")
+	if profileID == "" {
+		profileID = iapiserver.AgentProfileIDCoding
 	}
-	profile, ok := s.profiles[iapiserver.AgentProfileIDCoding]
+	profile, ok := s.profiles[profileID]
 	if !ok || profile.Status != iapiserver.AgentProfileStatusActive || !sets.NewString(profile.SupportedAgentKinds...).Has(iapiserver.AgentKindCoding) {
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent profile is unavailable")
+		return nil, nil, nil, nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent profile is unavailable")
 	}
-	authorization, err := generic.GetValueOrZero(s.workspaces.ValidateAgentWorkspaceBinding(ctx, ownerUserID, workspaceID))
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
+	if authorization == nil || authorization.Source == "" {
+		return nil, nil, nil, nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent workspace authorization is unavailable")
+	}
+	if modelBindingInput == nil || modelBindingInput.SourceType == "" || modelBindingInput.SourceRef == "" || modelBindingInput.Purpose != iapiserver.AgentModelBindingPurposeCoding {
+		return nil, nil, nil, nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, "coding agent requires an explicit CODING model selection")
 	}
 
 	agentID := stableCodingAgentID(idempotencyKey)
-	if existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID); getErr == nil {
-		if codingAgentMatchesStudio(existing, workspaceID) {
-			return existing, nil
-		}
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent idempotency key conflicts")
-	}
-
 	agent := &iapiserver.Agent{
 		ObjectMeta: imachinery.ObjectMeta{
 			ID:          agentID,
@@ -181,25 +177,11 @@ func (s *Service) CreateCodingAgentForStudio(
 	binding := &iapiserver.AgentWorkspaceBinding{
 		ObjectMeta: imachinery.ObjectMeta{ID: stableCodingAgentChildID(agentID, "workspace-binding")},
 		AgentID:    agentID, WorkspaceType: iapiserver.AgentWorkspaceTypeStudio, WorkspaceID: workspaceID,
-		AccessMode: iapiserver.AgentWorkspaceAccessModeReadWrite, AuthorizationSummary: authorization,
-	}
-	if modelBindingInput == nil {
-		modelBindingInput = &iapiserver.AgentModelBindingInput{
-			SourceType: iapiserver.AgentModelBindingSourceTypeUserDefault,
-			SourceRef:  iapiserver.AgentModelBindingSourceRefUserDefault,
-			Purpose:    defaultPurpose(iapiserver.AgentKindCoding),
-		}
+		AccessMode: iapiserver.AgentWorkspaceAccessModeReadWrite, AuthorizationSummary: *authorization,
 	}
 	model := modelBinding(agentID, "primary-model", modelBindingInput)
 	model.ID = stableCodingAgentChildID(agentID, "primary-model")
-	if err := s.store.CreateAgentAggregate(ctx, agent, session, binding, model); err != nil {
-		existing, getErr := s.store.GetAgent(ctx, agentID, ownerUserID)
-		if getErr == nil && codingAgentMatchesStudio(existing, workspaceID) {
-			return existing, nil
-		}
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
-	}
-	return agent, nil
+	return agent, session, binding, model, nil
 }
 
 // GetAgent 返回当前用户可见 Agent。
@@ -216,6 +198,46 @@ func (s *Service) GetAgent(ctx context.Context, id string) (*iapiserver.Agent, e
 		return nil, errors.NewStatus(code.ErrAgentNotVisible, "agent not visible")
 	}
 	return agent, nil
+}
+
+// GetCodingAgentForStudio 返回当前用户拥有且固定到指定 AppStudio Workspace 的内部 Coding Agent/Session。
+func (s *Service) GetCodingAgentForStudio(ctx context.Context, agentID, sessionID, workspaceID string) (*iapiserver.Agent, *iapiserver.AgentSession, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	agent, err := s.store.GetAgent(ctx, agentID, owner)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !codingAgentMatchesStudio(agent, workspaceID) {
+		return nil, nil, errors.NewStatus(code.ErrAgentNotVisible, "coding agent not visible")
+	}
+	session, err := s.store.GetAgentSession(ctx, sessionID, owner)
+	if err != nil {
+		return nil, nil, err
+	}
+	if session.AgentID != agent.ID {
+		return nil, nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "coding agent session not visible")
+	}
+	return agent, session, nil
+}
+
+// GetCodingModelBindingForStudio 返回替换 generation 时可继承的当前主 Coding ModelBinding。
+func (s *Service) GetCodingModelBindingForStudio(ctx context.Context, agentID, sessionID, workspaceID string) (*iapiserver.AgentModelBinding, error) {
+	agent, _, err := s.GetCodingAgentForStudio(ctx, agentID, sessionID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := s.store.ListAgentModelBindings(ctx, agent.ID, agent.OwnerUserID)
+	if err != nil {
+		return nil, err
+	}
+	binding := primaryModel(bindings)
+	if binding == nil || binding.Purpose != iapiserver.AgentModelBindingPurposeCoding {
+		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, "an ACTIVE primary coding model binding is required")
+	}
+	return binding, nil
 }
 
 // UpdateAgent 更新非敏感配置并保持 Kind/Profile/Workspace 不变。
@@ -420,7 +442,7 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	}
 	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
 		if runtime == nil {
-			runtime, runtimeErr = s.ensureRuntime(ctx, agent.ID, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+			runtime, runtimeErr = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
 			if runtimeErr != nil {
 				return nil, runtimeErr
 			}
@@ -432,6 +454,43 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 		return created, nil
 	}
 	return s.submitInvocationTask(ctx, agent, created, runtime)
+}
+
+// StartCodingInvocation 在 AppStudio 初始化事务提交后启动或排队指定 Coding Invocation。
+func (s *Service) StartCodingInvocation(ctx context.Context, agentID, invocationID string) (*iapiserver.AgentInvocation, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	agent, err := s.store.GetAgent(ctx, agentID, owner)
+	if err != nil {
+		return nil, err
+	}
+	if agent.Kind != iapiserver.AgentKindCoding {
+		return nil, errors.NewStatus(code.ErrAgentStateInvalid, "agent is not a coding agent")
+	}
+	invocation, err := s.store.GetAgentInvocation(ctx, invocationID, owner)
+	if err != nil {
+		return nil, err
+	}
+	if invocation.AgentID != agent.ID || invocation.Status != iapiserver.AgentInvocationStatusQueued {
+		return invocation, nil
+	}
+	runtime, err := s.currentRuntime(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
+		if runtime == nil {
+			runtime, err = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+			if err != nil {
+				return invocation, err
+			}
+		}
+		invocation.RuntimeBindingID = runtime.ID
+		return s.store.UpdateAgentInvocation(ctx, invocation)
+	}
+	return s.submitInvocationTask(ctx, agent, invocation, runtime)
 }
 
 // submitInvocationTask 只向 Task Center 传递 released registry 允许的引用和恢复游标。
@@ -463,11 +522,7 @@ func (s *Service) submitInvocationTask(
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: agent.OwnerUserID,
 	})
 	if err != nil {
-		invocation.Status = iapiserver.AgentInvocationStatusFailed
-		invocation.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
-		invocation.FailureMessage = "task center submission failed: " + err.Error()
-		invocation.CompletedAt = imachinery.Now()
-		return s.store.UpdateAgentInvocation(ctx, invocation)
+		return invocation, nil
 	}
 
 	invocation.RuntimeBindingID = runtime.ID
@@ -666,6 +721,10 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 	if err != nil {
 		return nil, err
 	}
+	return s.ensureRuntimeForAgent(ctx, agent, operation, req)
+}
+
+func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.Agent, operation string, req *iapiserver.AgentRuntimeActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
 	if agent.Disabled || agent.Status == iapiserver.AgentStatusDisabled || agent.Status == iapiserver.AgentStatusDeleting {
 		return nil, errors.NewStatus(code.ErrAgentStateInvalid, "agent runtime operation is blocked")
 	}
@@ -734,6 +793,31 @@ func (s *Service) ensureRuntime(ctx context.Context, agentID, operation string, 
 
 func (s *Service) SuspendRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
 	return s.stopRuntimeAction(ctx, agentID, iapiserver.AgentRuntimeActionSuspend, req)
+}
+
+// SuspendCodingAgentForStudio 挂起指定 AppStudio 当前 generation 的 Coding Agent Runtime。
+func (s *Service) SuspendCodingAgentForStudio(ctx context.Context, agentID, sessionID, workspaceID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
+	agent, _, err := s.GetCodingAgentForStudio(ctx, agentID, sessionID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.currentRuntime(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	if runtime == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeNotVisible, "agent runtime is not active")
+	}
+	return s.stopRuntime(ctx, agent, runtime, iapiserver.AgentRuntimeActionSuspend, req.Reason)
+}
+
+// ResumeCodingAgentForStudio 恢复指定 AppStudio 当前 generation 的 Coding Agent Runtime。
+func (s *Service) ResumeCodingAgentForStudio(ctx context.Context, agentID, sessionID, workspaceID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
+	agent, _, err := s.GetCodingAgentForStudio(ctx, agentID, sessionID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationRecover, &iapiserver.AgentRuntimeActionRequest{RequestID: req.RequestID, ResourceVersion: req.ResourceVersion})
 }
 func (s *Service) StopRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
 	return s.stopRuntimeAction(ctx, agentID, iapiserver.AgentRuntimeActionStop, req)

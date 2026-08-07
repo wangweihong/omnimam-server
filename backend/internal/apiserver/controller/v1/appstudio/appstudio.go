@@ -1,10 +1,18 @@
 package appstudio
 
 import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
@@ -32,6 +40,118 @@ func (c *Controller) UpdateApplication(ctx *gin.Context) {
 }
 func (c *Controller) ArchiveApplication(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.ArchiveApplication(ctx, ctx.Param("studio_application_id")) })
+}
+
+// GetAgentStatus 返回应用当前 generation 的 Coding Agent/Session 状态。
+func (c *Controller) GetAgentStatus(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetAgentStatus(ctx, ctx.Param("studio_application_id")) })
+}
+
+// SendAgentMessage 向应用当前 Coding Agent 发送开发指令并创建 CODING Invocation。
+func (c *Controller) SendAgentMessage(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentMessageRequest{}, func(req *iapiserver.StudioAgentMessageRequest) (any, error) {
+		return c.service.SendAgentMessage(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// ListAgentInvocations 返回应用当前 generation 的 Invocation 列表。
+func (c *Controller) ListAgentInvocations(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AgentInvocationListRequest{}, func(req *iapiserver.AgentInvocationListRequest) (any, error) {
+		return c.service.ListAgentInvocations(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// GetAgentInvocation 返回应用当前 generation 的单个 Invocation。
+func (c *Controller) GetAgentInvocation(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) {
+		return c.service.GetAgentInvocation(ctx, ctx.Param("studio_application_id"), ctx.Param("agent_invocation_id"))
+	})
+}
+
+// CancelAgentInvocation 请求取消应用当前 generation 的 Invocation。
+func (c *Controller) CancelAgentInvocation(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AgentActionRequest{}, func(req *iapiserver.AgentActionRequest) (any, error) {
+		return c.service.CancelAgentInvocation(ctx, ctx.Param("studio_application_id"), ctx.Param("agent_invocation_id"), req)
+	})
+}
+
+// StreamAgentInvocationEvents 在应用绑定校验后重放并持续输出持久化 Invocation 事件。
+func (c *Controller) StreamAgentInvocationEvents(ctx *gin.Context) {
+	afterSequence := 0
+	if value := ctx.GetHeader("Last-Event-ID"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			core.WriteResponse(ctx, errors.NewStatus(code.ErrValidation, "Last-Event-ID must be a non-negative integer"), nil)
+			return
+		}
+		afterSequence = parsed
+	}
+	appID, invocationID := ctx.Param("studio_application_id"), ctx.Param("agent_invocation_id")
+	if _, err := c.service.GetAgentInvocation(ctx, appID, invocationID); err != nil {
+		core.WriteResponse(ctx, err, nil)
+		return
+	}
+	ctx.Header("Content-Type", "text/event-stream")
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+	ctx.Header("X-Accel-Buffering", "no")
+	ctx.Status(200)
+	ctx.Writer.Flush()
+	poll := time.NewTicker(time.Second)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer poll.Stop()
+	defer heartbeat.Stop()
+	for {
+		events, err := c.service.ListAgentInvocationEvents(ctx, appID, invocationID, afterSequence)
+		if err != nil {
+			return
+		}
+		for _, event := range events {
+			if strings.ContainsAny(event.EventType, "\r\n") {
+				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				return
+			}
+			if _, err := fmt.Fprintf(ctx.Writer, "id: %d\nevent: %s\ndata: %s\n\n", event.SequenceNo, event.EventType, data); err != nil {
+				return
+			}
+			afterSequence = event.SequenceNo
+			ctx.Writer.Flush()
+		}
+		select {
+		case <-ctx.Request.Context().Done():
+			return
+		case <-heartbeat.C:
+			if _, err := fmt.Fprintf(ctx.Writer, ": heartbeat %d\n\n", afterSequence); err != nil {
+				return
+			}
+			ctx.Writer.Flush()
+		case <-poll.C:
+		}
+	}
+}
+
+// SuspendAgent 挂起应用当前 Coding Agent Runtime。
+func (c *Controller) SuspendAgent(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AgentActionRequest{}, func(req *iapiserver.AgentActionRequest) (any, error) {
+		return c.service.SuspendAgent(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// ResumeAgent 恢复应用当前 Coding Agent Runtime。
+func (c *Controller) ResumeAgent(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AgentActionRequest{}, func(req *iapiserver.AgentActionRequest) (any, error) {
+		return c.service.ResumeAgent(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// ReplaceAgent 原子替换应用 Coding Agent generation 并保留旧历史。
+func (c *Controller) ReplaceAgent(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentReplaceRequest{}, func(req *iapiserver.StudioAgentReplaceRequest) (any, error) {
+		return c.service.ReplaceAgent(ctx, ctx.Param("studio_application_id"), req)
+	})
 }
 func (c *Controller) GetSource(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) {

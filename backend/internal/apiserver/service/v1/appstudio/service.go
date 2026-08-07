@@ -35,7 +35,17 @@ type ArtifactReader interface {
 }
 
 type CodingAgentCreator interface {
-	CreateCodingAgentForStudio(context.Context, string, string, string, string, *iapiserver.AgentModelBindingInput) (*iapiserver.Agent, error)
+	PrepareCodingAgentForStudio(context.Context, string, string, string, string, string, *iapiserver.AgentModelBindingInput, *iapiserver.AgentAuthorizationSummary) (*iapiserver.Agent, *iapiserver.AgentSession, *iapiserver.AgentWorkspaceBinding, *iapiserver.AgentModelBinding, error)
+	StartCodingInvocation(context.Context, string, string) (*iapiserver.AgentInvocation, error)
+	GetCodingAgentForStudio(context.Context, string, string, string) (*iapiserver.Agent, *iapiserver.AgentSession, error)
+	GetCodingModelBindingForStudio(context.Context, string, string, string) (*iapiserver.AgentModelBinding, error)
+	SendMessage(context.Context, string, *iapiserver.AgentMessageRequest) (*iapiserver.AgentInvocation, error)
+	ListInvocations(context.Context, string, *iapiserver.AgentInvocationListRequest) (*iapiserver.AgentInvocationListResponse, error)
+	GetInvocation(context.Context, string) (*iapiserver.AgentInvocation, error)
+	CancelInvocation(context.Context, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentInvocation, error)
+	ListInvocationEvents(context.Context, string, int) ([]*iapiserver.AgentOperationEvent, error)
+	SuspendCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
+	ResumeCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
 }
 
 type Service struct {
@@ -75,37 +85,65 @@ func (s *Service) ListApplications(ctx context.Context, req *iapiserver.StudioAp
 	items, total, err := s.store.ListStudioApplications(ctx, req)
 	return &iapiserver.StudioApplicationListResponse{Total: total, Items: items}, err
 }
-func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioApplicationCreateRequest) (*iapiserver.StudioApplication, error) {
+func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioApplicationCreateRequest) (*iapiserver.StudioApplicationCreateResponse, error) {
 	owner, err := studioUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	appID, repoID, workspaceID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description}, OwnerUserID: owner, Status: iapiserver.AppStudioApplicationStatusCreating, DefaultWorkspaceID: workspaceID}
+	applicationType := req.ApplicationType
+	if applicationType == "" {
+		applicationType = iapiserver.AppStudioApplicationTypeStaticWeb
+	}
+	if applicationType != iapiserver.AppStudioApplicationTypeStaticWeb || req.BackendRequired {
+		return nil, errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "only STATIC_WEB applications are supported")
+	}
+	if s.agents == nil {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization is unavailable")
+	}
+
+	appID := stableStudioInitializationID(owner, req.IdempotencyKey, "application")
+	repoID := stableStudioInitializationID(owner, req.IdempotencyKey, "repository")
+	workspaceID := stableStudioInitializationID(owner, req.IdempotencyKey, "workspace")
+	app := &iapiserver.StudioApplication{
+		ObjectMeta:  imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description},
+		OwnerUserID: owner, Status: iapiserver.AppStudioApplicationStatusReady, DefaultWorkspaceID: workspaceID,
+		CodingAgentGeneration: 1, CreateIdempotencyKey: req.IdempotencyKey,
+	}
 	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: iapiserver.AppStudioSourceProviderBuiltIn, Status: iapiserver.AppStudioRepositoryStatusReady}
 	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: iapiserver.AppStudioDefaultWorkspaceName}, StudioApplicationID: appID, RepositoryID: repoID, Status: iapiserver.AppStudioWorkspaceStatusReady, CurrentRevisionDigest: emptyTreeDigest()}
-	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: emptyTreeDigest(), CreatedBy: owner}
+	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(owner, req.IdempotencyKey, "revision-0")}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: emptyTreeDigest(), CreatedBy: owner}
 	if err := s.sources.WriteRevision(ctx, workspaceID, 0, map[string][]byte{}); err != nil {
 		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
 	}
-	if err := s.store.CreateStudioApplicationAggregate(ctx, app, repository, workspace, revision); err != nil {
-		return nil, err
-	}
-	if s.agents == nil {
-		app.Status = iapiserver.AppStudioApplicationStatusError
-		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization is unavailable")
-	}
-	if _, err := s.agents.CreateCodingAgentForStudio(ctx, appID, workspaceID, owner, appID, req.ModelBinding); err != nil {
-		app.Status = iapiserver.AppStudioApplicationStatusError
-		_, _ = s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
+	modelInput := &iapiserver.AgentModelBindingInput{SourceType: req.CodingModelSelection.SourceType, SourceRef: req.CodingModelSelection.SourceRef, Purpose: iapiserver.AgentModelBindingPurposeCoding}
+	authorization := &iapiserver.AgentAuthorizationSummary{Source: iapiserver.AppStudioTaskDomain, ValidatedAt: imachinery.Now()}
+	agent, session, workspaceBinding, modelBinding, err := s.agents.PrepareCodingAgentForStudio(ctx, appID, workspaceID, owner, appID, req.CodingAgentProfile, modelInput, authorization)
+	if err != nil {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
 	}
-	app.Status = iapiserver.AppStudioApplicationStatusReady
-	if _, err := s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion); err != nil {
+	app.CodingAgentID, app.CodingSessionID = agent.ID, session.ID
+	messageID := stableStudioInitializationID(owner, req.IdempotencyKey, "initial-message")
+	invocationID := stableStudioInitializationID(owner, req.IdempotencyKey, "initial-invocation")
+	attachments := make([]iapiserver.AgentReference, 0, len(req.Attachments))
+	for _, attachment := range req.Attachments {
+		attachments = append(attachments, iapiserver.AgentReference{ReferenceType: attachment.Type, ReferenceID: attachment.ReferenceID})
+	}
+	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.InitialRequirement, Attachments: attachments}
+	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: iapiserver.AgentInvocationTypeCoding, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID, IdempotencyKey: "studio-create:" + req.IdempotencyKey}
+	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, UserMessage: message, InitialInvocation: invocation}
+	if _, err := s.store.CreateStudioApplicationInitialization(ctx, initialization); err != nil {
 		return nil, err
 	}
-	return app, nil
+	canonical, err := s.store.GetStudioApplicationInitialization(ctx, owner, req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.agents.StartCodingInvocation(ctx, canonical.Agent.ID, canonical.InitialInvocation.ID)
+	canonical, err = s.store.GetStudioApplicationInitialization(ctx, owner, req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	return studioApplicationCreateResponse(canonical), nil
 }
 func (s *Service) GetApplication(ctx context.Context, id string) (*iapiserver.StudioApplication, error) {
 	owner, err := studioUserID(ctx)
@@ -141,6 +179,158 @@ func (s *Service) ArchiveApplication(ctx context.Context, id string) (*iapiserve
 	app.Status = iapiserver.AppStudioApplicationStatusArchived
 	return s.store.UpdateStudioApplication(ctx, app, app.ResourceVersion)
 }
+
+// GetAgentStatus 返回当前 generation 的脱敏 Coding Agent/Session 状态。
+func (s *Service) GetAgentStatus(ctx context.Context, appID string) (*iapiserver.StudioAgentStatus, error) {
+	app, agent, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	return studioAgentStatus(app, agent), nil
+}
+
+// SendAgentMessage 持久化应用开发指令并返回当前 generation 的 CODING Invocation 投影。
+func (s *Service) SendAgentMessage(ctx context.Context, appID string, req *iapiserver.StudioAgentMessageRequest) (*iapiserver.StudioAgentInvocation, error) {
+	app, _, session, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	attachments := make([]iapiserver.AgentReference, 0, len(req.Attachments))
+	for _, attachment := range req.Attachments {
+		attachments = append(attachments, iapiserver.AgentReference{ReferenceType: attachment.Type, ReferenceID: attachment.ReferenceID})
+	}
+	invocation, err := s.agents.SendMessage(ctx, session.ID, &iapiserver.AgentMessageRequest{Content: req.Instruction, Attachments: attachments, IdempotencyKey: req.IdempotencyKey})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStudioInvocationBinding(app, invocation); err != nil {
+		return nil, err
+	}
+	return studioAgentInvocationProjection(app, invocation), nil
+}
+
+// ListAgentInvocations 返回当前 generation 的 CODING Invocation 列表。
+func (s *Service) ListAgentInvocations(ctx context.Context, appID string, req *iapiserver.AgentInvocationListRequest) (*iapiserver.StudioAgentInvocationListResponse, error) {
+	app, _, session, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.agents.ListInvocations(ctx, session.ID, req)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*iapiserver.StudioAgentInvocation, 0, len(result.Items))
+	for _, invocation := range result.Items {
+		if err := validateStudioInvocationBinding(app, invocation); err != nil {
+			return nil, err
+		}
+		items = append(items, studioAgentInvocationProjection(app, invocation))
+	}
+	return &iapiserver.StudioAgentInvocationListResponse{Total: result.Total, Items: items}, nil
+}
+
+// GetAgentInvocation 返回当前 generation 的单个 CODING Invocation。
+func (s *Service) GetAgentInvocation(ctx context.Context, appID, invocationID string) (*iapiserver.StudioAgentInvocation, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	invocation, err := s.agents.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStudioInvocationBinding(app, invocation); err != nil {
+		return nil, err
+	}
+	return studioAgentInvocationProjection(app, invocation), nil
+}
+
+// CancelAgentInvocation 取消当前 generation 的 Invocation，不允许跨应用或访问旧 generation。
+func (s *Service) CancelAgentInvocation(ctx context.Context, appID, invocationID string, req *iapiserver.AgentActionRequest) (*iapiserver.StudioAgentInvocation, error) {
+	if _, err := s.GetAgentInvocation(ctx, appID, invocationID); err != nil {
+		return nil, err
+	}
+	invocation, err := s.agents.CancelInvocation(ctx, invocationID, req)
+	if err != nil {
+		return nil, err
+	}
+	app, err := s.GetApplication(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStudioInvocationBinding(app, invocation); err != nil {
+		return nil, err
+	}
+	return studioAgentInvocationProjection(app, invocation), nil
+}
+
+// ListAgentInvocationEvents 在应用绑定校验后返回可恢复的持久化 Invocation 事件。
+func (s *Service) ListAgentInvocationEvents(ctx context.Context, appID, invocationID string, afterSequence int) ([]*iapiserver.AgentOperationEvent, error) {
+	if _, err := s.GetAgentInvocation(ctx, appID, invocationID); err != nil {
+		return nil, err
+	}
+	return s.agents.ListInvocationEvents(ctx, invocationID, afterSequence)
+}
+
+// SuspendAgent 挂起当前 generation 的 Coding Agent Runtime。
+func (s *Service) SuspendAgent(ctx context.Context, appID string, req *iapiserver.AgentActionRequest) (*iapiserver.StudioAgentStatus, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.agents.SuspendCodingAgentForStudio(ctx, app.CodingAgentID, app.CodingSessionID, app.DefaultWorkspaceID, req); err != nil {
+		return nil, err
+	}
+	return s.GetAgentStatus(ctx, appID)
+}
+
+// ResumeAgent 恢复当前 generation 的 Coding Agent Runtime。
+func (s *Service) ResumeAgent(ctx context.Context, appID string, req *iapiserver.AgentActionRequest) (*iapiserver.StudioAgentStatus, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.agents.ResumeCodingAgentForStudio(ctx, app.CodingAgentID, app.CodingSessionID, app.DefaultWorkspaceID, req); err != nil {
+		return nil, err
+	}
+	return s.GetAgentStatus(ctx, appID)
+}
+
+// ReplaceAgent 原子创建新的 Coding Agent/Session 并切换应用 generation，旧历史保持不变。
+func (s *Service) ReplaceAgent(ctx context.Context, appID string, req *iapiserver.StudioAgentReplaceRequest) (*iapiserver.StudioAgentStatus, error) {
+	app, currentAgent, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	currentModel, err := s.agents.GetCodingModelBindingForStudio(ctx, app.CodingAgentID, app.CodingSessionID, app.DefaultWorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	profileID := req.CodingAgentProfile
+	if profileID == "" {
+		profileID = currentAgent.AgentProfileID
+	}
+	modelInput := &iapiserver.AgentModelBindingInput{SourceType: currentModel.SourceType, SourceRef: currentModel.SourceRef, Purpose: iapiserver.AgentModelBindingPurposeCoding}
+	if req.CodingModelSelection != "" {
+		modelInput.SourceRef = req.CodingModelSelection
+	}
+	replacementKey := app.ID + ":replace:" + req.IdempotencyKey
+	authorization := &iapiserver.AgentAuthorizationSummary{Source: iapiserver.AppStudioTaskDomain, ValidatedAt: imachinery.Now()}
+	agent, session, workspaceBinding, modelBinding, err := s.agents.PrepareCodingAgentForStudio(ctx, app.ID, app.DefaultWorkspaceID, app.OwnerUserID, replacementKey, profileID, modelInput, authorization)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
+	}
+	updated, err := s.store.ReplaceStudioCodingAgent(ctx, app.ID, app.OwnerUserID, &store.StudioCodingAgentReplacement{Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding})
+	if err != nil {
+		return nil, err
+	}
+	current, _, err := s.agents.GetCodingAgentForStudio(ctx, updated.CodingAgentID, updated.CodingSessionID, updated.DefaultWorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return studioAgentStatus(updated, current), nil
+}
+
 func (s *Service) GetSource(ctx context.Context, appID string) (*iapiserver.StudioSourceState, error) {
 	_, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
@@ -742,6 +932,99 @@ func emptyTreeDigest() string {
 	sum := sha256.Sum256(nil)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+func stableStudioInitializationID(owner, idempotencyKey, resource string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("appstudio:"+owner+":"+idempotencyKey+":"+resource)).String()
+}
+
+func studioApplicationCreateResponse(initialization *store.StudioApplicationInitialization) *iapiserver.StudioApplicationCreateResponse {
+	app, agent, invocation := initialization.Application, initialization.Agent, initialization.InitialInvocation
+	return &iapiserver.StudioApplicationCreateResponse{
+		Application: app,
+		CodingAgent: &iapiserver.StudioAgentStatus{
+			StudioApplicationID: app.ID,
+			AgentID:             app.CodingAgentID,
+			SessionID:           app.CodingSessionID,
+			Generation:          app.CodingAgentGeneration,
+			Status:              agent.Status,
+		},
+		InitialInvocation: &iapiserver.StudioAgentInvocation{
+			ID:                   invocation.ID,
+			AgentID:              invocation.AgentID,
+			SessionID:            invocation.SessionID,
+			Generation:           app.CodingAgentGeneration,
+			Type:                 invocation.Type,
+			Status:               invocation.Status,
+			AtomicTaskID:         invocation.AtomicTaskID,
+			RuntimeBindingID:     invocation.RuntimeBindingID,
+			RuntimeSessionRef:    invocation.RuntimeSessionRef,
+			RuntimeInvocationRef: invocation.RuntimeInvocationRef,
+			LastEventSequence:    invocation.LastEventSequence,
+			FailureCode:          invocation.FailureCode,
+			FailureMessage:       invocation.FailureMessage,
+			CompletedAt:          invocation.CompletedAt,
+			CreatedAt:            invocation.CreatedAt,
+			UpdatedAt:            invocation.UpdatedAt,
+		},
+	}
+}
+
+func (s *Service) currentCodingAgent(ctx context.Context, appID string) (*iapiserver.StudioApplication, *iapiserver.Agent, *iapiserver.AgentSession, error) {
+	if s.agents == nil {
+		return nil, nil, nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent facade is unavailable")
+	}
+	app, err := s.GetApplication(ctx, appID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if app.CodingAgentID == "" || app.CodingSessionID == "" || app.CodingAgentGeneration < 1 || app.DefaultWorkspaceID == "" {
+		return nil, nil, nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent binding is incomplete")
+	}
+	agent, session, err := s.agents.GetCodingAgentForStudio(ctx, app.CodingAgentID, app.CodingSessionID, app.DefaultWorkspaceID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return app, agent, session, nil
+}
+
+func studioAgentStatus(app *iapiserver.StudioApplication, agent *iapiserver.Agent) *iapiserver.StudioAgentStatus {
+	return &iapiserver.StudioAgentStatus{
+		StudioApplicationID: app.ID,
+		AgentID:             app.CodingAgentID,
+		SessionID:           app.CodingSessionID,
+		Generation:          app.CodingAgentGeneration,
+		Status:              agent.Status,
+	}
+}
+
+func validateStudioInvocationBinding(app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation) error {
+	if invocation == nil || invocation.AgentID != app.CodingAgentID || invocation.SessionID != app.CodingSessionID || invocation.Type != iapiserver.AgentInvocationTypeCoding {
+		return errors.NewStatus(code.ErrAgentSessionNotVisible, "coding invocation not visible")
+	}
+	return nil
+}
+
+func studioAgentInvocationProjection(app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation) *iapiserver.StudioAgentInvocation {
+	return &iapiserver.StudioAgentInvocation{
+		ID:                   invocation.ID,
+		AgentID:              invocation.AgentID,
+		SessionID:            invocation.SessionID,
+		Generation:           app.CodingAgentGeneration,
+		Type:                 invocation.Type,
+		Status:               invocation.Status,
+		AtomicTaskID:         invocation.AtomicTaskID,
+		RuntimeBindingID:     invocation.RuntimeBindingID,
+		RuntimeSessionRef:    invocation.RuntimeSessionRef,
+		RuntimeInvocationRef: invocation.RuntimeInvocationRef,
+		LastEventSequence:    invocation.LastEventSequence,
+		FailureCode:          invocation.FailureCode,
+		FailureMessage:       invocation.FailureMessage,
+		CompletedAt:          invocation.CompletedAt,
+		CreatedAt:            invocation.CreatedAt,
+		UpdatedAt:            invocation.UpdatedAt,
+	}
+}
+
 func sortedPaths(files map[string][]byte) []string {
 	paths := make([]string, 0, len(files))
 	for path := range files {
