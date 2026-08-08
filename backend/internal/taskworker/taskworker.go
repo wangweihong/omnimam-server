@@ -386,6 +386,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		storeIns.AppStudio().ProjectStudioTaskTerminal,
 	)
 	reconciler.RegisterTerminalRecoverySource(storeIns.Agents().ListPendingAgentTerminalTaskIDs)
+	reconciler.RegisterTerminalRecoverySource(storeIns.AppStudio().ListPendingStudioTerminalTaskIDs)
 	reconciler.RegisterRecoveryHandler(agentProjector.ReconcileQueuedInvocations)
 	errCh := make(chan error, 1)
 	go func() { errCh <- reconciler.Run(ctx) }()

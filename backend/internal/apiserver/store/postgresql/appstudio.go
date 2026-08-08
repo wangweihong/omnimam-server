@@ -597,6 +597,46 @@ func (s *appStudioStore) UpdateStudioRuntimeInstance(ctx context.Context, runtim
 	return runtime, err
 }
 
+// ListPendingStudioTerminalTaskIDs returns terminal Tasks still needed by durable Build or Production projections.
+// Preview and stop operations cannot participate because their Task IDs are not persisted by the released model.
+func (s *appStudioStore) ListPendingStudioTerminalTaskIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	terminalStatuses := []string{
+		iapiserver.AtomicTaskStatusSuccess,
+		iapiserver.AtomicTaskStatusFailed,
+		iapiserver.AtomicTaskStatusCanceled,
+		iapiserver.AtomicTaskStatusTimeout,
+		iapiserver.AtomicTaskStatusSkipped,
+	}
+	ids := make([]string, 0, limit)
+	if err := s.ds.db.WithContext(ctx).Table("studio_builds").
+		Select("studio_builds.atomic_task_id").
+		Joins("JOIN atomic_tasks ON atomic_tasks.id = studio_builds.atomic_task_id").
+		Where("studio_builds.atomic_task_id <> '' AND studio_builds.status = ? AND atomic_tasks.status IN ?",
+			iapiserver.AppStudioBuildStatusRunning, terminalStatuses).
+		Order("studio_builds.updated_at ASC").Limit(limit).
+		Pluck("studio_builds.atomic_task_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) >= limit {
+		return ids, nil
+	}
+	runtimeIDs := make([]string, 0, limit-len(ids))
+	if err := s.ds.db.WithContext(ctx).Table("studio_runtime_instances").
+		Select("studio_runtime_instances.atomic_task_id").
+		Joins("JOIN studio_releases ON studio_releases.id = studio_runtime_instances.studio_release_id").
+		Joins("JOIN atomic_tasks ON atomic_tasks.id = studio_runtime_instances.atomic_task_id").
+		Where("studio_runtime_instances.atomic_task_id <> '' AND studio_releases.status IN ? AND atomic_tasks.status IN ?",
+			[]string{iapiserver.AppStudioReleaseStatusPending, iapiserver.AppStudioReleaseStatusDeploying}, terminalStatuses).
+		Order("studio_runtime_instances.updated_at ASC").Limit(limit-len(ids)).
+		Pluck("studio_runtime_instances.atomic_task_id", &runtimeIDs).Error; err != nil {
+		return nil, err
+	}
+	return append(ids, runtimeIDs...), nil
+}
+
 func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *iapiserver.AtomicTask) error {
 	if task == nil || !iapiserver.IsAtomicTaskTerminal(task.Status) {
 		return nil

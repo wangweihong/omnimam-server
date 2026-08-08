@@ -316,6 +316,81 @@ func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapi
 	return invocation, err
 }
 
+// FailAgentInvocationSubmission 只终结仍未绑定 Task 的当前 submission generation。
+func (s *agentStore) FailAgentInvocationSubmission(
+	ctx context.Context,
+	invocationID string,
+	expectedVersion int64,
+	submissionGeneration int,
+	failureMessage string,
+) (*iapiserver.AgentInvocation, bool, error) {
+	var invocation iapiserver.AgentInvocation
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocationID).First(&invocation).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+		if invocation.Status != iapiserver.AgentInvocationStatusQueued || invocation.AtomicTaskID != nil ||
+			invocation.ResourceVersion != expectedVersion || invocation.SubmissionGeneration != submissionGeneration {
+			return nil
+		}
+
+		previous := invocation
+		invocation.Status = iapiserver.AgentInvocationStatusFailed
+		invocation.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
+		invocation.FailureMessage = failureMessage
+		invocation.CompletedAt = imachinery.Now()
+		if err := tx.Save(&invocation).Error; err != nil {
+			return err
+		}
+		applied = true
+		return appendAgentOutbox(tx, "AgentInvocation", invocation.ID, "agent_invocation_status_changed", invocation.ResourceVersion, map[string]any{
+			"invocation_id": invocation.ID, "agent_id": invocation.AgentID, "session_id": invocation.SessionID,
+			"atomic_task_id": nil, "from_status": previous.Status, "to_status": invocation.Status,
+			"error_code": invocation.FailureCode,
+		})
+	})
+	return &invocation, applied, err
+}
+
+// RetryAgentInvocationSubmission 原子复用未曾绑定 Task 的可重试失败 Invocation。
+func (s *agentStore) RetryAgentInvocationSubmission(
+	ctx context.Context,
+	invocationID string,
+	expectedVersion int64,
+	submissionGeneration int,
+) (*iapiserver.AgentInvocation, bool, error) {
+	var invocation iapiserver.AgentInvocation
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocationID).First(&invocation).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+		if invocation.Status != iapiserver.AgentInvocationStatusFailed ||
+			invocation.FailureCode != iapiserver.AgentInvocationFailureCodeTaskUnavailable || invocation.AtomicTaskID != nil ||
+			invocation.ResourceVersion != expectedVersion || invocation.SubmissionGeneration != submissionGeneration {
+			return nil
+		}
+
+		previous := invocation
+		invocation.Status = iapiserver.AgentInvocationStatusQueued
+		invocation.FailureCode = ""
+		invocation.FailureMessage = ""
+		invocation.CompletedAt = imachinery.Time{}
+		invocation.SubmissionGeneration++
+		if err := tx.Save(&invocation).Error; err != nil {
+			return err
+		}
+		applied = true
+		return appendAgentOutbox(tx, "AgentInvocation", invocation.ID, "agent_invocation_status_changed", invocation.ResourceVersion, map[string]any{
+			"invocation_id": invocation.ID, "agent_id": invocation.AgentID, "session_id": invocation.SessionID,
+			"atomic_task_id": nil, "from_status": previous.Status, "to_status": invocation.Status,
+			"error_code": nil,
+		})
+	})
+	return &invocation, applied, err
+}
+
 // BindAgentInvocationTask 使用 Invocation generation 和资源版本原子绑定当前执行 Task。
 func (s *agentStore) BindAgentInvocationTask(
 	ctx context.Context,

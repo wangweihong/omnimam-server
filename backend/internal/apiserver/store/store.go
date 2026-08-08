@@ -133,6 +133,8 @@ type AgentStore interface {
 	ListPendingAgentTerminalTaskIDs(context.Context, int) ([]string, error)
 	ListAgentRuntimeQueueCandidates(context.Context, int) ([]AgentRuntimeQueueCandidate, error)
 	UpdateAgentInvocation(context.Context, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	FailAgentInvocationSubmission(context.Context, string, int64, int, string) (*iapiserver.AgentInvocation, bool, error)
+	RetryAgentInvocationSubmission(context.Context, string, int64, int) (*iapiserver.AgentInvocation, bool, error)
 	BindAgentInvocationTask(context.Context, string, int64, int, string, string, int64) (*iapiserver.AgentInvocation, bool, error)
 	ProjectAgentInvocationTerminal(context.Context, string, AgentInvocationTerminalProjection) (*iapiserver.AgentInvocation, bool, error)
 	ListAgentMemories(context.Context, *iapiserver.AgentMemoryListRequest, string) ([]*iapiserver.AgentMemory, int64, error)
@@ -213,6 +215,7 @@ type AppStudioStore interface {
 	ListStudioRuntimeInstances(context.Context, string, string, *iapiserver.StudioRuntimeInstanceListRequest) ([]*iapiserver.StudioRuntimeInstance, int64, error)
 	GetStudioRuntimeInstance(context.Context, string, string) (*iapiserver.StudioRuntimeInstance, error)
 	UpdateStudioRuntimeInstance(context.Context, *iapiserver.StudioRuntimeInstance) (*iapiserver.StudioRuntimeInstance, error)
+	ListPendingStudioTerminalTaskIDs(context.Context, int) ([]string, error)
 	ProjectStudioTaskTerminal(context.Context, *iapiserver.AtomicTask) error
 }
 

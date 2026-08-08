@@ -420,40 +420,30 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 			created.FailureCode != iapiserver.AgentInvocationFailureCodeTaskUnavailable || created.AtomicTaskID != nil {
 			return created, nil
 		}
-		created.Status = iapiserver.AgentInvocationStatusQueued
-		created.FailureCode = ""
-		created.FailureMessage = ""
-		created.CompletedAt = imachinery.Time{}
-		created.SubmissionGeneration++
-		created, err = s.store.UpdateAgentInvocation(ctx, created)
+		created, _, err = s.store.RetryAgentInvocationSubmission(ctx, created.ID, created.ResourceVersion, created.SubmissionGeneration)
 		if err != nil {
 			return nil, err
 		}
+		if created.Status != iapiserver.AgentInvocationStatusQueued || created.AtomicTaskID != nil {
+			return created, nil
+		}
 	}
 	if s.tasks == nil {
-		created.Status = iapiserver.AgentInvocationStatusFailed
-		created.FailureCode = iapiserver.AgentInvocationFailureCodeTaskUnavailable
-		created.FailureMessage = "Agent execution adapter is unavailable for " + typeName + " invocation."
-		created.CompletedAt = imachinery.Now()
-		if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
-			return nil, err
-		}
-		return created, nil
+		return s.failInvocationSubmission(ctx, created, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "task center is unavailable"))
 	}
 	runtime, runtimeErr := s.currentRuntime(ctx, agent)
 	if runtimeErr != nil {
-		return nil, runtimeErr
+		return s.failInvocationSubmission(ctx, created, runtimeErr)
 	}
 	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
-		if runtime == nil {
-			runtime, runtimeErr = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
-			if runtimeErr != nil {
-				return nil, runtimeErr
-			}
+		runtime, runtimeErr = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+		if runtimeErr != nil {
+			return s.failInvocationSubmission(ctx, created, runtimeErr)
 		}
 		created.RuntimeBindingID = runtime.ID
+		unbound := created.DeepCopy()
 		if _, err := s.store.UpdateAgentInvocation(ctx, created); err != nil {
-			return nil, err
+			return s.failInvocationSubmission(ctx, unbound, err)
 		}
 		return created, nil
 	}
@@ -477,22 +467,35 @@ func (s *Service) StartCodingInvocation(ctx context.Context, agentID, invocation
 	if err != nil {
 		return nil, err
 	}
-	if invocation.AgentID != agent.ID || invocation.Status != iapiserver.AgentInvocationStatusQueued {
+	if invocation.AgentID != agent.ID {
+		return invocation, nil
+	}
+	if invocation.Status == iapiserver.AgentInvocationStatusFailed &&
+		invocation.FailureCode == iapiserver.AgentInvocationFailureCodeTaskUnavailable && invocation.AtomicTaskID == nil {
+		invocation, _, err = s.store.RetryAgentInvocationSubmission(ctx, invocation.ID, invocation.ResourceVersion, invocation.SubmissionGeneration)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if invocation.Status != iapiserver.AgentInvocationStatusQueued || invocation.AtomicTaskID != nil {
 		return invocation, nil
 	}
 	runtime, err := s.currentRuntime(ctx, agent)
 	if err != nil {
-		return nil, err
+		return s.failInvocationSubmission(ctx, invocation, err)
 	}
 	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
-		if runtime == nil {
-			runtime, err = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
-			if err != nil {
-				return invocation, err
-			}
+		runtime, err = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+		if err != nil {
+			return s.failInvocationSubmission(ctx, invocation, err)
 		}
 		invocation.RuntimeBindingID = runtime.ID
-		return s.store.UpdateAgentInvocation(ctx, invocation)
+		unbound := invocation.DeepCopy()
+		updated, updateErr := s.store.UpdateAgentInvocation(ctx, invocation)
+		if updateErr != nil {
+			return s.failInvocationSubmission(ctx, unbound, updateErr)
+		}
+		return updated, nil
 	}
 	return s.submitInvocationTask(ctx, agent, invocation, runtime)
 }
@@ -505,25 +508,25 @@ func (s *Service) submitInvocationTask(
 	runtime *iapiserver.AgentRuntimeBinding,
 ) (*iapiserver.AgentInvocation, error) {
 	if invocation == nil || runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady || runtime.AgentID != agent.ID {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation runtime binding is not ready")
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation runtime binding is not ready"))
 	}
 	if s.tasks == nil {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "task center is unavailable")
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "task center is unavailable"))
 	}
 	if s.models == nil || s.grants == nil {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "agent invocation authorization is unavailable")
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "agent invocation authorization is unavailable"))
 	}
 	bindings, err := s.store.ListAgentModelBindings(ctx, agent.ID, agent.OwnerUserID)
 	if err != nil {
-		return nil, err
+		return s.failInvocationSubmission(ctx, invocation, err)
 	}
 	primary := primaryModel(bindings)
 	if primary == nil || primary.Purpose != defaultPurpose(agent.Kind) {
-		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, "an ACTIVE primary model binding is required before invocation submission")
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentModelBindingInvalid, "an ACTIVE primary model binding is required before invocation submission"))
 	}
 	modelAccessRef, err := s.models.ResolveAgentModelAccess(ctx, agent.OwnerUserID, primary)
 	if err != nil {
-		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error())
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error()))
 	}
 	expectedVersion := invocation.ResourceVersion + 1
 	issuedAt, expiresAt := s.grants.Window()
@@ -534,7 +537,7 @@ func (s *Service) submitInvocationTask(
 		ModelAccessGrantRef: modelAccessRef, IssuedAt: issuedAt, ExpiresAt: expiresAt,
 	})
 	if err != nil {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error())
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error()))
 	}
 	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
 		Key:  "agent-invocation-" + invocation.ID + "-" + fmt.Sprint(invocation.SubmissionGeneration),
@@ -554,13 +557,13 @@ func (s *Service) submitInvocationTask(
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: agent.OwnerUserID,
 	})
 	if err != nil && (task == nil || errors.ToStatus(err).Code != code.ErrAtomicTaskIdempotencyConflict) {
-		return invocation, err
+		return s.failInvocationSubmission(ctx, invocation, err)
 	}
 	if task == nil || !sameInvocationTask(task, agent, invocation, runtime, expectedVersion) {
 		if err != nil {
-			return invocation, err
+			return s.failInvocationSubmission(ctx, invocation, err)
 		}
-		return invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task identity does not match")
+		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task identity does not match"))
 	}
 	bound, applied, err := s.store.BindAgentInvocationTask(
 		ctx,
@@ -572,12 +575,44 @@ func (s *Service) submitInvocationTask(
 		expectedVersion,
 	)
 	if err != nil {
-		return nil, err
+		return s.failInvocationSubmission(ctx, invocation, err)
 	}
 	if !applied {
-		return nil, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task lost its resource-version fence")
+		return s.failInvocationSubmission(ctx, bound, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task lost its resource-version fence"))
 	}
 	return bound, nil
+}
+
+func (s *Service) failInvocationSubmission(
+	ctx context.Context,
+	invocation *iapiserver.AgentInvocation,
+	cause error,
+) (*iapiserver.AgentInvocation, error) {
+	if invocation == nil {
+		return nil, cause
+	}
+	failed, _, err := s.store.FailAgentInvocationSubmission(
+		ctx,
+		invocation.ID,
+		invocation.ResourceVersion,
+		invocation.SubmissionGeneration,
+		invocationSubmissionFailureMessage(cause),
+	)
+	if err != nil {
+		return nil, stderrors.Join(cause, errors.Wrap(err, "project invocation submission failure"))
+	}
+	return failed, cause
+}
+
+func invocationSubmissionFailureMessage(cause error) string {
+	switch errors.ToStatus(cause).Code {
+	case code.ErrAgentRuntimeOperationFailed, code.ErrAgentRuntimeNotVisible:
+		return "Agent runtime is unavailable for invocation submission."
+	case code.ErrAgentModelBindingInvalid:
+		return "Agent model authorization is unavailable for invocation submission."
+	default:
+		return "Agent invocation task submission failed before task binding."
+	}
 }
 
 func sameInvocationTask(task *iapiserver.AtomicTask, agent *iapiserver.Agent, invocation *iapiserver.AgentInvocation, runtime *iapiserver.AgentRuntimeBinding, expectedVersion int64) bool {
@@ -996,16 +1031,45 @@ func (s *Service) ProjectTaskTerminal(ctx context.Context, task *iapiserver.Atom
 	} else if iapiserver.IsAtomicTaskTerminal(task.Status) {
 		runtime.State, runtime.HealthStatus = iapiserver.AgentRuntimeStateFailed, iapiserver.AgentRuntimeHealthUnhealthy
 	}
-	projectedRuntime, _, err := s.store.ProjectAgentRuntimeTerminal(ctx, store.AgentRuntimeTerminalProjection{
+	projectedRuntime, applied, err := s.store.ProjectAgentRuntimeTerminal(ctx, store.AgentRuntimeTerminalProjection{
 		TaskID: task.ID, Operation: operation, ExpectedResourceVersion: expectedVersion, Runtime: runtime, AgentStatus: agentStatus,
 	})
-	if err != nil || task.Status != iapiserver.AtomicTaskStatusSuccess || task.FunctionRef != iapiserver.AgentRuntimeFunctionEnsure ||
-		projectedRuntime == nil || projectedRuntime.State != iapiserver.AgentRuntimeStateReady {
+	if err != nil {
 		return err
+	}
+	if task.Status != iapiserver.AtomicTaskStatusSuccess {
+		if applied && task.FunctionRef == iapiserver.AgentRuntimeFunctionEnsure {
+			return s.failQueuedInvocationSubmissions(ctx, runtime.AgentID)
+		}
+		return nil
+	}
+	if task.FunctionRef != iapiserver.AgentRuntimeFunctionEnsure ||
+		projectedRuntime == nil || projectedRuntime.State != iapiserver.AgentRuntimeStateReady {
+		return nil
 	}
 	// 重复终态投影仍需恢复 READY Runtime 的队列：首次投影可能已提交，随后 Task Center 提交失败。
 	// AtomicTask 幂等键和 Invocation resource-version fence 保证该扫描不会重复绑定执行任务。
 	return s.submitQueuedInvocations(ctx, projectedRuntime, task.CreatedBy)
+}
+
+func (s *Service) failQueuedInvocationSubmissions(ctx context.Context, agentID string) error {
+	invocations, err := s.store.ListQueuedAgentInvocationsByAgent(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, invocation := range invocations {
+		if _, _, failErr := s.store.FailAgentInvocationSubmission(
+			ctx,
+			invocation.ID,
+			invocation.ResourceVersion,
+			invocation.SubmissionGeneration,
+			"Agent runtime failed before invocation task submission.",
+		); failErr != nil {
+			errs = append(errs, failErr)
+		}
+	}
+	return stderrors.Join(errs...)
 }
 
 func (s *Service) projectInvocationTaskTerminal(ctx context.Context, task *iapiserver.AtomicTask) error {

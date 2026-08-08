@@ -3,11 +3,16 @@
 ## Current goal and status
 
 - Goal: complete the released `spec-v1.18.0` AppStudio static-Web flow: idempotent create, Coding Agent chat/Invocation, source revisions, preview, publish, and history-preserving restore.
-- Status: in progress. Application creation and Coding Invocation execution complete through the real OpenCode runtime. AppStudio is correctly fenced to `kind=coding`, profile `agent.coding`, `CODING` Invocation and the OpenCode adapter; it does not use the Platform Agent/Hermes CHAT path. The stale model-grant failure and terminal observer recovery starvation are fixed and target-package verified. Source mutation is blocked by a released SSOT contract gap described below; preview/publish/restore end-to-end validation remains incomplete.
+- Status: in progress. Invocation submission consistency is implemented: an unbound `QUEUED` Invocation becomes `FAILED/ERR_AGENT_INVOCATION_TASK_UNAVAILABLE` when Runtime or AtomicTask orchestration fails, and an idempotent retry reuses the original Message/Invocation while incrementing `submission_generation`. Build and Production ensure terminal observers now have durable recovery sources; Preview and stop recovery remain limited by missing persisted Task IDs. Application creation and Coding Invocation execution complete through the real OpenCode runtime. Source mutation is blocked by a released SSOT contract gap described below; preview/publish/restore end-to-end validation remains incomplete.
 - SSOT: `spec-v1.18.0`, submodule commit `b0de28e6b6d9462d95ae8e59a8412640047a218e`; `SSOT_VERSION` matches. Do not modify `ssot/` or add `backend/cmd/` binaries.
 
 ## Work completed in this session
 
+- Added `AgentStore.FailAgentInvocationSubmission` and `RetryAgentInvocationSubmission`, each protected by row locking, `resource_version`, `submission_generation`, unbound-Task checks, and existing Agent outbox transactions. Failure projection stores only controlled messages and cannot overwrite a concurrent Task binding or terminal state.
+- Routed `SendMessage`, `StartCodingInvocation`, `submitInvocationTask`, and failed Runtime ensure terminal projection through the failure fence. A lost Task-binding version fence retries failure projection against the locked current Invocation returned by the bind operation, so a concurrent version-only update cannot leave it queued; a concurrent successful bind is still preserved. Retryable unbound Task-unavailable failures reset to `QUEUED`, clear failure/completion fields, and increment `submission_generation`; bound or other terminal Invocations remain idempotent.
+- Preserved AppStudio initialization semantics: `CreateApplication` keeps the already-persisted Application `READY`, returns `ERR_AGENT_INITIALIZATION_FAILED` when initial submission fails, and retries the canonical initial Invocation for the same create idempotency key.
+- Added `AppStudioStore.ListPendingStudioTerminalTaskIDs` and registered it with the existing Task Center Reconciler. It recovers terminal Build Tasks and Production ensure Tasks while the Build or Release projection is still non-terminal, including a partially projected Production Runtime whose Release remains `PENDING`/`DEPLOYING`.
+- Extended `backend/internal/apiserver/store/postgresql/task_center_reconcile_integration_test.go` with failure/outbox/retry/stale-fence/bound-Task coverage and AppStudio terminal recovery-source coverage.
 - Confirmed and live-verified the AppStudio runtime boundary: Application `1f0b6b23-0c61-5f71-99c9-0010030c89a9` binds Agent `4b3c08b7-d5d4-510a-a1bb-9b281c1fb080` with `kind=coding`, profile/runtime profile `agent.coding`, workspace type `studio`, and a READY/HEALTHY OpenCode Runtime. Hermes remains limited to the Platform Agent CHAT branch.
 - Repaired Infrastructure endpoint recovery after `infraserver` restart. `ResolveEndpoint` now rehydrates a missing/expired in-memory provider target through provider `Inspect`, validates the Runtime is still RUNNING and has an endpoint, and restores the provider state cache. Start/Reconcile also refresh provider endpoint state. Provider addresses with no intrinsic expiry receive a bounded one-minute resolve validity window.
 - Rebuilt Compose and submitted a real follow-up instruction through the AppStudio UI. Coding Invocation `c55ffbd9-a914-44bc-8c5d-72aa4f31f698` and AtomicTask `10ed48c5-e311-48fc-8aab-1b3e94c1b9cc` succeeded after the Infrastructure service restart; operation events 1-3 are `invocation.started`, `message.completed`, and `invocation.completed`, and assistant Message `299debf6-b688-521b-a2d4-cd2e08137a55` was persisted.
@@ -29,6 +34,8 @@
 
 ## Current in-progress work
 
+- Run the new PostgreSQL integration cases against an environment with `OMNIMAM_TEST_POSTGRES_DSN`; the current environment does not provide the DSN, so the tagged tests compile and skip.
+- Preview ensure/stop and Production stop terminal recovery cannot be made reliable with the released data model because those operations do not persist their Task IDs or a terminal projection marker. Do not add a private field or contract workaround.
 - Source mutation cannot be implemented in this repository until a released SSOT defines the internal AppStudio Workspace Tool endpoint/protocol, short-lived grant claims and resolution boundary, and Runtime/OpenCode tool injection. The successful Coding Invocation currently creates `/tmp/opencode/index.html` inside the OpenCode container, while the AppStudio source remains Revision 0.
 - Invocation Task create/bind recovery is implemented in `backend/internal/apiserver/store/postgresql/task_center.go`, `backend/internal/apiserver/service/v1/taskcenter/task_center.go`, and `backend/internal/apiserver/service/v1/agent/service.go`: idempotency conflicts return the canonical Task internally; pending canonical Tasks without a runtime execution reuse the stable runtime idempotency key; Agent validates the canonical Invocation identity before binding with the existing resource-version fence.
 - Audit and repair the remaining AppStudio closure after a successful Coding Invocation: message facade/front-end consumption, source ChangeSet/revision application, Preview, Build/Release and Restore paths.
@@ -52,6 +59,7 @@
 - `backend/internal/apiserver/store/postgresql/appstudio.go`
 - `backend/internal/apiserver/store/postgresql/platform.go`
 - `backend/internal/apiserver/store/postgresql/task_center.go`
+- `backend/internal/apiserver/store/postgresql/task_center_reconcile_integration_test.go`
 - `backend/internal/apiserver/store/store.go`
 - `backend/internal/infrastructure/client.go`
 - `backend/internal/infrastructure/providers/dockerruntime/docker.go`
@@ -78,21 +86,24 @@
 - Passed: `go test ./backend/internal/apiserver/service/v1/identity ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql`
 - Passed: `go test ./backend/internal/apiserver/service/v1/usermodel ./backend/internal/apiserver/store/postgresql`
 - Passed: `go test -run '^$' ./backend/internal/apiserver/store/postgresql ./backend/internal/apiserver/service/v1/taskcenter ./backend/internal/taskworker` after terminal recovery query change.
+- Passed: `go test ./backend/internal/apiserver/service/v1/agent ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql ./backend/internal/taskworker`
+- Compiled and skipped because `OMNIMAM_TEST_POSTGRES_DSN` is unset: `go test -v -tags=integration ./backend/internal/apiserver/store/postgresql -run 'TestPostgres(AgentInvocationSubmissionFailureFence|AppStudioTerminalRecoverySource)$' -count=1`
 - Remaining: cancellation/retry recovery, a released Workspace Tool contract and subsequent source ChangeSet implementation, Preview, DEPLOY/UPGRADE/ROLLBACK and Restore validation.
 
 ## Known issues and risks
 
-- An Invocation can remain `QUEUED` with `atomic_task_id IS NULL` after Task Center created its AtomicTask but the domain binding failed. The implemented recovery reuses and binds the canonical Task under the released Task ID/resource-version fences; remaining risk is live validation against historical orphan rows.
+- New Runtime/AtomicTask orchestration failures no longer leave an Invocation indefinitely `QUEUED` and unbound. Historical orphan rows still require live audit; the new failure fence intentionally acts only when an active submission path or failed Runtime terminal projection supplies the current resource-version/generation fence.
 - Target-package compile verification passed for `service/v1/taskcenter`, PostgreSQL store, `service/v1/agent`, and `taskworker`. Full Task Center tests are currently blocked by pre-existing `TestAssignSystemName` localization output mismatch (`生成 thumbnail视图` vs `生成 thumbnail 表现形式`); no task-center recovery assertion failed.
 - The model health projection fix is live and a fresh follow-up Coding Invocation succeeded after the rebuild; cancellation and retry recovery still need live validation.
 - `/tmp/appstudio_followup_verify.go` cannot be used for verification: its Go OPAQUE client fails during `GenerateKE3` because it is incompatible with the frontend WASM OPAQUE implementation. Do not weaken or change the authentication service to accommodate this temporary client.
 - The agent runtime is not bound to a Studio workspace. A model can create files in its runtime filesystem but that is not a source revision and must not be copied into source storage through an invented protocol.
 - Released `spec-v1.18.0` states the Workspace Tool security semantics but does not define an implementable internal Workspace Tool API or Runtime/OpenCode protocol. Source mutation must wait for an SSOT release; changing only this server would create an unauthorized private contract.
 - AppStudio source APIs and Restore semantics exist, but the complete Preview/Build/Release flow has not been revalidated after the Agent fixes.
+- AppStudio Build and Production ensure have terminal recovery sources. Preview ensure/stop and Production stop lack persisted Task IDs; complete observer recovery requires a released schema/contract change and was not approximated with Task-key scans or private fields.
 
 ## Exact recommended next step
 
-Define and release the AppStudio Workspace Tool internal protocol in SSOT (endpoint/module interface, short-lived grant claims/resolution, ChangeSet request/response, and Runtime/OpenCode tool injection), then update the pinned submodule and implement it here. In parallel, verify the existing Preview, Build/Release and Restore paths only where they do not claim Coding Agent source mutation.
+Run the two tagged PostgreSQL integration tests with `OMNIMAM_TEST_POSTGRES_DSN` set, then live-verify one failed initial AppStudio submission followed by the same create idempotency-key retry. After that, define and release the AppStudio Workspace Tool internal protocol in SSOT before implementing source mutation.
 
 Next Prompt:
 
