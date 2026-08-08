@@ -27,12 +27,14 @@ import (
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
 	ssesvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/sse"
 	taskcentersvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/taskcenter"
+	usermodelsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/usermodel"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/taskname"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/agentexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/appstudioexecutor"
@@ -97,14 +99,40 @@ func RunTaskWorker(cfg *config.Config) error {
 		iapiserver.TaskWorkerFunctionComfyUISubmit, iapiserver.TaskWorkerFunctionComfyUIPoll, iapiserver.TaskWorkerFunctionComfyUICollectPreview,
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
-	agentProjector, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents()})
-	if err != nil {
-		return errors.Wrap(err, "construct agent runtime projector")
-	}
 	adapters := modeladapters.NewEngineAdapters()
 	executors := modeladapters.NewOperationExecutors()
 	if err := modeladapters.ValidateImplementations(runtimeRegistry, adapters, executors); err != nil {
 		return errors.Wrap(err, "validate application platform adapter implementations")
+	}
+	credentialBroker := usermodelsvc.NewCredentialBroker(0)
+	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, 10*time.Minute)
+	if err != nil {
+		return errors.Wrap(err, "construct agent grant codec")
+	}
+	userModelGateway, err := engine.NewUserModelGatewayService(engine.UserModelGatewayDependencies{
+		Runtime: runtimeRegistry, Adapters: adapters, Executors: executors, Credentials: credentialBroker,
+	})
+	if err != nil {
+		return errors.Wrap(err, "construct user model gateway")
+	}
+	userModelService, err := usermodelsvc.New(usermodelsvc.Dependencies{
+		Store: storeIns, Gateway: userModelGateway, Credentials: credentialBroker, Grants: grantCodec,
+	})
+	if err != nil {
+		return errors.Wrap(err, "construct user model service")
+	}
+	agentProjector, err := agentsvc.New(agentsvc.Dependencies{
+		Store: storeIns.Agents(), Tasks: tasks, Models: userModelService, Grants: grantCodec,
+	})
+	if err != nil {
+		return errors.Wrap(err, "construct agent runtime projector")
+	}
+	invocationExecutor, err := agentexecutor.NewInvocationExecutor(agentexecutor.InvocationExecutorDependencies{
+		Store: storeIns.Agents(), Endpoints: infrastructureClient, Models: userModelService,
+		Credentials: credentialBroker, Grants: grantCodec, Registry: functionRegistry,
+	})
+	if err != nil {
+		return errors.Wrap(err, "construct agent invocation executor")
 	}
 	events := appsvc.NoopEventPublisher{}
 	artifactLifecycle := &workerArtifactLifecycle{
@@ -161,6 +189,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAgentRuntimeStop, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return agentexecutor.ExecuteRuntimeStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAgentInvocationExecute, 8, invocationExecutor.Execute); err != nil {
 		return err
 	}
 	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
@@ -354,6 +385,8 @@ func RunTaskWorker(cfg *config.Config) error {
 		agentProjector.ProjectTaskTerminal,
 		storeIns.AppStudio().ProjectStudioTaskTerminal,
 	)
+	reconciler.RegisterTerminalRecoverySource(storeIns.Agents().ListPendingAgentTerminalTaskIDs)
+	reconciler.RegisterRecoveryHandler(agentProjector.ReconcileQueuedInvocations)
 	errCh := make(chan error, 1)
 	go func() { errCh <- reconciler.Run(ctx) }()
 	select {

@@ -252,6 +252,30 @@ func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string,
 	return result, err
 }
 
+// ResolveStudioInvocationChangeSets 返回每个 Invocation 最大目标 Revision 对应的最后一个已应用 ChangeSet。
+func (s *appStudioStore) ResolveStudioInvocationChangeSets(ctx context.Context, appID, owner string, invocationIDs []string) (map[string]*iapiserver.StudioChangeSet, error) {
+	resolved := make(map[string]*iapiserver.StudioChangeSet, len(invocationIDs))
+	if len(invocationIDs) == 0 {
+		return resolved, nil
+	}
+	var items []*iapiserver.StudioChangeSet
+	err := s.ds.db.WithContext(ctx).
+		Select("DISTINCT ON (studio_change_sets.agent_invocation_id) studio_change_sets.*").
+		Joins("JOIN studio_workspaces ON studio_workspaces.id = studio_change_sets.workspace_id").
+		Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
+		Where("studio_applications.id = ? AND studio_applications.owner_user_id = ?", appID, owner).
+		Where("studio_change_sets.agent_invocation_id IN ? AND studio_change_sets.status = ? AND studio_change_sets.target_revision IS NOT NULL", invocationIDs, iapiserver.AppStudioChangeSetStatusApplied).
+		Order("studio_change_sets.agent_invocation_id, studio_change_sets.target_revision DESC, studio_change_sets.created_at DESC, studio_change_sets.id DESC").
+		Find(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		resolved[item.AgentInvocationID] = item
+	}
+	return resolved, nil
+}
+
 func (s *appStudioStore) CreateStudioSourceSnapshot(ctx context.Context, owner string, snapshot *iapiserver.StudioSourceSnapshot) (*iapiserver.StudioSourceSnapshot, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64

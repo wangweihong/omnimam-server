@@ -133,6 +133,10 @@ func (s *taskCenterStore) AddAtomicTaskIdempotent(ctx context.Context, data *iap
 			Error
 		if err == nil {
 			if atomicTaskFingerprint(&existing) != atomicTaskFingerprint(data) {
+				// Return the canonical row together with the conflict. Domain callers may
+				// need to finish binding a resource after the create/bind transaction
+				// was interrupted; the immutable request still remains rejected.
+				result = &existing
 				return errors.NewStatusF(code.ErrAtomicTaskIdempotencyConflict, "atomic task idempotency request differs")
 			}
 			result = &existing

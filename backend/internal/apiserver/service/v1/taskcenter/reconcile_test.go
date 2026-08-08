@@ -51,6 +51,11 @@ type projectionStoreStub struct {
 	attempts []*iapiserver.TaskAttempt
 }
 
+type terminalRecoveryStoreStub struct {
+	store.TaskCenterStore
+	tasks []*iapiserver.AtomicTask
+}
+
 type ownerRepairStoreStub struct {
 	store.TaskCenterStore
 	dag         *iapiserver.DAGTaskGroup
@@ -82,6 +87,10 @@ func (r ownerRepairRuntime) GetExecution(context.Context, string) (workflowrunti
 func (s *projectionStoreStub) ApplyRuntimeProjection(_ context.Context, task *iapiserver.AtomicTask, attempts []*iapiserver.TaskAttempt, _ *iapiserver.RuntimeProjectionEvent) (bool, error) {
 	s.applied, s.task, s.attempts = true, task, attempts
 	return true, nil
+}
+
+func (s *terminalRecoveryStoreStub) GetAtomicTasksByIDs(context.Context, []string) ([]*iapiserver.AtomicTask, error) {
+	return s.tasks, nil
 }
 
 type failingTaskLogRuntime struct {
@@ -221,6 +230,30 @@ func TestProjectionNotifiesTerminalObserverAfterPersistence(t *testing.T) {
 	}
 	if !applied || !notified {
 		t.Fatalf("applied=%t notified=%t task=%#v", applied, notified, task)
+	}
+}
+
+func TestReconcileReplaysTerminalObserverAfterRuntimeProjection(t *testing.T) {
+	storage := &terminalRecoveryStoreStub{tasks: []*iapiserver.AtomicTask{{ObjectMeta: imachinery.ObjectMeta{ID: "terminal-task"}, Status: iapiserver.AtomicTaskStatusSuccess}}}
+	observed := 0
+	reconciler := &Reconciler{
+		store: storage,
+		terminalObservers: []func(context.Context, *iapiserver.AtomicTask) error{func(_ context.Context, task *iapiserver.AtomicTask) error {
+			if task.ID != "terminal-task" || task.Status != iapiserver.AtomicTaskStatusSuccess {
+				t.Fatalf("unexpected terminal task: %#v", task)
+			}
+			observed++
+			return nil
+		}},
+	}
+	reconciler.RegisterTerminalRecoverySource(func(context.Context, int) ([]string, error) {
+		return []string{"terminal-task"}, nil
+	})
+	if err := reconciler.reconcilePendingTerminalObservers(context.Background(), 200); err != nil {
+		t.Fatal(err)
+	}
+	if observed != 1 {
+		t.Fatalf("terminal observer calls = %d, want 1", observed)
 	}
 }
 

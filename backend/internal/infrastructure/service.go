@@ -31,6 +31,8 @@ type Service struct {
 	outputs   map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
 }
 
+const resolvedEndpointTTL = time.Minute
+
 func NewService(storage store.InfrastructureStore, provider providers.RuntimeProvider) (*Service, error) {
 	if storage == nil {
 		return nil, fmt.Errorf("infrastructure store is required")
@@ -132,15 +134,32 @@ func (s *Service) ResolveEndpoint(ctx context.Context, id string, req *iapiserve
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint is not ready")
 	}
 	target, ok := s.getEndpoint(id)
-	if !ok || target.BaseURL == "" || (target.ValidUntil.Before(now)) {
+	if !ok || target.BaseURL == "" || (!target.ValidUntil.IsZero() && !target.ValidUntil.After(now)) {
+		providerResult, inspectErr := s.provider.Inspect(ctx, runtime.ProviderRuntimeRef)
+		if inspectErr != nil || providerResult == nil || providerResult.Status != iapiserver.InfraRuntimeStatusRunning || providerResult.Endpoint == nil {
+			return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is unavailable")
+		}
+		s.rememberProviderState(endpoint, providerResult)
+		target, ok = s.getEndpoint(id)
+	}
+	if !ok || target.BaseURL == "" || (!target.ValidUntil.IsZero() && !target.ValidUntil.After(now)) {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is unavailable")
 	}
 	parsed, err := url.Parse(target.BaseURL)
 	if err != nil || (parsed.Scheme != iapiserver.InfraProtocolHTTP && parsed.Scheme != iapiserver.InfraProtocolHTTPS) || parsed.Host == "" || parsed.Scheme != target.Protocol {
 		return nil, errors.NewStatus(code.ErrInfraEndpointNotReady, "infra endpoint target is invalid")
 	}
+	// Provider 地址的生命周期和每次 resolve 返回的短时授权窗口不同；零值表示
+	// Provider 未声明固有过期时间，不能把一个仍然可用的进程内地址判为已过期。
+	resolvedValidUntil := now.Add(resolvedEndpointTTL)
+	if !target.ValidUntil.IsZero() && target.ValidUntil.Before(resolvedValidUntil) {
+		resolvedValidUntil = target.ValidUntil
+	}
+	if !endpoint.ExpiresAt.IsZero() && endpoint.ExpiresAt.Time.Before(resolvedValidUntil) {
+		resolvedValidUntil = endpoint.ExpiresAt.Time
+	}
 	resolvedAt := imachinery.NewTime(now)
-	validUntil := imachinery.NewTime(target.ValidUntil)
+	validUntil := imachinery.NewTime(resolvedValidUntil)
 	return &iapiserver.InfraResolvedEndpoint{EndpointRef: iapiserver.InfraRefPrefixEndpoint + endpoint.ID, RuntimeID: runtime.ID, Protocol: target.Protocol, BaseURL: target.BaseURL, ResolvedAt: resolvedAt, ValidUntil: validUntil}, nil
 }
 
@@ -312,6 +331,9 @@ func (s *Service) Start(ctx context.Context, id string) (*iapiserver.InfraOperat
 	if err != nil {
 		return nil, err
 	}
+	if endpoint, endpointErr := s.store.GetInfraRuntimeEndpoint(ctx, runtime.ID); endpointErr == nil {
+		s.rememberProviderState(endpoint, result)
+	}
 	return s.result(ctx, runtime, result)
 }
 
@@ -396,6 +418,9 @@ func (s *Service) Reconcile(ctx context.Context, id string) (*iapiserver.InfraOp
 	runtime, err = s.store.UpdateInfraRuntime(ctx, runtime, nil, result.Outputs, iapiserver.InfraRuntimeEventReasonReconciled)
 	if err != nil {
 		return nil, err
+	}
+	if endpoint, endpointErr := s.store.GetInfraRuntimeEndpoint(ctx, runtime.ID); endpointErr == nil {
+		s.rememberProviderState(endpoint, result)
 	}
 	return s.result(ctx, runtime, result)
 }

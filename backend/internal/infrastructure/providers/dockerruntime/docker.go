@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,9 +32,35 @@ func (m MapProfileImages) Image(id, revision string) (string, bool) {
 }
 
 type DockerProvider struct {
-	client     *http.Client
-	images     ProfileImageResolver
-	apiVersion string
+	client      *http.Client
+	runtimeHTTP *http.Client
+	images      ProfileImageResolver
+	apiVersion  string
+	networkMode string
+}
+
+type dockerContainerInspect struct {
+	Name   string `json:"Name"`
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+	State struct {
+		Status   string `json:"Status"`
+		Running  bool   `json:"Running"`
+		ExitCode int    `json:"ExitCode"`
+	} `json:"State"`
+	NetworkSettings struct {
+		Networks map[string]struct {
+			IPAddress string `json:"IPAddress"`
+		} `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+type agentServiceProfile struct {
+	healthPath string
+	port       int
+	command    string
+	tmpfs      map[string]string
 }
 
 func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver) (providers.RuntimeProvider, error) {
@@ -45,12 +73,19 @@ func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolve
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socketPath)
 	}}
-	provider := &DockerProvider{client: &http.Client{Transport: transport, Timeout: 2 * time.Minute}, images: images, apiVersion: apiVersion}
+	provider := &DockerProvider{
+		client:      &http.Client{Transport: transport, Timeout: 2 * time.Minute},
+		runtimeHTTP: &http.Client{Timeout: 5 * time.Second},
+		images:      images,
+		apiVersion:  apiVersion,
+		networkMode: "bridge",
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := provider.request(ctx, http.MethodGet, "/_ping", nil, nil); err != nil {
 		return nil, err
 	}
+	provider.networkMode = provider.detectNetwork(ctx)
 	return provider, nil
 }
 func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error) {
@@ -82,7 +117,14 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		}
 		env = append(env, normalizedEnvName(binding.Name)+"="+binding.Reference)
 	}
-	body := map[string]any{"Image": image, "Env": env, "Labels": map[string]string{"io.omnimam.runtime_id": input.RuntimeID, "io.omnimam.profile": input.Profile.ID}, "HostConfig": map[string]any{"ReadonlyRootfs": true, "Privileged": false, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "NetworkMode": "bridge", "AutoRemove": false, "PidsLimit": 256}}
+	hostConfig := map[string]any{"ReadonlyRootfs": true, "Privileged": false, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "NetworkMode": d.networkMode, "AutoRemove": false, "PidsLimit": 256}
+	body := map[string]any{"Image": image, "Env": env, "Labels": map[string]string{"io.omnimam.runtime_id": input.RuntimeID, "io.omnimam.profile": input.Profile.ID}, "HostConfig": hostConfig}
+	serviceProfile, agentService := agentRuntimeServiceProfile(input.Profile.ID)
+	if agentService {
+		body["Entrypoint"] = []string{"/bin/sh", "-c"}
+		body["Cmd"] = []string{serviceProfile.command}
+		hostConfig["Tmpfs"] = serviceProfile.tmpfs
+	}
 	var created struct {
 		ID       string   `json:"Id"`
 		Warnings []string `json:"Warnings"`
@@ -108,6 +150,14 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		}
 		return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusSucceeded}, nil
 	}
+	if agentService {
+		result, err := d.waitForAgentService(ctx, created.ID, serviceProfile)
+		if err != nil {
+			_ = d.Delete(context.Background(), created.ID)
+			return nil, err
+		}
+		return result, nil
+	}
 	state, err := d.Inspect(ctx, created.ID)
 	if err != nil {
 		_ = d.Delete(context.Background(), created.ID)
@@ -122,6 +172,13 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
 		return nil, err
+	}
+	data, err := d.inspectContainer(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if profile, ok := agentRuntimeServiceProfile(data.Config.Labels["io.omnimam.profile"]); ok {
+		return d.waitForAgentService(ctx, ref, profile)
 	}
 	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: iapiserver.InfraRuntimeStatusRunning}, nil
 }
@@ -142,14 +199,8 @@ func (d *DockerProvider) Delete(ctx context.Context, ref string) error {
 	return d.request(ctx, http.MethodDelete, "/containers/"+ref+"?force=true&v=true", nil, nil)
 }
 func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*providers.ProviderResult, error) {
-	var data struct {
-		State struct {
-			Status   string `json:"Status"`
-			Running  bool   `json:"Running"`
-			ExitCode int    `json:"ExitCode"`
-		} `json:"State"`
-	}
-	if err := d.request(ctx, http.MethodGet, "/containers/"+ref+"/json", nil, &data); err != nil {
+	data, err := d.inspectContainer(ctx, ref)
+	if err != nil {
 		return nil, err
 	}
 	status := iapiserver.InfraRuntimeStatusStopped
@@ -160,7 +211,16 @@ func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*providers.Pr
 	} else {
 		status = iapiserver.InfraRuntimeStatusFailed
 	}
-	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: status}, nil
+	result := &providers.ProviderResult{ProviderRuntimeRef: ref, Status: status}
+	if profile, ok := agentRuntimeServiceProfile(data.Config.Labels["io.omnimam.profile"]); ok && data.State.Running {
+		endpoint, endpointErr := d.agentServiceEndpoint(data, profile)
+		if endpointErr != nil {
+			return nil, endpointErr
+		}
+		result.EndpointDisplayRef = iapiserver.InfraEndpointDisplayRefPrefix + data.Config.Labels["io.omnimam.runtime_id"]
+		result.Endpoint = endpoint
+	}
+	return result, nil
 }
 func (d *DockerProvider) Logs(ctx context.Context, ref string, limit int) ([]*iapiserver.InfraRuntimeLogEntry, error) {
 	if limit <= 0 || limit > 5000 {
@@ -188,6 +248,145 @@ func (d *DockerProvider) Logs(ctx context.Context, ref string, limit int) ([]*ia
 	}
 	return items, scanner.Err()
 }
+
+func (d *DockerProvider) inspectContainer(ctx context.Context, ref string) (*dockerContainerInspect, error) {
+	var data dockerContainerInspect
+	if err := d.request(ctx, http.MethodGet, "/containers/"+url.PathEscape(ref)+"/json", nil, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+func (d *DockerProvider) detectNetwork(ctx context.Context) string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "bridge"
+	}
+	data, err := d.inspectContainer(ctx, hostname)
+	if err != nil || len(data.NetworkSettings.Networks) == 0 {
+		return "bridge"
+	}
+	names := make([]string, 0, len(data.NetworkSettings.Networks))
+	for name := range data.NetworkSettings.Networks {
+		if name != "bridge" && name != "host" && name != "none" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "bridge"
+	}
+	sort.Strings(names)
+	return names[0]
+}
+
+func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
+	switch profileID {
+	case iapiserver.InfraRuntimeProfileIDAgentCoding:
+		return agentServiceProfile{
+			healthPath: "/global/health",
+			port:       14096,
+			command: `set -eu
+printf '#!/bin/sh\nexec nc 127.0.0.1 4096\n' > /run/omnimam/forward
+chmod 500 /run/omnimam/forward
+nc -lk -p 14096 -e /run/omnimam/forward &
+exec opencode serve --hostname 127.0.0.1 --port 4096`,
+			tmpfs: map[string]string{
+				"/tmp":                        "rw,nosuid,nodev,noexec,size=64m",
+				"/run/omnimam":                "rw,nosuid,nodev,exec,size=1m",
+				"/root/.cache/opencode":       "rw,nosuid,nodev,noexec,size=64m",
+				"/root/.config/opencode":      "rw,nosuid,nodev,noexec,size=32m",
+				"/root/.local/share/opencode": "rw,nosuid,nodev,noexec,size=128m",
+			},
+		}, true
+	case iapiserver.InfraRuntimeProfileIDAgentHermes:
+		return agentServiceProfile{
+			healthPath: "/openapi.json",
+			port:       19119,
+			command: `set -eu
+python3 -c 'import asyncio
+async def copy(reader, writer):
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
+    finally:
+        writer.close()
+async def handle(reader, writer):
+    upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", 9119)
+    await asyncio.gather(copy(reader, upstream_writer), copy(upstream_reader, writer))
+async def main():
+    server = await asyncio.start_server(handle, "0.0.0.0", 19119)
+    async with server:
+        await server.serve_forever()
+asyncio.run(main())' &
+exec hermes serve --host 127.0.0.1 --port 9119 --skip-build`,
+			tmpfs: map[string]string{
+				"/tmp":          "rw,nosuid,nodev,noexec,size=64m",
+				"/root/.cache":  "rw,nosuid,nodev,noexec,size=64m",
+				"/root/.config": "rw,nosuid,nodev,noexec,size=32m",
+				"/root/.hermes": "rw,nosuid,nodev,noexec,size=128m",
+			},
+		}, true
+	default:
+		return agentServiceProfile{}, false
+	}
+}
+
+func (d *DockerProvider) agentServiceEndpoint(data *dockerContainerInspect, profile agentServiceProfile) (*providers.ProviderEndpoint, error) {
+	host := strings.TrimPrefix(data.Name, "/")
+	if d.networkMode == "bridge" {
+		host = ""
+		if network, ok := data.NetworkSettings.Networks[d.networkMode]; ok {
+			host = network.IPAddress
+		}
+	}
+	if host == "" {
+		return nil, fmt.Errorf("docker agent runtime has no reachable network address")
+	}
+	return &providers.ProviderEndpoint{Protocol: iapiserver.InfraProtocolHTTP, BaseURL: "http://" + net.JoinHostPort(host, strconv.Itoa(profile.port))}, nil
+}
+
+func (d *DockerProvider) waitForAgentService(ctx context.Context, ref string, profile agentServiceProfile) (*providers.ProviderResult, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	var lastErr error
+	for {
+		result, err := d.Inspect(waitCtx, ref)
+		if err != nil {
+			lastErr = err
+		} else if result.Status != iapiserver.InfraRuntimeStatusRunning {
+			return nil, fmt.Errorf("docker agent runtime exited during startup with status %s", result.Status)
+		} else if result.Endpoint != nil {
+			request, requestErr := http.NewRequestWithContext(waitCtx, http.MethodGet, result.Endpoint.BaseURL+profile.healthPath, nil)
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			response, requestErr := d.runtimeHTTP.Do(request)
+			if requestErr == nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+				closeErr := response.Body.Close()
+				if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices && closeErr == nil {
+					return result, nil
+				}
+				lastErr = fmt.Errorf("agent runtime health check returned status %d", response.StatusCode)
+			} else {
+				lastErr = requestErr
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			if lastErr != nil {
+				return nil, fmt.Errorf("wait for docker agent runtime health: %w", lastErr)
+			}
+			return nil, fmt.Errorf("wait for docker agent runtime health: %w", waitCtx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
 func (d *DockerProvider) wait(ctx context.Context, ref string) (int, error) {
 	var response struct {
 		StatusCode int `json:"StatusCode"`

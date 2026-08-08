@@ -138,7 +138,9 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	if err != nil {
 		return nil, err
 	}
-	_, _ = s.agents.StartCodingInvocation(ctx, canonical.Agent.ID, canonical.InitialInvocation.ID)
+	if _, err := s.agents.StartCodingInvocation(ctx, canonical.Agent.ID, canonical.InitialInvocation.ID); err != nil {
+		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
+	}
 	canonical, err = s.store.GetStudioApplicationInitialization(ctx, owner, req.IdempotencyKey)
 	if err != nil {
 		return nil, err
@@ -206,7 +208,7 @@ func (s *Service) SendAgentMessage(ctx context.Context, appID string, req *iapis
 	if err := validateStudioInvocationBinding(app, invocation); err != nil {
 		return nil, err
 	}
-	return studioAgentInvocationProjection(app, invocation), nil
+	return s.projectStudioAgentInvocation(ctx, app, invocation)
 }
 
 // ListAgentInvocations 返回当前 generation 的 CODING Invocation 列表。
@@ -219,12 +221,14 @@ func (s *Service) ListAgentInvocations(ctx context.Context, appID string, req *i
 	if err != nil {
 		return nil, err
 	}
-	items := make([]*iapiserver.StudioAgentInvocation, 0, len(result.Items))
 	for _, invocation := range result.Items {
 		if err := validateStudioInvocationBinding(app, invocation); err != nil {
 			return nil, err
 		}
-		items = append(items, studioAgentInvocationProjection(app, invocation))
+	}
+	items, err := s.projectStudioAgentInvocations(ctx, app, result.Items)
+	if err != nil {
+		return nil, err
 	}
 	return &iapiserver.StudioAgentInvocationListResponse{Total: result.Total, Items: items}, nil
 }
@@ -242,7 +246,7 @@ func (s *Service) GetAgentInvocation(ctx context.Context, appID, invocationID st
 	if err := validateStudioInvocationBinding(app, invocation); err != nil {
 		return nil, err
 	}
-	return studioAgentInvocationProjection(app, invocation), nil
+	return s.projectStudioAgentInvocation(ctx, app, invocation)
 }
 
 // CancelAgentInvocation 取消当前 generation 的 Invocation，不允许跨应用或访问旧 generation。
@@ -261,7 +265,7 @@ func (s *Service) CancelAgentInvocation(ctx context.Context, appID, invocationID
 	if err := validateStudioInvocationBinding(app, invocation); err != nil {
 		return nil, err
 	}
-	return studioAgentInvocationProjection(app, invocation), nil
+	return s.projectStudioAgentInvocation(ctx, app, invocation)
 }
 
 // ListAgentInvocationEvents 在应用绑定校验后返回可恢复的持久化 Invocation 事件。
@@ -1004,8 +1008,32 @@ func validateStudioInvocationBinding(app *iapiserver.StudioApplication, invocati
 	return nil
 }
 
-func studioAgentInvocationProjection(app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation) *iapiserver.StudioAgentInvocation {
-	return &iapiserver.StudioAgentInvocation{
+func (s *Service) projectStudioAgentInvocation(ctx context.Context, app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation) (*iapiserver.StudioAgentInvocation, error) {
+	items, err := s.projectStudioAgentInvocations(ctx, app, []*iapiserver.AgentInvocation{invocation})
+	if err != nil {
+		return nil, err
+	}
+	return items[0], nil
+}
+
+func (s *Service) projectStudioAgentInvocations(ctx context.Context, app *iapiserver.StudioApplication, invocations []*iapiserver.AgentInvocation) ([]*iapiserver.StudioAgentInvocation, error) {
+	invocationIDs := make([]string, 0, len(invocations))
+	for _, invocation := range invocations {
+		invocationIDs = append(invocationIDs, invocation.ID)
+	}
+	changeSets, err := s.store.ResolveStudioInvocationChangeSets(ctx, app.ID, app.OwnerUserID, invocationIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*iapiserver.StudioAgentInvocation, 0, len(invocations))
+	for _, invocation := range invocations {
+		items = append(items, studioAgentInvocationProjection(app, invocation, changeSets[invocation.ID]))
+	}
+	return items, nil
+}
+
+func studioAgentInvocationProjection(app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation, changeSet *iapiserver.StudioChangeSet) *iapiserver.StudioAgentInvocation {
+	projection := &iapiserver.StudioAgentInvocation{
 		ID:                   invocation.ID,
 		AgentID:              invocation.AgentID,
 		SessionID:            invocation.SessionID,
@@ -1023,6 +1051,13 @@ func studioAgentInvocationProjection(app *iapiserver.StudioApplication, invocati
 		CreatedAt:            invocation.CreatedAt,
 		UpdatedAt:            invocation.UpdatedAt,
 	}
+	if changeSet != nil && changeSet.TargetRevision != nil {
+		changeSetID := changeSet.ID
+		resultingRevision := *changeSet.TargetRevision
+		projection.ResultingChangeSetID = &changeSetID
+		projection.ResultingSourceRevision = &resultingRevision
+	}
+	return projection
 }
 
 func sortedPaths(files map[string][]byte) []string {

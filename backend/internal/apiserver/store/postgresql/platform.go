@@ -272,6 +272,48 @@ func (s *providerModelStore) Update(
 	return data, nil
 }
 
+// ProjectHealth 原子更新模型健康投影。重复的同结果探测只刷新检测时间，不使短期模型授权失效。
+func (s *providerModelStore) ProjectHealth(
+	ctx context.Context,
+	ownerUserID, id string,
+	expectedConfigVersion int64,
+	healthStatus, healthReason string,
+	checkedAt imachinery.Time,
+) (*iapiserver.ProviderModel, error) {
+	result := s.ds.db.WithContext(ctx).
+		Model(&iapiserver.ProviderModel{}).
+		Where("owner_user_id = ? AND id = ? AND deleted_at = '' AND resource_version = ?", ownerUserID, id, expectedConfigVersion).
+		Where("last_checked_at IS NULL OR last_checked_at <= ?", checkedAt.Time).
+		UpdateColumns(map[string]any{
+			"health_status":    healthStatus,
+			"unhealthy_reason": healthReason,
+			"last_checked_at":  checkedAt.Time,
+			"updated_at":       checkedAt.Time,
+			"resource_version": gorm.Expr(
+				"CASE WHEN health_status IS DISTINCT FROM ? OR unhealthy_reason IS DISTINCT FROM ? THEN resource_version + 1 ELSE resource_version END",
+				healthStatus,
+				healthReason,
+			),
+		})
+	if result.Error != nil {
+		return nil, errors.WithStack(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		current, err := s.GetOwned(ctx, ownerUserID, id)
+		if err != nil {
+			return nil, err
+		}
+		if current.ResourceVersion != expectedConfigVersion {
+			return nil, errors.Errorf("provider model configuration changed during health check")
+		}
+		if current.HealthCheckedAt != nil && checkedAt.Before(current.HealthCheckedAt) {
+			return current, nil
+		}
+		return nil, errors.Errorf("provider model health projection was not applied")
+	}
+	return s.GetOwned(ctx, ownerUserID, id)
+}
+
 func (s *providerModelStore) Delete(ctx context.Context, providerID, id string) error {
 	query := s.ds.db.WithContext(ctx).Model(&iapiserver.ProviderModel{}).Where("id = ?", id)
 	if providerID != "" {

@@ -168,6 +168,36 @@ func (s *agentStore) CreateAgentInvocation(ctx context.Context, message *iapiser
 	return result, err
 }
 
+func (s *agentStore) GetAgentMessage(ctx context.Context, id, ownerUserID string) (*iapiserver.AgentMessage, error) {
+	var message iapiserver.AgentMessage
+	err := s.ds.db.WithContext(ctx).Model(&iapiserver.AgentMessage{}).
+		Joins("JOIN agents ON agents.id = agent_messages.agent_id").
+		Where("agent_messages.id = ? AND agents.owner_user_id = ?", id, ownerUserID).
+		First(&message).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAgentSessionNotVisible, "agent message not visible")
+	}
+	return &message, nil
+}
+
+func (s *agentStore) CreateAgentAssistantMessage(ctx context.Context, message *iapiserver.AgentMessage) (*iapiserver.AgentMessage, error) {
+	if message == nil {
+		return nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "agent assistant message is required")
+	}
+	err := s.ds.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(message).Error
+	if err != nil {
+		return nil, err
+	}
+	var result iapiserver.AgentMessage
+	if err := s.ds.db.WithContext(ctx).Where("id = ?", message.ID).First(&result).Error; err != nil {
+		return nil, err
+	}
+	if result.InvocationID != message.InvocationID || result.AgentID != message.AgentID || result.SessionID != message.SessionID || result.Role != iapiserver.AgentMessageRoleAssistant {
+		return nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "agent assistant message identity conflicts")
+	}
+	return &result, nil
+}
+
 func (s *agentStore) ListAgentMessages(ctx context.Context, req *iapiserver.AgentMessageListRequest, ownerUserID string) ([]*iapiserver.AgentMessage, int64, error) {
 	var items []*iapiserver.AgentMessage
 	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.AgentMessage{}), func(query *gorm.DB) *gorm.DB {
@@ -201,6 +231,73 @@ func (s *agentStore) ListQueuedAgentInvocationsByAgent(ctx context.Context, agen
 	return items, err
 }
 
+// ListPendingAgentTerminalTaskIDs 返回仍被 Agent Runtime 或 Invocation 栅栏引用的 Task，供 Task Center 重放终态投影。
+func (s *agentStore) ListPendingAgentTerminalTaskIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	ids := make([]string, 0, limit)
+	terminalStatuses := []string{
+		iapiserver.AtomicTaskStatusSuccess,
+		iapiserver.AtomicTaskStatusFailed,
+		iapiserver.AtomicTaskStatusCanceled,
+		iapiserver.AtomicTaskStatusTimeout,
+		iapiserver.AtomicTaskStatusSkipped,
+	}
+	// Only return terminal runtime tasks. Including every STARTING/RUNNING task
+	// here can fill the recovery window and starve an invocation whose terminal
+	// observer was lost between Task Center and Agent projection.
+	if err := s.ds.db.WithContext(ctx).Table("agent_runtime_bindings").
+		Select("agent_runtime_bindings.current_task_id").
+		Joins("JOIN atomic_tasks ON atomic_tasks.id = agent_runtime_bindings.current_task_id").
+		Where("agent_runtime_bindings.current_task_id IS NOT NULL AND atomic_tasks.status IN ?", terminalStatuses).
+		Order("agent_runtime_bindings.updated_at ASC").Limit(limit).
+		Pluck("agent_runtime_bindings.current_task_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) >= limit {
+		return ids, nil
+	}
+	invocationIDs := make([]string, 0, limit-len(ids))
+	if err := s.ds.db.WithContext(ctx).Table("agent_invocations").
+		Select("agent_invocations.atomic_task_id").
+		Joins("JOIN atomic_tasks ON atomic_tasks.id = agent_invocations.atomic_task_id").
+		Where("agent_invocations.atomic_task_id IS NOT NULL AND agent_invocations.terminal_projected_task_id IS NULL AND atomic_tasks.status IN ?", terminalStatuses).
+		Order("agent_invocations.updated_at ASC").Limit(limit-len(ids)).Pluck("agent_invocations.atomic_task_id", &invocationIDs).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(ids)+len(invocationIDs))
+	result := make([]string, 0, len(ids)+len(invocationIDs))
+	for _, id := range append(ids, invocationIDs...) {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// ListAgentRuntimeQueueCandidates 返回 READY Runtime 的最小 owner 索引，供 Agent service 恢复未绑定 Invocation。
+func (s *agentStore) ListAgentRuntimeQueueCandidates(ctx context.Context, limit int) ([]store.AgentRuntimeQueueCandidate, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	items := make([]store.AgentRuntimeQueueCandidate, 0)
+	err := s.ds.db.WithContext(ctx).Table("agent_runtime_bindings").
+		Select("agent_runtime_bindings.id AS runtime_id, agent_runtime_bindings.agent_id, agents.owner_user_id").
+		Joins("JOIN agents ON agents.id = agent_runtime_bindings.agent_id").
+		Joins("JOIN agent_invocations ON agent_invocations.agent_id = agent_runtime_bindings.agent_id").
+		Where("agent_runtime_bindings.state = ? AND agent_invocations.status = ? AND agent_invocations.atomic_task_id IS NULL",
+			iapiserver.AgentRuntimeStateReady, iapiserver.AgentInvocationStatusQueued).
+		Group("agent_runtime_bindings.id, agent_runtime_bindings.agent_id, agents.owner_user_id").
+		Order("MIN(agent_invocations.created_at) ASC").Limit(limit).Scan(&items).Error
+	return items, err
+}
+
 func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.AgentInvocation
@@ -217,6 +314,55 @@ func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapi
 		})
 	})
 	return invocation, err
+}
+
+// BindAgentInvocationTask 使用 Invocation generation 和资源版本原子绑定当前执行 Task。
+func (s *agentStore) BindAgentInvocationTask(
+	ctx context.Context,
+	invocationID string,
+	expectedVersion int64,
+	submissionGeneration int,
+	runtimeBindingID, taskID string,
+	taskExpectedVersion int64,
+) (*iapiserver.AgentInvocation, bool, error) {
+	var invocation iapiserver.AgentInvocation
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocationID).First(&invocation).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+		if invocation.AtomicTaskID != nil && *invocation.AtomicTaskID == taskID &&
+			invocation.TaskExpectedResourceVersion != nil && *invocation.TaskExpectedResourceVersion == taskExpectedVersion &&
+			invocation.SubmissionGeneration == submissionGeneration {
+			applied = true
+			return nil
+		}
+		if invocation.Status != iapiserver.AgentInvocationStatusQueued || invocation.AtomicTaskID != nil ||
+			invocation.ResourceVersion != expectedVersion || invocation.SubmissionGeneration != submissionGeneration ||
+			taskExpectedVersion != expectedVersion+1 {
+			return nil
+		}
+
+		previous := invocation
+		invocation.RuntimeBindingID = runtimeBindingID
+		invocation.AtomicTaskID = &taskID
+		invocation.TaskExpectedResourceVersion = &taskExpectedVersion
+		invocation.TerminalProjectedTaskID = nil
+		invocation.TerminalProjectedAt = imachinery.Time{}
+		if err := tx.Save(&invocation).Error; err != nil {
+			return err
+		}
+		if invocation.ResourceVersion != taskExpectedVersion {
+			return errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "invocation task binding resource version changed")
+		}
+		applied = true
+		return appendAgentOutbox(tx, "AgentInvocation", invocation.ID, "agent_invocation_status_changed", invocation.ResourceVersion, map[string]any{
+			"invocation_id": invocation.ID, "agent_id": invocation.AgentID, "session_id": invocation.SessionID,
+			"atomic_task_id": taskID, "from_status": previous.Status, "to_status": invocation.Status,
+			"error_code": agentNullableString(invocation.FailureCode),
+		})
+	})
+	return &invocation, applied, err
 }
 
 // ProjectAgentInvocationTerminal 使用当前 Task 绑定和资源版本栅栏投影终态；旧任务与重复终态返回 applied=false。
@@ -236,7 +382,7 @@ func (s *agentStore) ProjectAgentInvocationTerminal(
 			result.ResourceVersion != projection.ExpectedResourceVersion {
 			return nil
 		}
-		if result.TerminalProjectedTaskID != "" || agentInvocationTerminal(result.Status) {
+		if result.TerminalProjectedTaskID != nil || agentInvocationTerminal(result.Status) {
 			return nil
 		}
 
@@ -248,7 +394,7 @@ func (s *agentStore) ProjectAgentInvocationTerminal(
 		result.LastEventSequence = projection.LastEventSequence
 		result.FailureCode = projection.FailureCode
 		result.FailureMessage = projection.FailureMessage
-		result.TerminalProjectedTaskID = projection.TaskID
+		result.TerminalProjectedTaskID = &projection.TaskID
 		result.TerminalProjectedAt = imachinery.Now()
 		result.CompletedAt = imachinery.Now()
 		if err := tx.Save(&result).Error; err != nil {
@@ -452,41 +598,95 @@ func (s *agentStore) UpdateAgentRuntime(ctx context.Context, runtime *iapiserver
 	return runtime, err
 }
 
-func (s *agentStore) ProjectAgentRuntime(ctx context.Context, runtime *iapiserver.AgentRuntimeBinding, agentStatus string) (*iapiserver.AgentRuntimeBinding, error) {
+// BindAgentRuntimeTask 使用 Runtime 资源版本绑定当前生命周期 Task；并发旧操作不会覆盖新绑定。
+func (s *agentStore) BindAgentRuntimeTask(
+	ctx context.Context,
+	runtimeID string,
+	expectedVersion int64,
+	taskID, operation, state string,
+) (*iapiserver.AgentRuntimeBinding, bool, error) {
+	var runtime iapiserver.AgentRuntimeBinding
+	applied := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", runtimeID).First(&runtime).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+		}
+		if runtime.CurrentTaskID != nil && runtime.CurrentOperation != nil &&
+			*runtime.CurrentTaskID == taskID && *runtime.CurrentOperation == operation {
+			return nil
+		}
+		if runtime.ResourceVersion != expectedVersion {
+			return nil
+		}
+
+		previous := runtime
+		runtime.CurrentTaskID = &taskID
+		runtime.CurrentOperation = &operation
+		runtime.State = state
+		if err := tx.Save(&runtime).Error; err != nil {
+			return err
+		}
+		applied = true
+		return appendAgentRuntimeOutbox(tx, &previous, &runtime)
+	})
+	if err == nil && runtime.CurrentTaskID != nil && runtime.CurrentOperation != nil &&
+		*runtime.CurrentTaskID == taskID && *runtime.CurrentOperation == operation {
+		applied = true
+	}
+	return &runtime, applied, err
+}
+
+// ProjectAgentRuntimeTerminal 仅投影当前生命周期 Task 的终态，并原子清空 Task 绑定。
+func (s *agentStore) ProjectAgentRuntimeTerminal(
+	ctx context.Context,
+	projection store.AgentRuntimeTerminalProjection,
+) (*iapiserver.AgentRuntimeBinding, bool, error) {
+	runtime := projection.Runtime
+	if runtime == nil {
+		return nil, false, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "agent runtime terminal projection is empty")
+	}
+	applied := false
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previousRuntime iapiserver.AgentRuntimeBinding
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", runtime.ID).First(&previousRuntime).Error; err != nil {
 			return mapNotFound(err, code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
 		}
+		if previousRuntime.CurrentTaskID == nil || previousRuntime.CurrentOperation == nil ||
+			*previousRuntime.CurrentTaskID != projection.TaskID ||
+			*previousRuntime.CurrentOperation != projection.Operation ||
+			previousRuntime.ResourceVersion != projection.ExpectedResourceVersion {
+			*runtime = previousRuntime
+			return nil
+		}
 		var agent iapiserver.Agent
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", runtime.AgentID).First(&agent).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", previousRuntime.AgentID).First(&agent).Error; err != nil {
 			return mapNotFound(err, code.ErrAgentNotVisible, "agent not visible")
 		}
-		runtimeChanged := previousRuntime.State != runtime.State || previousRuntime.ActivityState != runtime.ActivityState ||
-			previousRuntime.HealthStatus != runtime.HealthStatus || previousRuntime.InfraRuntimeID != runtime.InfraRuntimeID ||
-			previousRuntime.EndpointRef != runtime.EndpointRef
-		if runtimeChanged {
-			runtime.ResourceVersion = previousRuntime.ResourceVersion
-			if err := tx.Save(runtime).Error; err != nil {
-				return err
-			}
-			if err := appendAgentRuntimeOutbox(tx, &previousRuntime, runtime); err != nil {
-				return err
-			}
-		} else {
-			*runtime = previousRuntime
+
+		runtime.ResourceVersion = previousRuntime.ResourceVersion
+		runtime.AgentID = previousRuntime.AgentID
+		runtime.RuntimeProfileID = previousRuntime.RuntimeProfileID
+		runtime.RuntimeProfileRevision = previousRuntime.RuntimeProfileRevision
+		runtime.CurrentTaskID = nil
+		runtime.CurrentOperation = nil
+		if err := tx.Save(runtime).Error; err != nil {
+			return err
+		}
+		if err := appendAgentRuntimeOutbox(tx, &previousRuntime, runtime); err != nil {
+			return err
 		}
 
 		if agent.Disabled || agent.Status == "DISABLED" {
-			agentStatus = "DISABLED"
+			projection.AgentStatus = "DISABLED"
 		} else if agent.Status == "DELETING" {
-			agentStatus = "DELETING"
+			projection.AgentStatus = "DELETING"
 		}
-		if agent.Status == agentStatus {
+		applied = true
+		if agent.Status == projection.AgentStatus {
 			return nil
 		}
 		previousAgent := agent
-		agent.Status = agentStatus
+		agent.Status = projection.AgentStatus
 		if err := tx.Save(&agent).Error; err != nil {
 			return err
 		}
@@ -495,11 +695,25 @@ func (s *agentStore) ProjectAgentRuntime(ctx context.Context, runtime *iapiserve
 			"from_status": previousAgent.Status, "to_status": agent.Status,
 		})
 	})
-	return runtime, err
+	return runtime, applied, err
 }
 
 func (s *agentStore) AppendAgentOperationEvent(ctx context.Context, event *iapiserver.AgentOperationEvent) (*iapiserver.AgentOperationEvent, error) {
-	return event, s.ds.db.WithContext(ctx).Create(event).Error
+	if event == nil {
+		return nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "agent operation event is required")
+	}
+	err := s.ds.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "invocation_id"}, {Name: "sequence_no"}},
+		DoNothing: true,
+	}).Create(event).Error
+	if err != nil {
+		return nil, err
+	}
+	var result iapiserver.AgentOperationEvent
+	if err := s.ds.db.WithContext(ctx).Where("invocation_id = ? AND sequence_no = ?", event.InvocationID, event.SequenceNo).First(&result).Error; err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (s *agentStore) ListAgentOperationEvents(ctx context.Context, invocationID string, afterSequence int) ([]*iapiserver.AgentOperationEvent, error) {

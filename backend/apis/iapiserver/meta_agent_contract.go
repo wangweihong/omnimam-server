@@ -49,6 +49,10 @@ const (
 	AgentModelBindingSourceTypeUserDefault = "USER_DEFAULT_MODEL"
 	// AgentModelBindingSourceRefUserDefault 是用户默认模型的稳定来源引用。
 	AgentModelBindingSourceRefUserDefault = "user-default"
+	// AgentModelBindingSourceTypeUserProvider 选择当前用户显式绑定的 Provider Model。
+	AgentModelBindingSourceTypeUserProvider = "USER_PROVIDER_MODEL"
+	// AgentModelBindingSourceTypePlatform 选择平台托管模型；无 released resolver 时必须 fail closed。
+	AgentModelBindingSourceTypePlatform = "PLATFORM_MODEL"
 	// AgentModelBindingPurposeChat 表示模型用于 Platform Agent 对话。
 	AgentModelBindingPurposeChat = "CHAT"
 	// AgentModelBindingPurposeCoding 表示模型用于 Coding Agent 操作。
@@ -58,8 +62,21 @@ const (
 )
 
 const (
+	// AgentOperationEventTypeInvocationStarted 表示 Runtime 已开始处理 Invocation。
+	AgentOperationEventTypeInvocationStarted = "invocation.started"
+	// AgentOperationEventTypeMessageCompleted 表示 assistant Message 已持久化。
+	AgentOperationEventTypeMessageCompleted = "message.completed"
+	// AgentOperationEventTypeInvocationCompleted 表示 Invocation 已产生可投影的成功结果。
+	AgentOperationEventTypeInvocationCompleted = "invocation.completed"
+	// AgentOperationEventTypeInvocationCanceled 表示 Invocation 已响应取消。
+	AgentOperationEventTypeInvocationCanceled = "invocation.canceled"
+)
+
+const (
 	// AgentMessageRoleUser 表示消息由当前用户提交。
 	AgentMessageRoleUser = "USER"
+	// AgentMessageRoleAssistant 表示消息由 Agent Invocation 成功生成。
+	AgentMessageRoleAssistant = "ASSISTANT"
 	// AgentInvocationTypeChat 表示普通对话 Invocation。
 	AgentInvocationTypeChat = "CHAT"
 	// AgentInvocationTypeCoding 表示 Coding Agent Invocation。

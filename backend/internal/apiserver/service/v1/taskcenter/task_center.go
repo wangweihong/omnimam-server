@@ -243,22 +243,53 @@ func (s *taskCenterService) createAtomicTask(ctx context.Context, caller string,
 	task.RootTaskID = task.ID
 	task.Status = iapiserver.AtomicTaskStatusPending
 	createdTask, created, err := s.store.AddAtomicTaskIdempotent(ctx, task)
-	if err != nil || !created {
+	if err != nil && createdTask == nil {
 		return createdTask, err
 	}
-	definition := atomicDefinition(createdTask)
+	if !created {
+		// A previous request may have committed the Task row but failed before
+		// binding its workflow execution. Reuse the canonical row and let the
+		// runtime idempotency key converge concurrent recovery attempts.
+		if recovered, recoveryErr := s.ensureAtomicTaskExecution(ctx, createdTask); recoveryErr != nil {
+			if err != nil {
+				return createdTask, err
+			}
+			return createdTask, recoveryErr
+		} else if recovered != nil {
+			createdTask = recovered
+		}
+		return createdTask, err
+	}
+	if err != nil {
+		return createdTask, err
+	}
+	return s.startAtomicTaskExecution(ctx, createdTask)
+}
+
+func (s *taskCenterService) ensureAtomicTaskExecution(ctx context.Context, task *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error) {
+	if task == nil || task.RuntimeExecutionID != "" || task.Status != iapiserver.AtomicTaskStatusPending {
+		return task, nil
+	}
+	return s.startAtomicTaskExecution(ctx, task)
+}
+
+func (s *taskCenterService) startAtomicTaskExecution(ctx context.Context, task *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error) {
+	if task == nil {
+		return nil, errors.NewStatus(code.ErrAtomicTaskStateBlocked, "atomic task is unavailable")
+	}
+	definition := atomicDefinition(task)
 	binding, err := s.runtime.RegisterDefinition(ctx, definition)
 	if err != nil {
-		return createdTask, runtimeError(err)
+		return task, runtimeError(err)
 	}
-	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: createdTask.ID, IdempotencyKey: stableRuntimeKey(createdTask.ProjectID, createdTask.Namespace, createdTask.IdempotencyScope, createdTask.IdempotencyKey, createdTask.ID), Input: map[string]any{"atomic_task_id": createdTask.ID, "arguments": createdTask.Arguments}})
+	execution, err := s.runtime.StartExecution(ctx, workflowruntime.StartRequest{DefinitionName: binding.DefinitionName, DefinitionVersion: binding.DefinitionVersion, CorrelationID: task.ID, IdempotencyKey: stableRuntimeKey(task.ProjectID, task.Namespace, task.IdempotencyScope, task.IdempotencyKey, task.ID), Input: map[string]any{"atomic_task_id": task.ID, "arguments": task.Arguments}})
 	if err != nil {
-		return createdTask, runtimeError(err)
+		return task, runtimeError(err)
 	}
-	createdTask.RuntimeExecutionID = execution.ID
-	createdTask.RuntimeRevision = binding.Revision
-	createdTask.Status = iapiserver.AtomicTaskStatusRunning
-	return s.store.UpdateAtomicTask(ctx, createdTask)
+	task.RuntimeExecutionID = execution.ID
+	task.RuntimeRevision = binding.Revision
+	task.Status = iapiserver.AtomicTaskStatusRunning
+	return s.store.UpdateAtomicTask(ctx, task)
 }
 
 // BindApplicationRun 将 Canvas Worker 已解析的最终参数和 ApplicationRun 绑定到既有 DAG AtomicTask，不创建新任务。

@@ -32,6 +32,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/database"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store/postgresql"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
@@ -127,6 +128,13 @@ func createServer(cfg *config.Config) (*server, error) {
 		return nil, errors.Wrap(err, "validate application platform adapter implementations")
 	}
 	credentialBroker := usermodelsvc.NewCredentialBroker(0)
+	if cfg.InfrastructureClientOptions == nil {
+		return nil, errors.New("infrastructure client options are required for agent grants")
+	}
+	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, 10*time.Minute)
+	if err != nil {
+		return nil, errors.Wrap(err, "construct agent grant codec")
+	}
 	userModelGateway, err := engine.NewUserModelGatewayService(engine.UserModelGatewayDependencies{
 		Runtime: runtimeRegistry, Adapters: adapters, Executors: executors, Credentials: credentialBroker,
 	})
@@ -134,7 +142,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		return nil, errors.Wrap(err, "construct user model gateway")
 	}
 	userModelService, err := usermodelsvc.New(usermodelsvc.Dependencies{
-		Store: storeIns, Gateway: userModelGateway, Credentials: credentialBroker,
+		Store: storeIns, Gateway: userModelGateway, Credentials: credentialBroker, Grants: grantCodec,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct user model service")
@@ -193,7 +201,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}
-	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService})
+	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService, Models: userModelService, Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent service")
 	}

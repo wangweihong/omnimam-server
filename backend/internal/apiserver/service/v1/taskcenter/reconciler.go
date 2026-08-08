@@ -22,6 +22,8 @@ type Reconciler struct {
 	runtime           workflowruntime.WorkflowRuntime
 	interval          time.Duration
 	terminalObservers []func(context.Context, *iapiserver.AtomicTask) error
+	terminalSources   []func(context.Context, int) ([]string, error)
+	recoveryHandlers  []func(context.Context) error
 }
 
 func NewReconciler(factory store.Factory, runtime workflowruntime.WorkflowRuntime, interval time.Duration, terminalObservers ...func(context.Context, *iapiserver.AtomicTask) error) *Reconciler {
@@ -29,6 +31,20 @@ func NewReconciler(factory store.Factory, runtime workflowruntime.WorkflowRuntim
 		interval = 15 * time.Second
 	}
 	return &Reconciler{store: factory.TaskCenters(), runtime: runtime, interval: interval, terminalObservers: terminalObservers}
+}
+
+// RegisterTerminalRecoverySource 注册仍持有 Task 栅栏的领域查询，供 Reconciler 重放可能丢失的终态 observer。
+func (r *Reconciler) RegisterTerminalRecoverySource(source func(context.Context, int) ([]string, error)) {
+	if source != nil {
+		r.terminalSources = append(r.terminalSources, source)
+	}
+}
+
+// RegisterRecoveryHandler 注册领域幂等收敛函数；Task Center 仍是重试、超时和任务状态的唯一事实源。
+func (r *Reconciler) RegisterRecoveryHandler(handler func(context.Context) error) {
+	if handler != nil {
+		r.recoveryHandlers = append(r.recoveryHandlers, handler)
+	}
 }
 func (r *Reconciler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.interval)
@@ -67,6 +83,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			errs = append(errs, applyErr)
 		}
 	}
+	if err := r.reconcilePendingTerminalObservers(ctx, 200); err != nil {
+		errs = append(errs, err)
+	}
+	for _, handler := range r.recoveryHandlers {
+		if err := handler(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	groups, groupErr := r.store.ListNonTerminalTaskGroups(ctx, 100)
 	if groupErr != nil {
 		errs = append(errs, groupErr)
@@ -101,6 +125,51 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err := r.reconcileRuntimeRetention(ctx); err != nil {
 		reconcileRetentionFailures.WithLabelValues("conductor").Inc()
 		errs = append(errs, err)
+	}
+	return stderrors.Join(errs...)
+}
+
+func (r *Reconciler) reconcilePendingTerminalObservers(ctx context.Context, limit int) error {
+	if len(r.terminalSources) == 0 || len(r.terminalObservers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, limit)
+	var errs []error
+	for _, source := range r.terminalSources {
+		sourceIDs, err := source(ctx, limit)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, id := range sourceIDs {
+			if id == "" || len(ids) >= limit {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return stderrors.Join(errs...)
+	}
+	tasks, err := r.store.GetAtomicTasksByIDs(ctx, ids)
+	if err != nil {
+		errs = append(errs, err)
+		return stderrors.Join(errs...)
+	}
+	for _, task := range tasks {
+		if task == nil || !iapiserver.IsAtomicTaskTerminal(task.Status) {
+			continue
+		}
+		for _, observer := range r.terminalObservers {
+			if observerErr := observer(ctx, task); observerErr != nil {
+				errs = append(errs, observerErr)
+			}
+		}
 	}
 	return stderrors.Join(errs...)
 }

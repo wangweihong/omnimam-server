@@ -14,6 +14,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
 )
@@ -27,12 +28,14 @@ type Dependencies struct {
 	Store       store.Factory
 	Gateway     modelgateway.UserModelGateway
 	Credentials *CredentialBroker
+	Grants      *agentgrant.Codec
 }
 
 type Service struct {
 	store       store.Factory
 	gateway     modelgateway.UserModelGateway
 	credentials *CredentialBroker
+	grants      *agentgrant.Codec
 }
 
 type ExecutionContextRequest struct {
@@ -46,7 +49,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Store == nil || deps.Gateway == nil || deps.Credentials == nil {
 		return nil, errors.New("user model store, gateway, and credential broker are required")
 	}
-	return &Service{store: deps.Store, gateway: deps.Gateway, credentials: deps.Credentials}, nil
+	return &Service{store: deps.Store, gateway: deps.Gateway, credentials: deps.Credentials, grants: deps.Grants}, nil
 }
 
 func (s *Service) ListProviderTypes(ctx context.Context) (*iapiserver.ProviderTypeListResponse, error) {
@@ -164,18 +167,22 @@ func (s *Service) TestProvider(ctx context.Context, id string) (*iapiserver.Prov
 	}
 	now := imachinery.NewTime(time.Now().UTC())
 	if err := s.testProviderConnection(ctx, provider); err != nil {
-		s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
+		if persistErr := s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
 			OwnerUserID: provider.OwnerUserID, TargetType: "provider", ProviderID: provider.ID,
 			Success: false, HealthStatus: iapiserver.ProviderModelHealthUnhealthy,
 			Message: gatewayErrorCategory(err), CheckedAt: now,
-		})
+		}); persistErr != nil {
+			return nil, persistErr
+		}
 		return nil, err
 	}
-	s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
+	if err := s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
 		OwnerUserID: provider.OwnerUserID, TargetType: "provider", ProviderID: provider.ID,
 		Success: true, HealthStatus: iapiserver.ProviderModelHealthHealthy,
 		Message: "provider connection ok", CheckedAt: now,
-	})
+	}); err != nil {
+		return nil, err
+	}
 	response := providerTestResponse(provider.ID)
 	response.CheckedAt = now
 	return response, nil
@@ -382,31 +389,38 @@ func (s *Service) testProviderModelOwned(ctx context.Context, owner, id string) 
 	now := imachinery.NewTime(time.Now().UTC())
 	probe, probeErr := s.gateway.ProbeProviderModel(ctx, request, model.Model)
 	if probeErr != nil {
-		model.HealthStatus = iapiserver.ProviderModelHealthUnhealthy
-		model.HealthReason = gatewayErrorCategory(probeErr)
-		model.HealthCheckedAt = &now
-		_, _ = s.store.ProviderModels().Update(context.WithoutCancel(ctx), model)
-		s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
+		healthReason := gatewayErrorCategory(probeErr)
+		if _, err := s.store.ProviderModels().ProjectHealth(
+			context.WithoutCancel(ctx), owner, model.ID, model.ResourceVersion,
+			iapiserver.ProviderModelHealthUnhealthy, healthReason, now,
+		); err != nil {
+			return nil, errors.Wrap(err, "persist provider model health")
+		}
+		if err := s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
 			OwnerUserID: owner, TargetType: "model", ProviderID: provider.ID, ModelID: model.ID,
-			Success: false, HealthStatus: model.HealthStatus, Message: model.HealthReason, CheckedAt: now,
-		})
+			Success: false, HealthStatus: iapiserver.ProviderModelHealthUnhealthy, Message: healthReason, CheckedAt: now,
+		}); err != nil {
+			return nil, err
+		}
 		return nil, mapModelGatewayError(probeErr)
 	}
 	resolution, err := s.gateway.ResolveUserModelCapabilities(provider.Type, probe, model.DisabledCapabilityDefinitionIDs)
 	if err != nil {
 		return nil, mapModelGatewayError(err)
 	}
-	model.HealthStatus = iapiserver.ProviderModelHealthHealthy
-	model.HealthReason = ""
-	model.HealthCheckedAt = &now
 	applyResolution(model, resolution)
-	if _, err := s.store.ProviderModels().Update(context.WithoutCancel(ctx), model); err != nil {
-		return nil, errors.WithStack(err)
+	if _, err := s.store.ProviderModels().ProjectHealth(
+		context.WithoutCancel(ctx), owner, model.ID, model.ResourceVersion,
+		iapiserver.ProviderModelHealthHealthy, "", now,
+	); err != nil {
+		return nil, errors.Wrap(err, "persist provider model health")
 	}
-	s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
+	if err := s.persistHealthCheck(ctx, &iapiserver.ModelHealthCheck{
 		OwnerUserID: owner, TargetType: "model", ProviderID: provider.ID, ModelID: model.ID,
-		Success: true, HealthStatus: model.HealthStatus, Message: "provider model is available", CheckedAt: now,
-	})
+		Success: true, HealthStatus: iapiserver.ProviderModelHealthHealthy, Message: "provider model is available", CheckedAt: now,
+	}); err != nil {
+		return nil, err
+	}
 	return &iapiserver.ProviderModelHealthCheckResponse{
 		TargetType: "model", ProviderID: provider.ID, ModelID: model.ID, Success: true,
 		HealthStatus: model.HealthStatus, Message: "provider model is available", CheckedAt: now,
@@ -513,7 +527,10 @@ func (s *Service) ListModelOptions(ctx context.Context, req *iapiserver.Provider
 
 // ResolveUserModelExecutionContext validates the current User Model facts and issues a short-lived execution grant.
 func (s *Service) ResolveUserModelExecutionContext(ctx context.Context, req ExecutionContextRequest) (*modelgateway.UserModelExecutionContext, error) {
-	owner := currentUserID(ctx)
+	return s.resolveUserModelExecutionContext(ctx, currentUserID(ctx), req)
+}
+
+func (s *Service) resolveUserModelExecutionContext(ctx context.Context, owner string, req ExecutionContextRequest) (*modelgateway.UserModelExecutionContext, error) {
 	capabilityID := strings.TrimSpace(req.CapabilityDefinitionID)
 	if capabilityID == "" {
 		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, "execution capability is required")
@@ -578,6 +595,82 @@ func (s *Service) ResolveUserModelExecutionContext(ctx context.Context, req Exec
 		Endpoint: provider.BaseURL, AuthenticationType: provider.AuthType,
 		ProviderConfiguration: maps.Clone(provider.Config),
 	}, nil
+}
+
+// ResolveAgentModelAccess 校验固定 Agent ModelBinding 并签发不含模型凭证的短期授权引用。
+func (s *Service) ResolveAgentModelAccess(ctx context.Context, ownerUserID string, binding *iapiserver.AgentModelBinding) (string, error) {
+	if s.grants == nil {
+		return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent model grant issuer is unavailable")
+	}
+	if binding == nil || strings.TrimSpace(ownerUserID) == "" || binding.AgentID == "" ||
+		binding.Status != iapiserver.AgentModelBindingStatusActive || !binding.IsPrimary {
+		return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent model binding is invalid")
+	}
+	usage := agentUsage(binding.Purpose)
+	if usage == "" {
+		return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent model binding purpose is invalid")
+	}
+	request := ExecutionContextRequest{CapabilityDefinitionID: CapabilityTextChatCompletion}
+	switch binding.SourceType {
+	case iapiserver.AgentModelBindingSourceTypeUserDefault:
+		if binding.SourceRef != iapiserver.AgentModelBindingSourceRefUserDefault {
+			return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent default model reference is invalid")
+		}
+		request.DefaultUsage = usage
+	case "USER_PROVIDER_MODEL":
+		request.ModelID = strings.TrimSpace(binding.SourceRef)
+		if request.ModelID == "" {
+			return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent provider model reference is invalid")
+		}
+	case "PLATFORM_MODEL":
+		return "", errors.NewStatus(code.ErrDefaultModelInvalid, "platform model grants are not available")
+	default:
+		return "", errors.NewStatus(code.ErrDefaultModelInvalid, "agent model source type is invalid")
+	}
+	execution, err := s.resolveUserModelExecutionContext(ctx, ownerUserID, request)
+	if err != nil {
+		return "", err
+	}
+	issuedAt, expiresAt := s.grants.Window()
+	return s.grants.Issue(iapiserver.TaskWorkerRefPrefixAgentModelAccessGrant, agentgrant.ModelAccessClaims{
+		OwnerUserID: ownerUserID, AgentID: binding.AgentID, Usage: usage,
+		SourceType: binding.SourceType, SourceRef: binding.SourceRef,
+		ModelID: execution.ModelID, ConfigVersion: execution.ConfigVersion,
+		IssuedAt: issuedAt, ExpiresAt: expiresAt,
+	})
+}
+
+// ResolveAgentModelAccessGrant 仅为当前 Agent/用途解析授权，并重新校验最新用户模型事实。
+func (s *Service) ResolveAgentModelAccessGrant(ctx context.Context, reference, ownerUserID, agentID, usage string) (*modelgateway.UserModelExecutionContext, error) {
+	if s.grants == nil {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, "agent model grant resolver is unavailable")
+	}
+	var claims agentgrant.ModelAccessClaims
+	if err := s.grants.Resolve(reference, iapiserver.TaskWorkerRefPrefixAgentModelAccessGrant, &claims); err != nil {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, err.Error())
+	}
+	if err := agentgrant.ValidateWindow(claims.IssuedAt, claims.ExpiresAt); err != nil {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, err.Error())
+	}
+	if claims.OwnerUserID != ownerUserID || claims.AgentID != agentID || claims.Usage != usage {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, "agent model grant scope does not match")
+	}
+	request := ExecutionContextRequest{CapabilityDefinitionID: CapabilityTextChatCompletion}
+	if claims.SourceType == iapiserver.AgentModelBindingSourceTypeUserDefault {
+		request.DefaultUsage = usage
+	} else if claims.SourceType == "USER_PROVIDER_MODEL" {
+		request.ModelID = claims.SourceRef
+	} else {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, "agent model grant source is unsupported")
+	}
+	execution, err := s.resolveUserModelExecutionContext(ctx, ownerUserID, request)
+	if err != nil {
+		return nil, err
+	}
+	if execution.ModelID != claims.ModelID || execution.ConfigVersion != claims.ConfigVersion {
+		return nil, errors.NewStatus(code.ErrDefaultModelInvalid, "agent model grant configuration is stale")
+	}
+	return execution, nil
 }
 
 func (s *Service) validateProviderType(ctx context.Context, providerType, authType string) error {
@@ -703,8 +796,11 @@ func filterModelsByCapability(items []*iapiserver.ProviderModel, capability stri
 	return filtered
 }
 
-func (s *Service) persistHealthCheck(ctx context.Context, check *iapiserver.ModelHealthCheck) {
-	_, _ = s.store.ModelHealthChecks().Add(context.WithoutCancel(ctx), check)
+func (s *Service) persistHealthCheck(ctx context.Context, check *iapiserver.ModelHealthCheck) error {
+	if _, err := s.store.ModelHealthChecks().Add(context.WithoutCancel(ctx), check); err != nil {
+		return errors.Wrap(err, "persist model health check")
+	}
+	return nil
 }
 
 func providerTestResponse(providerID string) *iapiserver.ProviderTestResponse {
@@ -717,10 +813,21 @@ func providerTestResponse(providerID string) *iapiserver.ProviderTestResponse {
 
 func capabilityForUsage(usage string) string {
 	switch usage {
-	case "assistant.default", "quick":
+	case "assistant.default", "quick", "agent.chat", "agent.coding":
 		return CapabilityTextChatCompletion
 	case "translation":
 		return CapabilityTextTranslate
+	default:
+		return ""
+	}
+}
+
+func agentUsage(purpose string) string {
+	switch purpose {
+	case iapiserver.AgentModelBindingPurposeChat:
+		return "agent.chat"
+	case iapiserver.AgentModelBindingPurposeCoding:
+		return "agent.coding"
 	default:
 		return ""
 	}

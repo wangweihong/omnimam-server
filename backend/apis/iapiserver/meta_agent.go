@@ -145,7 +145,7 @@ type AgentInvocation struct {
 	LastEventSequence           int             `json:"last_event_sequence" gorm:"column:last_event_sequence;not null;default:0"`
 	SubmissionGeneration        int             `json:"submission_generation" gorm:"column:submission_generation;not null;default:0"`
 	TaskExpectedResourceVersion *int64          `json:"task_expected_resource_version,omitempty" gorm:"column:task_expected_resource_version"`
-	TerminalProjectedTaskID     string          `json:"terminal_projected_task_id,omitempty" gorm:"column:terminal_projected_task_id;type:text"`
+	TerminalProjectedTaskID     *string         `json:"terminal_projected_task_id,omitempty" gorm:"column:terminal_projected_task_id;type:text"`
 	TerminalProjectedAt         imachinery.Time `json:"terminal_projected_at,omitempty" gorm:"column:terminal_projected_at"`
 	FailureCode                 string          `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
 	FailureMessage              string          `json:"failure_message,omitempty" gorm:"column:failure_message;type:text;not null;default:''"`
@@ -320,8 +320,8 @@ type AgentRuntimeBinding struct {
 	State                  string          `json:"state" gorm:"column:state;type:text;not null"`
 	ActivityState          string          `json:"activity_state" gorm:"column:activity_state;type:text;not null"`
 	HealthStatus           string          `json:"health_status" gorm:"column:health_status;type:text;not null"`
-	CurrentTaskID          string          `json:"current_task_id,omitempty" gorm:"column:current_task_id;type:text"`
-	CurrentOperation       string          `json:"current_operation,omitempty" gorm:"column:current_operation;type:text"`
+	CurrentTaskID          *string         `json:"current_task_id,omitempty" gorm:"column:current_task_id;type:text"`
+	CurrentOperation       *string         `json:"current_operation,omitempty" gorm:"column:current_operation;type:text"`
 	LastHealthAt           imachinery.Time `json:"last_health_at,omitempty" gorm:"column:last_health_at"`
 	StartedAt              imachinery.Time `json:"started_at,omitempty" gorm:"column:started_at"`
 	StoppedAt              imachinery.Time `json:"stopped_at,omitempty" gorm:"column:stopped_at"`

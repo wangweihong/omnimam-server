@@ -40,6 +40,23 @@ type AgentInvocationTerminalProjection struct {
 	FailureMessage          string
 }
 
+// AgentRuntimeQueueCandidate 是 READY Runtime 与待提交 Invocation 的内部恢复索引，不对外暴露 Agent 内容。
+type AgentRuntimeQueueCandidate struct {
+	RuntimeID   string
+	AgentID     string
+	OwnerUserID string
+}
+
+// AgentRuntimeTerminalProjection 是 Runtime 生命周期 Task 允许写回的受栅栏投影。
+// Store 仅在当前 Task、操作和资源版本全部匹配时应用，并在终态清空当前操作。
+type AgentRuntimeTerminalProjection struct {
+	TaskID                  string
+	Operation               string
+	ExpectedResourceVersion int64
+	Runtime                 *iapiserver.AgentRuntimeBinding
+	AgentStatus             string
+}
+
 type UserStore interface {
 	List(ctx context.Context, req *iapiserver.UserListRequest) ([]*iapiserver.User, int64, error)
 	Get(ctx context.Context, id string) (*iapiserver.User, error)
@@ -107,11 +124,16 @@ type AgentStore interface {
 	GetAgentSession(context.Context, string, string) (*iapiserver.AgentSession, error)
 	UpdateAgentSession(context.Context, *iapiserver.AgentSession, int64) (*iapiserver.AgentSession, error)
 	CreateAgentInvocation(context.Context, *iapiserver.AgentMessage, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	GetAgentMessage(context.Context, string, string) (*iapiserver.AgentMessage, error)
+	CreateAgentAssistantMessage(context.Context, *iapiserver.AgentMessage) (*iapiserver.AgentMessage, error)
 	ListAgentMessages(context.Context, *iapiserver.AgentMessageListRequest, string) ([]*iapiserver.AgentMessage, int64, error)
 	ListAgentInvocations(context.Context, *iapiserver.AgentInvocationListRequest, string) ([]*iapiserver.AgentInvocation, int64, error)
 	GetAgentInvocation(context.Context, string, string) (*iapiserver.AgentInvocation, error)
 	ListQueuedAgentInvocationsByAgent(context.Context, string) ([]*iapiserver.AgentInvocation, error)
+	ListPendingAgentTerminalTaskIDs(context.Context, int) ([]string, error)
+	ListAgentRuntimeQueueCandidates(context.Context, int) ([]AgentRuntimeQueueCandidate, error)
 	UpdateAgentInvocation(context.Context, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
+	BindAgentInvocationTask(context.Context, string, int64, int, string, string, int64) (*iapiserver.AgentInvocation, bool, error)
 	ProjectAgentInvocationTerminal(context.Context, string, AgentInvocationTerminalProjection) (*iapiserver.AgentInvocation, bool, error)
 	ListAgentMemories(context.Context, *iapiserver.AgentMemoryListRequest, string) ([]*iapiserver.AgentMemory, int64, error)
 	CreateAgentMemory(context.Context, *iapiserver.AgentMemory) (*iapiserver.AgentMemory, error)
@@ -128,7 +150,8 @@ type AgentStore interface {
 	GetAgentRuntimeByID(context.Context, string) (*iapiserver.AgentRuntimeBinding, error)
 	CreateAgentRuntime(context.Context, string, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
 	UpdateAgentRuntime(context.Context, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
-	ProjectAgentRuntime(context.Context, *iapiserver.AgentRuntimeBinding, string) (*iapiserver.AgentRuntimeBinding, error)
+	BindAgentRuntimeTask(context.Context, string, int64, string, string, string) (*iapiserver.AgentRuntimeBinding, bool, error)
+	ProjectAgentRuntimeTerminal(context.Context, AgentRuntimeTerminalProjection) (*iapiserver.AgentRuntimeBinding, bool, error)
 	AppendAgentOperationEvent(context.Context, *iapiserver.AgentOperationEvent) (*iapiserver.AgentOperationEvent, error)
 	ListAgentOperationEvents(context.Context, string, int) ([]*iapiserver.AgentOperationEvent, error)
 }
@@ -167,6 +190,7 @@ type AppStudioStore interface {
 	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)
 	GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error)
 	ApplyStudioChangeSet(context.Context, string, *iapiserver.StudioChangeSet, *iapiserver.StudioWorkspaceRevision, []*iapiserver.StudioSourceFile) (*iapiserver.StudioChangeSet, error)
+	ResolveStudioInvocationChangeSets(context.Context, string, string, []string) (map[string]*iapiserver.StudioChangeSet, error)
 	CreateStudioSourceSnapshot(context.Context, string, *iapiserver.StudioSourceSnapshot) (*iapiserver.StudioSourceSnapshot, error)
 	GetStudioSourceSnapshot(context.Context, string, string) (*iapiserver.StudioSourceSnapshot, error)
 	CreateStudioApplicationVersion(context.Context, string, *iapiserver.StudioApplicationVersion) (*iapiserver.StudioApplicationVersion, error)
@@ -397,6 +421,8 @@ type ProviderModelStore interface {
 	GetByIDs(ctx context.Context, ownerUserID string, ids []string) ([]*iapiserver.ProviderModel, error)
 	Add(ctx context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error)
 	Update(ctx context.Context, data *iapiserver.ProviderModel) (*iapiserver.ProviderModel, error)
+	// ProjectHealth 以探测开始时的配置版本和检测时间为栅栏投影健康事实；仅健康资格变化递增配置版本。
+	ProjectHealth(ctx context.Context, ownerUserID, id string, expectedConfigVersion int64, healthStatus, healthReason string, checkedAt imachinery.Time) (*iapiserver.ProviderModel, error)
 	// Delete 删除指定模型提供商下的一个模型元数据。
 	Delete(ctx context.Context, providerID, id string) error
 	// DeleteByProviderID removes all models under one provider.

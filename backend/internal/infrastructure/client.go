@@ -66,6 +66,30 @@ func (c *Client) Execute(ctx context.Context, request *CommandRequest) (*Command
 	return &result, nil
 }
 
+// ResolveEndpoint 为 Agent Runtime Adapter 解析一次性的内存端点；调用方不得持久化 BaseURL。
+func (c *Client) ResolveEndpoint(ctx context.Context, endpointID string, input *iapiserver.InfraResolveEndpointRequest) (*iapiserver.InfraResolvedEndpoint, error) {
+	if strings.TrimSpace(endpointID) == "" {
+		return nil, fmt.Errorf("infrastructure endpoint id is required")
+	}
+	request, err := c.request(ctx, http.MethodPost, "/api/v1/infra/endpoints/"+url.PathEscape(endpointID)+"/resolve", input)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var endpoint iapiserver.InfraResolvedEndpoint
+	if err := decodeInfraJSON(response, &endpoint); err != nil {
+		return nil, err
+	}
+	if endpoint.EndpointRef == "" || endpoint.RuntimeID == "" || endpoint.BaseURL == "" {
+		return nil, fmt.Errorf("infrastructure resolved endpoint is invalid")
+	}
+	return &endpoint, nil
+}
+
 // OutputContent 是 Infrastructure 已认证输出流及其可信 descriptor。
 type OutputContent struct {
 	Body          io.ReadCloser
