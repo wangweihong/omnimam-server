@@ -2,12 +2,15 @@
 
 ## Current goal and status
 
-- Goal: repair the AppStudio Coding Agent Workspace Tool/ChangeSet flow, Invocation and Runtime state projection, grant lifetime, source persistence, result observability, and empty-source Preview/Snapshot prerequisites.
-- Status: implementation complete in the worktree; focused tests, vet, Compose rendering, shell syntax, and diff checks pass. Deployment and real OpenCode/UI end-to-end verification remain external follow-up work.
+- Goal: stop the Compose `taskworker` crash loop caused by its invalid remote HTTP MCP public base URL, rebuild the service, and restore the path to Source Revision/Preview verification.
+- Status: fixed and deployed locally. Task Worker now starts with the shared local loopback default, remains `running`, and has `RestartCount=0`; the rejected remote HTTP value and crash loop are gone.
 - SSOT: released `spec-v1.20.0` at `0e6300c8e776df08972a229f48775ed71ad5bff9`; `ssot` submodule and `SSOT_VERSION` match.
 
 ## Work completed in this session
 
+- Replaced Task Worker's hard-coded `http://apiserver:8080` MCP public base URL with the shared `OMNIMAM_MCP_PUBLIC_BASE_URL` interpolation and loopback local-development default; remote deployments retain the mandatory reachable HTTPS override.
+- Documented the shared API Server/Task Worker MCP public-Origin requirement in `deployments/README.md`.
+- Force-recreated `omnimam-taskworker` with the already deployed `omnimam/taskworker:b2d143a-amd64` image so the Compose-only configuration correction took effect without changing binary versions.
 - Added the grant-authenticated internal `POST /internal/appstudio/workspace-tool` MCP transport with source status/list/read and atomic ChangeSet apply tools.
 - Added nested encrypted Workspace Tool claims scoped to owner, application, Workspace, Agent, Session, Invocation, initial Revision, allowed actions, path scope, and expiry.
 - Added Task Worker OpenCode remote-MCP injection with initial Revision/path instructions; canonical StudioWorkspace storage remains unmounted.
@@ -47,7 +50,7 @@
 - Added `AgentRuntimeActivityActive = "ACTIVE"`, which is projected from existing Invocation lifecycle facts.
 - Agent grant TTL is now one hour in API Server and Task Worker.
 - Added `OMNIMAM_APPSTUDIO_SOURCE_DIR`, defaulting to `/var/lib/omnimam/appstudio-source`, and Compose volume `omnimam_appstudio_source`.
-- Task Worker resolves the internal Workspace Tool at `http://apiserver:8080` in Compose through the existing MCP base-URL configuration.
+- API Server and Task Worker now consume the same `OMNIMAM_MCP_PUBLIC_BASE_URL`; local startup defaults to loopback HTTP, while a remotely reachable Coding Runtime requires an explicit HTTPS Origin.
 
 ## Verification performed and remaining checks
 
@@ -55,23 +58,27 @@
 - Passed focused `go vet` for AppStudio service, Agent service, Agent executor, PostgreSQL store, and MCP package.
 - Passed `docker compose -f deployments/docker-compose.yaml config --quiet`.
 - Passed `bash -n scripts/install/environment.sh` and `git diff --check`.
+- Rendered Task Worker configuration contains `APISERVER_MCP_PUBLIC_BASE_URL=http://127.0.0.1:8080`.
+- Recreated Task Worker and observed it continuously `running` with restart count zero; startup logs no longer contain `remote MCP public base URL and allowed origins must use HTTPS`.
 - No full-repository tests were run, per repository scope rules.
 - Remaining external verification: rebuild/redeploy API Server and Task Worker, recreate the Coding Runtime if necessary, then run a real AppStudio instruction and confirm Tool discovery/call, Source Revision advancement, result fields, active/idle projection, Preview, Snapshot, restart persistence, cancellation, and timeout behavior.
 
 ## Outstanding tasks
 
-- Deploy the changed services and perform the real UI/OpenCode end-to-end verification described above.
+- Before real Coding Runtime verification, set `OMNIMAM_MCP_PUBLIC_BASE_URL` to a Runtime-reachable HTTPS Origin and recreate API Server/Task Worker if the Runtime is not co-located with a usable loopback proxy.
+- Perform the real UI/OpenCode Source Revision, Preview, Snapshot, cancellation, timeout, restart-persistence, and second-iteration verification described above.
 - If the Web client must disable Snapshot before submission rather than display the server business error, implement that presentation-only preflight in the Web repository; this server repository already enforces the prerequisite.
 
 ## Known issues and risks
 
+- The local loopback default is sufficient for process startup but is not automatically reachable from a separate Coding Runtime container; that deployment must supply a valid reachable HTTPS Origin before end-to-end Workspace Tool verification.
 - OpenCode remote-MCP behavior was verified against the pinned configuration contract and compile-time integration, but not against a newly deployed live Runtime in this session.
 - Runtime-local Tool cleanup is best-effort after process-level crashes; the encrypted Workspace Tool grant still expires after one hour and every request revalidates its scope/window.
 - Directly mounting `omnimam_appstudio_source` into Coding Runtime would violate the released SSOT and must not be added during deployment troubleshooting.
 
 ## Exact recommended next step
 
-Rebuild and redeploy `apiserver` and `taskworker`, recreate or restart the Coding Runtime, send one AppStudio coding instruction, and verify that the Invocation reaches RUNNING/ACTIVE, calls the Workspace Tool, returns an applied ChangeSet/new Source Revision, then settles to terminal/IDLE with source content surviving an API Server restart.
+Configure a Coding Runtime-reachable HTTPS `OMNIMAM_MCP_PUBLIC_BASE_URL`, recreate API Server/Task Worker and the Coding Runtime, send one AppStudio coding instruction, and verify that the Invocation reaches RUNNING/ACTIVE, calls the Workspace Tool, returns an applied ChangeSet/new Source Revision, then settles to terminal/IDLE before continuing Preview and the second iteration.
 
 Next Prompt:
 

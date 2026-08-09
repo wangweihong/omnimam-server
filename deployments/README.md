@@ -43,6 +43,11 @@ AppStudio 的不可变 Source Revision 正文保存在 `omnimam_appstudio_source
 `/var/lib/omnimam/appstudio-source`。如需覆盖路径，统一通过 `scripts/install/environment.sh` 中的
 `OMNIMAM_APPSTUDIO_SOURCE_DIR` 或部署进程环境设置；Coding Agent 不直接挂载该 volume。
 
+API Server 与 Task Worker 共用 `OMNIMAM_MCP_PUBLIC_BASE_URL`。本机开发默认使用
+`http://127.0.0.1:8080`；需要让 Coding Runtime 远程调用 AppStudio Workspace Tool 时，必须在
+部署进程环境中将其覆盖为 Runtime 可达的 HTTPS Origin，不能使用 `http://apiserver:8080` 之类的
+非 loopback 明文地址。
+
 Conductor 的业务元数据和运行历史保存在独立 PostgreSQL 数据库，延迟任务与 Scheduler
 队列使用开启 AOF 的 Redis。该组合用于保证六段秒级 cron 按期触发，并避免 PostgreSQL
 Queue 的 unack 回收周期放大短周期调度延迟。RedisQueueDAO 使用 Jedis，Redis 可用性由
