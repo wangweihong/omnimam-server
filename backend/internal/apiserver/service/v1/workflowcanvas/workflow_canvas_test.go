@@ -17,6 +17,13 @@ type canvasRelationStore struct {
 	canvasCalls  int
 	versionCalls int
 	retryCalls   int
+	nodeRunCalls int
+}
+
+func (s *canvasRelationStore) GetWorkflowCanvas(context.Context, string) (*iapiserver.WorkflowCanvas, error) {
+	item := &iapiserver.WorkflowCanvas{CreatedBy: iapiserver.DefaultTaskCenterCreatedBy}
+	item.ID = "canvas-1"
+	return item, nil
 }
 
 func (s *canvasRelationStore) GetWorkflowCanvasesByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvas, error) {
@@ -33,6 +40,18 @@ func (s *canvasRelationStore) GetCanvasVersionsByIDs(context.Context, []string) 
 	return []*iapiserver.CanvasVersion{item}, nil
 }
 
+func (s *canvasRelationStore) GetCanvasVersion(context.Context, string) (*iapiserver.CanvasVersion, error) {
+	item := &iapiserver.CanvasVersion{
+		CanvasID: "canvas-1",
+		GraphSnapshot: iapiserver.WorkflowCanvasGraph{
+			Nodes: []iapiserver.WorkflowCanvasNode{{NodeID: "failed"}, {NodeID: "skipped"}},
+			Edges: []iapiserver.WorkflowCanvasEdge{{SourceNodeID: "failed", TargetNodeID: "skipped"}},
+		},
+	}
+	item.ID = "version-1"
+	return item, nil
+}
+
 func (s *canvasRelationStore) GetWorkflowCanvasRunsByIDs(context.Context, []string) ([]*iapiserver.WorkflowCanvasRun, error) {
 	s.retryCalls++
 	item := &iapiserver.WorkflowCanvasRun{
@@ -44,6 +63,17 @@ func (s *canvasRelationStore) GetWorkflowCanvasRunsByIDs(context.Context, []stri
 	}
 	item.ID = "source-1"
 	return []*iapiserver.WorkflowCanvasRun{item}, nil
+}
+
+func (s *canvasRelationStore) ListCanvasNodeRuns(
+	_ context.Context,
+	req *iapiserver.CanvasNodeRunListRequest,
+) ([]*iapiserver.CanvasNodeRun, int64, error) {
+	s.nodeRunCalls++
+	if req.PageNum == 0 {
+		return []*iapiserver.CanvasNodeRun{{NodeID: "failed", Status: iapiserver.AtomicTaskStatusFailed}}, 2, nil
+	}
+	return []*iapiserver.CanvasNodeRun{{NodeID: "skipped", Status: iapiserver.AtomicTaskStatusSkipped}}, 2, nil
 }
 
 type canvasRelationTasks struct {
@@ -116,6 +146,28 @@ func TestValidateGraphRejectsUnsafeNodeType(t *testing.T) {
 		t.Fatalf("code = %d", status.Code)
 	}
 }
+
+func TestContainsUnsafeCanvasConfigMatchesFieldTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+		unsafe bool
+	}{
+		{name: "reject nested credential field", config: map[string]any{"provider": map[string]any{"auth_token": "secret"}}, unsafe: true},
+		{name: "reject endpoint field", config: map[string]any{"service.endpoint": "internal"}, unsafe: true},
+		{name: "reject camel case URL field", config: map[string]any{"callbackURL": "internal"}, unsafe: true},
+		{name: "reject camel case authorization field", config: map[string]any{"authorizationHeader": "secret"}, unsafe: true},
+		{name: "allow words containing denied substrings", config: map[string]any{"author": "Ada", "curl_mode": false, "duration": 10}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := containsUnsafeCanvasConfig(tt.config); got != tt.unsafe {
+				t.Fatalf("containsUnsafeCanvasConfig() = %t, want %t", got, tt.unsafe)
+			}
+		})
+	}
+}
+
 func TestGraphDigestIsStable(t *testing.T) {
 	a := iapiserver.WorkflowCanvasGraph{
 		Nodes: []iapiserver.WorkflowCanvasNode{
@@ -139,6 +191,58 @@ func TestGraphDigestIsStable(t *testing.T) {
 	}
 	if da != db {
 		t.Fatalf("digest mismatch: %s != %s", da, db)
+	}
+}
+
+func TestRetryFailedNodeIDsIncludesOnlyFailureCausedSkippedDescendants(t *testing.T) {
+	graph := iapiserver.WorkflowCanvasGraph{
+		Nodes: []iapiserver.WorkflowCanvasNode{
+			{NodeID: "failed"},
+			{NodeID: "skipped_child"},
+			{NodeID: "skipped_grandchild"},
+			{NodeID: "successful_child"},
+			{NodeID: "unrelated_skipped"},
+		},
+		Edges: []iapiserver.WorkflowCanvasEdge{
+			{SourceNodeID: "failed", TargetNodeID: "skipped_child"},
+			{SourceNodeID: "skipped_child", TargetNodeID: "skipped_grandchild"},
+			{SourceNodeID: "failed", TargetNodeID: "successful_child"},
+			{SourceNodeID: "successful_child", TargetNodeID: "unrelated_skipped"},
+		},
+	}
+	nodeRuns := []*iapiserver.CanvasNodeRun{
+		{NodeID: "failed", Status: iapiserver.AtomicTaskStatusFailed},
+		{NodeID: "skipped_child", Status: iapiserver.AtomicTaskStatusSkipped},
+		{NodeID: "skipped_grandchild", Status: iapiserver.AtomicTaskStatusSkipped},
+		{NodeID: "successful_child", Status: iapiserver.AtomicTaskStatusSuccess},
+		{NodeID: "unrelated_skipped", Status: iapiserver.AtomicTaskStatusSkipped},
+	}
+	want := []string{"failed", "skipped_child", "skipped_grandchild"}
+	got := retryFailedNodeIDs(graph, nodeRuns)
+	if len(got) != len(want) {
+		t.Fatalf("retryFailedNodeIDs() = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("retryFailedNodeIDs() = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestRetryFailedScopeLoadsAllSourceNodeRunPages(t *testing.T) {
+	canvasStore := &canvasRelationStore{}
+	service := &service{store: canvasStore}
+	source := &iapiserver.WorkflowCanvasRun{CanvasVersionID: "version-1"}
+	source.ID = "source-1"
+	scope, err := service.retryFailedScope(t.Context(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canvasStore.nodeRunCalls != 2 {
+		t.Fatalf("node run page calls = %d, want 2", canvasStore.nodeRunCalls)
+	}
+	if scope.Mode != iapiserver.CanvasRunScopeOnlyNodes || len(scope.NodeIDs) != 2 || scope.NodeIDs[0] != "failed" || scope.NodeIDs[1] != "skipped" {
+		t.Fatalf("scope = %#v", scope)
 	}
 }
 

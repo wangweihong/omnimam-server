@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/gowebpki/jcs"
@@ -841,6 +842,11 @@ func (s *service) RetryRun(ctx context.Context, id string, req *iapiserver.Workf
 	}
 	scope := source.Scope
 	switch req.Intent {
+	case iapiserver.CanvasRetryFailed:
+		scope, err = s.retryFailedScope(ctx, source)
+		if err != nil {
+			return nil, err
+		}
 	case iapiserver.CanvasRetryNode:
 		scope = iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeOnlyNodes, NodeIDs: req.NodeIDs}
 	case iapiserver.CanvasRetryFromNode:
@@ -872,6 +878,91 @@ func (s *service) RetryRun(ctx context.Context, id string, req *iapiserver.Workf
 	return created, err
 }
 
+func (s *service) retryFailedScope(ctx context.Context, source *iapiserver.WorkflowCanvasRun) (iapiserver.WorkflowRunScope, error) {
+	version, err := s.GetVersion(ctx, source.CanvasVersionID)
+	if err != nil {
+		return iapiserver.WorkflowRunScope{}, err
+	}
+	nodeRuns := make([]*iapiserver.CanvasNodeRun, 0)
+	for pageNum := 0; ; pageNum++ {
+		items, total, listErr := s.store.ListCanvasNodeRuns(ctx, &iapiserver.CanvasNodeRunListRequest{
+			BasicQueryParam: imachinery.BasicQueryParam{PagingParams: imachinery.PagingParams{
+				PageNum:  pageNum,
+				PageSize: imachinery.MaxPageSize,
+			}},
+			CanvasRunID: source.ID,
+		})
+		if listErr != nil {
+			return iapiserver.WorkflowRunScope{}, listErr
+		}
+		nodeRuns = append(nodeRuns, items...)
+		if int64(len(nodeRuns)) >= total {
+			break
+		}
+		if len(items) == 0 {
+			return iapiserver.WorkflowRunScope{}, errors.NewStatus(code.ErrCanvasRetryTargetInvalid, "source canvas node runs are incomplete")
+		}
+	}
+	nodeIDs := retryFailedNodeIDs(version.GraphSnapshot, nodeRuns)
+	if len(nodeIDs) == 0 {
+		return iapiserver.WorkflowRunScope{}, errors.NewStatus(code.ErrCanvasRetryTargetInvalid, "source canvas run has no failed nodes")
+	}
+	return iapiserver.WorkflowRunScope{Mode: iapiserver.CanvasRunScopeOnlyNodes, NodeIDs: nodeIDs}, nil
+}
+
+func retryFailedNodeIDs(graph iapiserver.WorkflowCanvasGraph, nodeRuns []*iapiserver.CanvasNodeRun) []string {
+	failed := make(map[string]struct{})
+	skipped := make(map[string]struct{})
+	for _, nodeRun := range nodeRuns {
+		if nodeRun == nil {
+			continue
+		}
+		switch nodeRun.Status {
+		case iapiserver.AtomicTaskStatusFailed:
+			failed[nodeRun.NodeID] = struct{}{}
+		case iapiserver.AtomicTaskStatusSkipped:
+			skipped[nodeRun.NodeID] = struct{}{}
+		}
+	}
+	children := make(map[string][]string, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		from, to := canvasEdgeSource(edge), canvasEdgeTarget(edge)
+		children[from] = append(children[from], to)
+	}
+	selected := make(map[string]struct{}, len(failed)+len(skipped))
+	queue := make([]string, 0, len(failed))
+	for _, node := range graph.Nodes {
+		id := canvasNodeID(node)
+		if _, ok := failed[id]; ok {
+			selected[id] = struct{}{}
+			queue = append(queue, id)
+		}
+	}
+	// 只沿实际 SKIPPED 节点传播，避免把成功分支后的无关跳过节点误判为失败所致。
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, child := range children[id] {
+			if _, ok := skipped[child]; !ok {
+				continue
+			}
+			if _, ok := selected[child]; ok {
+				continue
+			}
+			selected[child] = struct{}{}
+			queue = append(queue, child)
+		}
+	}
+	result := make([]string, 0, len(selected))
+	for _, node := range graph.Nodes {
+		id := canvasNodeID(node)
+		if _, ok := selected[id]; ok {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
 // attachCanvasRunRelations 在固定查询预算内组合 Canvas、版本、重跑来源和 Task Center DAG 摘要。
 func (s *service) attachCanvasRunRelations(ctx context.Context, runs []*iapiserver.WorkflowCanvasRun) error {
 	canvasIDs := make([]string, 0, len(runs))
@@ -895,7 +986,6 @@ func (s *service) attachCanvasRunRelations(ctx context.Context, runs []*iapiserv
 		}
 		if run.DAGTaskGroupID != nil {
 			dagIDs = append(dagIDs, *run.DAGTaskGroupID)
-			sliceutil.Append(dagIDs, *run.DAGTaskGroupID)
 		}
 	}
 
@@ -1261,15 +1351,16 @@ func validateGraphIssues(graph iapiserver.WorkflowCanvasGraph, requireNodes bool
 	}
 	return issues
 }
+
+var canvasConfigCamelBoundaryPattern = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+var canvasConfigAcronymBoundaryPattern = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
+
 func containsUnsafeCanvasConfig(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			normalized := strings.ToLower(key)
-			for _, forbidden := range []string{"url", "endpoint", "auth", "credential", "header", "script", "worker", "conductor"} {
-				if strings.Contains(normalized, forbidden) {
-					return true
-				}
+			if isUnsafeCanvasConfigKey(key) {
+				return true
 			}
 			if containsUnsafeCanvasConfig(child) {
 				return true
@@ -1280,6 +1371,20 @@ func containsUnsafeCanvasConfig(value any) bool {
 			if containsUnsafeCanvasConfig(child) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func isUnsafeCanvasConfigKey(key string) bool {
+	normalized := canvasConfigAcronymBoundaryPattern.ReplaceAllString(key, `${1}_${2}`)
+	normalized = canvasConfigCamelBoundaryPattern.ReplaceAllString(normalized, `${1}_${2}`)
+	for _, token := range strings.FieldsFunc(normalized, func(value rune) bool {
+		return !unicode.IsLetter(value) && !unicode.IsDigit(value)
+	}) {
+		switch strings.ToLower(token) {
+		case "url", "endpoint", "auth", "authentication", "authorization", "credential", "credentials", "header", "headers", "script", "scripts", "worker", "workers", "conductor":
+			return true
 		}
 	}
 	return false
@@ -1419,7 +1524,7 @@ func (s *service) resolveDefinitions(
 			iapiserver.DefaultTaskCenterNamespace,
 			includeDeprecated,
 		)
-		if err != nil {
+		if err != nil || definition == nil {
 			return nil, errors.NewStatus(code.ErrCanvasNodeReferenceInvalid, "canvas node definition is unavailable")
 		}
 		definitions[key] = definition
