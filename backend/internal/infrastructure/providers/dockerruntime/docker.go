@@ -1,7 +1,6 @@
 package dockerruntime
 
 import (
-	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wangweihong/gotoolbox/pkg/wait"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
@@ -64,6 +64,12 @@ type agentServiceProfile struct {
 	command    string
 	tmpfs      map[string]string
 }
+
+const (
+	openCodeConfigInstallCommand = "umask 077; cat > /root/.config/opencode/opencode.json && chmod 600 /root/.config/opencode/opencode.json && touch /run/omnimam/start"
+	dockerExecInspectInterval    = 50 * time.Millisecond
+	dockerExecInspectTimeout     = 5 * time.Second
+)
 
 func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver) (providers.RuntimeProvider, error) {
 	if socketPath == "" {
@@ -216,30 +222,112 @@ func (d *DockerProvider) injectOpenCodeConfig(ctx context.Context, ref string, b
 	if err != nil {
 		return err
 	}
-	var archive bytes.Buffer
-	tw := tar.NewWriter(&archive)
-	if err := tw.WriteHeader(&tar.Header{Name: "opencode.json", Mode: 0600, Size: int64(len(config))}); err != nil {
-		return err
-	}
-	if _, err := tw.Write(config); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	if err := d.requestBytes(ctx, http.MethodPut, "/containers/"+url.PathEscape(ref)+"/archive?path=/root/.config/opencode", archive.Bytes(), "application/x-tar"); err != nil {
-		return err
-	}
+	return d.execWithInput(ctx, ref, []string{"/bin/sh", "-c", openCodeConfigInstallCommand}, config)
+}
+
+// execWithInput 通过 Docker hijacked stream 传递敏感 stdin，避免把配置写入容器命令、环境变量或 daemon 错误正文。
+func (d *DockerProvider) execWithInput(ctx context.Context, ref string, command []string, input []byte) error {
 	var created struct {
 		ID string `json:"Id"`
 	}
-	if err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(ref)+"/exec", map[string]any{"Cmd": []string{"/bin/sh", "-c", "chmod 600 /root/.config/opencode/opencode.json && touch /run/omnimam/start"}, "AttachStdout": false, "AttachStderr": false}, &created); err != nil {
+	if err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(ref)+"/exec", map[string]any{
+		"AttachStdin": true, "AttachStdout": false, "AttachStderr": false,
+		"Tty": false, "Privileged": false, "Cmd": command,
+	}, &created); err != nil {
 		return err
 	}
 	if created.ID == "" {
-		return fmt.Errorf("docker returned no config release exec id")
+		return fmt.Errorf("docker returned no stdin exec id")
 	}
-	return d.request(ctx, http.MethodPost, "/exec/"+url.PathEscape(created.ID)+"/start", map[string]any{"Detach": true}, nil)
+	startBody, err := json.Marshal(map[string]any{"Detach": false, "Tty": false})
+	if err != nil {
+		return fmt.Errorf("encode docker exec start request: %w", err)
+	}
+	operationCtx := ctx
+	cancelOperation := func() {}
+	if d.client.Timeout > 0 {
+		operationCtx, cancelOperation = context.WithTimeout(ctx, d.client.Timeout)
+	}
+	defer cancelOperation()
+	request, err := http.NewRequestWithContext(operationCtx, http.MethodPost, "http://docker/"+d.apiVersion+"/exec/"+url.PathEscape(created.ID)+"/start", bytes.NewReader(startBody))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "tcp")
+	transport := d.client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	// http.Client.Timeout wraps a 101 response body and hides Write/CloseWrite. Use
+	// the transport directly, then enforce the same total timeout through the context.
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		if ctxErr := operationCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("start docker stdin exec: %w", ctxErr)
+		}
+		return fmt.Errorf("start docker stdin exec: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		return fmt.Errorf("start docker stdin exec: unexpected status %s", response.Status)
+	}
+	stream, ok := response.Body.(interface {
+		io.Reader
+		io.Writer
+		CloseWrite() error
+	})
+	if !ok {
+		return fmt.Errorf("start docker stdin exec: upgraded stream is not writable")
+	}
+	stopCloseOnCancel := context.AfterFunc(operationCtx, func() {
+		_ = response.Body.Close()
+	})
+	defer stopCloseOnCancel()
+	if _, err := io.Copy(stream, bytes.NewReader(input)); err != nil {
+		if ctxErr := operationCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("write docker exec stdin: %w", ctxErr)
+		}
+		return fmt.Errorf("write docker exec stdin failed")
+	}
+	if err := stream.CloseWrite(); err != nil {
+		if ctxErr := operationCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("close docker exec stdin: %w", ctxErr)
+		}
+		return fmt.Errorf("close docker exec stdin failed")
+	}
+	if _, err := io.Copy(io.Discard, stream); err != nil {
+		if ctxErr := operationCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("wait for docker stdin exec: %w", ctxErr)
+		}
+		return fmt.Errorf("wait for docker stdin exec failed")
+	}
+	stopCloseOnCancel()
+	var state struct {
+		Running  bool `json:"Running"`
+		ExitCode int  `json:"ExitCode"`
+	}
+	inspectCtx, cancelInspect := context.WithTimeout(operationCtx, dockerExecInspectTimeout)
+	defer cancelInspect()
+	if err := wait.PollImmediateUntil(dockerExecInspectInterval, func() (bool, error) {
+		if err := d.request(inspectCtx, http.MethodGet, "/exec/"+url.PathEscape(created.ID)+"/json", nil, &state); err != nil {
+			return false, fmt.Errorf("inspect docker stdin exec: %w", err)
+		}
+		return !state.Running, nil
+	}, inspectCtx.Done()); err != nil {
+		if ctxErr := operationCtx.Err(); ctxErr != nil {
+			return fmt.Errorf("wait for docker stdin exec state: %w", ctxErr)
+		}
+		if inspectCtx.Err() != nil {
+			return fmt.Errorf("docker stdin exec did not exit within %s", dockerExecInspectTimeout)
+		}
+		return err
+	}
+	if state.ExitCode != 0 {
+		return fmt.Errorf("docker stdin exec exited with code %d", state.ExitCode)
+	}
+	return nil
 }
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
@@ -517,23 +605,6 @@ func (d *DockerProvider) requestRaw(ctx context.Context, method, path string, bo
 	return nil
 }
 
-func (d *DockerProvider) requestBytes(ctx context.Context, method, path string, body []byte, contentType string) error {
-	request, err := http.NewRequestWithContext(ctx, method, "http://docker/"+d.apiVersion+path, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", contentType)
-	response, err := d.client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-		return fmt.Errorf("docker api %s: %s", response.Status, strings.TrimSpace(string(raw)))
-	}
-	return nil
-}
 func normalizedEnvName(value string) string {
 	value = strings.ToUpper(value)
 	var builder strings.Builder
