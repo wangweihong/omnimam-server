@@ -425,7 +425,12 @@ func (s *Service) SendMessage(ctx context.Context, sessionID string, req *iapise
 	}
 	messageID, invocationID := uuid.NewString(), uuid.NewString()
 	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.Content, Attachments: req.Attachments}
-	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: typeName, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID, IdempotencyKey: idempotency}
+	invocation := &iapiserver.AgentInvocation{
+		ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID,
+		Type: typeName, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID,
+		AssistantMessageID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent-invocation-assistant:"+invocationID)).String(),
+		IdempotencyKey:     idempotency,
+	}
 	created, err := s.store.CreateAgentInvocation(ctx, message, invocation)
 	if err != nil {
 		return nil, err
@@ -1277,7 +1282,71 @@ func (s *Service) projectInvocationTaskTerminal(ctx context.Context, task *iapis
 			projection.FailureMessage = task.LastError.Message
 		}
 	}
-	_, _, err := s.store.ProjectAgentInvocationTerminal(ctx, invocationID, projection)
+	projected, _, err := s.store.ProjectAgentInvocationTerminal(ctx, invocationID, projection)
+	if err != nil || projected == nil || !agentInvocationTerminalStatus(projected.Status) {
+		return err
+	}
+	return s.ensureInvocationTerminalEvent(ctx, projected)
+}
+
+func (s *Service) ensureInvocationTerminalEvent(ctx context.Context, invocation *iapiserver.AgentInvocation) error {
+	afterSequence := invocation.LastEventSequence - 1
+	if afterSequence < 0 {
+		afterSequence = 0
+	}
+	events, err := s.store.ListAgentOperationEvents(ctx, invocation.ID, afterSequence)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.EventType == iapiserver.AgentOperationEventTypeInvocationCompleted ||
+			event.EventType == iapiserver.AgentOperationEventTypeInvocationFailed ||
+			event.EventType == iapiserver.AgentOperationEventTypeInvocationCanceled {
+			return nil
+		}
+		if event.SequenceNo > invocation.LastEventSequence {
+			invocation.LastEventSequence = event.SequenceNo
+		}
+	}
+
+	eventType := iapiserver.AgentOperationEventTypeInvocationFailed
+	payload := any(&iapiserver.AgentInvocationFailedEventPayload{
+		Status:         iapiserver.AgentInvocationStatusFailed,
+		FailureCode:    invocation.FailureCode,
+		FailureMessage: invocation.FailureMessage,
+	})
+	switch invocation.Status {
+	case iapiserver.AgentInvocationStatusSucceeded:
+		eventType = iapiserver.AgentOperationEventTypeInvocationCompleted
+		payload = &iapiserver.AgentInvocationCompletedEventPayload{Status: invocation.Status, AssistantMessageID: invocation.AssistantMessageID}
+	case iapiserver.AgentInvocationStatusCanceled:
+		eventType = iapiserver.AgentOperationEventTypeInvocationCanceled
+		payload = &iapiserver.AgentInvocationCanceledEventPayload{Status: invocation.Status}
+	default:
+		if invocation.FailureCode == "" {
+			invocation.FailureCode = iapiserver.AgentInvocationFailureCodeInvocationFailed
+		}
+		if invocation.FailureMessage == "" {
+			invocation.FailureMessage = "Agent invocation execution failed."
+		}
+		payload = &iapiserver.AgentInvocationFailedEventPayload{
+			Status: invocation.Status, FailureCode: invocation.FailureCode, FailureMessage: invocation.FailureMessage,
+		}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal agent invocation terminal event payload: %w", err)
+	}
+	sequence := invocation.LastEventSequence + 1
+	_, err = s.store.AppendAgentOperationEvent(ctx, &iapiserver.AgentOperationEvent{
+		ObjectMeta: imachinery.ObjectMeta{
+			ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("agent-operation-event:%s:%d", invocation.ID, sequence))).String(),
+		},
+		InvocationID: invocation.ID,
+		EventType:    eventType,
+		SequenceNo:   sequence,
+		Payload:      payloadJSON,
+	})
 	return err
 }
 

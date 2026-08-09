@@ -161,7 +161,9 @@ func (e *InvocationExecutor) Execute(
 		return result, err
 	}
 
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationStarted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationStarted, &iapiserver.AgentInvocationStartedEventPayload{
+		Status: iapiserver.AgentInvocationStatusRunning,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent invocation start event: %w", err)
 	}
@@ -198,8 +200,12 @@ func (e *InvocationExecutor) Execute(
 	if err != nil {
 		return nil, err
 	}
+	assistantMessageID := execution.invocation.AssistantMessageID
+	if assistantMessageID == "" {
+		assistantMessageID = deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)
+	}
 	assistant, err := e.store.CreateAgentAssistantMessage(ctx, &iapiserver.AgentMessage{
-		ObjectMeta:   imachinery.ObjectMeta{ID: deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)},
+		ObjectMeta:   imachinery.ObjectMeta{ID: assistantMessageID},
 		SessionID:    execution.session.ID,
 		AgentID:      execution.agent.ID,
 		InvocationID: execution.invocation.ID,
@@ -209,11 +215,22 @@ func (e *InvocationExecutor) Execute(
 	if err != nil {
 		return nil, fmt.Errorf("persist agent assistant message: %w", err)
 	}
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageCompleted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageDelta, &iapiserver.AgentMessageDeltaEventPayload{
+		MessageID: assistant.ID, Delta: assistant.Content,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist agent message delta event: %w", err)
+	}
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageCompleted, &iapiserver.AgentMessageCompletedEventPayload{
+		MessageID: assistant.ID, Role: assistant.Role, Content: assistant.Content,
+		Attachments: assistant.Attachments, CreatedAt: assistant.CreatedAt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent message completion event: %w", err)
 	}
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCompleted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCompleted, &iapiserver.AgentInvocationCompletedEventPayload{
+		Status: iapiserver.AgentInvocationStatusSucceeded, AssistantMessageID: assistant.ID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent invocation completion event: %w", err)
 	}
@@ -239,7 +256,9 @@ func (e *InvocationExecutor) executeHermes(
 	}
 
 	var err error
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationStarted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationStarted, &iapiserver.AgentInvocationStartedEventPayload{
+		Status: iapiserver.AgentInvocationStatusRunning,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent invocation start event: %w", err)
 	}
@@ -297,8 +316,12 @@ func (e *InvocationExecutor) executeHermes(
 	if invocationRef == "" {
 		invocationRef = deterministicOpenCodeID("inv", execution.arguments.InvocationID)
 	}
+	assistantMessageID := execution.invocation.AssistantMessageID
+	if assistantMessageID == "" {
+		assistantMessageID = deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)
+	}
 	assistant, err := e.store.CreateAgentAssistantMessage(ctx, &iapiserver.AgentMessage{
-		ObjectMeta:   imachinery.ObjectMeta{ID: deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)},
+		ObjectMeta:   imachinery.ObjectMeta{ID: assistantMessageID},
 		SessionID:    execution.session.ID,
 		AgentID:      execution.agent.ID,
 		InvocationID: execution.invocation.ID,
@@ -308,11 +331,22 @@ func (e *InvocationExecutor) executeHermes(
 	if err != nil {
 		return nil, fmt.Errorf("persist agent assistant message: %w", err)
 	}
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageCompleted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageDelta, &iapiserver.AgentMessageDeltaEventPayload{
+		MessageID: assistant.ID, Delta: assistant.Content,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist agent message delta event: %w", err)
+	}
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeMessageCompleted, &iapiserver.AgentMessageCompletedEventPayload{
+		MessageID: assistant.ID, Role: assistant.Role, Content: assistant.Content,
+		Attachments: assistant.Attachments, CreatedAt: assistant.CreatedAt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent message completion event: %w", err)
 	}
-	execution.sequence, err = e.appendEvent(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCompleted)
+	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCompleted, &iapiserver.AgentInvocationCompletedEventPayload{
+		Status: iapiserver.AgentInvocationStatusSucceeded, AssistantMessageID: assistant.ID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent invocation completion event: %w", err)
 	}
@@ -470,8 +504,10 @@ func readHermesCompletion(ctx context.Context, conn *websocket.Conn, sessionRef,
 
 func (e *InvocationExecutor) hermesCanceledResult(ctx context.Context, execution *invocationExecution, contract *taskfunctionregistry.Contract, sessionRef, invocationRef string, cause error) (map[string]any, error) {
 	if stderrors.Is(cause, context.Canceled) || stderrors.Is(ctx.Err(), context.Canceled) {
+		execution.sequence, _ = e.appendEventOnce(context.WithoutCancel(ctx), execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCanceled, &iapiserver.AgentInvocationCanceledEventPayload{
+			Status: iapiserver.AgentInvocationStatusCanceled,
+		})
 		result := invocationResult(execution, sessionRef, invocationRef, iapiserver.AgentInvocationStatusCanceled, "", "", "")
-		execution.sequence, _ = e.appendEvent(context.WithoutCancel(ctx), execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCanceled)
 		if err := e.registry.ValidateOutput(contract, result); err != nil {
 			return nil, err
 		}
@@ -495,7 +531,11 @@ func (e *InvocationExecutor) completedHermesResult(ctx context.Context, executio
 	if !completed {
 		return false, nil, nil
 	}
-	assistant, err := e.store.GetAgentMessage(ctx, deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID), execution.claims.OwnerUserID)
+	assistantMessageID := execution.invocation.AssistantMessageID
+	if assistantMessageID == "" {
+		assistantMessageID = deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)
+	}
+	assistant, err := e.store.GetAgentMessage(ctx, assistantMessageID, execution.claims.OwnerUserID)
 	if err != nil {
 		return false, nil, fmt.Errorf("load completed Hermes assistant message: %w", err)
 	}
@@ -852,7 +892,9 @@ func (e *InvocationExecutor) canceledResult(ctx context.Context, execution *invo
 		cancel()
 	}
 	eventCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openCodeCleanupTimeout)
-	sequence, err := e.appendEvent(eventCtx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCanceled)
+	sequence, err := e.appendEventOnce(eventCtx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCanceled, &iapiserver.AgentInvocationCanceledEventPayload{
+		Status: iapiserver.AgentInvocationStatusCanceled,
+	})
 	cancel()
 	if err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("persist agent invocation cancellation event: %w", err))
@@ -886,7 +928,10 @@ func (e *InvocationExecutor) completedResult(ctx context.Context, execution *inv
 	if !completed {
 		return false, nil, nil
 	}
-	assistantID := deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)
+	assistantID := execution.invocation.AssistantMessageID
+	if assistantID == "" {
+		assistantID = deterministicUUID("agent-invocation-assistant", execution.arguments.InvocationID)
+	}
 	assistant, err := e.store.GetAgentMessage(ctx, assistantID, execution.claims.OwnerUserID)
 	if err != nil {
 		return false, nil, fmt.Errorf("load completed agent assistant message: %w", err)
@@ -924,14 +969,38 @@ func (e *InvocationExecutor) completedResult(ctx context.Context, execution *inv
 	return true, result, nil
 }
 
-func (e *InvocationExecutor) appendEvent(ctx context.Context, invocationID string, after int, eventType string) (int, error) {
+func (e *InvocationExecutor) appendEventOnce(ctx context.Context, invocationID string, after int, eventType string, payload any) (int, error) {
+	events, err := e.store.ListAgentOperationEvents(ctx, invocationID, 0)
+	if err != nil {
+		return after, err
+	}
+	found := false
+	for _, event := range events {
+		if event.SequenceNo > after {
+			after = event.SequenceNo
+		}
+		if event.EventType == eventType {
+			found = true
+		}
+	}
+	if found {
+		return after, nil
+	}
+	return e.appendEvent(ctx, invocationID, after, eventType, payload)
+}
+
+func (e *InvocationExecutor) appendEvent(ctx context.Context, invocationID string, after int, eventType string, payload any) (int, error) {
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return after, fmt.Errorf("marshal agent invocation event payload: %w", err)
+	}
 	sequence := after + 1
 	created, err := e.store.AppendAgentOperationEvent(ctx, &iapiserver.AgentOperationEvent{
 		ObjectMeta:   imachinery.ObjectMeta{ID: deterministicUUID("agent-operation-event", fmt.Sprintf("%s:%d", invocationID, sequence))},
 		InvocationID: invocationID,
 		EventType:    eventType,
 		SequenceNo:   sequence,
-		Payload:      json.RawMessage("{}"),
+		Payload:      payloadJSON,
 	})
 	if err != nil {
 		return after, err

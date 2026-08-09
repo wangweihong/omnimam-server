@@ -64,10 +64,26 @@ const (
 const (
 	// AgentOperationEventTypeInvocationStarted 表示 Runtime 已开始处理 Invocation。
 	AgentOperationEventTypeInvocationStarted = "invocation.started"
+	// AgentOperationEventTypeMessageDelta 表示 assistant Message 追加了流式文本片段。
+	AgentOperationEventTypeMessageDelta = "message.delta"
 	// AgentOperationEventTypeMessageCompleted 表示 assistant Message 已持久化。
 	AgentOperationEventTypeMessageCompleted = "message.completed"
+	// AgentOperationEventTypeToolRequested 表示 Runtime 请求执行受控工具。
+	AgentOperationEventTypeToolRequested = "tool.requested"
+	// AgentOperationEventTypeToolStarted 表示受控工具已开始执行。
+	AgentOperationEventTypeToolStarted = "tool.started"
+	// AgentOperationEventTypeToolProgress 表示受控工具报告了执行进度。
+	AgentOperationEventTypeToolProgress = "tool.progress"
+	// AgentOperationEventTypeToolCompleted 表示受控工具已成功完成。
+	AgentOperationEventTypeToolCompleted = "tool.completed"
+	// AgentOperationEventTypeToolFailed 表示受控工具执行失败。
+	AgentOperationEventTypeToolFailed = "tool.failed"
+	// AgentOperationEventTypeUserInputRequired 表示 Invocation 正在等待用户输入。
+	AgentOperationEventTypeUserInputRequired = "user.input_required"
 	// AgentOperationEventTypeInvocationCompleted 表示 Invocation 已产生可投影的成功结果。
 	AgentOperationEventTypeInvocationCompleted = "invocation.completed"
+	// AgentOperationEventTypeInvocationFailed 表示 Invocation 已失败终止。
+	AgentOperationEventTypeInvocationFailed = "invocation.failed"
 	// AgentOperationEventTypeInvocationCanceled 表示 Invocation 已响应取消。
 	AgentOperationEventTypeInvocationCanceled = "invocation.canceled"
 )
@@ -101,6 +117,8 @@ const (
 	AgentInvocationStatusCanceled = "CANCELED"
 	// AgentInvocationFailureCodeTaskUnavailable 表示缺少可执行 Invocation 的任务适配器。
 	AgentInvocationFailureCodeTaskUnavailable = "ERR_AGENT_INVOCATION_TASK_UNAVAILABLE"
+	// AgentInvocationFailureCodeInvocationFailed 表示 Runtime 执行未产生可用结果。
+	AgentInvocationFailureCodeInvocationFailed = "INVOCATION_FAILED"
 )
 
 const (

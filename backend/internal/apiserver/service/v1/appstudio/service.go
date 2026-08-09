@@ -151,7 +151,12 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		attachments = append(attachments, iapiserver.AgentReference{ReferenceType: attachment.Type, ReferenceID: attachment.ReferenceID})
 	}
 	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.InitialRequirement, Attachments: attachments}
-	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: iapiserver.AgentInvocationTypeCoding, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID, IdempotencyKey: "studio-create:" + req.IdempotencyKey}
+	invocation := &iapiserver.AgentInvocation{
+		ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID,
+		Type: iapiserver.AgentInvocationTypeCoding, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID,
+		AssistantMessageID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent-invocation-assistant:"+invocationID)).String(),
+		IdempotencyKey:     "studio-create:" + req.IdempotencyKey,
+	}
 	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
 	if _, err := s.store.CreateStudioApplicationInitialization(ctx, initialization); err != nil {
 		return nil, err
@@ -984,6 +989,8 @@ func studioApplicationCreateResponse(initialization *store.StudioApplicationInit
 			Generation:           app.CodingAgentGeneration,
 			Type:                 invocation.Type,
 			Status:               invocation.Status,
+			UserMessageID:        invocation.UserMessageID,
+			AssistantMessageID:   invocation.AssistantMessageID,
 			AtomicTaskID:         invocation.AtomicTaskID,
 			RuntimeBindingID:     invocation.RuntimeBindingID,
 			RuntimeSessionRef:    invocation.RuntimeSessionRef,
@@ -1077,6 +1084,8 @@ func studioAgentInvocationProjection(app *iapiserver.StudioApplication, invocati
 		Generation:           app.CodingAgentGeneration,
 		Type:                 invocation.Type,
 		Status:               invocation.Status,
+		UserMessageID:        invocation.UserMessageID,
+		AssistantMessageID:   invocation.AssistantMessageID,
 		AtomicTaskID:         invocation.AtomicTaskID,
 		RuntimeBindingID:     invocation.RuntimeBindingID,
 		RuntimeSessionRef:    invocation.RuntimeSessionRef,

@@ -1,10 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +10,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/invocationsse"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
 )
 
@@ -117,21 +115,20 @@ func (c *Controller) CancelInvocation(ctx *gin.Context) {
 	})
 }
 
-// StreamInvocationEvents replays persisted events after Last-Event-ID and then polls for new events.
+// StreamInvocationEvents 在 agent.invoke 权限和 owner 校验后重放并持续输出当前 Invocation 事件。
 func (c *Controller) StreamInvocationEvents(ctx *gin.Context) {
-	afterSequence := 0
-	if value := ctx.GetHeader("Last-Event-ID"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 0 {
-			core.WriteResponse(ctx, errors.NewStatus(code.ErrValidation, "Last-Event-ID must be a non-negative integer"), nil)
-			return
-		}
-		afterSequence = parsed
+	afterSequence, err := invocationsse.ParseLastEventID(ctx.GetHeader("Last-Event-ID"))
+	if err != nil {
+		core.WriteResponse(ctx, errors.NewStatus(code.ErrValidation, "Last-Event-ID must be a canonical non-negative decimal integer"), nil)
+		return
 	}
-	if _, err := c.service.GetInvocation(ctx, ctx.Param("invocation_id")); err != nil {
+	invocationID := ctx.Param("invocation_id")
+	invocation, err := c.service.GetInvocation(ctx, invocationID)
+	if err != nil {
 		core.WriteResponse(ctx, err, nil)
 		return
 	}
+	terminal := invocationsse.IsTerminalInvocationStatus(invocation.Status)
 	ctx.Header("Content-Type", "text/event-stream")
 	ctx.Header("Cache-Control", "no-cache")
 	ctx.Header("Connection", "keep-alive")
@@ -144,23 +141,39 @@ func (c *Controller) StreamInvocationEvents(ctx *gin.Context) {
 	defer poll.Stop()
 	defer heartbeat.Stop()
 	for {
-		events, err := c.service.ListInvocationEvents(ctx, ctx.Param("invocation_id"), afterSequence)
+		events, err := c.service.ListInvocationEvents(ctx, invocationID, afterSequence)
 		if err != nil {
 			return
 		}
+		advanced := false
 		for _, event := range events {
-			if strings.ContainsAny(event.EventType, "\r\n") {
-				return
+			if event.SequenceNo <= afterSequence {
+				continue
 			}
-			data, marshalErr := json.Marshal(event)
-			if marshalErr != nil {
-				return
-			}
-			if _, writeErr := fmt.Fprintf(ctx.Writer, "id: %d\nevent: %s\ndata: %s\n\n", event.SequenceNo, event.EventType, data); writeErr != nil {
+			if err := invocationsse.WriteEvent(ctx.Writer, event); err != nil {
 				return
 			}
 			afterSequence = event.SequenceNo
+			advanced = true
 			ctx.Writer.Flush()
+			if invocationsse.IsTerminalEventType(event.EventType) {
+				return
+			}
+		}
+		if advanced {
+			continue
+		}
+		if terminal {
+			return
+		}
+		invocation, err = c.service.GetInvocation(ctx, invocationID)
+		if err != nil {
+			return
+		}
+		terminal = invocationsse.IsTerminalInvocationStatus(invocation.Status)
+		if terminal {
+			// Re-list once so a terminal event committed with the status is flushed first.
+			continue
 		}
 		select {
 		case <-ctx.Request.Context().Done():

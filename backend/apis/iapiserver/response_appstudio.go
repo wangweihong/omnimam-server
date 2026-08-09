@@ -134,6 +134,8 @@ type StudioAgentInvocation struct {
 	Generation              int             `json:"generation"`
 	Type                    string          `json:"type"`
 	Status                  string          `json:"status"`
+	UserMessageID           string          `json:"user_message_id"`
+	AssistantMessageID      string          `json:"assistant_message_id"`
 	AtomicTaskID            *string         `json:"atomic_task_id,omitempty"`
 	RuntimeBindingID        string          `json:"runtime_binding_id,omitempty"`
 	RuntimeSessionRef       string          `json:"runtime_session_ref,omitempty"`

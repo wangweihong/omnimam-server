@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -468,7 +469,9 @@ func (s *agentStore) ProjectAgentInvocationTerminal(
 		result.RuntimeSessionRef = projection.RuntimeSessionRef
 		result.RuntimeInvocationRef = projection.RuntimeInvocationRef
 		result.AssistantMessageID = projection.AssistantMessageID
-		result.LastEventSequence = projection.LastEventSequence
+		if projection.LastEventSequence > result.LastEventSequence {
+			result.LastEventSequence = projection.LastEventSequence
+		}
 		result.FailureCode = projection.FailureCode
 		result.FailureMessage = projection.FailureMessage
 		result.TerminalProjectedTaskID = &projection.TaskID
@@ -957,18 +960,47 @@ func (s *agentStore) AppendAgentOperationEvent(ctx context.Context, event *iapis
 	if event == nil {
 		return nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "agent operation event is required")
 	}
-	err := s.ds.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "invocation_id"}, {Name: "sequence_no"}},
-		DoNothing: true,
-	}).Create(event).Error
-	if err != nil {
-		return nil, err
-	}
 	var result iapiserver.AgentOperationEvent
-	if err := s.ds.db.WithContext(ctx).Where("invocation_id = ? AND sequence_no = ?", event.InvocationID, event.SequenceNo).First(&result).Error; err != nil {
-		return nil, err
-	}
-	return &result, nil
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var invocation iapiserver.AgentInvocation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "last_event_sequence").Where("id = ?", event.InvocationID).First(&invocation).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+
+		existingErr := tx.Where("invocation_id = ? AND sequence_no = ?", event.InvocationID, event.SequenceNo).First(&result).Error
+		if existingErr == nil {
+			if result.EventType != event.EventType {
+				return fmt.Errorf("agent invocation event sequence conflicts")
+			}
+			if invocation.LastEventSequence < result.SequenceNo {
+				if err := tx.Model(&iapiserver.AgentInvocation{}).Where("id = ?", invocation.ID).UpdateColumn("last_event_sequence", result.SequenceNo).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if !stderrors.Is(existingErr, gorm.ErrRecordNotFound) {
+			return existingErr
+		}
+		if event.SequenceNo != invocation.LastEventSequence+1 {
+			return fmt.Errorf("agent invocation event sequence is not monotonic")
+		}
+		if err := tx.Create(event).Error; err != nil {
+			return err
+		}
+		updated := tx.Model(&iapiserver.AgentInvocation{}).
+			Where("id = ? AND last_event_sequence = ?", invocation.ID, invocation.LastEventSequence).
+			UpdateColumn("last_event_sequence", event.SequenceNo)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return fmt.Errorf("agent invocation event cursor changed concurrently")
+		}
+		result = *event
+		return nil
+	})
+	return &result, err
 }
 
 func (s *agentStore) ListAgentOperationEvents(ctx context.Context, invocationID string, afterSequence int) ([]*iapiserver.AgentOperationEvent, error) {
