@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -606,19 +608,197 @@ func (s *agentStore) ListAgentSkillBindings(ctx context.Context, agentID, ownerU
 
 func (s *agentStore) ListAgentMCPBindings(ctx context.Context, agentID, ownerUserID string) ([]*iapiserver.AgentMCPBinding, error) {
 	var items []*iapiserver.AgentMCPBinding
-	err := s.ds.db.WithContext(ctx).Joins("JOIN agents ON agents.id = agent_mcp_bindings.agent_id").Where("agent_mcp_bindings.agent_id = ? AND agents.owner_user_id = ?", agentID, ownerUserID).Find(&items).Error
+	err := s.ds.db.WithContext(ctx).Joins("JOIN agents ON agents.id = agent_mcp_bindings.agent_id").Where("agent_mcp_bindings.agent_id = ? AND agents.owner_user_id = ? AND agent_mcp_bindings.deleted_at IS NULL", agentID, ownerUserID).Order("agent_mcp_bindings.id ASC").Find(&items).Error
 	return items, err
 }
 
+func (s *agentStore) GetAgentMCPBindingByName(ctx context.Context, agentID, ownerUserID, name string) (*iapiserver.AgentMCPBinding, error) {
+	var item iapiserver.AgentMCPBinding
+	err := s.ds.db.WithContext(ctx).Joins("JOIN agents ON agents.id = agent_mcp_bindings.agent_id").Where("agent_mcp_bindings.agent_id = ? AND agents.owner_user_id = ? AND agent_mcp_bindings.name = ?", agentID, ownerUserID, name).First(&item).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAgentMCPBindingInvalid, "MCP binding is unavailable")
+	}
+	return &item, nil
+}
+
 func (s *agentStore) CreateAgentMCPBinding(ctx context.Context, ownerUserID string, binding *iapiserver.AgentMCPBinding) (*iapiserver.AgentMCPBinding, error) {
-	var count int64
-	if err := s.ds.db.WithContext(ctx).Model(&iapiserver.Agent{}).Where("id = ? AND owner_user_id = ?", binding.AgentID, ownerUserID).Count(&count).Error; err != nil {
-		return nil, err
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&iapiserver.Agent{}).Where("id = ? AND owner_user_id = ?", binding.AgentID, ownerUserID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return errors.NewStatus(code.ErrAgentNotVisible, "agent not visible")
+		}
+		var conflict int64
+		if err := tx.Model(&iapiserver.AgentMCPBinding{}).Where("agent_id = ? AND name = ? AND deleted_at IS NULL", binding.AgentID, binding.Name).Count(&conflict).Error; err != nil {
+			return err
+		}
+		if conflict > 0 {
+			return errors.NewStatus(code.ErrAgentMCPBindingNameConflict, "active MCP binding name conflicts")
+		}
+		if err := tx.Create(binding).Error; err != nil {
+			return mapAgentMCPActiveNameConflict(err)
+		}
+		return createMCPBindingRevision(tx, binding)
+	})
+	return binding, err
+}
+
+func (s *agentStore) UpdateAgentMCPBinding(ctx context.Context, agentID, ownerUserID string, binding *iapiserver.AgentMCPBinding, expectedVersion int64) (*iapiserver.AgentMCPBinding, error) {
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current iapiserver.AgentMCPBinding
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Joins("JOIN agents ON agents.id = agent_mcp_bindings.agent_id").Where("agent_mcp_bindings.id = ? AND agent_mcp_bindings.agent_id = ? AND agents.owner_user_id = ?", binding.ID, agentID, ownerUserID).First(&current).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentNotVisible, "agent not visible")
+		}
+		if current.DeletedAt != nil {
+			return errors.NewStatus(code.ErrAgentMCPBindingInvalid, "MCP binding is deleted")
+		}
+		if current.ResourceVersion != expectedVersion {
+			return errors.NewStatus(code.ErrAgentMCPBindingVersionConflict, "MCP binding resource version conflicts")
+		}
+		var conflict int64
+		if err := tx.Model(&iapiserver.AgentMCPBinding{}).Where("agent_id = ? AND id <> ? AND name = ? AND deleted_at IS NULL", agentID, binding.ID, binding.Name).Count(&conflict).Error; err != nil {
+			return err
+		}
+		if conflict > 0 {
+			return errors.NewStatus(code.ErrAgentMCPBindingNameConflict, "active MCP binding name conflicts")
+		}
+		current.Name, current.ServerType, current.EndpointRef = binding.Name, binding.ServerType, binding.EndpointRef
+		current.AllowedTools, current.Configuration, current.Enabled = binding.AllowedTools, binding.Configuration, binding.Enabled
+		if binding.CredentialRef != "__KEEP__" {
+			current.CredentialRef = binding.CredentialRef
+		}
+		if err := tx.Save(&current).Error; err != nil {
+			return mapAgentMCPActiveNameConflict(err)
+		}
+		*binding = current
+		return createMCPBindingRevision(tx, &current)
+	})
+	return binding, err
+}
+
+func mapAgentMCPActiveNameConflict(err error) error {
+	if err == nil {
+		return nil
 	}
-	if count == 0 {
-		return nil, errors.NewStatus(code.ErrAgentNotVisible, "agent not visible")
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "idx_agent_mcp_bindings_active_name") ||
+		strings.Contains(message, "idx_agent_mcp_binding_active_name") ||
+		strings.Contains(message, "agent_mcp_bindings.agent_id, agent_mcp_bindings.name") {
+		return errors.NewStatus(code.ErrAgentMCPBindingNameConflict, "active MCP binding name conflicts")
 	}
-	return binding, s.ds.db.WithContext(ctx).Create(binding).Error
+	return err
+}
+
+func (s *agentStore) DeleteAgentMCPBinding(ctx context.Context, agentID, bindingID, ownerUserID string) error {
+	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current iapiserver.AgentMCPBinding
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Joins("JOIN agents ON agents.id = agent_mcp_bindings.agent_id").Where("agent_mcp_bindings.id = ? AND agent_mcp_bindings.agent_id = ? AND agents.owner_user_id = ?", bindingID, agentID, ownerUserID).First(&current).Error; err != nil {
+			// DELETE is idempotent, but preserve owner isolation for unknown IDs.
+			if err == gorm.ErrRecordNotFound {
+				return nil
+			}
+			return mapNotFound(err, code.ErrAgentNotVisible, "agent not visible")
+		}
+		if current.DeletedAt != nil {
+			return nil
+		}
+		now := imachinery.Now()
+		current.DeletedAt = &now
+		current.Enabled = false
+		if err := tx.Save(&current).Error; err != nil {
+			return err
+		}
+		return createMCPBindingRevision(tx, &current)
+	})
+}
+
+func createMCPBindingRevision(tx *gorm.DB, binding *iapiserver.AgentMCPBinding) error {
+	return tx.Create(&iapiserver.AgentMCPBindingRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: binding.Name}, BindingID: binding.ID, BindingRevision: binding.ResourceVersion, AgentID: binding.AgentID, ServerType: binding.ServerType, EndpointRef: binding.EndpointRef, CredentialRef: binding.CredentialRef, AllowedTools: binding.AllowedTools, Configuration: binding.Configuration, Enabled: binding.Enabled}).Error
+}
+
+func (s *agentStore) GetAgentMCPBindingRevision(ctx context.Context, bindingID, agentID string, revision int64) (*iapiserver.AgentMCPBindingRevision, error) {
+	var item iapiserver.AgentMCPBindingRevision
+	if err := s.ds.db.WithContext(ctx).Where("binding_id = ? AND agent_id = ? AND binding_revision = ?", bindingID, agentID, revision).First(&item).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAgentMCPBindingRevisionUnavailable, "MCP binding revision unavailable")
+	}
+	return &item, nil
+}
+
+// CreateAgentRuntimeGrant 持久化本次 Runtime 启动可解析的 Binding revision 集合。
+func (s *agentStore) CreateAgentRuntimeGrant(ctx context.Context, grant *iapiserver.AgentRuntimeGrant) error {
+	if grant == nil || grant.ID == "" || grant.RequestID == "" {
+		return fmt.Errorf("runtime grant is incomplete")
+	}
+	if grant.Status == "" {
+		grant.Status = iapiserver.AgentRuntimeGrantStatusActive
+	}
+	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "runtime_binding_id"}, {Name: "request_id"}},
+			DoNothing: true,
+		}).Create(grant)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 1 {
+			return nil
+		}
+
+		var existing iapiserver.AgentRuntimeGrant
+		if err := tx.Where("runtime_binding_id = ? AND request_id = ?", grant.RuntimeBindingID, grant.RequestID).First(&existing).Error; err != nil {
+			return err
+		}
+		if !sameAgentRuntimeGrantScope(&existing, grant) {
+			return errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime grant request conflicts with its existing authorization scope")
+		}
+		if existing.Status != iapiserver.AgentRuntimeGrantStatusActive || existing.RevokedAt != nil || !existing.ExpiresAt.Time.After(time.Now()) {
+			return errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime grant request is no longer active")
+		}
+		return nil
+	})
+}
+
+func sameAgentRuntimeGrantScope(existing, requested *iapiserver.AgentRuntimeGrant) bool {
+	if existing == nil || requested == nil ||
+		existing.AgentID != requested.AgentID ||
+		existing.RuntimeBindingID != requested.RuntimeBindingID ||
+		existing.StudioApplicationID != requested.StudioApplicationID ||
+		existing.RequestID != requested.RequestID ||
+		!slices.Equal(existing.BindingRevisions, requested.BindingRevisions) {
+		return false
+	}
+	if existing.AgentGeneration == nil || requested.AgentGeneration == nil {
+		return existing.AgentGeneration == nil && requested.AgentGeneration == nil
+	}
+	return *existing.AgentGeneration == *requested.AgentGeneration
+}
+
+// GetAgentRuntimeGrantByRequestID 以不透明 authorization_ref（存于 RequestID）解析 Grant。
+func (s *agentStore) GetAgentRuntimeGrantByRequestID(ctx context.Context, requestID string) (*iapiserver.AgentRuntimeGrant, error) {
+	var grant iapiserver.AgentRuntimeGrant
+	if err := s.ds.db.WithContext(ctx).Where("request_id = ?", requestID).First(&grant).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAgentRuntimeOperationFailed, "runtime grant is unavailable")
+	}
+	return &grant, nil
+}
+
+// RevokeAgentRuntimeGrant 使任务入队失败或运行时停止后的 Grant 立即失效。
+func (s *agentStore) RevokeAgentRuntimeGrant(ctx context.Context, requestID string) error {
+	now := imachinery.Now()
+	result := s.ds.db.WithContext(ctx).Model(&iapiserver.AgentRuntimeGrant{}).
+		Where("request_id = ? AND revoked_at IS NULL", requestID).
+		Updates(map[string]any{"status": iapiserver.AgentRuntimeGrantStatusRevoked, "revoked_at": now})
+	return result.Error
+}
+
+// RevokeActiveAgentRuntimeGrants 在停止类操作成功后撤销该 Runtime 的全部活动启动 Grant。
+func (s *agentStore) RevokeActiveAgentRuntimeGrants(ctx context.Context, runtimeBindingID string) error {
+	now := imachinery.Now()
+	return s.ds.db.WithContext(ctx).Model(&iapiserver.AgentRuntimeGrant{}).
+		Where("runtime_binding_id = ? AND status = ? AND revoked_at IS NULL", runtimeBindingID, iapiserver.AgentRuntimeGrantStatusActive).
+		Updates(map[string]any{"status": iapiserver.AgentRuntimeGrantStatusRevoked, "revoked_at": now}).Error
 }
 
 func (s *agentStore) GetCurrentAgentRuntime(ctx context.Context, agentID, ownerUserID string) (*iapiserver.AgentRuntimeBinding, error) {

@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: b0de28e6b6d9462d95ae8e59a8412640047a218e
-contract_version: spec-v1.18.0
-updated_at: 2026-08-07
+commit: aa3f843e6ad4987f0441d882bfa0d05e02e05065
+contract_version: spec-v1.19.0
+updated_at: 2026-08-08
 status: released
-note: Released AppStudio Coding Agent invocation, model grant, runtime adapter and source restore contracts.
+note: Released Agent MCP binding lifecycle, runtime grant, infrastructure injection and AppStudio platform binding contracts.

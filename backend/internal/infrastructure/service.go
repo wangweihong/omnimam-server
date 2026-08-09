@@ -19,16 +19,18 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentmcp"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 )
 
 type Service struct {
-	store     store.InfrastructureStore                  // 持久化存储层
-	provider  providers.RuntimeProvider                  // 运行时提供者接口
-	profiles  map[string]*iapiserver.InfraRuntimeProfile // 内存中的运行时配置模板
-	stateMu   sync.RWMutex                               // 保护 endpoints/outputs 的读写锁
-	endpoints map[string]providers.ProviderEndpoint      // 内存中的端点缓存
-	outputs   map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
+	store       store.InfrastructureStore                  // 持久化存储层
+	provider    providers.RuntimeProvider                  // 运行时提供者接口
+	profiles    map[string]*iapiserver.InfraRuntimeProfile // 内存中的运行时配置模板
+	stateMu     sync.RWMutex                               // 保护 endpoints/outputs 的读写锁
+	endpoints   map[string]providers.ProviderEndpoint      // 内存中的端点缓存
+	outputs     map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
+	mcpResolver agentmcp.Resolver
 }
 
 const resolvedEndpointTTL = time.Minute
@@ -44,6 +46,9 @@ func NewService(storage store.InfrastructureStore, provider providers.RuntimePro
 	service := &Service{store: storage, provider: provider, profiles: profiles, endpoints: make(map[string]providers.ProviderEndpoint), outputs: make(map[string]providers.ProviderOutputContent)}
 	return service, nil
 }
+
+// SetMCPBindingResolver injects the Agent-domain resolver without coupling Infrastructure to Agent tables.
+func (s *Service) SetMCPBindingResolver(resolver agentmcp.Resolver) { s.mcpResolver = resolver }
 
 func (s *Service) getEndpoint(id string) (providers.ProviderEndpoint, bool) {
 	s.stateMu.RLock()
@@ -275,17 +280,41 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	}
 	created.Status = iapiserver.InfraRuntimeStatusPreparing
 	_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
-	providerResult, err := s.provider.Ensure(ctx, providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req})
-	if err != nil {
+	markRuntimeFailed := func(failureCode string) {
 		created.Status = iapiserver.InfraRuntimeStatusFailed
-		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
+		created.FailureCode = failureCode
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
+	}
+	providerRequest := providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req}
+	for _, binding := range req.ConfigurationBindings {
+		if binding.BindingType != iapiserver.InfraConfigBindingTypeMCPServerRef {
+			continue
+		}
+		if s.mcpResolver == nil {
+			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver is unavailable")
+		}
+		resolved, resolveErr := s.mcpResolver.ResolveMCPBinding(ctx, req.AuthorizationRef, req.OwnerReference, binding.Reference)
+		if resolveErr != nil {
+			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolution failed")
+		}
+		if resolved == nil || resolved.ServerKey == "" || resolved.Endpoint == "" {
+			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver returned an invalid result")
+		}
+		providerRequest.MCPBindings = append(providerRequest.MCPBindings, providers.ResolvedMCPBinding{
+			ServerKey: resolved.ServerKey, ServerType: resolved.ServerType, Endpoint: resolved.Endpoint,
+			Credential: resolved.Credential, AllowedTools: append([]string(nil), resolved.AllowedTools...), Configuration: resolved.Configuration,
+		})
+	}
+	providerResult, err := s.provider.Ensure(ctx, providerRequest)
+	if err != nil {
+		markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
 	if providerResult == nil {
-		created.Status = iapiserver.InfraRuntimeStatusFailed
-		created.FailureCode = "ERR_INFRA_RUNTIME_OPERATION_FAILED"
-		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
+		markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "provider returned no runtime result")
 	}
 	created.ProviderRuntimeRef = providerResult.ProviderRuntimeRef
@@ -294,9 +323,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 		created.Status = iapiserver.InfraRuntimeStatusRunning
 	}
 	if err := prepareProviderOutputs(created.ID, providerResult, req.OutputDeclarations); err != nil {
-		created.Status = iapiserver.InfraRuntimeStatusFailed
-		created.FailureCode = "ERR_INFRA_OUTPUT_COLLECTION_FAILED"
-		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
+		markRuntimeFailed("ERR_INFRA_OUTPUT_COLLECTION_FAILED")
 		return nil, errors.NewStatus(code.ErrInfraOutputCollectionFailed, err.Error())
 	}
 	endpoint := endpointFromResult(created, req, providerResult)

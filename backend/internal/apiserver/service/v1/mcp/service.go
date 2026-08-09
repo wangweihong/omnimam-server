@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/wangweihong/gotoolbox/pkg/log"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/apiserver/middleware"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
@@ -88,6 +91,10 @@ type Authorizer interface {
 	Allowed(context.Context, string) (bool, error)
 }
 
+type AgentWorkloadScopeResolver interface {
+	ResolveAgentWorkloadOwner(context.Context, string, string, int64) (string, error)
+}
+
 type Auditor interface {
 	Record(context.Context, AuditRecord) error
 }
@@ -111,32 +118,37 @@ type AuditRecord struct {
 }
 
 type Dependencies struct {
-	Capabilities CapabilityCatalog
-	Applications ApplicationService
-	Tasks        TaskService
-	Assets       AssetService
-	Bindings     store.MCPTaskBindingStore
-	Authorizer   Authorizer
-	Auditor      Auditor
-	Admission    AdmissionController
-	Config       Config
+	Capabilities   CapabilityCatalog
+	Applications   ApplicationService
+	Tasks          TaskService
+	Assets         AssetService
+	Bindings       store.MCPTaskBindingStore
+	AgentGrants    store.AgentStore
+	WorkloadScopes AgentWorkloadScopeResolver
+	Authorizer     Authorizer
+	Auditor        Auditor
+	Admission      AdmissionController
+	Config         Config
 }
 
 type Service struct {
-	capabilities CapabilityCatalog
-	applications ApplicationService
-	tasks        TaskService
-	assets       AssetService
-	bindings     store.MCPTaskBindingStore
-	authorizer   Authorizer
-	auditor      Auditor
-	admission    AdmissionController
-	validator    *protocol.ResultValidator
-	config       Config
+	capabilities   CapabilityCatalog
+	applications   ApplicationService
+	tasks          TaskService
+	assets         AssetService
+	bindings       store.MCPTaskBindingStore
+	agentGrants    store.AgentStore
+	workloadScopes AgentWorkloadScopeResolver
+	authorizer     Authorizer
+	auditor        Auditor
+	admission      AdmissionController
+	validator      *protocol.ResultValidator
+	config         Config
 }
 
 type requestMetadataContextKey struct{}
 type auditCorrelationContextKey struct{}
+type agentWorkloadToolsContextKey struct{}
 
 type auditCorrelation struct {
 	ApplicationRunID string
@@ -218,7 +230,7 @@ func New(deps Dependencies) (*Service, error) {
 	}
 	return &Service{
 		capabilities: deps.Capabilities, applications: deps.Applications, tasks: deps.Tasks,
-		assets: deps.Assets, bindings: deps.Bindings, authorizer: deps.Authorizer,
+		assets: deps.Assets, bindings: deps.Bindings, agentGrants: deps.AgentGrants, workloadScopes: deps.WorkloadScopes, authorizer: deps.Authorizer,
 		auditor: deps.Auditor, admission: deps.Admission, validator: validator, config: deps.Config,
 	}, nil
 }
@@ -228,6 +240,14 @@ func (s *Service) Dispatch(ctx context.Context, invocation protocol.Invocation) 
 	principalID, err := currentPrincipalID(ctx)
 	if err != nil {
 		return nil, rpcBusiness(mcpError(code.ErrMCPAuthenticationRequired, "ERR_MCP_AUTHENTICATION_REQUIRED", false, "identity"))
+	}
+	if principal, ok := middleware.PrincipalFromContext(ctx); ok && principal.PrincipalType == "AGENT_WORKLOAD" {
+		allowedTools, ownerUserID, grantErr := s.resolveAgentWorkload(ctx, principal)
+		if grantErr != nil {
+			return nil, rpcBusiness(mcpError(code.ErrMCPAuthenticationRequired, "ERR_MCP_AUTHENTICATION_REQUIRED", false, "identity"))
+		}
+		ctx = context.WithValue(ctx, agentWorkloadToolsContextKey{}, allowedTools)
+		ctx = context.WithValue(ctx, iapiserver.GinContextKeyUser, &iapiserver.User{ObjectMeta: imachinery.ObjectMeta{ID: ownerUserID}})
 	}
 	if err := s.require(ctx, permissionProtocolAccess); err != nil {
 		return nil, err
@@ -289,12 +309,12 @@ func (s *Service) Dispatch(ctx context.Context, invocation protocol.Invocation) 
 
 	switch invocation.Method {
 	case protocol.MethodDiscover:
-		if err := s.require(ctx, permissionDiscoveryRead); err != nil {
+		if err := s.requireDiscovery(ctx); err != nil {
 			return nil, err
 		}
 		return s.discover(), nil
 	case protocol.MethodToolsList:
-		if err := s.require(ctx, permissionDiscoveryRead); err != nil {
+		if err := s.requireDiscovery(ctx); err != nil {
 			return nil, err
 		}
 		return s.listTools(ctx), nil
@@ -339,6 +359,9 @@ func (s *Service) discover() protocol.DiscoverResult {
 
 func (s *Service) listTools(ctx context.Context) protocol.ToolsListResult {
 	definitions := protocol.ToolDefinitions(func(name string) bool {
+		if !agentWorkloadToolAllowed(ctx, name) {
+			return false
+		}
 		for _, permission := range toolPermissions[name] {
 			allowed, err := s.authorizer.Allowed(ctx, permission)
 			if err != nil || !allowed {
@@ -351,6 +374,9 @@ func (s *Service) listTools(ctx context.Context) protocol.ToolsListResult {
 }
 
 func (s *Service) dispatchTool(ctx context.Context, invocation protocol.Invocation) (any, error) {
+	if !agentWorkloadToolAllowed(ctx, invocation.Name) {
+		return nil, rpcBusiness(mcpError(code.ErrMCPToolNotVisible, "ERR_MCP_TOOL_NOT_VISIBLE", false, "mcp"))
+	}
 	permissions, exists := toolPermissions[invocation.Name]
 	if !exists {
 		return nil, rpcBusiness(mcpError(code.ErrMCPToolNotVisible, "ERR_MCP_TOOL_NOT_VISIBLE", false, "mcp"))
@@ -417,6 +443,67 @@ func (s *Service) require(ctx context.Context, permission string) error {
 	return nil
 }
 
+func (s *Service) requireDiscovery(ctx context.Context) error {
+	if principal, ok := middleware.PrincipalFromContext(ctx); ok && principal.PrincipalType == "AGENT_WORKLOAD" {
+		return nil
+	}
+	return s.require(ctx, permissionDiscoveryRead)
+}
+
+func (s *Service) resolveAgentWorkload(ctx context.Context, principal middleware.IdentityPrincipal) (map[string]struct{}, string, error) {
+	if s.agentGrants == nil || s.workloadScopes == nil {
+		return nil, "", fmt.Errorf("agent workload resolvers are unavailable")
+	}
+	grant, err := s.agentGrants.GetAgentRuntimeGrantByRequestID(ctx, principal.GrantRef)
+	if err != nil || grant == nil || grant.RequestID != principal.GrantRef || grant.Status != iapiserver.AgentRuntimeGrantStatusActive || grant.RevokedAt != nil ||
+		grant.AgentID != principal.AgentID || grant.RuntimeBindingID != principal.RuntimeID ||
+		grant.StudioApplicationID != principal.ApplicationID || grant.AgentGeneration == nil || *grant.AgentGeneration != principal.AgentGeneration ||
+		!grant.ExpiresAt.Time.After(time.Now()) || len(grant.BindingRevisions) > iapiserver.AgentRuntimeMaxMCPBindings {
+		return nil, "", fmt.Errorf("agent runtime grant is invalid")
+	}
+	ownerUserID, err := s.workloadScopes.ResolveAgentWorkloadOwner(ctx, principal.ApplicationID, principal.AgentID, principal.AgentGeneration)
+	if err != nil || ownerUserID == "" {
+		return nil, "", fmt.Errorf("agent workload object scope is invalid")
+	}
+	allowedTools := map[string]struct{}{}
+	for _, reference := range grant.BindingRevisions {
+		parts := strings.Split(reference, "/")
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, "", fmt.Errorf("agent runtime grant contains an invalid binding revision")
+		}
+		revision, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil || revision < 1 {
+			return nil, "", fmt.Errorf("agent runtime grant contains an invalid binding revision")
+		}
+		snapshot, snapshotErr := s.agentGrants.GetAgentMCPBindingRevision(ctx, parts[0], principal.AgentID, revision)
+		if snapshotErr != nil || snapshot == nil {
+			return nil, "", fmt.Errorf("agent MCP binding revision is unavailable")
+		}
+		if snapshot.ServerType != iapiserver.AgentMCPServerTypePlatform || snapshot.EndpointRef != iapiserver.AgentMCPPlatformEndpointRefDefault || !snapshot.Enabled {
+			continue
+		}
+		for _, tool := range snapshot.AllowedTools {
+			if _, known := toolPermissions[tool]; known {
+				allowedTools[tool] = struct{}{}
+			}
+		}
+	}
+	return allowedTools, ownerUserID, nil
+}
+
+func agentWorkloadToolAllowed(ctx context.Context, name string) bool {
+	principal, workload := middleware.PrincipalFromContext(ctx)
+	if !workload || principal.PrincipalType != "AGENT_WORKLOAD" {
+		return true
+	}
+	allowed, ok := ctx.Value(agentWorkloadToolsContextKey{}).(map[string]struct{})
+	if !ok {
+		return false
+	}
+	_, ok = allowed[name]
+	return ok
+}
+
 // AuthenticatedAuthorizer mirrors the current default-role permission behavior while Identity S2 lacks role-permission storage.
 type AuthenticatedAuthorizer struct{}
 
@@ -424,8 +511,17 @@ func (AuthenticatedAuthorizer) Allowed(ctx context.Context, permission string) (
 	if _, err := currentPrincipalID(ctx); err != nil {
 		return false, err
 	}
+	if principal, ok := middleware.PrincipalFromContext(ctx); ok && principal.PrincipalType == "AGENT_WORKLOAD" {
+		_, allowed := agentWorkloadPermissions[permission]
+		return allowed, nil
+	}
 	_, known := releasedPermissions[permission]
 	return known, nil
+}
+
+var agentWorkloadPermissions = map[string]struct{}{
+	permissionProtocolAccess: {}, iapiserver.AIAppProviderCapabilityRead: {}, iapiserver.AIAppApplicationRead: {},
+	iapiserver.AIAppApplicationRun: {}, "asset.read": {},
 }
 
 // StructuredAuditor emits only low-cardinality protocol metadata for the existing Identity log ingestion boundary.
@@ -501,6 +597,11 @@ func correlateAudit(ctx context.Context, applicationRunID, mcpTaskID string) {
 }
 
 func currentPrincipalID(ctx context.Context) (string, error) {
+	if principal, ok := middleware.PrincipalFromContext(ctx); ok {
+		if principal.PrincipalType == "AGENT_WORKLOAD" && principal.AgentID != "" {
+			return principal.AgentID, nil
+		}
+	}
 	user, err := ctxvalue.GetValue[*iapiserver.User](ctx, iapiserver.GinContextKeyUser)
 	if err != nil || user == nil || strings.TrimSpace(user.ID) == "" {
 		return "", errors.NewStatus(code.ErrMCPAuthenticationRequired, "authenticated user is required")

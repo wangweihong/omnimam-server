@@ -9,9 +9,21 @@ import (
 )
 
 type ProviderRequest struct {
-	RuntimeID string
-	Profile   *iapiserver.InfraRuntimeProfile
-	Request   *iapiserver.InfraCreateRuntimeRequest
+	RuntimeID   string
+	Profile     *iapiserver.InfraRuntimeProfile
+	Request     *iapiserver.InfraCreateRuntimeRequest
+	MCPBindings []ResolvedMCPBinding
+}
+
+// ResolvedMCPBinding is an in-memory result of the Agent authorization resolver.
+// It must never be persisted or logged.
+type ResolvedMCPBinding struct {
+	ServerKey     string
+	ServerType    string
+	Endpoint      string
+	Credential    string
+	AllowedTools  []string
+	Configuration map[string]any
 }
 
 type ProviderResult struct {

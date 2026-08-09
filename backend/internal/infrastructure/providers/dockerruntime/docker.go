@@ -1,6 +1,7 @@
 package dockerruntime
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -19,6 +20,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentmcp"
 )
 
 type ProfileImageResolver interface {
@@ -112,6 +114,9 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	}
 	env := make([]string, 0, len(input.Request.ConfigurationBindings))
 	for _, binding := range input.Request.ConfigurationBindings {
+		if binding.BindingType == iapiserver.InfraConfigBindingTypeMCPServerRef {
+			continue
+		}
 		if binding.BindingType != iapiserver.InfraConfigBindingTypePlainConfig {
 			return nil, fmt.Errorf("binding %s requires a configured secret/model resolver", binding.Name)
 		}
@@ -121,6 +126,9 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	body := map[string]any{"Image": image, "Env": env, "Labels": map[string]string{"io.omnimam.runtime_id": input.RuntimeID, "io.omnimam.profile": input.Profile.ID}, "HostConfig": hostConfig}
 	serviceProfile, agentService := agentRuntimeServiceProfile(input.Profile.ID)
 	if agentService {
+		if len(input.MCPBindings) > 0 && input.Profile.ID != iapiserver.InfraRuntimeProfileIDAgentCoding {
+			return nil, fmt.Errorf("MCP bindings are only supported by the coding runtime")
+		}
 		body["Entrypoint"] = []string{"/bin/sh", "-c"}
 		body["Cmd"] = []string{serviceProfile.command}
 		hostConfig["Tmpfs"] = serviceProfile.tmpfs
@@ -139,6 +147,12 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	if err := d.request(ctx, http.MethodPost, "/containers/"+created.ID+"/start", nil, nil); err != nil {
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, err
+	}
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAgentCoding {
+		if err := d.injectOpenCodeConfig(ctx, created.ID, input.MCPBindings); err != nil {
+			_ = d.Delete(context.Background(), created.ID)
+			return nil, err
+		}
 	}
 	if input.Request.RuntimeMode == iapiserver.InfraRuntimeModeJob {
 		status, err := d.wait(ctx, created.ID)
@@ -168,6 +182,64 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
 	}
 	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: iapiserver.InfraEndpointDisplayRefPrefix + input.RuntimeID}, nil
+}
+
+func (d *DockerProvider) injectOpenCodeConfig(ctx context.Context, ref string, bindings []providers.ResolvedMCPBinding) error {
+	mcp := make(map[string]any, len(bindings))
+	tools := make(map[string]bool)
+	for _, binding := range bindings {
+		rawConfiguration, err := json.Marshal(binding.Configuration)
+		if err != nil {
+			return fmt.Errorf("MCP configuration is invalid")
+		}
+		configuration, err := agentmcp.ParseConfiguration(rawConfiguration)
+		if err != nil {
+			return fmt.Errorf("MCP configuration is invalid")
+		}
+		entry := make(map[string]any, len(configuration)+4)
+		for key, value := range configuration {
+			entry[key] = value
+		}
+		entry["type"] = "remote"
+		entry["url"] = binding.Endpoint
+		entry["enabled"] = true
+		if binding.Credential != "" {
+			entry["headers"] = map[string]string{"Authorization": "Bearer " + binding.Credential}
+		}
+		mcp[binding.ServerKey] = entry
+		tools[binding.ServerKey+"_*"] = false
+		for _, tool := range binding.AllowedTools {
+			tools[binding.ServerKey+"_"+tool] = true
+		}
+	}
+	config, err := json.Marshal(map[string]any{"mcp": mcp, "tools": tools})
+	if err != nil {
+		return err
+	}
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	if err := tw.WriteHeader(&tar.Header{Name: "opencode.json", Mode: 0600, Size: int64(len(config))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(config); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	if err := d.requestBytes(ctx, http.MethodPut, "/containers/"+url.PathEscape(ref)+"/archive?path=/root/.config/opencode", archive.Bytes(), "application/x-tar"); err != nil {
+		return err
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := d.request(ctx, http.MethodPost, "/containers/"+url.PathEscape(ref)+"/exec", map[string]any{"Cmd": []string{"/bin/sh", "-c", "chmod 600 /root/.config/opencode/opencode.json && touch /run/omnimam/start"}, "AttachStdout": false, "AttachStderr": false}, &created); err != nil {
+		return err
+	}
+	if created.ID == "" {
+		return fmt.Errorf("docker returned no config release exec id")
+	}
+	return d.request(ctx, http.MethodPost, "/exec/"+url.PathEscape(created.ID)+"/start", map[string]any{"Detach": true}, nil)
 }
 func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.ProviderResult, error) {
 	if err := d.request(ctx, http.MethodPost, "/containers/"+ref+"/start", nil, nil); err != nil && !strings.Contains(err.Error(), "304") {
@@ -286,6 +358,7 @@ func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
 			healthPath: "/global/health",
 			port:       14096,
 			command: `set -eu
+while [ ! -f /run/omnimam/start ]; do sleep 0.1; done
 printf '#!/bin/sh\nexec nc 127.0.0.1 4096\n' > /run/omnimam/forward
 chmod 500 /run/omnimam/forward
 nc -lk -p 14096 -e /run/omnimam/forward &
@@ -440,6 +513,24 @@ func (d *DockerProvider) requestRaw(ctx context.Context, method, path string, bo
 	if out != nil {
 		_, err = io.Copy(out, io.LimitReader(response.Body, 8<<20))
 		return err
+	}
+	return nil
+}
+
+func (d *DockerProvider) requestBytes(ctx context.Context, method, path string, body []byte, contentType string) error {
+	request, err := http.NewRequestWithContext(ctx, method, "http://docker/"+d.apiVersion+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", contentType)
+	response, err := d.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+		return fmt.Errorf("docker api %s: %s", response.Status, strings.TrimSpace(string(raw)))
 	}
 	return nil
 }

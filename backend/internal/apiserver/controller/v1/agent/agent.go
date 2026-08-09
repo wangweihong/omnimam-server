@@ -223,3 +223,16 @@ func (c *Controller) CreateMCPBinding(ctx *gin.Context) {
 		return c.service.CreateMCPBinding(ctx, ctx.Param("agent_id"), req)
 	})
 }
+func (c *Controller) UpdateMCPBinding(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.AgentMCPBindingUpdateRequest{}, func(req *iapiserver.AgentMCPBindingUpdateRequest) (any, error) {
+		return c.service.UpdateMCPBinding(ctx, ctx.Param("agent_id"), ctx.Param("binding_id"), req)
+	})
+}
+func (c *Controller) DeleteMCPBinding(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) {
+		if err := c.service.DeleteMCPBinding(ctx, ctx.Param("agent_id"), ctx.Param("binding_id")); err != nil {
+			return nil, err
+		}
+		return &iapiserver.AgentOperationResult{Success: true}, nil
+	})
+}

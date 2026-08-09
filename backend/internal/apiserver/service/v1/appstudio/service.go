@@ -46,6 +46,7 @@ type CodingAgentCreator interface {
 	ListInvocationEvents(context.Context, string, int) ([]*iapiserver.AgentOperationEvent, error)
 	SuspendCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
 	ResumeCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
+	EnsurePlatformMCPBindingForCodingAgent(context.Context, string, string) error
 }
 
 type Service struct {
@@ -74,6 +75,26 @@ func New(deps Dependencies) (*Service, error) {
 
 func (s *Service) SetCodingAgentCreator(creator CodingAgentCreator) {
 	s.agents = creator
+}
+
+// ResolveAgentWorkloadScope resolves only the current Coding Agent generation
+// for the owner-bound Studio application.
+func (s *Service) ResolveAgentWorkloadScope(ctx context.Context, agentID, owner string) (string, int64, error) {
+	app, err := s.store.GetStudioApplicationByCodingAgent(ctx, agentID, owner)
+	if err != nil || app == nil || app.CodingAgentID != agentID || app.CodingAgentGeneration < 1 {
+		return "", 0, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent workload scope is unavailable")
+	}
+	return app.ID, int64(app.CodingAgentGeneration), nil
+}
+
+// ResolveAgentWorkloadOwner revalidates that a workload still represents the
+// current Coding Agent generation and returns only its owning user boundary.
+func (s *Service) ResolveAgentWorkloadOwner(ctx context.Context, applicationID, agentID string, generation int64) (string, error) {
+	app, err := s.store.GetStudioApplicationWorkloadScope(ctx, applicationID, agentID, generation)
+	if err != nil || app == nil || app.OwnerUserID == "" {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent workload scope is unavailable")
+	}
+	return app.OwnerUserID, nil
 }
 
 func (s *Service) ListApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) (*iapiserver.StudioApplicationListResponse, error) {
@@ -121,6 +142,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
 	}
+	mcpBinding := studioPlatformMCPBinding(agent, appID)
 	app.CodingAgentID, app.CodingSessionID = agent.ID, session.ID
 	messageID := stableStudioInitializationID(owner, req.IdempotencyKey, "initial-message")
 	invocationID := stableStudioInitializationID(owner, req.IdempotencyKey, "initial-invocation")
@@ -130,12 +152,15 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	}
 	message := &iapiserver.AgentMessage{ObjectMeta: imachinery.ObjectMeta{ID: messageID}, SessionID: session.ID, AgentID: agent.ID, InvocationID: invocationID, Role: iapiserver.AgentMessageRoleUser, Content: req.InitialRequirement, Attachments: attachments}
 	invocation := &iapiserver.AgentInvocation{ObjectMeta: imachinery.ObjectMeta{ID: invocationID}, AgentID: agent.ID, SessionID: session.ID, Type: iapiserver.AgentInvocationTypeCoding, Status: iapiserver.AgentInvocationStatusQueued, UserMessageID: messageID, IdempotencyKey: "studio-create:" + req.IdempotencyKey}
-	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, UserMessage: message, InitialInvocation: invocation}
+	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
 	if _, err := s.store.CreateStudioApplicationInitialization(ctx, initialization); err != nil {
 		return nil, err
 	}
 	canonical, err := s.store.GetStudioApplicationInitialization(ctx, owner, req.IdempotencyKey)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.agents.EnsurePlatformMCPBindingForCodingAgent(ctx, canonical.Agent.ID, canonical.Application.ID); err != nil {
 		return nil, err
 	}
 	if _, err := s.agents.StartCodingInvocation(ctx, canonical.Agent.ID, canonical.InitialInvocation.ID); err != nil {
@@ -324,7 +349,7 @@ func (s *Service) ReplaceAgent(ctx context.Context, appID string, req *iapiserve
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
 	}
-	updated, err := s.store.ReplaceStudioCodingAgent(ctx, app.ID, app.OwnerUserID, &store.StudioCodingAgentReplacement{Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding})
+	updated, err := s.store.ReplaceStudioCodingAgent(ctx, app.ID, app.OwnerUserID, &store.StudioCodingAgentReplacement{Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: studioPlatformMCPBinding(agent, app.ID)})
 	if err != nil {
 		return nil, err
 	}
@@ -988,7 +1013,19 @@ func (s *Service) currentCodingAgent(ctx context.Context, appID string) (*iapise
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.agents.EnsurePlatformMCPBindingForCodingAgent(ctx, agent.ID, app.ID); err != nil {
+		return nil, nil, nil, err
+	}
 	return app, agent, session, nil
+}
+
+func studioPlatformMCPBinding(agent *iapiserver.Agent, applicationID string) *iapiserver.AgentMCPBinding {
+	return &iapiserver.AgentMCPBinding{
+		ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(agent.OwnerUserID, agent.ID, "platform-mcp"), Name: "omnimam-platform"},
+		AgentID:    agent.ID, ServerType: iapiserver.AgentMCPServerTypePlatform,
+		EndpointRef: iapiserver.AgentMCPPlatformEndpointRefDefault, Enabled: true,
+		AllowedTools: []string{"omnimam.capabilities.list", "omnimam.capabilities.get", "omnimam.applications.list", "omnimam.applications.get", "omnimam.applications.run", "omnimam.application_runs.get", "omnimam.assets.search", "omnimam.assets.get"},
+	}
 }
 
 func studioAgentStatus(app *iapiserver.StudioApplication, agent *iapiserver.Agent) *iapiserver.StudioAgentStatus {

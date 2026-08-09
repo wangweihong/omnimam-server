@@ -3,8 +3,10 @@ package iapiserver
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentmcp"
 )
 
 // AgentListRequest 查询当前主体可见 Agent，OwnerUserID 只由 service 注入。
@@ -204,11 +206,59 @@ type AgentMCPBindingRequest struct {
 	AllowedTools []string `json:"allowed_tools,omitempty" binding:"omitempty,max=200,dive,max=200"`
 	// Configuration 是 Server 类型允许的非敏感配置。
 	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// Enabled 控制 Binding 是否参与下一次 Runtime 启动。
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 func (r *AgentMCPBindingRequest) Validate() error {
 	if len(r.Configuration) > 32*1024 {
 		return fmt.Errorf("agent MCP configuration exceeds 32 KiB")
+	}
+	_, err := agentmcp.ParseConfiguration(r.Configuration)
+	return err
+}
+
+// AgentMCPBindingUpdateRequest 全量更新 MCP Binding，并以资源版本执行乐观锁。
+// +k8s:deepcopy-gen=true
+type AgentMCPBindingUpdateRequest struct {
+	// Name 是 Agent 范围内新的活动 Binding 名称。
+	Name string `json:"name" binding:"required,max=200"`
+	// ServerType 全量替换平台、远端或 Runtime 本地类型。
+	ServerType string `json:"server_type" binding:"required,oneof=PLATFORM REMOTE RUNTIME_LOCAL"`
+	// EndpointRef 是由受信 resolver 解析的受控 Endpoint 引用。
+	EndpointRef string `json:"endpoint_ref" binding:"required,max=1024"`
+	// AllowedTools 是下一次 Runtime 启动使用的完整工具白名单。
+	AllowedTools []string `json:"allowed_tools" binding:"max=200,dive,max=200"`
+	// Configuration 是不含凭证和 resolver 保留字段的完整配置对象。
+	Configuration json.RawMessage `json:"configuration"`
+	// Enabled 控制更新后的 Binding 是否参与下一次 Runtime 启动。
+	Enabled bool `json:"enabled"`
+	// ResourceVersion 是当前版本，更新时执行乐观并发控制。
+	ResourceVersion int64 `json:"resource_version" binding:"required,min=1"`
+	// CredentialRefMode 选择保留、设置或清除当前 Secret 引用。
+	CredentialRefMode string `json:"credential_ref_mode" binding:"required,oneof=KEEP SET CLEAR"`
+	// CredentialRef 仅在 SET 模式提供，值仍是 Secret 引用而非明文。
+	CredentialRef *string `json:"credential_ref,omitempty" binding:"omitempty,max=1024"`
+}
+
+func (r *AgentMCPBindingUpdateRequest) Validate() error {
+	if len(r.Configuration) > 32*1024 {
+		return fmt.Errorf("agent MCP configuration exceeds 32 KiB")
+	}
+	if _, err := agentmcp.ParseConfiguration(r.Configuration); err != nil {
+		return err
+	}
+	switch r.CredentialRefMode {
+	case AgentMCPBindingCredentialRefModeSet:
+		if r.CredentialRef == nil || strings.TrimSpace(*r.CredentialRef) == "" {
+			return fmt.Errorf("credential_ref is required when credential_ref_mode is SET")
+		}
+	case AgentMCPBindingCredentialRefModeKeep, AgentMCPBindingCredentialRefModeClear:
+		if r.CredentialRef != nil {
+			return fmt.Errorf("credential_ref must be omitted for credential_ref_mode %s", r.CredentialRefMode)
+		}
+	default:
+		return fmt.Errorf("unsupported credential_ref_mode")
 	}
 	return nil
 }

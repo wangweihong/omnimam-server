@@ -16,6 +16,7 @@ import (
 )
 
 type runtimeEnsureArguments struct {
+	MCPBindingRefs          []mcpBindingRef                     `json:"mcp_binding_refs"`
 	AgentID                 string                              `json:"agent_id"`
 	AgentRuntimeID          string                              `json:"agent_runtime_id"`
 	ExistingInfraRuntimeID  *string                             `json:"existing_infra_runtime_id"`
@@ -32,6 +33,11 @@ type runtimeEnsureArguments struct {
 	ExpectedResourceVersion int64                               `json:"expected_resource_version"`
 	ResourceRequirement     iapiserver.InfraResourceRequirement `json:"resource_requirement"`
 	LifecyclePolicy         runtimeLifecyclePolicy              `json:"lifecycle_policy"`
+}
+
+type mcpBindingRef struct {
+	BindingID       string `json:"binding_id"`
+	BindingRevision string `json:"binding_revision"`
 }
 
 type runtimeLifecyclePolicy struct {
@@ -109,6 +115,12 @@ func ExecuteRuntimeEnsure(
 			EndpointVisibility:     iapiserver.TaskWorkerEndpointVisibilityInternal,
 			FunctionRef:            contract.FunctionRef,
 			FunctionArguments:      rawArguments,
+		}
+		for _, ref := range arguments.MCPBindingRefs {
+			command.Create.ConfigurationBindings = append(command.Create.ConfigurationBindings, iapiserver.InfraRuntimeConfigBindingInput{
+				Name: "mcp-" + ref.BindingID, BindingType: iapiserver.InfraConfigBindingTypeMCPServerRef,
+				Reference: "mcp-binding-revision://" + ref.BindingID + "/" + ref.BindingRevision,
+			})
 		}
 	}
 	response, err := client.Execute(ctx, command)
@@ -261,6 +273,14 @@ func validateRuntimeEnsureArguments(arguments runtimeEnsureArguments) error {
 	}
 	if arguments.WorkspaceSourceRef != nil && !strings.HasPrefix(*arguments.WorkspaceSourceRef, iapiserver.TaskWorkerRefPrefixAgentWorkspace) {
 		return fmt.Errorf("agent runtime ensure workspace source reference is invalid")
+	}
+	if len(arguments.MCPBindingRefs) > 50 {
+		return fmt.Errorf("agent runtime ensure has too many MCP bindings")
+	}
+	for _, ref := range arguments.MCPBindingRefs {
+		if ref.BindingID == "" || ref.BindingRevision == "" {
+			return fmt.Errorf("agent runtime ensure MCP binding reference is invalid")
+		}
 	}
 	resource := arguments.ResourceRequirement
 	if resource.CPUCores < 0 || resource.MemoryMB < 0 || resource.DiskMB < 0 || resource.GPUCount < 0 || resource.GPUMemoryMB < 0 {

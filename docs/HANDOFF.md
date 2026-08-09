@@ -2,108 +2,105 @@
 
 ## Current goal and status
 
-- Goal: complete the released `spec-v1.18.0` AppStudio static-Web flow: idempotent create, Coding Agent chat/Invocation, source revisions, preview, publish, and history-preserving restore.
-- Status: in progress. Invocation submission consistency is implemented: an unbound `QUEUED` Invocation becomes `FAILED/ERR_AGENT_INVOCATION_TASK_UNAVAILABLE` when Runtime or AtomicTask orchestration fails, and an idempotent retry reuses the original Message/Invocation while incrementing `submission_generation`. Build and Production ensure terminal observers now have durable recovery sources; Preview and stop recovery remain limited by missing persisted Task IDs. Application creation and Coding Invocation execution complete through the real OpenCode runtime. Source mutation is blocked by a released SSOT contract gap described below; preview/publish/restore end-to-end validation remains incomplete.
-- SSOT: `spec-v1.18.0`, submodule commit `b0de28e6b6d9462d95ae8e59a8412640047a218e`; `SSOT_VERSION` matches. Do not modify `ssot/` or add `backend/cmd/` binaries.
+- Goal: implement the released Agent MCP end-to-end contracts: Binding PUT/DELETE, immutable revisions, Runtime Grants, Infrastructure/OpenCode injection, AppStudio default platform Binding, and `AGENT_WORKLOAD` MCP authentication.
+- Status: implementation and focused verification complete for the released `spec-v1.19.0` contracts. External non-empty `credential_ref` resolution remains intentionally fail closed because the released SSOT does not define a persistent Secret resolver protocol.
+- SSOT: released `spec-v1.19.0`, tag/commit `aa3f843e6ad4987f0441d882bfa0d05e02e05065`; `SSOT_VERSION` matches the `ssot` submodule.
 
 ## Work completed in this session
 
-- Added `AgentStore.FailAgentInvocationSubmission` and `RetryAgentInvocationSubmission`, each protected by row locking, `resource_version`, `submission_generation`, unbound-Task checks, and existing Agent outbox transactions. Failure projection stores only controlled messages and cannot overwrite a concurrent Task binding or terminal state.
-- Routed `SendMessage`, `StartCodingInvocation`, `submitInvocationTask`, and failed Runtime ensure terminal projection through the failure fence. A lost Task-binding version fence retries failure projection against the locked current Invocation returned by the bind operation, so a concurrent version-only update cannot leave it queued; a concurrent successful bind is still preserved. Retryable unbound Task-unavailable failures reset to `QUEUED`, clear failure/completion fields, and increment `submission_generation`; bound or other terminal Invocations remain idempotent.
-- Preserved AppStudio initialization semantics: `CreateApplication` keeps the already-persisted Application `READY`, returns `ERR_AGENT_INITIALIZATION_FAILED` when initial submission fails, and retries the canonical initial Invocation for the same create idempotency key.
-- Added `AppStudioStore.ListPendingStudioTerminalTaskIDs` and registered it with the existing Task Center Reconciler. It recovers terminal Build Tasks and Production ensure Tasks while the Build or Release projection is still non-terminal, including a partially projected Production Runtime whose Release remains `PENDING`/`DEPLOYING`.
-- Extended `backend/internal/apiserver/store/postgresql/task_center_reconcile_integration_test.go` with failure/outbox/retry/stale-fence/bound-Task coverage and AppStudio terminal recovery-source coverage.
-- Confirmed and live-verified the AppStudio runtime boundary: Application `1f0b6b23-0c61-5f71-99c9-0010030c89a9` binds Agent `4b3c08b7-d5d4-510a-a1bb-9b281c1fb080` with `kind=coding`, profile/runtime profile `agent.coding`, workspace type `studio`, and a READY/HEALTHY OpenCode Runtime. Hermes remains limited to the Platform Agent CHAT branch.
-- Repaired Infrastructure endpoint recovery after `infraserver` restart. `ResolveEndpoint` now rehydrates a missing/expired in-memory provider target through provider `Inspect`, validates the Runtime is still RUNNING and has an endpoint, and restores the provider state cache. Start/Reconcile also refresh provider endpoint state. Provider addresses with no intrinsic expiry receive a bounded one-minute resolve validity window.
-- Rebuilt Compose and submitted a real follow-up instruction through the AppStudio UI. Coding Invocation `c55ffbd9-a914-44bc-8c5d-72aa4f31f698` and AtomicTask `10ed48c5-e311-48fc-8aab-1b3e94c1b9cc` succeeded after the Infrastructure service restart; operation events 1-3 are `invocation.started`, `message.completed`, and `invocation.completed`, and assistant Message `299debf6-b688-521b-a2d4-cd2e08137a55` was persisted.
-- Confirmed the second-Invocation stale-grant root cause against released User Model S1/S2. `config_version` is the model configuration's monotonic version, but `testProviderModelOwned` currently calls the generic `ProviderModels().Update` on every health probe. This increments `user_provider_models.resource_version` even when only `last_checked_at` changed, so a freshly issued Agent model grant becomes stale before its Task attempt executes. The live default model reached resource version 6562 from repeated healthy probes.
-- Repaired Docker Runtime endpoint resolution in `backend/internal/infrastructure/service.go`: a zero `ProviderEndpoint.ValidUntil` now means unspecified provider expiry, not an expired endpoint. The resolver issues a one-minute ephemeral validity window, bounded by any earlier provider or persisted endpoint expiry.
-- Added bounded OpenCode non-2xx response detail in `backend/internal/taskworker/agentexecutor/invocation.go` for actionable Worker failures.
-- Repaired the OpenCode model configuration adapter: Coding runtimes are started without a project directory, so `PATCH /config` always returns OpenCode 500. The same released configuration payload succeeds through `PATCH /global/config`; the executor now uses that endpoint.
-- Live browser verification on `http://127.0.0.1:9990`, account `admin`: created Application `e9fc3725-7052-59af-9c67-132eeb5e9a73`. Its Invocation `dd00d032-9abc-532a-a97a-362619ebb79c` and AtomicTask `3b73d4fc-d97f-4f19-a38f-ed79e67aa32b` both succeeded. The persisted operation events are monotonic: `invocation.started`, `message.completed`, `invocation.completed`; the deterministic assistant Message `b24bcbde-5cc7-5684-9bda-b46bda7fd348` was written.
-- `make compose` has rebuilt and started APIServer, Infrastructure, Notification Worker and Task Worker successfully after the fixes.
-- Completed AppStudio Invocation source-result projection. `AppStudioStore.ResolveStudioInvocationChangeSets` resolves the final `APPLIED` ChangeSet at the maximum `target_revision`, and send/list/get/cancel facade responses now populate `resulting_change_set_id` and `resulting_source_revision` without inventing results for Invocations that produced no ChangeSet.
-- Added the released `appstudio.agent.read` and `appstudio.agent.operate` definitions to Identity bootstrap and granted both to the built-in `USER`, `ADMIN`, and `SUPER_ADMIN` roles. This closes the route/bootstrap mismatch that returned `220606` before the facade could run.
-- Added `ProviderModelStore.ProjectHealth` with an owner/model/config-version fence. A repeated health result now refreshes `health_checked_at` without changing `resource_version`; only a changed health status or reason increments the model configuration version. Older probes cannot overwrite a concurrent configuration change or a newer health fact, and health projection/record persistence errors are propagated.
-- Confirmed the second facade Invocation `a9562c47-2752-4191-8d13-c1026b683870` / Task `d87b307c-428a-4a63-aa73-a39a7261aac5` failed because the old health updater advanced `resource_version` every 30 seconds. The grant stale check remains fail closed; no fallback authorization path was added.
-- Passed `go test ./backend/internal/apiserver/service/v1/usermodel ./backend/internal/apiserver/store/postgresql` after the health projection repair, then completed `make compose` and restarted the affected services.
-- Live verification across two later health projections confirmed the default model stayed at `resource_version=6579` while `last_checked_at` advanced from `2026-08-08 11:35:01Z` to `11:37:01Z` and `11:39:01Z`; both results remained `healthy`.
-- Tightened `ListPendingAgentTerminalTaskIDs` in `backend/internal/apiserver/store/postgresql/agent.go` to join `atomic_tasks` and return only terminal Tasks still held by Runtime/Invocation fences. Non-terminal Runtime tasks can no longer consume the recovery window and starve a lost terminal observer.
-- Confirmed `backend/internal/taskworker/taskworker.go` registers `agent.invocation.execute` with the existing `InvocationExecutor`; no second Worker registration or private Task handler was added.
-- Audited the released Workspace Tool boundary. The Invocation grant currently carries only `workspace_id`; OpenCode receives no Workspace Tool endpoint or tool authorization. Released S2 requires CODING grants to encapsulate a short-lived AppStudio Workspace Tool grant and explicitly forbids the Worker from calling `ApplyChangeSet` on the Coding Agent's behalf, but it defines no internal endpoint, request/response schema, runtime tool-injection protocol or grant-resolution contract. No file-copy or private API workaround was introduced.
+- Implemented owner-isolated MCP Binding List/Create/PUT/Delete with optimistic locking, active-name conflict handling, `KEEP/SET/CLEAR`, credential hiding, soft deletion, and immutable revision snapshots.
+- Added `agent_mcp_binding_revisions` and `agent_runtime_grants` models/schema registration, plus Agent Store create/get/revoke Grant methods.
+- Runtime ensure selects enabled, non-deleted Bindings in stable Binding-ID order, rejects more than 50, persists exact revision refs before enqueue, and revokes the Grant on enqueue failure.
+- Agent Executor converts `mcp_binding_refs` into Infrastructure `MCP_SERVER_REF` configuration bindings and preserves `authorization_ref`.
+- Infrastructure and Docker paths resolve MCP configuration, use an OpenCode startup gate, write `/root/.config/opencode/opencode.json` through Docker Archive/Exec into tmpfs, set mode `0600`, and release the gate.
+- AppStudio initialization and generation replacement transactions create the default platform Binding and revision. Current-generation lookup performs idempotent backfill and does not recreate a same-generation Binding after soft deletion.
+- Added initial Identity claim/principal fields for `AGENT_WORKLOAD` and an MCP Dispatch Grant check with the fixed minimum workload permission set.
+- Added neutral `internal/pkg/agentmcp` resolver contract; Infrastructure now consumes the injected Agent Service resolver and uses `APISERVER_MCP_PUBLIC_BASE_URL` for the platform endpoint. Removed the Infrastructure-side Agent Store resolver.
+- Added dedicated runtime-scoped `AGENT_WORKLOAD` JWT signing. Authentication no longer requires USER credential/session rows and requires `aud=mcp`, Agent, generation, Application, Runtime, and Grant claims.
+- Coding Runtime Grants now persist the current AppStudio Application/generation. MCP revalidates Grant status, exact scope, current generation, immutable platform Binding revisions, and exact allowed-tool union on every request, then injects only the resolved owner boundary for downstream object isolation.
+- OpenCode config now emits fixture-compatible `tools` entries: `<binding_id>_*: false` plus exact allowed tool entries, so an empty allowlist denies all.
+- Runtime Grant creation now reuses only an active, scope-identical row for `(runtime_binding_id, request_id)` and rejects expired, revoked, or scope-conflicting reuse.
+- Runtime ensure now selects and validates the stable Binding revision set before Runtime creation, avoids pre-Task mutation of an existing Runtime, generates a deterministic authorization ref, and resumes only a canonical idempotent Task whose full arguments and lifecycle fence match.
+- Failed ensure revokes its exact Grant only after the terminal projection fence applies. Successful stop/suspend/delete revokes all active Grants for that Runtime; stale terminal projections do not revoke Grants.
+- Agent schema startup now checks active same-name Binding conflicts before `AutoMigrate`, then creates the active-name unique index and backfills immutable revisions.
+- `AGENT_WORKLOAD` JWT validation now requires the exact single audience `mcp`.
+- OpenCode configuration injection is limited to `agent.coding@1.0`; Hermes remains outside the MCP injection path.
+- Declared and exported `OMNIMAM_MCP_PUBLIC_BASE_URL` in `scripts/install/environment.sh` with the same local default used by Compose.
+- Binding List/Delete now verify parent Agent ownership first: cross-owner access maps to `ERR_AGENT_NOT_VISIBLE`, while deletion of a missing Binding under a visible Agent remains idempotent.
+- Binding PUT now requires a positive `resource_version`, and `credential_ref` retains the released length bound.
+- Infrastructure resolver construction now consumes the already validated Auth/MCP config instead of rereading environment variables.
+- Runtime ensure now supplies the released 30-minute idle timeout and 8-hour maximum lifetime; Runtime Grants and static workload JWTs share the remaining 8-hour Grant boundary.
+- MCP endpoint resolution now fails closed for `REMOTE` and `RUNTIME_LOCAL` until their released trusted registries/resolvers exist; `PLATFORM` resolves only through trusted platform configuration.
+- Concurrent active Binding-name unique violations now map to `ERR_AGENT_MCP_BINDING_NAME_CONFLICT`.
+- MCP Binding `configuration` now accepts only a JSON object, recursively rejects secret-bearing and resolver-owned keys, and is revalidated both when resolving historical revisions and before Docker rendering.
+- Docker now merges validated non-sensitive Binding configuration into each OpenCode server entry while keeping trusted `type`, `url`, `enabled`, and runtime-only `headers` authoritative.
+- Infrastructure now transitions an already-persisted `PREPARING` Runtime to `FAILED` on MCP resolver absence/failure/invalid output and returns a sanitized resolution error.
+- AppStudio now requires the platform Binding backfill capability on its Coding Agent port and invokes it on canonical create retries as well as current-generation access; create/replace still write Binding and revision in their existing aggregate transaction.
+- Centralized released MCP server types, credential modes, platform endpoint ref, and the 50-Binding Runtime limit in `meta_agent_contract.go`; MCP request dispatch also rejects persisted Grants exceeding that limit.
+- Completed MCP workload authorization review: every request revalidates active Grant state, expiry, Agent, Runtime, Application, generation, exact historical revisions, owner scope, fixed minimum permissions, and the effective tool allowlist.
 
 ## Current in-progress work
 
-- Run the new PostgreSQL integration cases against an environment with `OMNIMAM_TEST_POSTGRES_DSN`; the current environment does not provide the DSN, so the tagged tests compile and skip.
-- Preview ensure/stop and Production stop terminal recovery cannot be made reliable with the released data model because those operations do not persist their Task IDs or a terminal projection marker. Do not add a private field or contract workaround.
-- Source mutation cannot be implemented in this repository until a released SSOT defines the internal AppStudio Workspace Tool endpoint/protocol, short-lived grant claims and resolution boundary, and Runtime/OpenCode tool injection. The successful Coding Invocation currently creates `/tmp/opencode/index.html` inside the OpenCode container, while the AppStudio source remains Revision 0.
-- Invocation Task create/bind recovery is implemented in `backend/internal/apiserver/store/postgresql/task_center.go`, `backend/internal/apiserver/service/v1/taskcenter/task_center.go`, and `backend/internal/apiserver/service/v1/agent/service.go`: idempotency conflicts return the canonical Task internally; pending canonical Tasks without a runtime execution reuse the stable runtime idempotency key; Agent validates the canonical Invocation identity before binding with the existing resource-version fence.
-- Audit and repair the remaining AppStudio closure after a successful Coding Invocation: message facade/front-end consumption, source ChangeSet/revision application, Preview, Build/Release and Restore paths.
-- The successful OpenCode message currently writes only to the ephemeral runtime filesystem (`/tmp/opencode/...`); it is not an AppStudio source ChangeSet. Do not claim source generation is complete until a released, concrete workspace/tool protocol authorizes applying it.
-- The frontend is supplied by image `omnimam-frontend:cefc096`; this repository has no frontend source to repair. Backend changes must preserve the released AppStudio Agent facade consumed by that image.
+- None for the released Agent MCP scope.
 
-## Files modified
+## Files modified or added
 
-- `backend/apis/iapiserver/deepcopy_generated.go`
+- `SSOT_VERSION`, `ssot` gitlink
 - `backend/apis/iapiserver/meta_agent.go`
 - `backend/apis/iapiserver/meta_agent_contract.go`
+- `backend/apis/iapiserver/request_agent.go`
+- `backend/apis/iapiserver/request_infrastructure.go`
+- `backend/internal/apiserver/controller/v1/agent/agent.go`
+- `backend/internal/apiserver/middleware/identity_v11.go`
+- `backend/internal/apiserver/middleware/identity_v11_test.go`
+- `backend/internal/apiserver/route.go`
 - `backend/internal/apiserver/server.go`
 - `backend/internal/apiserver/service/v1/agent/service.go`
+- `backend/internal/apiserver/service/v1/agent/mcp_resolver.go`
 - `backend/internal/apiserver/service/v1/appstudio/service.go`
-- `backend/internal/apiserver/service/v1/identity/identity.go`
-- `backend/internal/apiserver/service/v1/taskcenter/reconcile_test.go`
-- `backend/internal/apiserver/service/v1/taskcenter/reconciler.go`
-- `backend/internal/apiserver/service/v1/taskcenter/task_center.go`
-- `backend/internal/apiserver/service/v1/usermodel/service.go`
+- `backend/internal/apiserver/service/v1/mcp/service.go`
+- `backend/internal/apiserver/store/postgresql/0_pg.go`
 - `backend/internal/apiserver/store/postgresql/agent.go`
 - `backend/internal/apiserver/store/postgresql/appstudio.go`
-- `backend/internal/apiserver/store/postgresql/platform.go`
-- `backend/internal/apiserver/store/postgresql/task_center.go`
-- `backend/internal/apiserver/store/postgresql/task_center_reconcile_integration_test.go`
 - `backend/internal/apiserver/store/store.go`
-- `backend/internal/infrastructure/client.go`
+- `backend/internal/infrastructure/app.go`
+- `backend/internal/pkg/agentmcp/resolver.go`
+- `backend/internal/pkg/agentmcp/configuration.go`
+- `backend/internal/pkg/agentmcp/configuration_test.go`
+- `backend/internal/infrastructure/providers/basic.go`
 - `backend/internal/infrastructure/providers/dockerruntime/docker.go`
 - `backend/internal/infrastructure/service.go`
-- `backend/internal/pkg/agentgrant/codec.go`
-- `backend/internal/taskworker/agentexecutor/invocation.go`
-- `backend/internal/taskworker/taskworker.go`
+- `backend/internal/taskworker/agentexecutor/executor.go`
+- `backend/internal/pkg/code/release_v119.go`
 - `docs/HANDOFF.md`
+- `scripts/install/environment.sh`
 
-## Architectural decisions
+## Architectural and contract decisions
 
-- Task Center remains the sole retry/timeout owner. Do not introduce an APIServer scheduler, watchdog, durable grant table, or private runtime protocol.
-- OpenCode endpoint and credential resolution remain ephemeral in the Worker. Model grants remain short-lived and fail closed.
-- Runtime-specific provider IDs are deterministic per Invocation; provider configuration is written to OpenCode's global runtime config because the runtime has no project-scoped instance.
-- AppStudio must always use the internal Coding Agent path. Public Platform Agents remain hidden from AppStudio creation and Hermes remains the CHAT adapter.
-- Do not implement source synchronization by mounting StudioWorkspace, copying `/tmp/opencode`, or having Task Worker call `ApplyChangeSet`; all three violate the released Workspace/ChangeSet boundary.
+- Infrastructure receives only `MCP_SERVER_REF` and `authorization_ref`; an Agent-owned adapter resolves authorized immutable revisions. Worker, Infrastructure, and Docker do not read Agent tables.
+- Binding changes affect the next Runtime start/recover/rebuild and do not interrupt an existing container. A valid pre-delete Grant may resolve its historical revision.
+- Platform MCP workload permissions are fixed to protocol access plus capability/application read, application run, and asset read. They never inherit creator/admin permissions and exclude cancel/upload/delete.
+- Secrets and workload JWTs must not enter Task arguments/results, revision snapshots, logs, environment variables, container command, or inspect-visible fields.
+- OpenCode uses Binding ID as server key; empty `allowed_tools` denies all tools. Hermes MCP injection remains out of scope.
+- No new `backend/cmd/` binary or parallel environment file is permitted.
 
-## Verification
+## Verification performed and remaining checks
 
-- Passed: `go test ./backend/internal/infrastructure ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker`
-- Passed: `make compose`
-- Passed: browser create-to-assistant verification described above.
-- Passed: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql`
-- Passed: `go test ./backend/internal/apiserver/service/v1/identity ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql`
-- Passed: `go test ./backend/internal/apiserver/service/v1/usermodel ./backend/internal/apiserver/store/postgresql`
-- Passed: `go test -run '^$' ./backend/internal/apiserver/store/postgresql ./backend/internal/apiserver/service/v1/taskcenter ./backend/internal/taskworker` after terminal recovery query change.
-- Passed: `go test ./backend/internal/apiserver/service/v1/agent ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql ./backend/internal/taskworker`
-- Compiled and skipped because `OMNIMAM_TEST_POSTGRES_DSN` is unset: `go test -v -tags=integration ./backend/internal/apiserver/store/postgresql -run 'TestPostgres(AgentInvocationSubmissionFailureFence|AppStudioTerminalRecoverySource)$' -count=1`
-- Remaining: cancellation/retry recovery, a released Workspace Tool contract and subsequent source ChangeSet implementation, Preview, DEPLOY/UPGRADE/ROLLBACK and Restore validation.
+- Passed direct final-patch verification: `go test ./backend/apis/iapiserver ./backend/internal/apiserver/service/v1/agent ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/mcp`.
+- Passed complete focused verification: `go test ./backend/internal/apiserver/middleware ./backend/internal/apiserver/service/v1/identity ./backend/internal/apiserver/service/v1/mcp ./backend/internal/apiserver/service/v1/agent ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/store/postgresql ./backend/internal/infrastructure ./backend/internal/infrastructure/providers/dockerruntime ./backend/internal/taskworker/agentexecutor ./backend/internal/pkg/agentmcp`.
+- Passed configuration package verification separately: `go test ./backend/internal/pkg/agentmcp`.
+- Passed `bash -n scripts/install/environment.sh` and `git diff --check`.
+- No full-repository test was run, per repository constraints. Several target packages have no test files; coverage there is compile-level through `go test` plus the permitted existing focused tests.
 
 ## Known issues and risks
 
-- New Runtime/AtomicTask orchestration failures no longer leave an Invocation indefinitely `QUEUED` and unbound. Historical orphan rows still require live audit; the new failure fence intentionally acts only when an active submission path or failed Runtime terminal projection supplies the current resource-version/generation fence.
-- Target-package compile verification passed for `service/v1/taskcenter`, PostgreSQL store, `service/v1/agent`, and `taskworker`. Full Task Center tests are currently blocked by pre-existing `TestAssignSystemName` localization output mismatch (`生成 thumbnail视图` vs `生成 thumbnail 表现形式`); no task-center recovery assertion failed.
-- The model health projection fix is live and a fresh follow-up Coding Invocation succeeded after the rebuild; cancellation and retry recovery still need live validation.
-- `/tmp/appstudio_followup_verify.go` cannot be used for verification: its Go OPAQUE client fails during `GenerateKE3` because it is incompatible with the frontend WASM OPAQUE implementation. Do not weaken or change the authentication service to accommodate this temporary client.
-- The agent runtime is not bound to a Studio workspace. A model can create files in its runtime filesystem but that is not a source revision and must not be copied into source storage through an invented protocol.
-- Released `spec-v1.18.0` states the Workspace Tool security semantics but does not define an implementable internal Workspace Tool API or Runtime/OpenCode protocol. Source mutation must wait for an SSOT release; changing only this server would create an unauthorized private contract.
-- AppStudio source APIs and Restore semantics exist, but the complete Preview/Build/Release flow has not been revalidated after the Agent fixes.
-- AppStudio Build and Production ensure have terminal recovery sources. Preview ensure/stop and Production stop lack persisted Task IDs; complete observer recovery requires a released schema/contract change and was not approximated with Task-key scans or private fields.
+- The Agent-owned resolver currently has no trusted credential resolver for non-empty `credential_ref` values.
+- Released SSOT requires a trusted Secret/Identity resolver but does not define an implementable persistent Secret API/store protocol. Non-empty external `credential_ref` therefore fails closed; it must not be interpreted as plaintext or mapped to an ad hoc environment variable.
+- Direct Runtime Grant recovery/revocation, AppStudio transaction, and Docker injection assertions remain limited because repository rules prohibit adding new `_test.go` files outside `pkg/`; the affected target packages compile successfully.
 
 ## Exact recommended next step
 
-Run the two tagged PostgreSQL integration tests with `OMNIMAM_TEST_POSTGRES_DSN` set, then live-verify one failed initial AppStudio submission followed by the same create idempotency-key retry. After that, define and release the AppStudio Workspace Tool internal protocol in SSOT before implementing source mutation.
+Review the completed focused diff, then stage or commit it together with the already pinned released SSOT update. Do not implement plaintext or environment-based credential resolution without a released Secret resolver contract.
 
 Next Prompt:
 

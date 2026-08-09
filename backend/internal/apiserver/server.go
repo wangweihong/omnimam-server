@@ -201,7 +201,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}
-	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService, Models: userModelService, Grants: grantCodec})
+	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService, Models: userModelService, Scopes: appStudioService, Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent service")
 	}
@@ -219,6 +219,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		mcpService, err := mcpsvc.New(mcpsvc.Dependencies{
 			Capabilities: runtimeRegistry, Applications: applicationPlatformService,
 			Tasks: taskCenterService, Assets: assetService, Bindings: mcpFactory.MCPTaskBindings(),
+			AgentGrants: storeIns.Agents(), WorkloadScopes: appStudioService,
 			Config: mcpsvc.Config{
 				DiscoverTTL: cfg.MCPOptions.DiscoverTTL, ResourceTTL: cfg.MCPOptions.ResourceTTL,
 				TaskTTL: cfg.MCPOptions.TaskTTL, TaskPollInterval: cfg.MCPOptions.TaskPollInterval,
@@ -370,6 +371,8 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.AgentWorkspaceBinding{},
 		&iapiserver.AgentSkillBinding{},
 		&iapiserver.AgentMCPBinding{},
+		&iapiserver.AgentMCPBindingRevision{},
+		&iapiserver.AgentRuntimeGrant{},
 		&iapiserver.AgentRuntimeBinding{},
 		&iapiserver.AgentOperationEvent{},
 		&iapiserver.AgentOutbox{},

@@ -276,6 +276,24 @@ func (b *AgentSkillBinding) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type AgentMCPBinding struct {
 	imachinery.ObjectMeta
+	AgentID             string           `json:"agent_id" gorm:"column:agent_id;type:text;not null;index"`
+	ServerType          string           `json:"server_type" gorm:"column:server_type;type:text;not null"`
+	EndpointRef         string           `json:"endpoint_ref" gorm:"column:endpoint_ref;type:text;not null"`
+	CredentialRef       string           `json:"-" gorm:"column:credential_ref;type:text"`
+	AllowedTools        []string         `json:"allowed_tools,omitempty" gorm:"-"`
+	AllowedToolsShadow  string           `json:"-" gorm:"column:allowed_tools_json;type:text;not null;default:'[]'"`
+	Configuration       json.RawMessage  `json:"configuration,omitempty" gorm:"-"`
+	ConfigurationShadow string           `json:"-" gorm:"column:configuration_json;type:text;not null;default:'{}'"`
+	Enabled             bool             `json:"enabled" gorm:"column:enabled;not null;default:true"`
+	DeletedAt           *imachinery.Time `json:"deleted_at,omitempty" gorm:"column:deleted_at;type:timestamptz;index"`
+}
+
+// AgentMCPBindingRevision 保存 Binding 每个 resource_version 的不可变非明文快照。
+// +k8s:deepcopy-gen=true
+type AgentMCPBindingRevision struct {
+	imachinery.ObjectMeta
+	BindingID           string          `json:"binding_id" gorm:"column:binding_id;type:text;not null;index"`
+	BindingRevision     int64           `json:"binding_revision" gorm:"column:binding_revision;type:integer;not null"`
 	AgentID             string          `json:"agent_id" gorm:"column:agent_id;type:text;not null;index"`
 	ServerType          string          `json:"server_type" gorm:"column:server_type;type:text;not null"`
 	EndpointRef         string          `json:"endpoint_ref" gorm:"column:endpoint_ref;type:text;not null"`
@@ -284,7 +302,56 @@ type AgentMCPBinding struct {
 	AllowedToolsShadow  string          `json:"-" gorm:"column:allowed_tools_json;type:text;not null;default:'[]'"`
 	Configuration       json.RawMessage `json:"configuration,omitempty" gorm:"-"`
 	ConfigurationShadow string          `json:"-" gorm:"column:configuration_json;type:text;not null;default:'{}'"`
-	Enabled             bool            `json:"enabled" gorm:"column:enabled;not null;default:true"`
+	Enabled             bool            `json:"enabled" gorm:"column:enabled;not null"`
+}
+
+func (AgentMCPBindingRevision) TableName() string { return "agent_mcp_binding_revisions" }
+func (r *AgentMCPBindingRevision) BeforeCreate(tx *gorm.DB) error {
+	return beforeAgentJSONCreate(&r.ObjectMeta, tx, r.marshalJSON)
+}
+func (*AgentMCPBindingRevision) AfterCreate(*gorm.DB) error { return nil }
+func (r *AgentMCPBindingRevision) AfterFind(tx *gorm.DB) error {
+	if err := r.ObjectMeta.AfterFind(tx); err != nil {
+		return err
+	}
+	unmarshalJSON(r.AllowedToolsShadow, &r.AllowedTools, "[]")
+	unmarshalJSON(r.ConfigurationShadow, &r.Configuration, "{}")
+	return nil
+}
+func (r *AgentMCPBindingRevision) marshalJSON() error {
+	return marshalJSONFields(jsonField{r.AllowedTools, &r.AllowedToolsShadow, "[]"}, jsonField{r.Configuration, &r.ConfigurationShadow, "{}"})
+}
+
+// AgentRuntimeGrant 授权一次 Runtime 请求可解析的 Binding revisions。
+// +k8s:deepcopy-gen=true
+type AgentRuntimeGrant struct {
+	imachinery.ObjectMeta
+	AgentID                string           `json:"agent_id" gorm:"column:agent_id;type:text;not null;index"`
+	RuntimeBindingID       string           `json:"runtime_binding_id" gorm:"column:runtime_binding_id;type:text;not null;index"`
+	StudioApplicationID    string           `json:"studio_application_id,omitempty" gorm:"column:studio_application_id;type:text"`
+	AgentGeneration        *int64           `json:"agent_generation,omitempty" gorm:"column:agent_generation;type:integer"`
+	RequestID              string           `json:"request_id" gorm:"column:request_id;type:text;not null"`
+	BindingRevisions       []string         `json:"binding_revisions,omitempty" gorm:"-"`
+	BindingRevisionsShadow string           `json:"-" gorm:"column:binding_revisions_json;type:text;not null;default:'[]'"`
+	Status                 string           `json:"status" gorm:"column:status;type:text;not null"`
+	ExpiresAt              imachinery.Time  `json:"expires_at" gorm:"column:expires_at;not null"`
+	RevokedAt              *imachinery.Time `json:"revoked_at,omitempty" gorm:"column:revoked_at"`
+}
+
+func (AgentRuntimeGrant) TableName() string { return "agent_runtime_grants" }
+func (g *AgentRuntimeGrant) BeforeCreate(tx *gorm.DB) error {
+	return beforeAgentJSONCreate(&g.ObjectMeta, tx, g.marshalJSON)
+}
+func (*AgentRuntimeGrant) AfterCreate(*gorm.DB) error { return nil }
+func (g *AgentRuntimeGrant) AfterFind(tx *gorm.DB) error {
+	if err := g.ObjectMeta.AfterFind(tx); err != nil {
+		return err
+	}
+	unmarshalJSON(g.BindingRevisionsShadow, &g.BindingRevisions, "[]")
+	return nil
+}
+func (g *AgentRuntimeGrant) marshalJSON() error {
+	return marshalJSONFields(jsonField{g.BindingRevisions, &g.BindingRevisionsShadow, "[]"})
 }
 
 func (AgentMCPBinding) TableName() string { return "agent_mcp_bindings" }

@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"github.com/wangweihong/gotoolbox/pkg/errors"
 
+	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
+	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/pkg/httpsvr/genericoptions"
 
@@ -503,6 +507,9 @@ func (ds *datastore) Close() error {
 }
 
 func (ds *datastore) EnsureScheme(metaTypes ...any) error {
+	if err := ds.preflightAgentMCPBindingNames(); err != nil {
+		return err
+	}
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
@@ -539,8 +546,53 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	return nil
 }
 
+func (ds *datastore) preflightAgentMCPBindingNames() error {
+	migrator := ds.db.Migrator()
+	if !migrator.HasTable(&iapiserver.AgentMCPBinding{}) {
+		return nil
+	}
+	activePredicate := ""
+	if migrator.HasColumn(&iapiserver.AgentMCPBinding{}, "deleted_at") {
+		activePredicate = " WHERE deleted_at IS NULL"
+	}
+	var conflict struct {
+		AgentID string
+		Name    string
+	}
+	result := ds.db.Raw(`SELECT agent_id, name FROM agent_mcp_bindings` + activePredicate + ` GROUP BY agent_id, name HAVING COUNT(*) > 1 LIMIT 1`).Scan(&conflict)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return fmt.Errorf("agent MCP binding migration blocked: agent %q has duplicate active binding name %q", conflict.AgentID, conflict.Name)
+	}
+	return nil
+}
+
 func (ds *datastore) ensureAgentScheme() error {
-	return ds.db.Exec(agentConstraintsSQL).Error
+	if err := ds.db.Exec(agentConstraintsSQL).Error; err != nil {
+		return err
+	}
+	if err := ds.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_mcp_bindings_active_name ON agent_mcp_bindings(agent_id, name) WHERE deleted_at IS NULL;`).Error; err != nil {
+		return err
+	}
+	if err := ds.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_mcp_binding_revision_unique ON agent_mcp_binding_revisions(binding_id, binding_revision);`).Error; err != nil {
+		return err
+	}
+	if err := ds.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runtime_grants_request ON agent_runtime_grants(runtime_binding_id, request_id);`).Error; err != nil {
+		return err
+	}
+	var bindings []iapiserver.AgentMCPBinding
+	if err := ds.db.Where("NOT EXISTS (SELECT 1 FROM agent_mcp_binding_revisions r WHERE r.binding_id = agent_mcp_bindings.id AND r.binding_revision = agent_mcp_bindings.resource_version)").Find(&bindings).Error; err != nil {
+		return err
+	}
+	for i := range bindings {
+		b := &bindings[i]
+		if err := ds.db.Create(&iapiserver.AgentMCPBindingRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: b.Name}, BindingID: b.ID, BindingRevision: b.ResourceVersion, AgentID: b.AgentID, ServerType: b.ServerType, EndpointRef: b.EndpointRef, CredentialRef: b.CredentialRef, AllowedTools: b.AllowedTools, Configuration: b.Configuration, Enabled: b.Enabled}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ds *datastore) ensureAppStudioScheme() error {

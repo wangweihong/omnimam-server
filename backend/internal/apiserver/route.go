@@ -233,6 +233,8 @@ func installAgentApis(rg *gin.RouterGroup, service *agentsvc.Service) {
 	agentsManage.GET("/:agent_id/skill-bindings", controller.ListSkillBindings)
 	agentsManage.GET("/:agent_id/mcp-bindings", controller.ListMCPBindings)
 	agentsManage.POST("/:agent_id/mcp-bindings", controller.CreateMCPBinding)
+	agentsManage.PUT("/:agent_id/mcp-bindings/:binding_id", controller.UpdateMCPBinding)
+	agentsManage.DELETE("/:agent_id/mcp-bindings/:binding_id", controller.DeleteMCPBinding)
 
 	runtimes := rg.Group("/agents/:agent_id/runtime")
 	runtimes.Use(authmiddleware.RequireIdentityPermission("agent.runtime.operate"))

@@ -148,6 +148,34 @@ const (
 )
 
 const (
+	// AgentRuntimeGrantStatusActive 表示 Grant 仍可解析其固定 Binding revisions。
+	AgentRuntimeGrantStatusActive = "ACTIVE"
+	// AgentRuntimeGrantStatusRevoked 表示 Grant 已被生命周期操作主动撤销。
+	AgentRuntimeGrantStatusRevoked = "REVOKED"
+	// AgentRuntimeGrantStatusExpired 表示 Grant 已超过 Runtime 授权窗口。
+	AgentRuntimeGrantStatusExpired = "EXPIRED"
+)
+
+const (
+	// AgentMCPServerTypePlatform 表示 OmniMAM 平台提供的受信 MCP Server。
+	AgentMCPServerTypePlatform = "PLATFORM"
+	// AgentMCPServerTypeRemote 表示由受信远端目标注册表解析的 MCP Server。
+	AgentMCPServerTypeRemote = "REMOTE"
+	// AgentMCPServerTypeRuntimeLocal 表示 Runtime Profile 声明的本地 MCP Server。
+	AgentMCPServerTypeRuntimeLocal = "RUNTIME_LOCAL"
+	// AgentMCPBindingCredentialRefModeKeep 保留 Binding 当前 Secret 引用。
+	AgentMCPBindingCredentialRefModeKeep = "KEEP"
+	// AgentMCPBindingCredentialRefModeSet 使用请求中的新 Secret 引用。
+	AgentMCPBindingCredentialRefModeSet = "SET"
+	// AgentMCPBindingCredentialRefModeClear 清除 Binding 当前 Secret 引用。
+	AgentMCPBindingCredentialRefModeClear = "CLEAR"
+	// AgentMCPPlatformEndpointRefDefault 是平台默认 MCP Server 的受控引用。
+	AgentMCPPlatformEndpointRefDefault = "platform-mcp://default"
+	// AgentRuntimeMaxMCPBindings 是一次 Runtime Grant 允许固定的 Binding 上限。
+	AgentRuntimeMaxMCPBindings = 50
+)
+
+const (
 	AgentInvocationTaskKeyAgentID                    = "agent_id"
 	AgentInvocationTaskKeySessionID                  = "session_id"
 	AgentInvocationTaskKeyInvocationID               = "invocation_id"

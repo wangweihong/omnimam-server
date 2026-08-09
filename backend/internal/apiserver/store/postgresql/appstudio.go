@@ -45,10 +45,19 @@ func (s *appStudioStore) CreateStudioApplicationInitialization(ctx context.Conte
 			initialization.Session,
 			initialization.WorkspaceBinding,
 			initialization.ModelBinding,
+			initialization.MCPBinding,
 			initialization.UserMessage,
 			initialization.InitialInvocation,
 		} {
+			if value == nil {
+				continue
+			}
 			if err := tx.Create(value).Error; err != nil {
+				return err
+			}
+		}
+		if initialization.MCPBinding != nil {
+			if err := createMCPBindingRevision(tx, initialization.MCPBinding); err != nil {
 				return err
 			}
 		}
@@ -79,6 +88,22 @@ func (s *appStudioStore) GetStudioApplicationInitialization(ctx context.Context,
 		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "initial coding invocation is incomplete")
 	}
 	return &store.StudioApplicationInitialization{Application: &app, Agent: &agent, Session: &session, InitialInvocation: &invocation}, nil
+}
+
+func (s *appStudioStore) GetStudioApplicationByCodingAgent(ctx context.Context, agentID, owner string) (*iapiserver.StudioApplication, error) {
+	var app iapiserver.StudioApplication
+	if err := s.ds.db.WithContext(ctx).Where("coding_agent_id = ? AND owner_user_id = ?", agentID, owner).First(&app).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application not visible")
+	}
+	return &app, nil
+}
+
+func (s *appStudioStore) GetStudioApplicationWorkloadScope(ctx context.Context, applicationID, agentID string, generation int64) (*iapiserver.StudioApplication, error) {
+	var app iapiserver.StudioApplication
+	if err := s.ds.db.WithContext(ctx).Where("id = ? AND coding_agent_id = ? AND coding_agent_generation = ?", applicationID, agentID, generation).First(&app).Error; err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application workload scope not visible")
+	}
+	return &app, nil
 }
 
 func (s *appStudioStore) ListStudioApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error) {
@@ -146,8 +171,16 @@ func (s *appStudioStore) ReplaceStudioCodingAgent(ctx context.Context, appID, ow
 		if replacement.Agent.OwnerUserID != owner || replacement.Agent.WorkspaceID != app.DefaultWorkspaceID || replacement.Session.AgentID != replacement.Agent.ID || replacement.WorkspaceBinding.AgentID != replacement.Agent.ID || replacement.ModelBinding.AgentID != replacement.Agent.ID {
 			return errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "coding agent replacement binding is invalid")
 		}
-		for _, value := range []any{replacement.Agent, replacement.Session, replacement.WorkspaceBinding, replacement.ModelBinding} {
+		for _, value := range []any{replacement.Agent, replacement.Session, replacement.WorkspaceBinding, replacement.ModelBinding, replacement.MCPBinding} {
+			if value == nil {
+				continue
+			}
 			if err := tx.Create(value).Error; err != nil {
+				return err
+			}
+		}
+		if replacement.MCPBinding != nil {
+			if err := createMCPBindingRevision(tx, replacement.MCPBinding); err != nil {
 				return err
 			}
 		}

@@ -35,6 +35,11 @@ type IdentityPrincipal struct {
 	CredentialVersion    int64
 	AuthorizationVersion int64
 	Permissions          map[string]struct{}
+	AgentID              string
+	AgentGeneration      int64
+	ApplicationID        string
+	RuntimeID            string
+	GrantRef             string
 }
 
 type IdentityTokenClaims struct {
@@ -43,6 +48,11 @@ type IdentityTokenClaims struct {
 	SessionID         string `json:"session_id"`
 	SecurityVersion   int64  `json:"security_version"`
 	CredentialVersion int64  `json:"credential_version"`
+	AgentID           string `json:"agent_id,omitempty"`
+	AgentGeneration   int64  `json:"agent_generation,omitempty"`
+	ApplicationID     string `json:"application_id,omitempty"`
+	RuntimeID         string `json:"runtime_id,omitempty"`
+	GrantRef          string `json:"grant_ref,omitempty"`
 }
 
 // IdentityAuthentication 在每个请求中校验 JWT、JTI 凭据、会话和当前用户状态。
@@ -129,7 +139,21 @@ func ResolveIdentityBearer(ctx context.Context, raw string, identity store.Ident
 		}
 		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrTokenInvalid, "identity token is invalid")
 	}
-	if claims.Subject == "" || claims.ID == "" || claims.SessionID == "" || claims.PrincipalType == "" {
+	if claims.Subject == "" || claims.ID == "" || claims.PrincipalType == "" {
+		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrTokenInvalid, "identity token claims are incomplete")
+	}
+	if claims.PrincipalType == "AGENT_WORKLOAD" {
+		if !claimAudienceEquals(claims.Audience, "mcp") || claims.AgentID == "" || claims.AgentID != claims.Subject ||
+			claims.ApplicationID == "" || claims.RuntimeID == "" || claims.GrantRef == "" || claims.AgentGeneration < 1 {
+			return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrTokenInvalid, "agent workload claims are incomplete")
+		}
+		return IdentityPrincipal{
+			PrincipalType: claims.PrincipalType, PrincipalID: claims.Subject, Permissions: map[string]struct{}{},
+			AgentID: claims.AgentID, AgentGeneration: claims.AgentGeneration, ApplicationID: claims.ApplicationID,
+			RuntimeID: claims.RuntimeID, GrantRef: claims.GrantRef,
+		}, nil, nil
+	}
+	if claims.SessionID == "" {
 		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrTokenInvalid, "identity token claims are incomplete")
 	}
 	credential, err := identity.GetTokenCredentialByJTI(ctx, claims.ID)
@@ -154,16 +178,20 @@ func ResolveIdentityBearer(ctx context.Context, raw string, identity store.Ident
 	} else if claims.PrincipalType != "SERVICE_ACCOUNT" {
 		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrIdentityPrincipalContextInvalid, "identity principal type is invalid")
 	}
+	principal.Permissions = map[string]struct{}{}
 	permissionCodes, version, err := identity.PermissionCodes(ctx, claims.PrincipalType, claims.Subject)
 	if err != nil {
 		return IdentityPrincipal{}, nil, errors.NewStatus(code.ErrIdentityAuthzContextInvalid, "identity authorization context is unavailable")
 	}
 	principal.AuthorizationVersion = version
-	principal.Permissions = make(map[string]struct{}, len(permissionCodes))
 	for _, permission := range permissionCodes {
 		principal.Permissions[permission] = struct{}{}
 	}
 	return principal, user, nil
+}
+
+func claimAudienceEquals(audience jwt.ClaimStrings, expected string) bool {
+	return len(audience) == 1 && audience[0] == expected
 }
 
 func bearerAuthorization(c *gin.Context) string {
@@ -309,6 +337,27 @@ func IssueIdentityAccessToken(secret []byte, principalType, principalID, session
 	claims := IdentityTokenClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: principalID, ID: jti, IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(lifetime))}, PrincipalType: principalType, SessionID: sessionID, SecurityVersion: securityVersion, CredentialVersion: credentialVersion}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 	return token, jti, err
+}
+
+// IssueAgentWorkloadAccessToken signs a runtime-scoped MCP token. Its validity
+// is checked against the persisted Runtime Grant on every MCP request.
+func IssueAgentWorkloadAccessToken(secret []byte, agentID string, generation int64, applicationID, runtimeID, grantRef string, lifetime time.Duration) (string, error) {
+	if len(secret) < 32 {
+		return "", errors.New("identity JWT secret must be at least 32 bytes")
+	}
+	if agentID == "" || generation < 1 || applicationID == "" || runtimeID == "" || grantRef == "" || lifetime <= 0 {
+		return "", errors.New("agent workload token scope is incomplete")
+	}
+	now := time.Now()
+	claims := IdentityTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: agentID, ID: uuid.NewString(), Audience: jwt.ClaimStrings{"mcp"},
+			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(lifetime)),
+		},
+		PrincipalType: "AGENT_WORKLOAD", AgentID: agentID, AgentGeneration: generation,
+		ApplicationID: applicationID, RuntimeID: runtimeID, GrantRef: grantRef,
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 }
 
 func HashRefreshToken(value string) string {

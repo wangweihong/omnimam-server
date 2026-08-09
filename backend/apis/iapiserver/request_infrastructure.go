@@ -73,6 +73,7 @@ const (
 	InfraConfigBindingTypeModelAccess    = "MODEL_ACCESS"
 	InfraConfigBindingTypeSecretRef      = "SECRET_REF"
 	InfraConfigBindingTypeIntegrationRef = "INTEGRATION_REF"
+	InfraConfigBindingTypeMCPServerRef   = "MCP_SERVER_REF"
 
 	// InfraResolveEndpointPurposeAgentRuntimeAdapter 是 Agent Runtime 解析 Endpoint 的用途。
 	InfraResolveEndpointPurposeAgentRuntimeAdapter = "AGENT_RUNTIME_ADAPTER"
@@ -131,7 +132,7 @@ type InfraRuntimeMountInput struct {
 // +k8s:deepcopy-gen=true
 type InfraRuntimeConfigBindingInput struct {
 	Name        string `json:"name" binding:"required,max=200"`
-	BindingType string `json:"binding_type" binding:"required,oneof=PLAIN_CONFIG MODEL_ACCESS SECRET_REF INTEGRATION_REF"`
+	BindingType string `json:"binding_type" binding:"required,oneof=PLAIN_CONFIG MODEL_ACCESS SECRET_REF INTEGRATION_REF MCP_SERVER_REF"`
 	Reference   string `json:"reference" binding:"required,max=2048"`
 }
 

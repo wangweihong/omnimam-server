@@ -5,11 +5,62 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 )
+
+func TestResolveIdentityBearerAcceptsScopedAgentWorkloadWithoutIdentityRows(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	token, err := IssueAgentWorkloadAccessToken(secret, "agent-1", 2, "app-1", "runtime-1", "grant-1", time.Minute)
+	if err != nil {
+		t.Fatalf("issue workload token: %v", err)
+	}
+	principal, user, err := ResolveIdentityBearer(context.Background(), "Bearer "+token, nil, secret)
+	if err != nil {
+		t.Fatalf("resolve workload token: %v", err)
+	}
+	if user != nil {
+		t.Fatalf("workload user = %#v, want nil", user)
+	}
+	if principal.PrincipalType != "AGENT_WORKLOAD" || principal.AgentID != "agent-1" || principal.AgentGeneration != 2 ||
+		principal.ApplicationID != "app-1" || principal.RuntimeID != "runtime-1" || principal.GrantRef != "grant-1" {
+		t.Fatalf("workload principal = %#v", principal)
+	}
+	if len(principal.Permissions) != 0 {
+		t.Fatalf("workload permissions = %#v, want empty", principal.Permissions)
+	}
+}
+
+func TestIssueAgentWorkloadAccessTokenRejectsIncompleteScope(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	if _, err := IssueAgentWorkloadAccessToken(secret, "agent-1", 1, "", "runtime-1", "grant-1", time.Minute); err == nil {
+		t.Fatal("expected missing application scope to be rejected")
+	}
+}
+
+func TestResolveIdentityBearerRejectsAgentWorkloadWithAdditionalAudience(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	now := time.Now()
+	claims := IdentityTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: "agent-1", ID: "token-1", Audience: jwt.ClaimStrings{"mcp", "other"},
+			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+		PrincipalType: "AGENT_WORKLOAD", AgentID: "agent-1", AgentGeneration: 2,
+		ApplicationID: "app-1", RuntimeID: "runtime-1", GrantRef: "grant-1",
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+	if err != nil {
+		t.Fatalf("sign workload token: %v", err)
+	}
+	if _, _, err := ResolveIdentityBearer(context.Background(), "Bearer "+token, nil, secret); err == nil {
+		t.Fatal("expected additional workload audience to be rejected")
+	}
+}
 
 type auditStore struct {
 	records []*iapiserver.PlatformAuditLog

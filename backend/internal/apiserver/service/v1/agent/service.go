@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -16,6 +18,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
+)
+
+const (
+	agentRuntimeIdleTimeout     = 30 * time.Minute
+	agentRuntimeMaximumLifetime = 8 * time.Hour
 )
 
 // TaskClient 是 Agent 消费的 Task Center 小接口，只允许创建和操作受控任务。
@@ -35,12 +42,19 @@ type ModelAccessResolver interface {
 	ResolveAgentModelAccess(context.Context, string, *iapiserver.AgentModelBinding) (string, error)
 }
 
+// WorkloadScopeResolver resolves the current AppStudio application and Coding
+// Agent generation without allowing Agent to read AppStudio tables.
+type WorkloadScopeResolver interface {
+	ResolveAgentWorkloadScope(context.Context, string, string) (string, int64, error)
+}
+
 // Service 实现 released Agent API、固定 Workspace、交互持久化和 Runtime Task 编排。
 type Service struct {
 	store      store.AgentStore
 	tasks      TaskClient
 	workspaces WorkspaceBindingValidator
 	models     ModelAccessResolver
+	scopes     WorkloadScopeResolver
 	grants     *agentgrant.Codec
 	profiles   map[string]iapiserver.AgentProfile
 }
@@ -51,6 +65,7 @@ type Dependencies struct {
 	Tasks      TaskClient
 	Workspaces WorkspaceBindingValidator
 	Models     ModelAccessResolver
+	Scopes     WorkloadScopeResolver
 	Grants     *agentgrant.Codec
 }
 
@@ -59,7 +74,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("agent store is required")
 	}
-	return &Service{store: deps.Store, tasks: deps.Tasks, workspaces: deps.Workspaces, models: deps.Models, grants: deps.Grants, profiles: defaultProfiles()}, nil
+	return &Service{store: deps.Store, tasks: deps.Tasks, workspaces: deps.Workspaces, models: deps.Models, scopes: deps.Scopes, grants: deps.Grants, profiles: defaultProfiles()}, nil
 }
 
 func defaultProfiles() map[string]iapiserver.AgentProfile {
@@ -794,6 +809,9 @@ func (s *Service) ListMCPBindings(ctx context.Context, agentID string) (*iapiser
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.store.GetAgent(ctx, agentID, owner); err != nil {
+		return nil, err
+	}
 	items, err := s.store.ListAgentMCPBindings(ctx, agentID, owner)
 	return &iapiserver.AgentMCPBindingListResponse{Total: int64(len(items)), Items: items}, err
 }
@@ -802,8 +820,70 @@ func (s *Service) CreateMCPBinding(ctx context.Context, agentID string, req *iap
 	if err != nil {
 		return nil, err
 	}
-	binding := &iapiserver.AgentMCPBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: req.Name}, AgentID: agentID, ServerType: req.ServerType, EndpointRef: req.EndpointRef, CredentialRef: req.CredentialRef, AllowedTools: req.AllowedTools, Configuration: req.Configuration, Enabled: true}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	binding := &iapiserver.AgentMCPBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: req.Name}, AgentID: agentID, ServerType: req.ServerType, EndpointRef: req.EndpointRef, CredentialRef: req.CredentialRef, AllowedTools: req.AllowedTools, Configuration: req.Configuration, Enabled: enabled}
 	return s.store.CreateAgentMCPBinding(ctx, owner, binding)
+}
+
+func (s *Service) UpdateMCPBinding(ctx context.Context, agentID, bindingID string, req *iapiserver.AgentMCPBindingUpdateRequest) (*iapiserver.AgentMCPBinding, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	credential := ""
+	if req.CredentialRefMode == iapiserver.AgentMCPBindingCredentialRefModeSet && req.CredentialRef != nil {
+		credential = *req.CredentialRef
+	}
+	if req.CredentialRefMode == iapiserver.AgentMCPBindingCredentialRefModeKeep {
+		// Store resolves KEEP from the current row; an empty value is a sentinel here.
+		credential = "__KEEP__"
+	}
+	binding := &iapiserver.AgentMCPBinding{ObjectMeta: imachinery.ObjectMeta{ID: bindingID, Name: req.Name}, AgentID: agentID, ServerType: req.ServerType, EndpointRef: req.EndpointRef, CredentialRef: credential, AllowedTools: req.AllowedTools, Configuration: req.Configuration, Enabled: req.Enabled}
+	if req.CredentialRefMode == iapiserver.AgentMCPBindingCredentialRefModeClear {
+		binding.CredentialRef = ""
+	}
+	return s.store.UpdateAgentMCPBinding(ctx, agentID, owner, binding, req.ResourceVersion)
+}
+
+func (s *Service) DeleteMCPBinding(ctx context.Context, agentID, bindingID string) error {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := s.store.GetAgent(ctx, agentID, owner); err != nil {
+		return err
+	}
+	return s.store.DeleteAgentMCPBinding(ctx, agentID, bindingID, owner)
+}
+
+// EnsurePlatformMCPBindingForCodingAgent 为当前 Coding Agent 代际幂等补齐平台 MCP Binding。
+func (s *Service) EnsurePlatformMCPBindingForCodingAgent(ctx context.Context, agentID, applicationID string) error {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return err
+	}
+	agent, err := s.store.GetAgent(ctx, agentID, owner)
+	if err != nil {
+		return err
+	}
+	if agent.Kind != iapiserver.AgentKindCoding || agent.WorkspaceType != iapiserver.AgentWorkspaceTypeStudio {
+		return nil
+	}
+	if item, lookupErr := s.store.GetAgentMCPBindingByName(ctx, agentID, agent.OwnerUserID, "omnimam-platform"); lookupErr == nil {
+		if item.DeletedAt != nil {
+			return nil
+		}
+		return nil
+	}
+	_, err = s.store.CreateAgentMCPBinding(ctx, agent.OwnerUserID, studioPlatformBinding(agentID, agent.OwnerUserID))
+	return err
+}
+
+func studioPlatformBinding(agentID, owner string) *iapiserver.AgentMCPBinding {
+	return &iapiserver.AgentMCPBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent-platform-mcp:"+agentID)).String(), Name: "omnimam-platform", Description: "Platform MCP for " + owner}, AgentID: agentID, ServerType: iapiserver.AgentMCPServerTypePlatform, EndpointRef: iapiserver.AgentMCPPlatformEndpointRefDefault, Enabled: true, AllowedTools: []string{"omnimam.capabilities.list", "omnimam.capabilities.get", "omnimam.applications.list", "omnimam.applications.get", "omnimam.applications.run", "omnimam.application_runs.get", "omnimam.assets.search", "omnimam.assets.get"}}
 }
 
 func (s *Service) StartRuntime(ctx context.Context, agentID string, req *iapiserver.AgentRuntimeActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
@@ -855,14 +935,36 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error())
 	}
+	var studioApplicationID string
+	var agentGeneration *int64
+	if agent.Kind == iapiserver.AgentKindCoding {
+		if s.scopes == nil {
+			return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent workload scope resolver is unavailable")
+		}
+		applicationID, generation, scopeErr := s.scopes.ResolveAgentWorkloadScope(ctx, agent.ID, agent.OwnerUserID)
+		if scopeErr != nil || applicationID == "" || generation < 1 {
+			return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent workload scope is unavailable")
+		}
+		studioApplicationID = applicationID
+		agentGeneration = &generation
+	}
+	mcpBindings, err := s.store.ListAgentMCPBindings(ctx, agent.ID, agent.OwnerUserID)
+	if err != nil {
+		return nil, err
+	}
+	mcpRefs := make([]map[string]string, 0, len(mcpBindings))
+	for _, binding := range mcpBindings {
+		if !binding.Enabled || binding.DeletedAt != nil {
+			continue
+		}
+		mcpRefs = append(mcpRefs, map[string]string{"binding_id": binding.ID, "binding_revision": fmt.Sprintf("%d", binding.ResourceVersion)})
+	}
+	if len(mcpRefs) > iapiserver.AgentRuntimeMaxMCPBindings {
+		return nil, errors.NewStatus(code.ErrAgentMCPBindingInvalid, "at most 50 active MCP bindings may be attached")
+	}
 	if runtime == nil {
 		runtime = &iapiserver.AgentRuntimeBinding{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, AgentID: agent.ID, RuntimeProfileID: agent.AgentProfileID, RuntimeProfileRevision: agent.AgentProfileRevision, State: iapiserver.AgentRuntimeStateStarting, ActivityState: iapiserver.AgentRuntimeActivityIdle, HealthStatus: iapiserver.AgentRuntimeHealthUnknown}
 		if _, err := s.store.CreateAgentRuntime(ctx, agent.OwnerUserID, runtime); err != nil {
-			return nil, err
-		}
-	} else {
-		runtime.State = iapiserver.AgentRuntimeStateStarting
-		if _, err := s.store.UpdateAgentRuntime(ctx, runtime); err != nil {
 			return nil, err
 		}
 	}
@@ -871,38 +973,89 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 		workspaceSource = "agent-workspace://" + agent.WorkspaceID
 	}
 	expectedVersion := runtime.ResourceVersion + 1
+	authRef := runtimeGrantAuthorizationRef(agent.ID, runtime.ID, operation, req, expectedVersion)
 	arguments := map[string]any{
 		"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "operation": operation, "agent_kind": agent.Kind,
 		"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID, "workspace_source_ref": workspaceSource,
 		"runtime_profile_id": runtime.RuntimeProfileID, "runtime_profile_revision": runtime.RuntimeProfileRevision,
 		"model_access_grant_ref": modelAccessRef, "runtime_configuration_ref": "agent-runtime-config://" + agent.ID,
-		"authorization_ref":         fmt.Sprintf("agent-runtime-grant://%s/%s/%d", agent.ID, runtime.ID, expectedVersion),
+		"authorization_ref":         authRef,
 		"expected_resource_version": expectedVersion,
+		"mcp_binding_refs":          mcpRefs,
+		"lifecycle_policy": map[string]any{
+			"restart_policy":           iapiserver.TaskWorkerAgentRuntimeRestartPolicyOnFailure,
+			"idle_timeout_seconds":     int(agentRuntimeIdleTimeout / time.Second),
+			"maximum_lifetime_seconds": int(agentRuntimeMaximumLifetime / time.Second),
+		},
+	}
+	expiresAt := time.Now().UTC().Add(agentRuntimeMaximumLifetime)
+	grant := &iapiserver.AgentRuntimeGrant{
+		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: "runtime-grant-" + runtime.ID},
+		AgentID:    agent.ID, RuntimeBindingID: runtime.ID, StudioApplicationID: studioApplicationID, AgentGeneration: agentGeneration, RequestID: authRef,
+		BindingRevisions: make([]string, 0, len(mcpRefs)), Status: iapiserver.AgentRuntimeGrantStatusActive,
+		ExpiresAt: imachinery.Time{Time: expiresAt},
+	}
+	for _, ref := range mcpRefs {
+		grant.BindingRevisions = append(grant.BindingRevisions, ref["binding_id"]+"/"+ref["binding_revision"])
+	}
+	if err := s.store.CreateAgentRuntimeGrant(ctx, grant); err != nil {
+		return nil, err
 	}
 	if runtime.InfraRuntimeID != "" {
 		arguments["existing_infra_runtime_id"] = runtime.InfraRuntimeID
 	}
 	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
 		Key: "runtime-" + runtime.ID, Name: "Agent runtime " + strings.ToLower(operation), FunctionRef: iapiserver.AgentRuntimeFunctionEnsure,
-		Arguments: arguments, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
+		Arguments: arguments, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: agent.OwnerUserID,
 	})
-	if err != nil {
-		runtime.State = iapiserver.AgentRuntimeStateFailed
-		_, _ = s.store.UpdateAgentRuntime(ctx, runtime)
-		return nil, err
+	if err != nil && (task == nil || errors.ToStatus(err).Code != code.ErrAtomicTaskIdempotencyConflict || !sameRuntimeEnsureTask(task, agent, runtime, operation, expectedVersion, arguments)) {
+		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, err)
+	}
+	if task == nil || !sameRuntimeEnsureTask(task, agent, runtime, operation, expectedVersion, arguments) {
+		cause := errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime ensure task identity does not match")
+		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, cause)
 	}
 	bound, applied, bindErr := s.store.BindAgentRuntimeTask(ctx, runtime.ID, runtime.ResourceVersion, task.ID, operation, iapiserver.AgentRuntimeStateStarting)
 	if bindErr != nil {
-		return nil, bindErr
+		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, bindErr)
 	}
 	if !applied {
-		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime lifecycle task lost its resource-version fence")
+		cause := errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime lifecycle task lost its resource-version fence")
+		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, cause)
 	}
 	agent.Status = iapiserver.AgentStatusStarting
 	if _, err := s.store.UpdateAgent(ctx, agent, agent.ResourceVersion); err != nil {
 		return nil, err
 	}
 	return bound, nil
+}
+
+func runtimeGrantAuthorizationRef(agentID, runtimeID, operation string, req *iapiserver.AgentRuntimeActionRequest, expectedVersion int64) string {
+	requestIdentity := "version:" + fmt.Sprint(expectedVersion)
+	if req != nil && strings.TrimSpace(req.RequestID) != "" {
+		requestIdentity = "request:" + strings.TrimSpace(req.RequestID)
+	}
+	identity := strings.Join([]string{"agent-runtime-grant", agentID, runtimeID, operation, requestIdentity}, "\x00")
+	return "agent-runtime-grant://" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()
+}
+
+func sameRuntimeEnsureTask(task *iapiserver.AtomicTask, agent *iapiserver.Agent, runtime *iapiserver.AgentRuntimeBinding, operation string, expectedVersion int64, arguments map[string]any) bool {
+	if task == nil || agent == nil || runtime == nil || task.FunctionRef != iapiserver.AgentRuntimeFunctionEnsure ||
+		task.ProjectID != iapiserver.DefaultTaskCenterProjectID || task.Namespace != iapiserver.DefaultTaskCenterNamespace ||
+		task.CreatedBy != agent.OwnerUserID || task.IdempotencyScope != "agent-runtime:"+runtime.ID ||
+		task.IdempotencyKey != fmt.Sprintf("%s:%d:0", operation, expectedVersion) {
+		return false
+	}
+	actual, actualErr := json.Marshal(task.Arguments)
+	expected, expectedErr := json.Marshal(arguments)
+	return actualErr == nil && expectedErr == nil && string(actual) == string(expected)
+}
+
+func (s *Service) revokeRuntimeGrantAfterFailure(ctx context.Context, authorizationRef string, cause error) error {
+	if err := s.store.RevokeAgentRuntimeGrant(ctx, authorizationRef); err != nil {
+		return stderrors.Join(cause, errors.Wrap(err, "revoke runtime grant after lifecycle submission failure"))
+	}
+	return cause
 }
 
 func (s *Service) SuspendRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
@@ -1039,9 +1192,21 @@ func (s *Service) ProjectTaskTerminal(ctx context.Context, task *iapiserver.Atom
 	}
 	if task.Status != iapiserver.AtomicTaskStatusSuccess {
 		if applied && task.FunctionRef == iapiserver.AgentRuntimeFunctionEnsure {
-			return s.failQueuedInvocationSubmissions(ctx, runtime.AgentID)
+			authorizationRef, _ := task.Arguments["authorization_ref"].(string)
+			var revokeErr error
+			if authorizationRef == "" {
+				revokeErr = errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "agent runtime ensure task has no authorization reference")
+			} else {
+				revokeErr = s.store.RevokeAgentRuntimeGrant(ctx, authorizationRef)
+			}
+			return stderrors.Join(revokeErr, s.failQueuedInvocationSubmissions(ctx, runtime.AgentID))
 		}
 		return nil
+	}
+	if applied && task.FunctionRef == iapiserver.AgentRuntimeFunctionStop {
+		if err := s.store.RevokeActiveAgentRuntimeGrants(ctx, runtime.ID); err != nil {
+			return err
+		}
 	}
 	if task.FunctionRef != iapiserver.AgentRuntimeFunctionEnsure ||
 		projectedRuntime == nil || projectedRuntime.State != iapiserver.AgentRuntimeStateReady {

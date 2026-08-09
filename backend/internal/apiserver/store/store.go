@@ -147,7 +147,15 @@ type AgentStore interface {
 	ReplaceAgentModelBinding(context.Context, string, string, *iapiserver.AgentModelBinding) (*iapiserver.AgentModelBinding, error)
 	ListAgentSkillBindings(context.Context, string, string) ([]*iapiserver.AgentSkillBinding, error)
 	ListAgentMCPBindings(context.Context, string, string) ([]*iapiserver.AgentMCPBinding, error)
+	GetAgentMCPBindingByName(context.Context, string, string, string) (*iapiserver.AgentMCPBinding, error)
 	CreateAgentMCPBinding(context.Context, string, *iapiserver.AgentMCPBinding) (*iapiserver.AgentMCPBinding, error)
+	UpdateAgentMCPBinding(context.Context, string, string, *iapiserver.AgentMCPBinding, int64) (*iapiserver.AgentMCPBinding, error)
+	DeleteAgentMCPBinding(context.Context, string, string, string) error
+	GetAgentMCPBindingRevision(context.Context, string, string, int64) (*iapiserver.AgentMCPBindingRevision, error)
+	CreateAgentRuntimeGrant(context.Context, *iapiserver.AgentRuntimeGrant) error
+	GetAgentRuntimeGrantByRequestID(context.Context, string) (*iapiserver.AgentRuntimeGrant, error)
+	RevokeAgentRuntimeGrant(context.Context, string) error
+	RevokeActiveAgentRuntimeGrants(context.Context, string) error
 	GetCurrentAgentRuntime(context.Context, string, string) (*iapiserver.AgentRuntimeBinding, error)
 	GetAgentRuntimeByID(context.Context, string) (*iapiserver.AgentRuntimeBinding, error)
 	CreateAgentRuntime(context.Context, string, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
@@ -167,6 +175,7 @@ type StudioApplicationInitialization struct {
 	Session           *iapiserver.AgentSession
 	WorkspaceBinding  *iapiserver.AgentWorkspaceBinding
 	ModelBinding      *iapiserver.AgentModelBinding
+	MCPBinding        *iapiserver.AgentMCPBinding
 	UserMessage       *iapiserver.AgentMessage
 	InitialInvocation *iapiserver.AgentInvocation
 }
@@ -177,6 +186,7 @@ type StudioCodingAgentReplacement struct {
 	Session          *iapiserver.AgentSession
 	WorkspaceBinding *iapiserver.AgentWorkspaceBinding
 	ModelBinding     *iapiserver.AgentModelBinding
+	MCPBinding       *iapiserver.AgentMCPBinding
 }
 
 // AppStudioStore 是 StudioApplication 源码谱系、构建、发布和 Runtime 投影的事实边界。
@@ -185,6 +195,8 @@ type AppStudioStore interface {
 	GetStudioApplicationInitialization(context.Context, string, string) (*StudioApplicationInitialization, error)
 	ListStudioApplications(context.Context, *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error)
 	GetStudioApplication(context.Context, string, string) (*iapiserver.StudioApplication, error)
+	GetStudioApplicationByCodingAgent(context.Context, string, string) (*iapiserver.StudioApplication, error)
+	GetStudioApplicationWorkloadScope(context.Context, string, string, int64) (*iapiserver.StudioApplication, error)
 	UpdateStudioApplication(context.Context, *iapiserver.StudioApplication, int64) (*iapiserver.StudioApplication, error)
 	ReplaceStudioCodingAgent(context.Context, string, string, *StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error)
 	GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
