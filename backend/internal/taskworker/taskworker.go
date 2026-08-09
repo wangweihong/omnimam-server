@@ -54,6 +54,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	if cfg.InfrastructureClientOptions == nil {
 		return fmt.Errorf("infrastructure client options are required for taskworker")
 	}
+	if cfg.MCPOptions == nil {
+		return fmt.Errorf("MCP options are required for taskworker workspace tools")
+	}
 	infrastructureClient, err := infrastructure.NewClient(cfg.InfrastructureClientOptions.BaseURL, cfg.InfrastructureClientOptions.Token)
 	if err != nil {
 		return errors.Wrap(err, "construct infrastructure client")
@@ -105,7 +108,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "validate application platform adapter implementations")
 	}
 	credentialBroker := usermodelsvc.NewCredentialBroker(0)
-	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, 10*time.Minute)
+	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, time.Hour)
 	if err != nil {
 		return errors.Wrap(err, "construct agent grant codec")
 	}
@@ -129,7 +132,8 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	invocationExecutor, err := agentexecutor.NewInvocationExecutor(agentexecutor.InvocationExecutorDependencies{
 		Store: storeIns.Agents(), Endpoints: infrastructureClient, Models: userModelService,
-		Credentials: credentialBroker, Grants: grantCodec, Registry: functionRegistry,
+		Credentials: credentialBroker, Grants: grantCodec, Workspaces: storeIns.AppStudio(),
+		WorkspaceToolBaseURL: cfg.MCPOptions.PublicBaseURL, Registry: functionRegistry,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct agent invocation executor")
@@ -388,6 +392,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	reconciler.RegisterTerminalRecoverySource(storeIns.Agents().ListPendingAgentTerminalTaskIDs)
 	reconciler.RegisterTerminalRecoverySource(storeIns.AppStudio().ListPendingStudioTerminalTaskIDs)
 	reconciler.RegisterRecoveryHandler(agentProjector.ReconcileQueuedInvocations)
+	reconciler.RegisterRecoveryHandler(agentProjector.ReconcileInvocationActivity)
 	errCh := make(chan error, 1)
 	go func() { errCh <- reconciler.Run(ctx) }()
 	select {

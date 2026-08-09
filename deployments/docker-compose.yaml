@@ -113,6 +113,7 @@ services:
       APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
       APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
       OMNIMAM_STORAGE_ROOT: ${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}
+      OMNIMAM_APPSTUDIO_SOURCE_DIR: ${OMNIMAM_APPSTUDIO_SOURCE_DIR:-/var/lib/omnimam/appstudio-source}
     ports:
       - "${OMNIMAM_APISERVER_PORT:-8080}:8080"
     entrypoint:
@@ -166,6 +167,7 @@ services:
       - omnimam_logs:/var/log/omnimam
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
+      - omnimam_appstudio_source:/var/lib/omnimam/appstudio-source
 
   infraserver:
     image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/infraserver:${OMNIMAM_IMAGE_TAG:-latest-amd64}
@@ -309,7 +311,8 @@ services:
       APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
-      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}}
+      # Agent Runtime 与 Task Worker 通过 Compose 网络访问 Invocation-scoped Workspace Tool。
+      APISERVER_MCP_PUBLIC_BASE_URL: http://apiserver:8080
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
@@ -462,3 +465,4 @@ volumes:
   omnimam_logs:
   omnimam_debug:
   omnimam_assets:
+  omnimam_appstudio_source:

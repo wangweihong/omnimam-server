@@ -16,14 +16,18 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
+	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
 const (
 	maxStudioFileBytes        = 2 << 20
 	maxStudioContentReadBytes = 1 << 20
 )
+
+var errStudioSourceRevisionEmpty = fmt.Errorf("source revision is empty")
 
 type TaskClient interface {
 	CreateDomainAtomicTask(context.Context, string, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
@@ -51,17 +55,20 @@ type CodingAgentCreator interface {
 }
 
 type Service struct {
-	store     store.AppStudioStore
-	tasks     TaskClient
-	sources   SourceContentStore
-	artifacts ArtifactReader
-	agents    CodingAgentCreator
+	store                  store.AppStudioStore
+	tasks                  TaskClient
+	sources                SourceContentStore
+	artifacts              ArtifactReader
+	agents                 CodingAgentCreator
+	grants                 *agentgrant.Codec
+	workspaceToolProcessor *mcpprotocol.Processor
 }
 type Dependencies struct {
 	Store     store.AppStudioStore
 	Tasks     TaskClient
 	Sources   SourceContentStore
 	Artifacts ArtifactReader
+	Grants    *agentgrant.Codec
 }
 
 func New(deps Dependencies) (*Service, error) {
@@ -71,7 +78,15 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Sources == nil {
 		return nil, fmt.Errorf("appstudio source content store is required")
 	}
-	return &Service{store: deps.Store, tasks: deps.Tasks, sources: deps.Sources, artifacts: deps.Artifacts}, nil
+	service := &Service{store: deps.Store, tasks: deps.Tasks, sources: deps.Sources, artifacts: deps.Artifacts, grants: deps.Grants}
+	if deps.Grants != nil {
+		processor, err := mcpprotocol.NewProcessor(workspaceToolDispatcher{service: service})
+		if err != nil {
+			return nil, fmt.Errorf("construct appstudio workspace tool processor: %w", err)
+		}
+		service.workspaceToolProcessor = processor
+	}
+	return service, nil
 }
 
 func (s *Service) SetCodingAgentCreator(creator CodingAgentCreator) {
@@ -441,6 +456,17 @@ func (s *Service) ApplyChangeSet(ctx context.Context, appID string, req *iapiser
 	if workspace.Status != iapiserver.AppStudioWorkspaceStatusReady {
 		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "studio source is not ready")
 	}
+	existing, existingErr := s.store.GetStudioChangeSetByIdempotencyKey(ctx, workspace.ID, req.IdempotencyKey, owner)
+	if existingErr == nil {
+		if !sameStudioChangeSetRequest(existing, req) {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "change set idempotency key conflicts")
+		}
+		existing.StudioApplicationID = appID
+		return existing, nil
+	}
+	if errors.ToStatus(existingErr).Code != code.ErrAppStudioSourceNotVisible {
+		return nil, existingErr
+	}
 	if workspace.CurrentRevision != req.BaseRevision {
 		return nil, errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source base revision conflicts")
 	}
@@ -465,6 +491,17 @@ func (s *Service) ApplyChangeSet(ctx context.Context, appID string, req *iapiser
 		result.StudioApplicationID = appID
 	}
 	return result, err
+}
+
+func sameStudioChangeSetRequest(existing *iapiserver.StudioChangeSet, req *iapiserver.StudioChangeSetRequest) bool {
+	if existing == nil || req == nil || existing.BaseRevision != req.BaseRevision || existing.IdempotencyKey != req.IdempotencyKey ||
+		existing.AgentID != req.AgentID || existing.AgentSessionID != req.AgentSessionID || existing.AgentInvocationID != req.AgentInvocationID ||
+		existing.Description != req.Summary {
+		return false
+	}
+	existingOperations, existingErr := json.Marshal(existing.Operations)
+	requestedOperations, requestedErr := json.Marshal(req.Operations)
+	return existingErr == nil && requestedErr == nil && string(existingOperations) == string(requestedOperations)
 }
 
 func (s *Service) RestoreRevision(ctx context.Context, appID string, req *iapiserver.StudioRestoreRevisionRequest) (*iapiserver.StudioChangeSet, error) {
@@ -532,11 +569,10 @@ func (s *Service) CreateSnapshot(ctx context.Context, appID string, req *iapiser
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is unavailable")
 	}
-	files, err := s.store.ListStudioSourceFiles(ctx, workspace.ID, revision, "", owner)
-	if err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
+	if err := s.requireNonEmptySourceRevision(ctx, workspace.ID, revision, owner); err != nil {
+		if err != errStudioSourceRevisionEmpty {
+			return nil, err
+		}
 		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is empty")
 	}
 	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: iapiserver.AppStudioSnapshotStatusReady, CreatedBy: owner}
@@ -684,6 +720,12 @@ func (s *Service) RefreshPreview(ctx context.Context, appID string, req *iapiser
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireNonEmptySourceRevision(ctx, workspace.ID, revision, owner); err != nil {
+		if err != errStudioSourceRevisionEmpty {
+			return nil, err
+		}
+		return nil, errors.NewStatus(code.ErrAppStudioRuntimeDeployFailed, "preview source revision is empty")
+	}
 	runtime := &iapiserver.StudioPreviewRuntime{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, Status: iapiserver.AppStudioPreviewStatusPending, ExpiresAt: imachinery.Time{Time: time.Now().Add(24 * time.Hour)}}
 	runtime, err = s.store.CreateStudioPreviewRuntime(ctx, owner, runtime)
 	if err != nil {
@@ -698,6 +740,17 @@ func (s *Service) RefreshPreview(ctx context.Context, appID string, req *iapiser
 		return nil, err
 	}
 	return runtime, nil
+}
+
+func (s *Service) requireNonEmptySourceRevision(ctx context.Context, workspaceID string, revision int64, owner string) error {
+	files, err := s.store.ListStudioSourceFiles(ctx, workspaceID, revision, "", owner)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return errStudioSourceRevisionEmpty
+	}
+	return nil
 }
 func (s *Service) StopPreview(ctx context.Context, appID string, req *iapiserver.StudioActionRequest) (*iapiserver.StudioPreviewRuntime, error) {
 	runtime, err := s.GetPreview(ctx, appID)

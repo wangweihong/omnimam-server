@@ -12,7 +12,9 @@ import (
 
 const (
 	ProtocolVersion = "2026-07-28"
-	TasksExtension  = "io.modelcontextprotocol/tasks"
+	// AppStudioWorkspaceToolPath 是仅接受 Invocation 短期 grant 的内部 Workspace Tool 传输路径。
+	AppStudioWorkspaceToolPath = "/internal/appstudio/workspace-tool"
+	TasksExtension             = "io.modelcontextprotocol/tasks"
 
 	MethodDiscover              = "server/discover"
 	MethodToolsList             = "tools/list"
@@ -34,6 +36,12 @@ const (
 	ToolAssetsGet             = "omnimam.assets.get"
 	ToolAssetsPrepareUpload   = "omnimam.assets.prepare_upload"
 	ToolAssetsCompleteUpload  = "omnimam.assets.complete_upload"
+
+	// AppStudio Workspace Tool 仅由当前 Coding Invocation 的短期授权发现和调用。
+	ToolAppStudioSourceStatus   = "omnimam.appstudio.source.status"
+	ToolAppStudioSourceList     = "omnimam.appstudio.source.list"
+	ToolAppStudioSourceRead     = "omnimam.appstudio.source.read"
+	ToolAppStudioChangeSetApply = "omnimam.appstudio.changeset.apply"
 
 	JSONRPCInvalidRequest = -32600
 	JSONRPCMethodNotFound = -32601

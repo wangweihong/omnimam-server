@@ -11,6 +11,13 @@ Task Center、Asset Library 和 Model Gateway 服务。MCP 只持久化
 `McpTaskBinding`；ApplicationRun、AtomicTask、Artifact、Asset 和
 Representation 仍由源领域拥有。
 
+AppStudio Coding Invocation 另使用内部 `POST /internal/appstudio/workspace-tool`。
+该入口不接受 Identity JWT，也不加入公开 MCP Catalog；它只解析当前 Invocation 的短期加密 grant，
+并把源码访问限制在固定 StudioWorkspace、Agent、Session、Invocation、动作和应用相对路径范围。
+Coding Runtime 通过远程 MCP 调用 Source status/list/read 和原子 ChangeSet apply，不能直接挂载
+canonical StudioWorkspace。Task Worker 只有在 AppStudio 已记录同一 Invocation 的 applied ChangeSet
+且 Source Revision 前进后，才允许 Invocation 成功；完成后会禁用该 Runtime-local Tool 配置。
+
 本机部署可以使用 loopback HTTP，例如
 `http://127.0.0.1:8080/mcp`。任何非 loopback MCP Proxy endpoint、
 `mcp.public-base-url` 或浏览器 Origin 都必须使用 HTTPS，避免 Bearer

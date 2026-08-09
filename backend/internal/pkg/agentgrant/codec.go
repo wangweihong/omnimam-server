@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const defaultTTL = 10 * time.Minute
+const defaultTTL = time.Hour
 
 // Codec 签发和解析不落库的短期 Agent 授权引用。
 // 授权正文使用 AES-GCM 加密认证，避免稳定资源标识和授权边界暴露到 Task 参数。
@@ -113,9 +113,26 @@ type InvocationClaims struct {
 	InvocationType          string    `json:"invocation_type"`
 	ExpectedResourceVersion int64     `json:"expected_resource_version"`
 	WorkspaceID             string    `json:"workspace_id,omitempty"`
+	WorkspaceToolGrantRef   string    `json:"workspace_tool_grant_ref,omitempty"`
 	ModelAccessGrantRef     string    `json:"model_access_grant_ref"`
 	IssuedAt                time.Time `json:"issued_at"`
 	ExpiresAt               time.Time `json:"expires_at"`
+}
+
+// WorkspaceToolClaims 将 Coding Agent 的一次源码访问限制在固定 Invocation 和 StudioWorkspace 内。
+// InitialRevision 只提供启动上下文；每次写入仍由 AppStudio 按请求中的 base_revision 重新校验。
+type WorkspaceToolClaims struct {
+	OwnerUserID         string    `json:"owner_user_id"`
+	StudioApplicationID string    `json:"studio_application_id"`
+	WorkspaceID         string    `json:"workspace_id"`
+	AgentID             string    `json:"agent_id"`
+	SessionID           string    `json:"session_id"`
+	InvocationID        string    `json:"invocation_id"`
+	InitialRevision     int64     `json:"initial_revision"`
+	AllowedActions      []string  `json:"allowed_actions"`
+	AllowedPathScopes   []string  `json:"allowed_path_scopes"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
 }
 
 // ValidateWindow 拒绝未来签发、过期或非法时间窗口。

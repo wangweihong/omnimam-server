@@ -303,6 +303,68 @@ func (s *agentStore) ListAgentRuntimeQueueCandidates(ctx context.Context, limit 
 	return items, err
 }
 
+// ListAgentInvocationActivityCandidates 返回事件/终态事实与 Invocation、Runtime 投影不一致的记录。
+func (s *agentStore) ListAgentInvocationActivityCandidates(ctx context.Context, limit int) ([]store.AgentInvocationActivityCandidate, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	items := make([]store.AgentInvocationActivityCandidate, 0, limit)
+	var activeIDs []string
+	activeStatuses := []string{
+		iapiserver.AgentInvocationStatusQueued,
+		iapiserver.AgentInvocationStatusStarting,
+		iapiserver.AgentInvocationStatusRunning,
+		iapiserver.AgentInvocationStatusWaitingForTool,
+		iapiserver.AgentInvocationStatusWaitingForUser,
+		iapiserver.AgentInvocationStatusCanceling,
+	}
+	err := s.ds.db.WithContext(ctx).Table("agent_invocations").
+		Select("agent_invocations.id").
+		Joins("JOIN agent_runtime_bindings ON agent_runtime_bindings.id = agent_invocations.runtime_binding_id").
+		Where("agent_invocations.status IN ?", activeStatuses).
+		Where("(agent_invocations.status <> ? OR agent_runtime_bindings.activity_state <> ?)", iapiserver.AgentInvocationStatusRunning, iapiserver.AgentRuntimeActivityActive).
+		Where("EXISTS (SELECT 1 FROM agent_operation_events WHERE agent_operation_events.invocation_id = agent_invocations.id AND agent_operation_events.event_type = ?)", iapiserver.AgentOperationEventTypeInvocationStarted).
+		Order("agent_invocations.updated_at ASC").Limit(limit).Pluck("agent_invocations.id", &activeIDs).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range activeIDs {
+		items = append(items, store.AgentInvocationActivityCandidate{InvocationID: id, Active: true})
+	}
+	remaining := limit - len(items)
+	if remaining == 0 {
+		return items, nil
+	}
+	var idleIDs []string
+	err = s.ds.db.WithContext(ctx).Table("agent_invocations").
+		Select("agent_invocations.id").
+		Joins("JOIN agent_runtime_bindings ON agent_runtime_bindings.id = agent_invocations.runtime_binding_id").
+		Where("agent_invocations.status IN ?", []string{iapiserver.AgentInvocationStatusSucceeded, iapiserver.AgentInvocationStatusFailed, iapiserver.AgentInvocationStatusCanceled}).
+		Where("agent_runtime_bindings.activity_state = ?", iapiserver.AgentRuntimeActivityActive).
+		Order("agent_invocations.updated_at ASC").Limit(remaining).Pluck("agent_invocations.id", &idleIDs).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range idleIDs {
+		items = append(items, store.AgentInvocationActivityCandidate{InvocationID: id})
+	}
+	return items, nil
+}
+
+// ProjectAgentInvocationActivity 原子同步 Invocation RUNNING 与 Runtime ACTIVE/IDLE 投影，不推进任务资源版本栅栏。
+func (s *agentStore) ProjectAgentInvocationActivity(ctx context.Context, invocationID string, active bool) error {
+	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var invocation iapiserver.AgentInvocation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocationID).First(&invocation).Error; err != nil {
+			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
+		}
+		if active {
+			return projectAgentInvocationActive(tx, &invocation)
+		}
+		return projectAgentInvocationIdle(tx, &invocation)
+	})
+}
+
 func (s *agentStore) UpdateAgentInvocation(ctx context.Context, invocation *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.AgentInvocation
@@ -482,6 +544,9 @@ func (s *agentStore) ProjectAgentInvocationTerminal(
 		if err := tx.Save(&result).Error; err != nil {
 			return err
 		}
+		if err := projectAgentInvocationIdle(tx, &result); err != nil {
+			return err
+		}
 		applied = true
 		return appendAgentOutbox(tx, "AgentInvocation", result.ID, "agent_invocation_status_changed", result.ResourceVersion, map[string]any{
 			"invocation_id": result.ID, "agent_id": result.AgentID, "session_id": result.SessionID,
@@ -496,6 +561,64 @@ func agentInvocationTerminal(status string) bool {
 	return status == iapiserver.AgentInvocationStatusSucceeded ||
 		status == iapiserver.AgentInvocationStatusFailed ||
 		status == iapiserver.AgentInvocationStatusCanceled
+}
+
+func projectAgentInvocationActive(tx *gorm.DB, invocation *iapiserver.AgentInvocation) error {
+	if invocation == nil || agentInvocationTerminal(invocation.Status) {
+		return nil
+	}
+	var runtime iapiserver.AgentRuntimeBinding
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND state = ?", invocation.RuntimeBindingID, iapiserver.AgentRuntimeStateReady).
+		First(&runtime).Error; err != nil {
+		return mapNotFound(err, code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	now := time.Now()
+	updates := map[string]any{"status": iapiserver.AgentInvocationStatusRunning, "updated_at": now}
+	if invocation.StartedAt.IsZero() {
+		updates["started_at"] = now
+	}
+	if err := tx.Model(&iapiserver.AgentInvocation{}).Where("id = ?", invocation.ID).UpdateColumns(updates).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&iapiserver.AgentRuntimeBinding{}).
+		Where("id = ?", runtime.ID).
+		UpdateColumns(map[string]any{"activity_state": iapiserver.AgentRuntimeActivityActive, "updated_at": now}).Error; err != nil {
+		return err
+	}
+	return tx.Model(&iapiserver.Agent{}).Where("id = ?", invocation.AgentID).
+		UpdateColumns(map[string]any{"last_active_at": now, "updated_at": now}).Error
+}
+
+func projectAgentInvocationIdle(tx *gorm.DB, invocation *iapiserver.AgentInvocation) error {
+	if invocation == nil || !agentInvocationTerminal(invocation.Status) {
+		return nil
+	}
+	var runtime iapiserver.AgentRuntimeBinding
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", invocation.RuntimeBindingID).First(&runtime).Error; err != nil {
+		return mapNotFound(err, code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	var otherActive int64
+	if err := tx.Model(&iapiserver.AgentInvocation{}).
+		Where("runtime_binding_id = ? AND id <> ? AND status IN ?", invocation.RuntimeBindingID, invocation.ID, []string{
+			iapiserver.AgentInvocationStatusStarting,
+			iapiserver.AgentInvocationStatusRunning,
+			iapiserver.AgentInvocationStatusWaitingForTool,
+			iapiserver.AgentInvocationStatusWaitingForUser,
+			iapiserver.AgentInvocationStatusCanceling,
+		}).Count(&otherActive).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	if otherActive == 0 {
+		if err := tx.Model(&iapiserver.AgentRuntimeBinding{}).
+			Where("id = ? AND state = ?", runtime.ID, iapiserver.AgentRuntimeStateReady).
+			UpdateColumns(map[string]any{"activity_state": iapiserver.AgentRuntimeActivityIdle, "updated_at": now}).Error; err != nil {
+			return err
+		}
+	}
+	return tx.Model(&iapiserver.Agent{}).Where("id = ?", invocation.AgentID).
+		UpdateColumns(map[string]any{"last_active_at": now, "updated_at": now}).Error
 }
 
 func (s *agentStore) ListAgentMemories(ctx context.Context, req *iapiserver.AgentMemoryListRequest, ownerUserID string) ([]*iapiserver.AgentMemory, int64, error) {
@@ -965,7 +1088,7 @@ func (s *agentStore) AppendAgentOperationEvent(ctx context.Context, event *iapis
 	var result iapiserver.AgentOperationEvent
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var invocation iapiserver.AgentInvocation
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "last_event_sequence").Where("id = ?", event.InvocationID).First(&invocation).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", event.InvocationID).First(&invocation).Error; err != nil {
 			return mapNotFound(err, code.ErrAgentSessionNotVisible, "agent invocation not visible")
 		}
 
@@ -978,6 +1101,9 @@ func (s *agentStore) AppendAgentOperationEvent(ctx context.Context, event *iapis
 				if err := tx.Model(&iapiserver.AgentInvocation{}).Where("id = ?", invocation.ID).UpdateColumn("last_event_sequence", result.SequenceNo).Error; err != nil {
 					return err
 				}
+			}
+			if event.EventType == iapiserver.AgentOperationEventTypeInvocationStarted {
+				return projectAgentInvocationActive(tx, &invocation)
 			}
 			return nil
 		}
@@ -1000,6 +1126,9 @@ func (s *agentStore) AppendAgentOperationEvent(ctx context.Context, event *iapis
 			return fmt.Errorf("agent invocation event cursor changed concurrently")
 		}
 		result = *event
+		if event.EventType == iapiserver.AgentOperationEventTypeInvocationStarted {
+			return projectAgentInvocationActive(tx, &invocation)
+		}
 		return nil
 	})
 	return &result, err

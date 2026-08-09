@@ -22,12 +22,16 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
+	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
 const (
 	openCodeRequestTimeout = 10 * time.Minute
 	openCodeCleanupTimeout = 10 * time.Second
+	workspaceToolServerKey = "omnimam-workspace"
 )
+
+var errCodingResultMissing = stderrors.New("coding invocation has no applied changeset and new source revision")
 
 type InvocationStore interface {
 	GetAgent(context.Context, string, string) (*iapiserver.Agent, error)
@@ -54,22 +58,30 @@ type InvocationGrantResolver interface {
 	Resolve(string, string, any) error
 }
 
+type InvocationWorkspaceResults interface {
+	ResolveStudioInvocationChangeSets(context.Context, string, string, []string) (map[string]*iapiserver.StudioChangeSet, error)
+}
+
 type InvocationExecutorDependencies struct {
-	Store       InvocationStore
-	Endpoints   InvocationEndpointResolver
-	Models      InvocationModelResolver
-	Credentials modelgateway.CredentialResolver
-	Grants      InvocationGrantResolver
-	Registry    *taskfunctionregistry.Registry
+	Store                InvocationStore
+	Endpoints            InvocationEndpointResolver
+	Models               InvocationModelResolver
+	Credentials          modelgateway.CredentialResolver
+	Grants               InvocationGrantResolver
+	Workspaces           InvocationWorkspaceResults
+	WorkspaceToolBaseURL string
+	Registry             *taskfunctionregistry.Registry
 }
 
 type InvocationExecutor struct {
-	store       InvocationStore
-	endpoints   InvocationEndpointResolver
-	models      InvocationModelResolver
-	credentials modelgateway.CredentialResolver
-	grants      InvocationGrantResolver
-	registry    *taskfunctionregistry.Registry
+	store            InvocationStore
+	endpoints        InvocationEndpointResolver
+	models           InvocationModelResolver
+	credentials      modelgateway.CredentialResolver
+	grants           InvocationGrantResolver
+	workspaces       InvocationWorkspaceResults
+	workspaceToolURL string
+	registry         *taskfunctionregistry.Registry
 }
 
 type invocationArguments struct {
@@ -86,17 +98,18 @@ type invocationArguments struct {
 }
 
 type invocationExecution struct {
-	arguments    invocationArguments
-	claims       agentgrant.InvocationClaims
-	agent        *iapiserver.Agent
-	session      *iapiserver.AgentSession
-	message      *iapiserver.AgentMessage
-	invocation   *iapiserver.AgentInvocation
-	runtime      *iapiserver.AgentRuntimeBinding
-	model        *modelgateway.UserModelExecutionContext
-	credential   *modelgateway.ResolvedCredential
-	endpointBase string
-	sequence     int
+	arguments     invocationArguments
+	claims        agentgrant.InvocationClaims
+	agent         *iapiserver.Agent
+	session       *iapiserver.AgentSession
+	message       *iapiserver.AgentMessage
+	invocation    *iapiserver.AgentInvocation
+	runtime       *iapiserver.AgentRuntimeBinding
+	model         *modelgateway.UserModelExecutionContext
+	credential    *modelgateway.ResolvedCredential
+	workspaceTool *agentgrant.WorkspaceToolClaims
+	endpointBase  string
+	sequence      int
 }
 
 type openCodeSession struct {
@@ -130,13 +143,28 @@ type hermesRPCMessage struct {
 }
 
 func NewInvocationExecutor(deps InvocationExecutorDependencies) (*InvocationExecutor, error) {
-	if deps.Store == nil || deps.Endpoints == nil || deps.Models == nil || deps.Credentials == nil || deps.Grants == nil || deps.Registry == nil {
+	if deps.Store == nil || deps.Endpoints == nil || deps.Models == nil || deps.Credentials == nil || deps.Grants == nil || deps.Workspaces == nil || deps.Registry == nil {
 		return nil, fmt.Errorf("agent invocation executor dependencies are required")
+	}
+	workspaceToolURL, err := workspaceToolEndpoint(deps.WorkspaceToolBaseURL)
+	if err != nil {
+		return nil, err
 	}
 	return &InvocationExecutor{
 		store: deps.Store, endpoints: deps.Endpoints, models: deps.Models,
-		credentials: deps.Credentials, grants: deps.Grants, registry: deps.Registry,
+		credentials: deps.Credentials, grants: deps.Grants, workspaces: deps.Workspaces,
+		workspaceToolURL: workspaceToolURL, registry: deps.Registry,
 	}, nil
+}
+
+func workspaceToolEndpoint(baseURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("appstudio workspace tool base URL is invalid")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + mcpprotocol.AppStudioWorkspaceToolPath
+	return parsed.String(), nil
 }
 
 func (e *InvocationExecutor) Execute(
@@ -154,7 +182,7 @@ func (e *InvocationExecutor) Execute(
 	if completed, result, err := e.completedResult(ctx, execution, contract); completed || err != nil {
 		if completed {
 			providerID := deterministicOpenCodeID("omnimam", execution.arguments.InvocationID)
-			if cleanupErr := e.removeOpenCodeAuth(context.WithoutCancel(ctx), execution.endpointBase, providerID); cleanupErr != nil {
+			if cleanupErr := e.cleanupOpenCodeInvocation(context.WithoutCancel(ctx), execution, providerID); cleanupErr != nil {
 				return nil, fmt.Errorf("remove completed agent invocation runtime authentication: %w", cleanupErr)
 			}
 		}
@@ -171,7 +199,7 @@ func (e *InvocationExecutor) Execute(
 	authConfigured, err := e.configureOpenCode(ctx, execution, providerID)
 	if authConfigured {
 		defer func() {
-			if cleanupErr := e.removeOpenCodeAuth(context.WithoutCancel(ctx), execution.endpointBase, providerID); cleanupErr != nil {
+			if cleanupErr := e.cleanupOpenCodeInvocation(context.WithoutCancel(ctx), execution, providerID); cleanupErr != nil {
 				result = nil
 				resultErr = stderrors.Join(resultErr, fmt.Errorf("remove agent invocation runtime authentication: %w", cleanupErr))
 			}
@@ -227,6 +255,12 @@ func (e *InvocationExecutor) Execute(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("persist agent message completion event: %w", err)
+	}
+	if err := e.verifyCodingResult(ctx, execution); err != nil {
+		if !stderrors.Is(err, errCodingResultMissing) {
+			return nil, err
+		}
+		return e.failedResult(ctx, execution, contract, sessionID, response.Info.ID, assistant.ID, err)
 	}
 	execution.sequence, err = e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationCompleted, &iapiserver.AgentInvocationCompletedEventPayload{
 		Status: iapiserver.AgentInvocationStatusSucceeded, AssistantMessageID: assistant.ID,
@@ -641,8 +675,28 @@ func (e *InvocationExecutor) prepare(
 		claims.ExpectedResourceVersion != arguments.ExpectedResourceVersion || claims.OwnerUserID != atomicTask.CreatedBy {
 		return nil, nil, fmt.Errorf("agent invocation authorization scope does not match the task")
 	}
+	var workspaceTool *agentgrant.WorkspaceToolClaims
+	if arguments.InvocationType == iapiserver.AgentInvocationTypeCoding {
+		if claims.WorkspaceToolGrantRef == "" {
+			return nil, nil, fmt.Errorf("coding invocation workspace tool authorization is missing")
+		}
+		workspaceTool = &agentgrant.WorkspaceToolClaims{}
+		if err := e.grants.Resolve(claims.WorkspaceToolGrantRef, iapiserver.AppStudioRefPrefixWorkspaceToolGrant, workspaceTool); err != nil {
+			return nil, nil, fmt.Errorf("resolve coding invocation workspace tool authorization: %w", err)
+		}
+		if err := agentgrant.ValidateWindow(workspaceTool.IssuedAt, workspaceTool.ExpiresAt); err != nil {
+			return nil, nil, fmt.Errorf("validate coding invocation workspace tool authorization: %w", err)
+		}
+		if workspaceTool.OwnerUserID != claims.OwnerUserID || workspaceTool.AgentID != claims.AgentID ||
+			workspaceTool.SessionID != claims.SessionID || workspaceTool.InvocationID != claims.InvocationID ||
+			workspaceTool.WorkspaceID != claims.WorkspaceID || workspaceTool.StudioApplicationID == "" || workspaceTool.InitialRevision < 0 {
+			return nil, nil, fmt.Errorf("coding invocation workspace tool authorization scope does not match the task")
+		}
+	} else if claims.WorkspaceToolGrantRef != "" {
+		return nil, nil, fmt.Errorf("chat invocation must not receive workspace tool authorization")
+	}
 
-	execution := &invocationExecution{arguments: arguments, claims: claims, sequence: arguments.EventSequenceAfter}
+	execution := &invocationExecution{arguments: arguments, claims: claims, workspaceTool: workspaceTool, sequence: arguments.EventSequenceAfter}
 	if execution.agent, err = e.store.GetAgent(ctx, arguments.AgentID, claims.OwnerUserID); err != nil {
 		return nil, nil, fmt.Errorf("load agent invocation agent: %w", err)
 	}
@@ -799,6 +853,17 @@ func (e *InvocationExecutor) configureOpenCode(ctx context.Context, execution *i
 			"id": execution.model.RemoteModel, "name": execution.model.RemoteModel,
 		}},
 	}}}
+	if execution.workspaceTool != nil {
+		config["mcp"] = map[string]any{workspaceToolServerKey: map[string]any{
+			"type": "remote", "url": e.workspaceToolURL, "enabled": true,
+			"headers": map[string]string{"Authorization": "Bearer " + execution.claims.WorkspaceToolGrantRef},
+		}}
+		tools := map[string]bool{workspaceToolServerKey + "_*": false}
+		for _, tool := range []string{mcpprotocol.ToolAppStudioSourceStatus, mcpprotocol.ToolAppStudioSourceList, mcpprotocol.ToolAppStudioSourceRead, mcpprotocol.ToolAppStudioChangeSetApply} {
+			tools[workspaceToolServerKey+"_"+tool] = true
+		}
+		config["tools"] = tools
+	}
 	if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPatch, "/global/config", config, nil); err != nil {
 		return true, fmt.Errorf("configure agent invocation runtime model: %w", err)
 	}
@@ -865,7 +930,7 @@ func (e *InvocationExecutor) promptOpenCode(ctx context.Context, execution *invo
 	err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/message", map[string]any{
 		"messageID": messageID,
 		"model":     map[string]any{"providerID": providerID, "modelID": execution.model.RemoteModel},
-		"parts":     []map[string]any{{"type": "text", "text": execution.message.Content}},
+		"parts":     []map[string]any{{"type": "text", "text": invocationPrompt(execution)}},
 	}, &response)
 	if err != nil {
 		return nil, fmt.Errorf("execute agent invocation runtime message: %w", err)
@@ -877,6 +942,16 @@ func (e *InvocationExecutor) promptOpenCode(ctx context.Context, execution *invo
 		return nil, fmt.Errorf("agent invocation runtime message failed")
 	}
 	return &response, nil
+}
+
+func invocationPrompt(execution *invocationExecution) string {
+	if execution == nil || execution.workspaceTool == nil {
+		if execution == nil || execution.message == nil {
+			return ""
+		}
+		return execution.message.Content
+	}
+	return fmt.Sprintf("You are editing an OmniMAM AppStudio application through the %s MCP server. Canonical source is not mounted. First inspect source status and files with the Workspace Tool. Apply every write as an atomic ChangeSet with base_revision and a stable idempotency_key. Do not report completion until the ChangeSet tool returns an applied target revision greater than the initial revision %d. Authorized path scope: .\n\nUser request:\n%s", workspaceToolServerKey, execution.workspaceTool.InitialRevision, execution.message.Content)
 }
 
 func (e *InvocationExecutor) canceledResult(ctx context.Context, execution *invocationExecution, contract *taskfunctionregistry.Contract, sessionID string, cause error) (map[string]any, error) {
@@ -911,6 +986,31 @@ func (e *InvocationExecutor) canceledResult(ctx context.Context, execution *invo
 	return result, nil
 }
 
+func (e *InvocationExecutor) failedResult(
+	ctx context.Context,
+	execution *invocationExecution,
+	contract *taskfunctionregistry.Contract,
+	sessionID, invocationRef, assistantID string,
+	cause error,
+) (map[string]any, error) {
+	failureMessage := "Agent invocation completed without an applied ChangeSet and new source Revision."
+	sequence, err := e.appendEventOnce(ctx, execution.arguments.InvocationID, execution.sequence, iapiserver.AgentOperationEventTypeInvocationFailed, &iapiserver.AgentInvocationFailedEventPayload{
+		Status: iapiserver.AgentInvocationStatusFailed, FailureCode: iapiserver.AgentInvocationFailureCodeInvocationFailed, FailureMessage: failureMessage,
+	})
+	if err != nil {
+		return nil, stderrors.Join(cause, fmt.Errorf("persist failed agent invocation event: %w", err))
+	}
+	execution.sequence = sequence
+	result := invocationResult(
+		execution, sessionID, invocationRef, iapiserver.AgentInvocationStatusFailed, assistantID,
+		iapiserver.AgentInvocationFailureCodeInvocationFailed, failureMessage,
+	)
+	if err := e.registry.ValidateOutput(contract, result); err != nil {
+		return nil, stderrors.Join(cause, fmt.Errorf("validate failed agent invocation output: %w", err))
+	}
+	return result, nil
+}
+
 func (e *InvocationExecutor) completedResult(ctx context.Context, execution *invocationExecution, contract *taskfunctionregistry.Contract) (bool, map[string]any, error) {
 	events, err := e.store.ListAgentOperationEvents(ctx, execution.arguments.InvocationID, execution.arguments.EventSequenceAfter)
 	if err != nil {
@@ -927,6 +1027,9 @@ func (e *InvocationExecutor) completedResult(ctx context.Context, execution *inv
 	}
 	if !completed {
 		return false, nil, nil
+	}
+	if err := e.verifyCodingResult(ctx, execution); err != nil {
+		return false, nil, err
 	}
 	assistantID := execution.invocation.AssistantMessageID
 	if assistantID == "" {
@@ -967,6 +1070,27 @@ func (e *InvocationExecutor) completedResult(ctx context.Context, execution *inv
 		return false, nil, fmt.Errorf("validate completed agent invocation output: %w", err)
 	}
 	return true, result, nil
+}
+
+func (e *InvocationExecutor) verifyCodingResult(ctx context.Context, execution *invocationExecution) error {
+	if execution == nil || execution.arguments.InvocationType != iapiserver.AgentInvocationTypeCoding {
+		return nil
+	}
+	if execution.workspaceTool == nil {
+		return fmt.Errorf("coding invocation workspace tool result fence is unavailable")
+	}
+	changeSets, err := e.workspaces.ResolveStudioInvocationChangeSets(ctx, execution.workspaceTool.StudioApplicationID, execution.claims.OwnerUserID, []string{execution.arguments.InvocationID})
+	if err != nil {
+		return fmt.Errorf("resolve coding invocation ChangeSet result: %w", err)
+	}
+	changeSet := changeSets[execution.arguments.InvocationID]
+	if changeSet == nil || changeSet.TargetRevision == nil || *changeSet.TargetRevision <= execution.workspaceTool.InitialRevision ||
+		changeSet.WorkspaceID != execution.workspaceTool.WorkspaceID || changeSet.AgentID != execution.arguments.AgentID ||
+		changeSet.AgentSessionID != execution.arguments.SessionID || changeSet.AgentInvocationID != execution.arguments.InvocationID ||
+		changeSet.Status != iapiserver.AppStudioChangeSetStatusApplied {
+		return errCodingResultMissing
+	}
+	return nil
 }
 
 func (e *InvocationExecutor) appendEventOnce(ctx context.Context, invocationID string, after int, eventType string, payload any) (int, error) {
@@ -1018,6 +1142,27 @@ func (e *InvocationExecutor) removeOpenCodeAuth(ctx context.Context, baseURL, pr
 		return fmt.Errorf("remove runtime authentication: %w", err)
 	}
 	return nil
+}
+
+func (e *InvocationExecutor) cleanupOpenCodeInvocation(ctx context.Context, execution *invocationExecution, providerID string) error {
+	cleanupCtx, cancel := context.WithTimeout(ctx, openCodeCleanupTimeout)
+	defer cancel()
+	var cleanupErrors []error
+	if execution != nil && execution.workspaceTool != nil {
+		config := map[string]any{
+			"mcp": map[string]any{workspaceToolServerKey: map[string]any{
+				"type": "remote", "url": e.workspaceToolURL, "enabled": false, "headers": map[string]string{},
+			}},
+			"tools": map[string]bool{workspaceToolServerKey + "_*": false},
+		}
+		if err := invokeOpenCode(cleanupCtx, execution.endpointBase, http.MethodPatch, "/global/config", config, nil); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("disable runtime workspace tool: %w", err))
+		}
+	}
+	if err := e.removeOpenCodeAuth(cleanupCtx, execution.endpointBase, providerID); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	return stderrors.Join(cleanupErrors...)
 }
 
 func invokeOpenCode(ctx context.Context, baseURL, method, path string, payload, output any, acceptedStatuses ...int) error {

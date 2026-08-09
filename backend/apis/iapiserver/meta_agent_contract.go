@@ -144,6 +144,8 @@ const (
 	AgentRuntimeStateFailed = "FAILED"
 	// AgentRuntimeActivityIdle 表示 Runtime 已就绪且无活动 Invocation。
 	AgentRuntimeActivityIdle = "IDLE"
+	// AgentRuntimeActivityActive 表示 Runtime 正在执行至少一个 Invocation。
+	AgentRuntimeActivityActive = "ACTIVE"
 	// AgentRuntimeActivitySuspended 表示 Runtime 活动已挂起。
 	AgentRuntimeActivitySuspended = "SUSPENDED"
 	// AgentRuntimeHealthUnknown 表示尚无可用 Runtime 健康结论。

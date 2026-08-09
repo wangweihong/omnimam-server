@@ -131,7 +131,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if cfg.InfrastructureClientOptions == nil {
 		return nil, errors.New("infrastructure client options are required for agent grants")
 	}
-	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, 10*time.Minute)
+	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, time.Hour)
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent grant codec")
 	}
@@ -197,7 +197,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio source content store")
 	}
-	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, Sources: sourceStore, Artifacts: storeIns.AssetsV1()})
+	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, Sources: sourceStore, Artifacts: storeIns.AssetsV1(), Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}

@@ -35,6 +35,7 @@ type TaskClient interface {
 // WorkspaceBindingValidator 由 AppStudio 提供 Coding Agent 固定 Workspace 授权校验。
 type WorkspaceBindingValidator interface {
 	ValidateAgentWorkspaceBinding(context.Context, string, string) (*iapiserver.AgentAuthorizationSummary, error)
+	IssueAgentWorkspaceToolGrant(context.Context, string, string, string, string, string) (string, *agentgrant.WorkspaceToolClaims, error)
 }
 
 // ModelAccessResolver 将 Agent ModelBinding 转换为不含明文凭证的 ModelAccessSpec 引用。
@@ -549,12 +550,24 @@ func (s *Service) submitInvocationTask(
 		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error()))
 	}
 	expectedVersion := invocation.ResourceVersion + 1
+	workspaceToolGrantRef := ""
+	if invocation.Type == iapiserver.AgentInvocationTypeCoding {
+		if s.workspaces == nil {
+			return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "appstudio workspace tool is unavailable"))
+		}
+		workspaceToolGrantRef, _, err = s.workspaces.IssueAgentWorkspaceToolGrant(
+			ctx, agent.OwnerUserID, agent.ID, invocation.SessionID, invocation.ID, agent.WorkspaceID,
+		)
+		if err != nil {
+			return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error()))
+		}
+	}
 	issuedAt, expiresAt := s.grants.Window()
 	authorizationRef, err := s.grants.Issue(iapiserver.TaskWorkerRefPrefixAgentInvocationGrant, agentgrant.InvocationClaims{
 		OwnerUserID: agent.OwnerUserID, AgentID: agent.ID, SessionID: invocation.SessionID,
 		InvocationID: invocation.ID, RuntimeBindingID: runtime.ID, InvocationType: invocation.Type,
 		ExpectedResourceVersion: expectedVersion, WorkspaceID: agent.WorkspaceID,
-		ModelAccessGrantRef: modelAccessRef, IssuedAt: issuedAt, ExpiresAt: expiresAt,
+		WorkspaceToolGrantRef: workspaceToolGrantRef, ModelAccessGrantRef: modelAccessRef, IssuedAt: issuedAt, ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error()))
@@ -1399,6 +1412,21 @@ func (s *Service) ReconcileQueuedInvocations(ctx context.Context) error {
 		}
 		if submitErr := s.submitQueuedInvocations(ctx, runtime, candidate.OwnerUserID); submitErr != nil {
 			errs = append(errs, submitErr)
+		}
+	}
+	return stderrors.Join(errs...)
+}
+
+// ReconcileInvocationActivity 恢复 started/terminal 事实与 Invocation、Runtime active/idle 投影之间的缺口。
+func (s *Service) ReconcileInvocationActivity(ctx context.Context) error {
+	candidates, err := s.store.ListAgentInvocationActivityCandidates(ctx, 200)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, candidate := range candidates {
+		if projectErr := s.store.ProjectAgentInvocationActivity(ctx, candidate.InvocationID, candidate.Active); projectErr != nil {
+			errs = append(errs, projectErr)
 		}
 	}
 	return stderrors.Join(errs...)

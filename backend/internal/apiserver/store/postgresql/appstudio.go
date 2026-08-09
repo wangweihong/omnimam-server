@@ -242,6 +242,20 @@ func (s *appStudioStore) GetStudioWorkspaceRevision(ctx context.Context, workspa
 	return &item, nil
 }
 
+// GetStudioChangeSetByIdempotencyKey 返回同一 Workspace 内已提交的 ChangeSet，供服务层在写正文前完成幂等重放。
+func (s *appStudioStore) GetStudioChangeSetByIdempotencyKey(ctx context.Context, workspaceID, idempotencyKey, owner string) (*iapiserver.StudioChangeSet, error) {
+	var item iapiserver.StudioChangeSet
+	err := s.ds.db.WithContext(ctx).
+		Joins("JOIN studio_workspaces ON studio_workspaces.id = studio_change_sets.workspace_id").
+		Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
+		Where("studio_change_sets.workspace_id = ? AND studio_change_sets.idempotency_key = ? AND studio_applications.owner_user_id = ?", workspaceID, idempotencyKey, owner).
+		First(&item).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio change set not visible")
+	}
+	return &item, nil
+}
+
 func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string, changeSet *iapiserver.StudioChangeSet, revision *iapiserver.StudioWorkspaceRevision, files []*iapiserver.StudioSourceFile) (*iapiserver.StudioChangeSet, error) {
 	var result = changeSet
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

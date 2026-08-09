@@ -68,6 +68,7 @@ readonly OMNIMAM_OPAQUE_SERVER_SETUP="${OMNIMAM_OPAQUE_SERVER_SETUP:-${APISERVER
 readonly OMNIMAM_INFRA_SERVICE_TOKEN="${OMNIMAM_INFRA_SERVICE_TOKEN:-${APISERVER_INFRASTRUCTURE_CLIENT_TOKEN}}"
 readonly OMNIMAM_MCP_PUBLIC_BASE_URL="${OMNIMAM_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}}"
 readonly OMNIMAM_STORAGE_ROOT="${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}"
+readonly OMNIMAM_APPSTUDIO_SOURCE_DIR="${OMNIMAM_APPSTUDIO_SOURCE_DIR:-/var/lib/omnimam/appstudio-source}"
 if [[ -z "${OMNIMAM_INFRA_PROFILE_IMAGES:-}" ]]; then
     OMNIMAM_INFRA_PROFILE_IMAGES='{"agent.hermes@1.0":"nousresearch/hermes-agent:v2026.8.3","agent.coding@1.0":"ghcr.io/anomalyco/opencode:1.18.13","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}'
 fi
@@ -80,4 +81,5 @@ export OMNIMAM_OPAQUE_SERVER_SETUP
 export OMNIMAM_INFRA_SERVICE_TOKEN
 export OMNIMAM_MCP_PUBLIC_BASE_URL
 export OMNIMAM_STORAGE_ROOT
+export OMNIMAM_APPSTUDIO_SOURCE_DIR
 export OMNIMAM_INFRA_PROFILE_IMAGES

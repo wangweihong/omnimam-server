@@ -47,6 +47,12 @@ type AgentRuntimeQueueCandidate struct {
 	OwnerUserID string
 }
 
+// AgentInvocationActivityCandidate 标识需要恢复 active/idle 业务投影的 Invocation。
+type AgentInvocationActivityCandidate struct {
+	InvocationID string
+	Active       bool
+}
+
 // AgentRuntimeTerminalProjection 是 Runtime 生命周期 Task 允许写回的受栅栏投影。
 // Store 仅在当前 Task、操作和资源版本全部匹配时应用，并在终态清空当前操作。
 type AgentRuntimeTerminalProjection struct {
@@ -132,6 +138,8 @@ type AgentStore interface {
 	ListQueuedAgentInvocationsByAgent(context.Context, string) ([]*iapiserver.AgentInvocation, error)
 	ListPendingAgentTerminalTaskIDs(context.Context, int) ([]string, error)
 	ListAgentRuntimeQueueCandidates(context.Context, int) ([]AgentRuntimeQueueCandidate, error)
+	ListAgentInvocationActivityCandidates(context.Context, int) ([]AgentInvocationActivityCandidate, error)
+	ProjectAgentInvocationActivity(context.Context, string, bool) error
 	UpdateAgentInvocation(context.Context, *iapiserver.AgentInvocation) (*iapiserver.AgentInvocation, error)
 	FailAgentInvocationSubmission(context.Context, string, int64, int, string) (*iapiserver.AgentInvocation, bool, error)
 	RetryAgentInvocationSubmission(context.Context, string, int64, int) (*iapiserver.AgentInvocation, bool, error)
@@ -203,6 +211,7 @@ type AppStudioStore interface {
 	GetStudioWorkspace(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
 	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)
 	GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error)
+	GetStudioChangeSetByIdempotencyKey(context.Context, string, string, string) (*iapiserver.StudioChangeSet, error)
 	ApplyStudioChangeSet(context.Context, string, *iapiserver.StudioChangeSet, *iapiserver.StudioWorkspaceRevision, []*iapiserver.StudioSourceFile) (*iapiserver.StudioChangeSet, error)
 	ResolveStudioInvocationChangeSets(context.Context, string, string, []string) (map[string]*iapiserver.StudioChangeSet, error)
 	CreateStudioSourceSnapshot(context.Context, string, *iapiserver.StudioSourceSnapshot) (*iapiserver.StudioSourceSnapshot, error)

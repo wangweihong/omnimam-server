@@ -39,6 +39,10 @@ Compose 提供与 `scripts/install/environment.sh` 一致的本地开发默认�
 docker compose -f deployments/docker-compose.yaml down
 ```
 
+AppStudio 的不可变 Source Revision 正文保存在 `omnimam_appstudio_source` volume，容器内目录默认为
+`/var/lib/omnimam/appstudio-source`。如需覆盖路径，统一通过 `scripts/install/environment.sh` 中的
+`OMNIMAM_APPSTUDIO_SOURCE_DIR` 或部署进程环境设置；Coding Agent 不直接挂载该 volume。
+
 Conductor 的业务元数据和运行历史保存在独立 PostgreSQL 数据库，延迟任务与 Scheduler
 队列使用开启 AOF 的 Redis。该组合用于保证六段秒级 cron 按期触发，并避免 PostgreSQL
 Queue 的 unack 回收周期放大短周期调度延迟。RedisQueueDAO 使用 Jedis，Redis 可用性由

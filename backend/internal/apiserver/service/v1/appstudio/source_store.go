@@ -1,6 +1,7 @@
 package appstudio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func (s *LocalSourceContentStore) WriteRevision(ctx context.Context, workspaceID
 	}
 	target := filepath.Join(s.baseDir, workspaceID, strconv.FormatInt(revision, 10))
 	if _, err := os.Stat(target); err == nil {
-		return nil
+		return revisionContentMatches(ctx, target, files)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -69,9 +70,50 @@ func (s *LocalSourceContentStore) WriteRevision(ctx context.Context, workspaceID
 	}
 	if err := os.Rename(temporary, target); err != nil {
 		if _, statErr := os.Stat(target); statErr == nil {
-			return nil
+			return revisionContentMatches(ctx, target, files)
 		}
 		return err
+	}
+	return nil
+}
+
+func revisionContentMatches(ctx context.Context, target string, expected map[string][]byte) error {
+	actual := make(map[string][]byte, len(expected))
+	err := filepath.WalkDir(target, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return fmt.Errorf("source revision contains an unsupported entry")
+		}
+		relative, err := filepath.Rel(target, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		actual[filepath.ToSlash(relative)] = content
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("source revision content conflicts with an existing immutable revision")
+	}
+	for path, content := range expected {
+		stored, ok := actual[path]
+		if !ok || !bytes.Equal(stored, content) {
+			return fmt.Errorf("source revision content conflicts with an existing immutable revision")
+		}
 	}
 	return nil
 }
