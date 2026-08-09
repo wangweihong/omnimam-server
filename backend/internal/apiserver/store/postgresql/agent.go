@@ -203,9 +203,11 @@ func (s *agentStore) CreateAgentAssistantMessage(ctx context.Context, message *i
 
 func (s *agentStore) ListAgentMessages(ctx context.Context, req *iapiserver.AgentMessageListRequest, ownerUserID string) ([]*iapiserver.AgentMessage, int64, error) {
 	var items []*iapiserver.AgentMessage
-	query := req.BasicQueryParam.ToUnpaginatedQuery(ctx, s.ds.db.Model(&iapiserver.AgentMessage{}), func(query *gorm.DB) *gorm.DB {
-		return query.Joins("JOIN agent_sessions ON agent_sessions.id = agent_messages.session_id").Where("agent_messages.session_id = ? AND agent_sessions.owner_user_id = ?", req.SessionID, ownerUserID)
-	})
+	query := s.ds.db.WithContext(ctx).Model(&iapiserver.AgentMessage{}).
+		Joins("JOIN agent_sessions ON agent_sessions.id = agent_messages.session_id").
+		Where("agent_messages.session_id = ? AND agent_sessions.owner_user_id = ?", req.SessionID, ownerUserID).
+		Order("agent_messages.created_at DESC").
+		Order("agent_messages.id DESC")
 	total, err := CountAndFindPage(query, req.PagingParams, &items)
 	return items, total, err
 }

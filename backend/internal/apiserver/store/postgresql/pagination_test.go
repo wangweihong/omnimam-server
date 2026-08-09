@@ -86,3 +86,33 @@ func TestListStudioApplicationsUsesCaseInsensitiveKeyword(t *testing.T) {
 		t.Fatalf("keyword SQL is not case-insensitive: %s", sql)
 	}
 }
+
+func TestListAgentMessagesUsesStableNewestFirstOrder(t *testing.T) {
+	var output bytes.Buffer
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=localhost user=test dbname=test sslmode=disable"}), &gorm.Config{
+		DryRun:               true,
+		DisableAutomaticPing: true,
+		Logger: logger.New(log.New(&output, "", 0), logger.Config{
+			LogLevel: logger.Info,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("open dry-run database: %v", err)
+	}
+
+	agentStore := newAgentStore(&datastore{db: db})
+	_, _, err = agentStore.ListAgentMessages(t.Context(), &iapiserver.AgentMessageListRequest{
+		BasicQueryParam: imachinery.BasicQueryParam{
+			PagingParams: imachinery.PagingParams{PageSize: 50},
+		},
+		SessionID: "session-1",
+	}, "user-1")
+	if err != nil {
+		t.Fatalf("ListAgentMessages() error = %v", err)
+	}
+
+	const expectedOrder = "ORDER BY agent_messages.created_at DESC,agent_messages.id DESC"
+	if sql := output.String(); !strings.Contains(sql, expectedOrder) {
+		t.Fatalf("message history SQL is not stably ordered by creation and id: %s", sql)
+	}
+}

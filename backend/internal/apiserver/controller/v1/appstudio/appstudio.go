@@ -52,6 +52,13 @@ func (c *Controller) SendAgentMessage(ctx *gin.Context) {
 	})
 }
 
+// ListAgentMessages 返回应用当前 generation/session 的 Coding Agent 消息历史，不暴露 Workspace 或内部绑定。
+func (c *Controller) ListAgentMessages(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentMessageListRequest{}, func(req *iapiserver.StudioAgentMessageListRequest) (any, error) {
+		return c.service.ListAgentMessages(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
 // ListAgentInvocations 返回应用当前 generation 的 Invocation 列表。
 func (c *Controller) ListAgentInvocations(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.AgentInvocationListRequest{}, func(req *iapiserver.AgentInvocationListRequest) (any, error) {

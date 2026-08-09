@@ -126,6 +126,24 @@ type StudioAgentStatus struct {
 	CurrentInvocationID *string `json:"current_invocation_id,omitempty"`
 }
 
+// StudioAgentMessage 是应用当前 Coding Agent generation/session 的受限消息投影。
+// +k8s:deepcopy-gen=true
+type StudioAgentMessage struct {
+	ID           string                  `json:"id"`
+	InvocationID *string                 `json:"invocation_id"`
+	Role         string                  `json:"role"`
+	Content      string                  `json:"content"`
+	Attachments  []StudioAgentAttachment `json:"attachments"`
+	CreatedAt    imachinery.Time         `json:"created_at"`
+}
+
+// StudioAgentMessageListResponse 返回当前 generation/session 的稳定倒序消息历史。
+// +k8s:deepcopy-gen=true
+type StudioAgentMessageListResponse struct {
+	Total int64                 `json:"total"`
+	Items []*StudioAgentMessage `json:"items"`
+}
+
 // +k8s:deepcopy-gen=true
 type StudioAgentInvocation struct {
 	ID                      string          `json:"id"`

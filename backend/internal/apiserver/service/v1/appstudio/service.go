@@ -40,6 +40,7 @@ type CodingAgentCreator interface {
 	GetCodingAgentForStudio(context.Context, string, string, string) (*iapiserver.Agent, *iapiserver.AgentSession, error)
 	GetCodingModelBindingForStudio(context.Context, string, string, string) (*iapiserver.AgentModelBinding, error)
 	SendMessage(context.Context, string, *iapiserver.AgentMessageRequest) (*iapiserver.AgentInvocation, error)
+	ListMessages(context.Context, string, *iapiserver.AgentMessageListRequest) (*iapiserver.AgentMessageListResponse, error)
 	ListInvocations(context.Context, string, *iapiserver.AgentInvocationListRequest) (*iapiserver.AgentInvocationListResponse, error)
 	GetInvocation(context.Context, string) (*iapiserver.AgentInvocation, error)
 	CancelInvocation(context.Context, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentInvocation, error)
@@ -239,6 +240,28 @@ func (s *Service) SendAgentMessage(ctx context.Context, appID string, req *iapis
 		return nil, err
 	}
 	return s.projectStudioAgentInvocation(ctx, app, invocation)
+}
+
+// ListAgentMessages 返回当前 generation/session 的受限消息投影，不暴露 Agent 私有字段。
+func (s *Service) ListAgentMessages(ctx context.Context, appID string, req *iapiserver.StudioAgentMessageListRequest) (*iapiserver.StudioAgentMessageListResponse, error) {
+	app, _, session, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.agents.ListMessages(ctx, session.ID, &iapiserver.AgentMessageListRequest{
+		BasicQueryParam: imachinery.BasicQueryParam{PagingParams: req.PagingParams},
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*iapiserver.StudioAgentMessage, 0, len(result.Items))
+	for _, message := range result.Items {
+		if message == nil || message.AgentID != app.CodingAgentID || message.SessionID != app.CodingSessionID {
+			return nil, errors.NewStatus(code.ErrAgentSessionNotVisible, "coding agent message not visible")
+		}
+		items = append(items, studioAgentMessageProjection(message))
+	}
+	return &iapiserver.StudioAgentMessageListResponse{Total: result.Total, Items: items}, nil
 }
 
 // ListAgentInvocations 返回当前 generation 的 CODING Invocation 列表。
@@ -1050,6 +1073,29 @@ func validateStudioInvocationBinding(app *iapiserver.StudioApplication, invocati
 		return errors.NewStatus(code.ErrAgentSessionNotVisible, "coding invocation not visible")
 	}
 	return nil
+}
+
+func studioAgentMessageProjection(message *iapiserver.AgentMessage) *iapiserver.StudioAgentMessage {
+	attachments := make([]iapiserver.StudioAgentAttachment, 0, len(message.Attachments))
+	for _, attachment := range message.Attachments {
+		attachments = append(attachments, iapiserver.StudioAgentAttachment{
+			Type:        attachment.ReferenceType,
+			ReferenceID: attachment.ReferenceID,
+		})
+	}
+	var invocationID *string
+	if message.InvocationID != "" {
+		value := message.InvocationID
+		invocationID = &value
+	}
+	return &iapiserver.StudioAgentMessage{
+		ID:           message.ID,
+		InvocationID: invocationID,
+		Role:         message.Role,
+		Content:      message.Content,
+		Attachments:  attachments,
+		CreatedAt:    message.CreatedAt,
+	}
 }
 
 func (s *Service) projectStudioAgentInvocation(ctx context.Context, app *iapiserver.StudioApplication, invocation *iapiserver.AgentInvocation) (*iapiserver.StudioAgentInvocation, error) {

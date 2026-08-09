@@ -149,6 +149,7 @@ func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	agentRead := rg.Group("/studio-applications/:studio_application_id/agent")
 	agentRead.Use(authmiddleware.RequireIdentityPermission("appstudio.agent.read"))
 	agentRead.GET("", c.GetAgentStatus)
+	agentRead.GET("/messages", c.ListAgentMessages)
 	agentRead.GET("/invocations", c.ListAgentInvocations)
 	agentRead.GET("/invocations/:agent_invocation_id", c.GetAgentInvocation)
 	agentRead.GET("/invocations/:agent_invocation_id/events", c.StreamAgentInvocationEvents)

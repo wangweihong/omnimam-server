@@ -300,6 +300,28 @@ type StudioAgentMessageRequest struct {
 	Attachments []StudioAgentAttachment `json:"attachments,omitempty" binding:"omitempty,max=50,dive"`
 }
 
+// StudioAgentMessageListRequest 查询应用当前 Coding Agent generation/session 的消息历史。
+// +k8s:deepcopy-gen=true
+type StudioAgentMessageListRequest struct {
+	imachinery.BasicQueryParam
+}
+
+// SetDefaults 对齐 Studio Agent 消息历史契约的默认分页大小 50。
+func (r *StudioAgentMessageListRequest) SetDefaults() {
+	if r.PageSize == 0 {
+		r.PageSize = 50
+	}
+}
+
+// Validate 限制消息历史每页最多返回 200 项。
+func (r *StudioAgentMessageListRequest) Validate() error {
+	if r.PageSize > 200 {
+		return fmt.Errorf("page_size must be less than or equal to 200")
+	}
+	_, err := r.PagingParams.Normalize()
+	return err
+}
+
 // StudioAgentReplaceRequest 原子切换应用当前 Coding Agent generation，旧历史保持可审计。
 // +k8s:deepcopy-gen=true
 type StudioAgentReplaceRequest struct {
