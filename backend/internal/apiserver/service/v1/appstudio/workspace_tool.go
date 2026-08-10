@@ -78,17 +78,29 @@ func (s *Service) ProcessWorkspaceToolRequest(
 	authorization string,
 	headers protocol.Headers,
 	body []byte,
-) (protocol.Response, int) {
+) (any, int) {
 	requestID := protocol.RequestIDOrNull(body)
 	claims, err := s.resolveWorkspaceToolGrant(ctx, authorization)
 	if err != nil {
 		return workspaceToolRPCFailure(requestID, code.ErrAppStudioSourceAccessInvalid, "ERR_APPSTUDIO_SOURCE_ACCESS_INVALID", "workspace tool authorization is invalid"), 200
+	}
+	if headers.Method == "" && headers.Name == "" {
+		requestCtx := context.WithValue(ctx, workspaceToolClaimsContextKey{}, claims)
+		if response, status, handled := s.workspaceToolProcessor.ProcessInitializeProtocol(requestCtx, body); handled {
+			return response, status
+		}
 	}
 	if transportErr := protocol.ValidateHeaders(headers); transportErr != nil {
 		return protocol.Response{JSONRPC: "2.0", ID: requestID, Error: transportErr.RPC}, transportErr.HTTPStatus
 	}
 	requestCtx := context.WithValue(ctx, workspaceToolClaimsContextKey{}, claims)
 	return s.workspaceToolProcessor.Process(requestCtx, headers, body)
+}
+
+// ValidateWorkspaceToolGrant 仅验证内部 Runtime 的短期 Workspace Tool grant，不执行 MCP 方法。
+func (s *Service) ValidateWorkspaceToolGrant(ctx context.Context, authorization string) error {
+	_, err := s.resolveWorkspaceToolGrant(ctx, authorization)
+	return err
 }
 
 func (s *Service) resolveWorkspaceToolGrant(ctx context.Context, authorization string) (*agentgrant.WorkspaceToolClaims, error) {
@@ -252,7 +264,11 @@ func (s *Service) workspaceSourceRead(ctx context.Context, claims *agentgrant.Wo
 
 func workspaceToolDefinitions() []protocol.ToolDefinition {
 	object := func(required []string, properties map[string]any) map[string]any {
-		return map[string]any{"type": "object", "additionalProperties": false, "required": required, "properties": properties}
+		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		return schema
 	}
 	integer := map[string]any{"type": "integer", "minimum": 0}
 	path := map[string]any{"type": "string", "minLength": 1, "maxLength": 1024}

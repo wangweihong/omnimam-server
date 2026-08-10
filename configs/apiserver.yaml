@@ -18,7 +18,7 @@ insecure:
 secure:
   bind-address: ${APISERVER_SECURE_BIND_ADDRESS} # HTTPS 安全模式的 IP 地址，默认为 0.0.0.0
   bind-port: ${APISERVER_SECURE_BIND_PORT} # 使用 HTTPS 安全模式的端口号默认为 8443
-  required: false
+  required: ${APISERVER_SECURE_REQUIRED}
   tls:
     #cert-dir:  # TLS 证书所在的目录
     #pair-name:  # TLS 私钥对名称

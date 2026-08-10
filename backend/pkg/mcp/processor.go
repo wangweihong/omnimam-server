@@ -13,9 +13,27 @@ import (
 )
 
 const (
-	base64SentinelPrefix = "=?base64?"
-	base64SentinelSuffix = "?="
+	base64SentinelPrefix                 = "=?base64?"
+	base64SentinelSuffix                 = "?="
+	initializeProtocolVersion20241105    = "2024-11-05"
+	initializeProtocolVersion20250326    = "2025-03-26"
+	initializeProtocolVersion20250618    = "2025-06-18"
+	initializeProtocolVersion20251125    = "2025-11-25"
+	initializeProtocolFallbackVersion    = initializeProtocolVersion20251125
+	methodInitialize                     = "initialize"
+	methodInitializedNotification        = "notifications/initialized"
+	methodPing                           = "ping"
+	initializeProtocolServerName         = "omnimam-workspace"
+	initializeProtocolServerVersion      = "1.0.0"
+	initializeProtocolServerInstructions = "Use only application-relative paths. Apply all writes atomically with base_revision and an idempotency key."
 )
+
+var initializeProtocolVersions = map[string]struct{}{
+	initializeProtocolVersion20241105: {},
+	initializeProtocolVersion20250326: {},
+	initializeProtocolVersion20250618: {},
+	initializeProtocolVersion20251125: {},
+}
 
 // Headers contains the MCP transport metadata validated independently for each request.
 type Headers struct {
@@ -90,6 +108,100 @@ func (p *Processor) Process(ctx context.Context, headers Headers, body []byte) (
 		return errorResponse(request.ID, &RPCError{Code: JSONRPCInternalError, Message: "internal MCP dispatch error"}), 500
 	}
 	return Response{JSONRPC: "2.0", ID: request.ID, Result: result}, 200
+}
+
+// ProcessInitializeProtocol adapts the initialize-handshake MCP versions used by
+// OpenCode to the same dispatcher as the released per-request metadata protocol.
+// The caller must keep this adapter on an internal, independently authenticated route.
+func (p *Processor) ProcessInitializeProtocol(ctx context.Context, body []byte) (*Response, int, bool) {
+	var request struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if !json.Valid(body) || json.Unmarshal(body, &request) != nil {
+		return nil, 0, false
+	}
+	switch request.Method {
+	case methodInitialize, methodInitializedNotification, methodPing, MethodToolsList, MethodToolsCall:
+	default:
+		return nil, 0, false
+	}
+	if request.JSONRPC != "2.0" {
+		return initializeProtocolError(request.ID, JSONRPCInvalidRequest, "invalid JSON-RPC request", 400)
+	}
+	if request.Method == methodInitializedNotification {
+		if len(request.ID) != 0 {
+			return initializeProtocolError(request.ID, JSONRPCInvalidRequest, "initialized must be a notification", 400)
+		}
+		return nil, 202, true
+	}
+	if err := validateRequestID(request.ID); err != nil {
+		return initializeProtocolError(json.RawMessage("null"), JSONRPCInvalidRequest, err.Error(), 400)
+	}
+	if p == nil || p.dispatcher == nil {
+		return initializeProtocolError(request.ID, JSONRPCInternalError, "internal MCP dispatch error", 500)
+	}
+	switch request.Method {
+	case methodInitialize:
+		var params struct {
+			ProtocolVersion string                     `json:"protocolVersion"`
+			Capabilities    map[string]json.RawMessage `json:"capabilities"`
+			ClientInfo      Implementation             `json:"clientInfo"`
+		}
+		if err := decodeStrict(request.Params, &params); err != nil || params.ProtocolVersion == "" || params.Capabilities == nil || validateImplementation(params.ClientInfo) != nil {
+			return initializeProtocolError(request.ID, JSONRPCInvalidParams, "invalid initialize params", 200)
+		}
+		version := params.ProtocolVersion
+		if _, supported := initializeProtocolVersions[version]; !supported {
+			version = initializeProtocolFallbackVersion
+		}
+		return &Response{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{
+			"protocolVersion": version,
+			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+			"serverInfo":      Implementation{Name: initializeProtocolServerName, Version: initializeProtocolServerVersion},
+			"instructions":    initializeProtocolServerInstructions,
+		}}, 200, true
+	case methodPing:
+		return &Response{JSONRPC: "2.0", ID: request.ID, Result: map[string]any{}}, 200, true
+	case MethodToolsList:
+		result, err := p.dispatcher.Dispatch(ctx, Invocation{Method: MethodToolsList})
+		return initializeProtocolDispatchResult(request.ID, result, err)
+	case MethodToolsCall:
+		var params struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments,omitempty"`
+		}
+		if err := decodeStrict(request.Params, &params); err != nil || params.Name == "" {
+			return initializeProtocolError(request.ID, JSONRPCInvalidParams, "invalid tool call params", 200)
+		}
+		if len(params.Arguments) == 0 {
+			params.Arguments = json.RawMessage("{}")
+		}
+		if !isJSONObject(params.Arguments) {
+			return initializeProtocolError(request.ID, JSONRPCInvalidParams, "invalid tool call params", 200)
+		}
+		result, err := p.dispatcher.Dispatch(ctx, Invocation{Method: MethodToolsCall, Name: params.Name, Arguments: params.Arguments})
+		return initializeProtocolDispatchResult(request.ID, result, err)
+	default:
+		panic("unreachable initialize protocol method")
+	}
+}
+
+func initializeProtocolDispatchResult(id json.RawMessage, result any, err error) (*Response, int, bool) {
+	if err == nil {
+		return &Response{JSONRPC: "2.0", ID: id, Result: result}, 200, true
+	}
+	var dispatched *RPCError
+	if errors.As(err, &dispatched) {
+		return &Response{JSONRPC: "2.0", ID: id, Error: dispatched}, 200, true
+	}
+	return initializeProtocolError(id, JSONRPCInternalError, "internal MCP dispatch error", 500)
+}
+
+func initializeProtocolError(id json.RawMessage, code int, message string, status int) (*Response, int, bool) {
+	return &Response{JSONRPC: "2.0", ID: id, Error: &RPCError{Code: code, Message: message}}, status, true
 }
 
 func decodeRequest(body []byte) (Request, *RPCError) {

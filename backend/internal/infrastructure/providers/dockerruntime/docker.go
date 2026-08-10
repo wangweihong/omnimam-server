@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,11 +35,13 @@ func (m MapProfileImages) Image(id, revision string) (string, bool) {
 }
 
 type DockerProvider struct {
-	client      *http.Client
-	runtimeHTTP *http.Client
-	images      ProfileImageResolver
-	apiVersion  string
-	networkMode string
+	client       *http.Client
+	runtimeHTTP  *http.Client
+	images       ProfileImageResolver
+	apiVersion   string
+	networkMode  string
+	runtimeCA    []byte
+	sourceVolume string
 }
 
 type dockerContainerInspect struct {
@@ -67,27 +70,41 @@ type agentServiceProfile struct {
 
 const (
 	openCodeConfigInstallCommand = "umask 077; cat > /root/.config/opencode/opencode.json && chmod 600 /root/.config/opencode/opencode.json && touch /run/omnimam/start"
-	dockerExecInspectInterval    = 50 * time.Millisecond
-	dockerExecInspectTimeout     = 5 * time.Second
+	openCodeCAInstallCommand     = "umask 077; cat > /run/omnimam/mcp-ca.crt && chmod 400 /run/omnimam/mcp-ca.crt"
+	openCodeRuntimeCAPath        = "/run/omnimam/mcp-ca.crt"
+	previewContentRoot           = "/usr/share/nginx/html"
+	previewRuntimeCommand        = `set -eu
+cp -R /mnt/omnimam/source/. /usr/share/nginx/html/
+chmod -R a+rX,a-w /usr/share/nginx/html
+exec /docker-entrypoint.sh nginx -g 'daemon off;'`
+	maxRuntimeCABundleBytes   = 1 << 20
+	dockerExecInspectInterval = 50 * time.Millisecond
+	dockerExecInspectTimeout  = 5 * time.Second
 )
 
-func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver) (providers.RuntimeProvider, error) {
+func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver, runtimeCAFile, sourceVolume string) (providers.RuntimeProvider, error) {
 	if socketPath == "" {
 		socketPath = "/var/run/docker.sock"
 	}
 	if apiVersion == "" {
-		apiVersion = "v1.44"
+		apiVersion = "v1.45"
 	}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socketPath)
 	}}
 	provider := &DockerProvider{
-		client:      &http.Client{Transport: transport, Timeout: 2 * time.Minute},
-		runtimeHTTP: &http.Client{Timeout: 5 * time.Second},
-		images:      images,
-		apiVersion:  apiVersion,
-		networkMode: "bridge",
+		client:       &http.Client{Transport: transport, Timeout: 2 * time.Minute},
+		runtimeHTTP:  &http.Client{Timeout: 5 * time.Second},
+		images:       images,
+		apiVersion:   apiVersion,
+		networkMode:  "bridge",
+		sourceVolume: strings.TrimSpace(sourceVolume),
 	}
+	runtimeCA, err := readRuntimeCA(runtimeCAFile)
+	if err != nil {
+		return nil, err
+	}
+	provider.runtimeCA = runtimeCA
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := provider.request(ctx, http.MethodGet, "/_ping", nil, nil); err != nil {
@@ -95,6 +112,24 @@ func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolve
 	}
 	provider.networkMode = provider.detectNetwork(ctx)
 	return provider, nil
+}
+
+func readRuntimeCA(path string) ([]byte, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	runtimeCA, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read coding runtime MCP CA bundle: %w", err)
+	}
+	if len(runtimeCA) == 0 || len(runtimeCA) > maxRuntimeCABundleBytes {
+		return nil, fmt.Errorf("coding runtime MCP CA bundle must contain 1 to %d bytes", maxRuntimeCABundleBytes)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(runtimeCA) {
+		return nil, fmt.Errorf("coding runtime MCP CA bundle contains no PEM certificates")
+	}
+	return runtimeCA, nil
 }
 func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error) {
 	var info struct {
@@ -108,15 +143,15 @@ func (d *DockerProvider) Info(ctx context.Context) (*iapiserver.InfraNode, error
 	return &iapiserver.InfraNode{ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraNodeIDDockerLocal, Name: iapiserver.InfraNodeNameDockerLocal}, ProviderType: iapiserver.InfraProviderTypeDocker, Status: iapiserver.InfraNodeStatusOnline, CPUCores: float64(info.NCPU), MemoryMB: info.MemTotal / (1024 * 1024), LastHeartbeatAt: imachinery.Now()}, nil
 }
 func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderRequest) (*providers.ProviderResult, error) {
+	if input.Profile == nil || input.Request == nil {
+		return nil, fmt.Errorf("docker runtime profile and request are required")
+	}
 	if d.images == nil {
 		return nil, fmt.Errorf("docker profile image catalog is unavailable")
 	}
 	image, ok := d.images.Image(input.Profile.ID, input.Profile.Revision)
 	if !ok || image == "" {
 		return nil, fmt.Errorf("docker image is not configured for profile %s@%s", input.Profile.ID, input.Profile.Revision)
-	}
-	if len(input.Request.Mounts) > 0 {
-		return nil, fmt.Errorf("docker source resolver is not configured for requested mounts")
 	}
 	env := make([]string, 0, len(input.Request.ConfigurationBindings))
 	for _, binding := range input.Request.ConfigurationBindings {
@@ -128,9 +163,33 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		}
 		env = append(env, normalizedEnvName(binding.Name)+"="+binding.Reference)
 	}
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAgentCoding && len(d.runtimeCA) > 0 {
+		const caEnvPrefix = "NODE_EXTRA_CA_CERTS="
+		filtered := env[:0]
+		for _, value := range env {
+			if !strings.HasPrefix(value, caEnvPrefix) {
+				filtered = append(filtered, value)
+			}
+		}
+		env = append(filtered, caEnvPrefix+openCodeRuntimeCAPath)
+	}
 	hostConfig := map[string]any{"ReadonlyRootfs": true, "Privileged": false, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "NetworkMode": d.networkMode, "AutoRemove": false, "PidsLimit": 256}
 	body := map[string]any{"Image": image, "Env": env, "Labels": map[string]string{"io.omnimam.runtime_id": input.RuntimeID, "io.omnimam.profile": input.Profile.ID}, "HostConfig": hostConfig}
 	serviceProfile, agentService := agentRuntimeServiceProfile(input.Profile.ID)
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb {
+		// 官方 Nginx 镜像需要写入缓存/PID，并由 master 将缓存目录交给 worker；仅恢复该启动路径所需权限。
+		hostConfig["Tmpfs"] = map[string]string{
+			"/var/cache/nginx": "rw,nosuid,nodev,noexec,size=16m",
+			"/var/run":         "rw,nosuid,nodev,noexec,size=1m",
+			previewContentRoot: "rw,nosuid,nodev,noexec,size=64m",
+		}
+		hostConfig["CapAdd"] = []string{"CHOWN", "SETGID", "SETUID"}
+		if err := d.configurePreviewSource(input, body, hostConfig); err != nil {
+			return nil, err
+		}
+	} else if len(input.Request.Mounts) > 0 {
+		return nil, fmt.Errorf("docker source resolver does not support mounts for profile %s", input.Profile.ID)
+	}
 	if agentService {
 		if len(input.MCPBindings) > 0 && input.Profile.ID != iapiserver.InfraRuntimeProfileIDAgentCoding {
 			return nil, fmt.Errorf("MCP bindings are only supported by the coding runtime")
@@ -155,6 +214,12 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		return nil, err
 	}
 	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAgentCoding {
+		if len(d.runtimeCA) > 0 {
+			if err := d.execWithInput(ctx, created.ID, []string{"/bin/sh", "-c", openCodeCAInstallCommand}, d.runtimeCA); err != nil {
+				_ = d.Delete(context.Background(), created.ID)
+				return nil, fmt.Errorf("install coding runtime MCP CA bundle: %w", err)
+			}
+		}
 		if err := d.injectOpenCodeConfig(ctx, created.ID, input.MCPBindings); err != nil {
 			_ = d.Delete(context.Background(), created.ID)
 			return nil, err
@@ -188,6 +253,68 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		return nil, fmt.Errorf("docker runtime exited after start with status %s", state.Status)
 	}
 	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: iapiserver.InfraEndpointDisplayRefPrefix + input.RuntimeID}, nil
+}
+
+func (d *DockerProvider) configurePreviewSource(input providers.ProviderRequest, body, hostConfig map[string]any) error {
+	if len(input.Request.Mounts) != 1 {
+		return fmt.Errorf("static web Preview requires exactly one source revision mount")
+	}
+	mount := input.Request.Mounts[0]
+	if mount.MountKind != iapiserver.InfraMountKindStudioWorkspaceRevision || !mount.ReadOnly || mount.TargetPath != iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource || mount.SourceRef != input.Request.SourceRef {
+		return fmt.Errorf("static web Preview source revision mount is invalid")
+	}
+	if d.sourceVolume == "" || strings.TrimSpace(d.sourceVolume) != d.sourceVolume || strings.ContainsAny(d.sourceVolume, `/\\`) || d.sourceVolume == "." || d.sourceVolume == ".." {
+		return fmt.Errorf("AppStudio source volume is not configured")
+	}
+	subpath, err := previewSourceSubpath(mount.SourceRef, input.Request.AuthorizationRef, input.Request.OwnerReference)
+	if err != nil {
+		return err
+	}
+	hostConfig["Mounts"] = []map[string]any{{
+		"Type":     "volume",
+		"Source":   d.sourceVolume,
+		"Target":   mount.TargetPath,
+		"ReadOnly": true,
+		"VolumeOptions": map[string]any{
+			"Subpath": subpath,
+		},
+	}}
+	// 每次容器启动都从受控只读 Revision 重建 tmpfs，避免 stop/start 后丢失 Preview 内容。
+	body["Entrypoint"] = []string{"/bin/sh", "-c"}
+	body["Cmd"] = []string{previewRuntimeCommand}
+	return nil
+}
+
+func previewSourceSubpath(sourceRef, authorizationRef, ownerReference string) (string, error) {
+	source := strings.TrimPrefix(sourceRef, iapiserver.InfraRefPrefixStudioWorkspaceRevision)
+	if source == sourceRef {
+		return "", fmt.Errorf("Preview source reference is invalid")
+	}
+	sourceParts := strings.Split(source, "/")
+	if len(sourceParts) != 2 || !validPreviewReferencePart(sourceParts[0]) {
+		return "", fmt.Errorf("Preview source reference is invalid")
+	}
+	revision, err := strconv.ParseInt(sourceParts[1], 10, 64)
+	if err != nil || revision < 0 {
+		return "", fmt.Errorf("Preview source reference is invalid")
+	}
+	grant := strings.TrimPrefix(authorizationRef, iapiserver.AppStudioRefPrefixPreviewGrant)
+	if grant == authorizationRef {
+		return "", fmt.Errorf("Preview authorization reference is invalid")
+	}
+	grantParts := strings.Split(grant, "/")
+	if len(grantParts) != 3 || !validPreviewReferencePart(grantParts[0]) || !validPreviewReferencePart(grantParts[1]) {
+		return "", fmt.Errorf("Preview authorization reference is invalid")
+	}
+	resourceVersion, err := strconv.ParseInt(grantParts[2], 10, 64)
+	if err != nil || resourceVersion < 0 || grantParts[0] != sourceParts[0] || grantParts[1] != ownerReference {
+		return "", fmt.Errorf("Preview source reference is outside its authorization scope")
+	}
+	return sourceParts[0] + "/" + strconv.FormatInt(revision, 10), nil
+}
+
+func validPreviewReferencePart(value string) bool {
+	return value != "" && value != "." && value != ".." && !strings.ContainsAny(value, `/\\%\x00`)
 }
 
 func (d *DockerProvider) injectOpenCodeConfig(ctx context.Context, ref string, bindings []providers.ResolvedMCPBinding) error {
@@ -447,9 +574,26 @@ func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
 			port:       14096,
 			command: `set -eu
 while [ ! -f /run/omnimam/start ]; do sleep 0.1; done
-printf '#!/bin/sh\nexec nc 127.0.0.1 4096\n' > /run/omnimam/forward
+printf '#!/bin/sh\nexec nc -w 1 127.0.0.1 4096\n' > /run/omnimam/forward
 chmod 500 /run/omnimam/forward
-nc -lk -p 14096 -e /run/omnimam/forward &
+while :; do
+  if ! nc -l -s 0.0.0.0 -p 14096 -e /run/omnimam/forward; then
+    sleep 0.1
+  fi
+done &
+forwarder_pid=$!
+for attempt in $(seq 1 100); do
+  if awk '$2 ~ /:3710$/ && $4 == "0A" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6; then
+    break
+  fi
+  if ! kill -0 "$forwarder_pid" 2>/dev/null; then
+    exit 1
+  fi
+  sleep 0.01
+done
+if ! awk '$2 ~ /:3710$/ && $4 == "0A" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6; then
+  exit 1
+fi
 exec opencode serve --hostname 127.0.0.1 --port 4096`,
 			tmpfs: map[string]string{
 				"/tmp":                        "rw,nosuid,nodev,noexec,size=64m",
@@ -457,6 +601,7 @@ exec opencode serve --hostname 127.0.0.1 --port 4096`,
 				"/root/.cache/opencode":       "rw,nosuid,nodev,noexec,size=64m",
 				"/root/.config/opencode":      "rw,nosuid,nodev,noexec,size=32m",
 				"/root/.local/share/opencode": "rw,nosuid,nodev,noexec,size=128m",
+				"/root/.local/state/opencode": "rw,nosuid,nodev,noexec,size=16m",
 			},
 		}, true
 	case iapiserver.InfraRuntimeProfileIDAgentHermes:

@@ -104,12 +104,14 @@ const (
 	InfraRuntimeProfileIDAppStudioBuildAPI      = "appstudio.build.web-backend"
 	InfraRuntimeProfileIDAppStudioProductionWeb = "appstudio.production.static-web"
 	InfraRuntimeProfileIDAppStudioProductionAPI = "appstudio.production.web-backend"
-	InfraRuntimeCapabilityCPU                   = "cpu"
-	InfraRuntimeCapabilityNetwork               = "network"
-	InfraRuntimeCapabilityPersistentWorkspace   = "persistent_workspace"
-	InfraRuntimeCapabilityWorkspaceTool         = "workspace_tool"
-	InfraRuntimeCapabilityEndpoint              = "endpoint"
-	InfraRuntimeCapabilityArtifactOutput        = "artifact_output"
+	// InfraRuntimeMountTargetAppStudioStaticWebSource 是静态 Web Runtime 接收不可变源码 Revision 的受控只读路径。
+	InfraRuntimeMountTargetAppStudioStaticWebSource = "/mnt/omnimam/source"
+	InfraRuntimeCapabilityCPU                       = "cpu"
+	InfraRuntimeCapabilityNetwork                   = "network"
+	InfraRuntimeCapabilityPersistentWorkspace       = "persistent_workspace"
+	InfraRuntimeCapabilityWorkspaceTool             = "workspace_tool"
+	InfraRuntimeCapabilityEndpoint                  = "endpoint"
+	InfraRuntimeCapabilityArtifactOutput            = "artifact_output"
 
 	// Infrastructure endpoint 解析和内容响应使用的协议标识。
 	InfraProtocolHTTP                 = "http"

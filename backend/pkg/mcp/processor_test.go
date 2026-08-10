@@ -112,6 +112,72 @@ func TestProcessor_Process(t *testing.T) {
 	}
 }
 
+func TestProcessor_ProcessInitializeProtocol(t *testing.T) {
+	t.Parallel()
+
+	t.Run("initialize and notification", func(t *testing.T) {
+		t.Parallel()
+		processor, err := NewProcessor(&recordingDispatcher{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, status, handled := processor.ProcessInitializeProtocol(t.Context(), []byte(`{
+			"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+				"protocolVersion":"2025-06-18","capabilities":{},
+				"clientInfo":{"name":"opencode","version":"1.18.13"}
+			}
+		}`))
+		if !handled || status != 200 || response == nil || response.Error != nil {
+			t.Fatalf("initialize = (%#v, %d, %t), want successful handled response", response, status, handled)
+		}
+		result, ok := response.Result.(map[string]any)
+		if !ok || result["protocolVersion"] != "2025-06-18" {
+			t.Fatalf("initialize result = %#v", response.Result)
+		}
+
+		response, status, handled = processor.ProcessInitializeProtocol(t.Context(), []byte(`{
+			"jsonrpc":"2.0","method":"notifications/initialized"
+		}`))
+		if !handled || status != 202 || response != nil {
+			t.Fatalf("initialized notification = (%#v, %d, %t), want empty 202", response, status, handled)
+		}
+	})
+
+	t.Run("tools call", func(t *testing.T) {
+		t.Parallel()
+		dispatcher := &recordingDispatcher{result: ToolCompleteResult{Content: []ContentBlock{{Type: "text", Text: "ok"}}}}
+		processor, err := NewProcessor(dispatcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, status, handled := processor.ProcessInitializeProtocol(t.Context(), []byte(`{
+			"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{
+				"name":"omnimam.appstudio.source.status","arguments":{}
+			}
+		}`))
+		if !handled || status != 200 || response == nil || response.Error != nil {
+			t.Fatalf("tools/call = (%#v, %d, %t), want successful handled response", response, status, handled)
+		}
+		if dispatcher.invocation.Method != MethodToolsCall || dispatcher.invocation.Name != "omnimam.appstudio.source.status" || string(dispatcher.invocation.Arguments) != "{}" {
+			t.Fatalf("dispatched invocation = %#v", dispatcher.invocation)
+		}
+	})
+
+	t.Run("released protocol remains separate", func(t *testing.T) {
+		t.Parallel()
+		processor, err := NewProcessor(&recordingDispatcher{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, status, handled := processor.ProcessInitializeProtocol(t.Context(), []byte(`{
+			"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}
+		}`))
+		if handled || status != 0 || response != nil {
+			t.Fatalf("server/discover compatibility = (%#v, %d, %t), want unhandled", response, status, handled)
+		}
+	})
+}
+
 func TestValidateHeaders_RejectsZeroQuality(t *testing.T) {
 	t.Parallel()
 	failure := ValidateHeaders(Headers{

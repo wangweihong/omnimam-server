@@ -89,6 +89,7 @@ services:
       APISERVER_INSECURE_BIND_PORT: 8080
       APISERVER_SECURE_BIND_ADDRESS: 0.0.0.0
       APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_REQUIRED: "true"
       APISERVER_DATABASE_TYPE: postgresql
       APISERVER_DATABASE_NAME: ${OMNIMAM_POSTGRES_DB:-omnimam}
       APISERVER_POSTGRES_HOST: postgres
@@ -105,7 +106,7 @@ services:
       APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
-      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}}
+      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
@@ -121,6 +122,36 @@ services:
       - -ec
     command:
       - |
+        ensure_local_mcp_tls() {
+          cert_dir=/etc/omnimam/cert
+          if [ -s "$$cert_dir/ca.crt" ] && [ -s "$$cert_dir/apiserver.crt" ] && [ -s "$$cert_dir/apiserver.key" ]; then
+            return
+          fi
+          umask 077
+          mkdir -p "$$cert_dir"
+          openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+            -subj "/CN=OmniMAM Local MCP CA" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -keyout "$$cert_dir/ca.key.new" -out "$$cert_dir/ca.crt.new"
+          openssl req -new -newkey rsa:3072 -sha256 -nodes \
+            -subj "/CN=apiserver" \
+            -addext "subjectAltName=DNS:apiserver,DNS:localhost,IP:127.0.0.1" \
+            -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth" \
+            -keyout "$$cert_dir/apiserver.key.new" -out "$$cert_dir/apiserver.csr.new"
+          openssl x509 -req -sha256 -days 825 \
+            -in "$$cert_dir/apiserver.csr.new" \
+            -CA "$$cert_dir/ca.crt.new" -CAkey "$$cert_dir/ca.key.new" -CAcreateserial \
+            -copy_extensions copy -out "$$cert_dir/apiserver.crt.new"
+          mv "$$cert_dir/ca.key.new" "$$cert_dir/ca.key"
+          mv "$$cert_dir/ca.crt.new" "$$cert_dir/ca.crt"
+          mv "$$cert_dir/apiserver.key.new" "$$cert_dir/apiserver.key"
+          mv "$$cert_dir/apiserver.crt.new" "$$cert_dir/apiserver.crt"
+          rm -f "$$cert_dir/apiserver.csr.new" "$$cert_dir/ca.crt.srl" "$$cert_dir/ca.crt.new.srl"
+          chmod 600 "$$cert_dir/ca.key" "$$cert_dir/apiserver.key"
+          chmod 644 "$$cert_dir/ca.crt" "$$cert_dir/apiserver.crt"
+        }
         render_config() {
           template="$$1"
           output="$$2"
@@ -132,6 +163,7 @@ services:
             APISERVER_INSECURE_BIND_PORT \
             APISERVER_SECURE_BIND_ADDRESS \
             APISERVER_SECURE_BIND_PORT \
+            APISERVER_SECURE_REQUIRED \
             APISERVER_SECURE_TLS_CERT_FILE \
             APISERVER_SECURE_TLS_CERT_KEY \
             APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR \
@@ -160,14 +192,20 @@ services:
             sed -i "s/\$${$$name}/$$escaped/g" "$$output"
           done
         }
+        ensure_local_mcp_tls
         render_config /etc/omnimam-template/apiserver.yaml /tmp/apiserver.yaml
-        exec /opt/omnimam/bin/apiserver -c /tmp/apiserver.yaml
+        # 嵌套 cert-key 的配置文件值会被当前 pflag 绑定保留的空默认值覆盖；显式 flag 保证 TLS fail-closed 启动。
+        exec /opt/omnimam/bin/apiserver -c /tmp/apiserver.yaml \
+          --secure.required="$$APISERVER_SECURE_REQUIRED" \
+          --secure.tls.cert-key.cert-file="$$APISERVER_SECURE_TLS_CERT_FILE" \
+          --secure.tls.cert-key.private-key-file="$$APISERVER_SECURE_TLS_CERT_KEY"
     volumes:
       - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
       - omnimam_logs:/var/log/omnimam
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
       - omnimam_appstudio_source:/var/lib/omnimam/appstudio-source
+      - omnimam_mcp_tls:/etc/omnimam/cert
 
   infraserver:
     image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/infraserver:${OMNIMAM_IMAGE_TAG:-latest-amd64}
@@ -186,6 +224,7 @@ services:
       APISERVER_INSECURE_BIND_PORT: 8080
       APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
       APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_REQUIRED: "false"
       APISERVER_SECURE_TLS_CERT_FILE: ""
       APISERVER_SECURE_TLS_CERT_KEY: ""
       APISERVER_DATABASE_TYPE: postgresql
@@ -202,7 +241,7 @@ services:
       APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
-      APISERVER_MCP_PUBLIC_BASE_URL: http://127.0.0.1:8080
+      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
       APISERVER_CONDUCTOR_BASE_URL: ""
       APISERVER_CONDUCTOR_AUTH_KEY: ""
@@ -210,7 +249,9 @@ services:
       APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
       APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
       OMNIMAM_DOCKER_SOCKET: /var/run/docker.sock
-      OMNIMAM_DOCKER_API_VERSION: ${OMNIMAM_DOCKER_API_VERSION:-v1.44}
+      OMNIMAM_DOCKER_API_VERSION: ${OMNIMAM_DOCKER_API_VERSION:-v1.45}
+      OMNIMAM_MCP_RUNTIME_CA_FILE: ${OMNIMAM_MCP_RUNTIME_CA_FILE:-/etc/omnimam/mcp-tls/ca.crt}
+      OMNIMAM_APPSTUDIO_SOURCE_VOLUME: ${OMNIMAM_APPSTUDIO_SOURCE_VOLUME:-deployments_omnimam_appstudio_source}
       OMNIMAM_INFRA_LISTEN_ADDRESS: 0.0.0.0:8082
       OMNIMAM_INFRA_SERVICE_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
       OMNIMAM_INFRA_PROFILE_IMAGES: '${OMNIMAM_INFRA_PROFILE_IMAGES:-{"agent.hermes@1.0":"nousresearch/hermes-agent:v2026.8.3","agent.coding@1.0":"ghcr.io/anomalyco/opencode:1.18.13","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}}'
@@ -227,6 +268,7 @@ services:
       - ../configs/apiserver.yaml:/etc/omnimam-template/apiserver.yaml:ro
       - omnimam_logs:/var/log/omnimam
       - omnimam_debug:/var/lib/omnimam/debug
+      - omnimam_mcp_tls:/etc/omnimam/mcp-tls:ro
     entrypoint: [/bin/sh, -ec]
     command:
       - |
@@ -244,6 +286,7 @@ services:
           APISERVER_INSECURE_BIND_PORT \
           APISERVER_SECURE_BIND_ADDRESS \
           APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_REQUIRED \
           APISERVER_SECURE_TLS_CERT_FILE \
           APISERVER_SECURE_TLS_CERT_KEY \
           APISERVER_DATABASE_TYPE \
@@ -295,6 +338,7 @@ services:
       APISERVER_INSECURE_BIND_PORT: 8080
       APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
       APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_REQUIRED: "false"
       APISERVER_SECURE_TLS_CERT_FILE: ""
       APISERVER_SECURE_TLS_CERT_KEY: ""
       APISERVER_DATABASE_TYPE: postgresql
@@ -312,7 +356,7 @@ services:
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
       # 与 API Server 共用可信公开 Origin；远程 Coding Runtime 场景必须显式配置可达的 HTTPS 地址。
-      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}}
+      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
@@ -341,6 +385,7 @@ services:
           APISERVER_INSECURE_BIND_PORT \
           APISERVER_SECURE_BIND_ADDRESS \
           APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_REQUIRED \
           APISERVER_SECURE_TLS_CERT_FILE \
           APISERVER_SECURE_TLS_CERT_KEY \
           APISERVER_DATABASE_TYPE \
@@ -388,6 +433,7 @@ services:
       APISERVER_INSECURE_BIND_PORT: 8080
       APISERVER_SECURE_BIND_ADDRESS: 127.0.0.1
       APISERVER_SECURE_BIND_PORT: 8443
+      APISERVER_SECURE_REQUIRED: "false"
       APISERVER_SECURE_TLS_CERT_FILE: ""
       APISERVER_SECURE_TLS_CERT_KEY: ""
       APISERVER_DATABASE_TYPE: postgresql
@@ -404,7 +450,7 @@ services:
       APISERVER_ENGINE_HEALTH_INTERVAL: ${OMNIMAM_ENGINE_HEALTH_INTERVAL:-30s}
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
-      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:${OMNIMAM_APISERVER_PORT:-8080}}
+      APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
       APISERVER_CONDUCTOR_BASE_URL: ""
       APISERVER_CONDUCTOR_AUTH_KEY: ""
@@ -430,6 +476,7 @@ services:
           APISERVER_INSECURE_BIND_PORT \
           APISERVER_SECURE_BIND_ADDRESS \
           APISERVER_SECURE_BIND_PORT \
+          APISERVER_SECURE_REQUIRED \
           APISERVER_SECURE_TLS_CERT_FILE \
           APISERVER_SECURE_TLS_CERT_KEY \
           APISERVER_DATABASE_TYPE \
@@ -466,3 +513,5 @@ volumes:
   omnimam_debug:
   omnimam_assets:
   omnimam_appstudio_source:
+    name: ${OMNIMAM_APPSTUDIO_SOURCE_VOLUME:-deployments_omnimam_appstudio_source}
+  omnimam_mcp_tls:

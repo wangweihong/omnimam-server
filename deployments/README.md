@@ -42,11 +42,14 @@ docker compose -f deployments/docker-compose.yaml down
 AppStudio 的不可变 Source Revision 正文保存在 `omnimam_appstudio_source` volume，容器内目录默认为
 `/var/lib/omnimam/appstudio-source`。如需覆盖路径，统一通过 `scripts/install/environment.sh` 中的
 `OMNIMAM_APPSTUDIO_SOURCE_DIR` 或部署进程环境设置；Coding Agent 不直接挂载该 volume。
+静态 Web Preview 只读挂载该 volume 中获授权的单一 Workspace Revision 子目录，volume 实际名称由
+`OMNIMAM_APPSTUDIO_SOURCE_VOLUME` 控制。该隔离依赖 Docker API v1.45+ 的 volume subpath；本地默认
+`OMNIMAM_DOCKER_API_VERSION=v1.45`，使用旧 Engine 时 Preview 会显式失败而不会回退到整卷挂载。
 
-API Server 与 Task Worker 共用 `OMNIMAM_MCP_PUBLIC_BASE_URL`。本机开发默认使用
-`http://127.0.0.1:8080`；需要让 Coding Runtime 远程调用 AppStudio Workspace Tool 时，必须在
-部署进程环境中将其覆盖为 Runtime 可达的 HTTPS Origin，不能使用 `http://apiserver:8080` 之类的
-非 loopback 明文地址。
+API Server、Infrastructure Server、Task Worker 与 Notification Worker 共用
+`OMNIMAM_MCP_PUBLIC_BASE_URL`。Compose 本地默认使用 Runtime 可达的 `https://apiserver:8443`，
+并通过受控 CA bundle 建立信任；非 Compose 部署必须提供 Coding Runtime 可达的等价 HTTPS Origin，
+不能使用 Runtime 容器内的 `127.0.0.1` 或非 loopback 明文地址。
 
 Conductor 的业务元数据和运行历史保存在独立 PostgreSQL 数据库，延迟任务与 Scheduler
 队列使用开启 AOF 的 Redis。该组合用于保证六段秒级 cron 按期触发，并避免 PostgreSQL

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
 	appplatformsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
@@ -124,8 +126,22 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "construct user model service")
 	}
+	sourceDir := os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_DIR")
+	if sourceDir == "" {
+		sourceDir = "data/appstudio/source"
+	}
+	sourceStore, err := appstudiosvc.NewLocalSourceContentStore(sourceDir)
+	if err != nil {
+		return errors.Wrap(err, "construct appstudio source content store")
+	}
+	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{
+		Store: storeIns.AppStudio(), Tasks: tasks, Sources: sourceStore, Artifacts: storeIns.AssetsV1(), Grants: grantCodec,
+	})
+	if err != nil {
+		return errors.Wrap(err, "construct appstudio service for agent projector")
+	}
 	agentProjector, err := agentsvc.New(agentsvc.Dependencies{
-		Store: storeIns.Agents(), Tasks: tasks, Models: userModelService, Grants: grantCodec,
+		Store: storeIns.Agents(), Tasks: tasks, Workspaces: appStudioService, Models: userModelService, Grants: grantCodec,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct agent runtime projector")

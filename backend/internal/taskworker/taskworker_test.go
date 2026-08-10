@@ -141,7 +141,7 @@ func appStudioPreviewEnsureTestArguments(existing any) map[string]any {
 		iapiserver.TaskWorkerKeyStudioApplicationID: "application-1", iapiserver.TaskWorkerKeyPreviewRuntimeID: "preview-1", iapiserver.TaskWorkerKeyExistingInfraRuntimeID: existing,
 		iapiserver.TaskWorkerKeyWorkspaceID: "workspace-1", iapiserver.TaskWorkerKeyWorkspaceRevision: 7, iapiserver.TaskWorkerKeyWorkspaceRevisionSourceRef: iapiserver.TaskWorkerRefPrefixStudioWorkspaceRevision + "workspace-1/7",
 		iapiserver.TaskWorkerKeyRuntimeProfileID: iapiserver.TaskWorkerAppStudioPreviewProfileStaticWeb, iapiserver.TaskWorkerKeyRuntimeProfileRevision: "profile-rev-1", iapiserver.TaskWorkerKeyEndpointVisibility: iapiserver.TaskWorkerEndpointVisibilityUserAccessible,
-		iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant + "grant-1", iapiserver.TaskWorkerKeyExpectedResourceVersion: 3,
+		iapiserver.TaskWorkerKeyAuthorizationRef: iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant + "workspace-1/preview-1/3", iapiserver.TaskWorkerKeyExpectedResourceVersion: 3,
 		iapiserver.TaskWorkerKeyResourceRequirement: map[string]any{"cpu_cores": 1.5, "memory_mb": 512, "disk_mb": 1024},
 	}
 }
@@ -546,8 +546,11 @@ func TestExecuteAppStudioPreviewEnsureCreatesRuntime(t *testing.T) {
 	if request.Create.RequestID != "atomic-1:2" || request.Create.OwnerReference != "preview-1" || request.Create.RuntimeMode != iapiserver.TaskWorkerRuntimeModeService || request.Create.SourceRef != arguments["workspace_revision_source_ref"] {
 		t.Fatalf("create request identity/source = %#v", request.Create)
 	}
-	if request.Create.RuntimeProfileID != iapiserver.TaskWorkerAppStudioPreviewProfileStaticWeb || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || request.Create.AuthorizationRef != iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant+"grant-1" {
+	if request.Create.RuntimeProfileID != iapiserver.TaskWorkerAppStudioPreviewProfileStaticWeb || request.Create.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || request.Create.AuthorizationRef != iapiserver.TaskWorkerRefPrefixAppStudioPreviewGrant+"workspace-1/preview-1/3" {
 		t.Fatalf("create request profile/security = %#v", request.Create)
+	}
+	if len(request.Create.Mounts) != 1 || request.Create.Mounts[0].SourceRef != request.Create.SourceRef || request.Create.Mounts[0].MountKind != iapiserver.InfraMountKindStudioWorkspaceRevision || request.Create.Mounts[0].TargetPath != iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource || !request.Create.Mounts[0].ReadOnly {
+		t.Fatalf("create request source mounts = %#v", request.Create.Mounts)
 	}
 	if result[iapiserver.TaskWorkerKeyInfraRuntimeID] != "infra-preview-1" || result[iapiserver.TaskWorkerKeyRuntimeStatus] != iapiserver.TaskWorkerRuntimeStatusRunning || result[iapiserver.TaskWorkerKeyHealthStatus] != iapiserver.TaskWorkerRuntimeHealthStatusHealthy || result[iapiserver.TaskWorkerKeyEndpointRef] != iapiserver.TaskWorkerRefPrefixInfraEndpoint+"endpoint-1" {
 		t.Fatalf("result = %#v", result)

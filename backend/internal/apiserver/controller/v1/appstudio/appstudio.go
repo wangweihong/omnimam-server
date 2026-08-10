@@ -17,7 +17,10 @@ import (
 	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
-const workspaceToolMaxRequestBytes = 1 << 20
+const (
+	workspaceToolMaxRequestBytes = 1 << 20
+	workspaceToolHeartbeat       = 15 * time.Second
+)
 
 type Controller struct{ service *appstudiosvc.Service }
 
@@ -25,6 +28,35 @@ func NewController(service *appstudiosvc.Service) *Controller { return &Controll
 
 // HandleWorkspaceTool 处理 Runtime 使用 Invocation 短期 grant 发起的内部 MCP 请求，不接受 Identity JWT。
 func (c *Controller) HandleWorkspaceTool(ctx *gin.Context) {
+	if ctx.Request.Method == http.MethodGet {
+		// OpenCode keeps this SSE transport open after the initialize handshake.
+		// Closing it after the acknowledgement makes the client reconnect without
+		// ever publishing the Workspace Tool IDs to the invocation runtime.
+		if err := c.service.ValidateWorkspaceToolGrant(ctx, ctx.GetHeader("Authorization")); err != nil {
+			ctx.Status(http.StatusUnauthorized)
+			return
+		}
+		ctx.Header("Content-Type", "text/event-stream")
+		ctx.Header("Cache-Control", "no-cache")
+		ctx.Header("Connection", "keep-alive")
+		ctx.Header("X-Accel-Buffering", "no")
+		ctx.Status(http.StatusOK)
+		_, _ = ctx.Writer.WriteString(": workspace tool connected\n\n")
+		ctx.Writer.Flush()
+		heartbeat := time.NewTicker(workspaceToolHeartbeat)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case <-ctx.Request.Context().Done():
+				return
+			case <-heartbeat.C:
+				if _, err := ctx.Writer.WriteString(": workspace tool heartbeat\n\n"); err != nil {
+					return
+				}
+				ctx.Writer.Flush()
+			}
+		}
+	}
 	ctx.Header("MCP-Protocol-Version", mcpprotocol.ProtocolVersion)
 	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, workspaceToolMaxRequestBytes)
 	body, err := io.ReadAll(ctx.Request.Body)
@@ -42,6 +74,10 @@ func (c *Controller) HandleWorkspaceTool(ctx *gin.Context) {
 		Accept:          ctx.GetHeader("Accept"),
 		ContentType:     ctx.GetHeader("Content-Type"),
 	}, body)
+	if response == nil {
+		ctx.Status(status)
+		return
+	}
 	ctx.JSON(status, response)
 }
 

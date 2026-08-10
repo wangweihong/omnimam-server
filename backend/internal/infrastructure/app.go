@@ -43,7 +43,13 @@ func Run(cfg *config.Config) error {
 	if err := json.Unmarshal([]byte(os.Getenv("OMNIMAM_INFRA_PROFILE_IMAGES")), &images); err != nil || len(images) == 0 {
 		return fmt.Errorf("OMNIMAM_INFRA_PROFILE_IMAGES must be a non-empty JSON object")
 	}
-	provider, err := dockerruntime.NewDockerProvider(os.Getenv("OMNIMAM_DOCKER_SOCKET"), os.Getenv("OMNIMAM_DOCKER_API_VERSION"), images)
+	provider, err := dockerruntime.NewDockerProvider(
+		os.Getenv("OMNIMAM_DOCKER_SOCKET"),
+		os.Getenv("OMNIMAM_DOCKER_API_VERSION"),
+		images,
+		os.Getenv("OMNIMAM_MCP_RUNTIME_CA_FILE"),
+		os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_VOLUME"),
+	)
 	if err != nil {
 		return err
 	}

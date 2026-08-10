@@ -124,7 +124,13 @@ func ExecutePreviewEnsure(
 	if arguments.EndpointVisibility != iapiserver.TaskWorkerEndpointVisibilityUserAccessible || invalidResourceRequirement(arguments.ResourceRequirement) {
 		return nil, fmt.Errorf("appstudio preview ensure runtime configuration is invalid")
 	}
-	command := ensureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.PreviewRuntimeID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.WorkspaceRevisionSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement)
+	mounts := []iapiserver.InfraRuntimeMountInput{{
+		SourceRef:  arguments.WorkspaceRevisionSourceRef,
+		TargetPath: iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource,
+		ReadOnly:   true,
+		MountKind:  iapiserver.InfraMountKindStudioWorkspaceRevision,
+	}}
+	command := ensureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.PreviewRuntimeID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.WorkspaceRevisionSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement, mounts)
 	return executeReady(ctx, client, registry, contract, command, arguments.ExistingInfraRuntimeID, "preview ensure")
 }
 
@@ -324,7 +330,7 @@ func ExecuteProductionReconcile(
 	if invalidResourceRequirement(arguments.ResourceRequirement) {
 		return nil, fmt.Errorf("appstudio production resource requirement is invalid")
 	}
-	command := ensureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.StudioRuntimeInstanceID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.ArtifactSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement)
+	command := ensureCommand(atomicTask, workerTask, contract, raw, arguments.ExistingInfraRuntimeID, arguments.StudioRuntimeInstanceID, arguments.RuntimeProfileID, arguments.RuntimeProfileRevision, arguments.ArtifactSourceRef, arguments.AuthorizationRef, arguments.EndpointVisibility, arguments.ResourceRequirement, nil)
 	return executeReady(ctx, client, registry, contract, command, arguments.ExistingInfraRuntimeID, "production reconcile")
 }
 
@@ -380,7 +386,7 @@ func decodeArguments[T any](arguments map[string]any) (T, error) {
 	return result, decoder.Decode(arguments)
 }
 
-func ensureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime.WorkerTask, contract *taskfunctionregistry.Contract, raw []byte, existing *string, ownerReference, profileID, profileRevision, sourceRef, authorizationRef, endpointVisibility string, resource iapiserver.InfraResourceRequirement) *infrastructure.CommandRequest {
+func ensureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime.WorkerTask, contract *taskfunctionregistry.Contract, raw []byte, existing *string, ownerReference, profileID, profileRevision, sourceRef, authorizationRef, endpointVisibility string, resource iapiserver.InfraResourceRequirement, mounts []iapiserver.InfraRuntimeMountInput) *infrastructure.CommandRequest {
 	if existing != nil {
 		return &infrastructure.CommandRequest{Operation: iapiserver.TaskWorkerInfrastructureOperationStart, RuntimeID: *existing}
 	}
@@ -396,6 +402,7 @@ func ensureCommand(atomicTask *iapiserver.AtomicTask, workerTask workflowruntime
 			RuntimeProfileID:       profileID,
 			RuntimeProfileRevision: profileRevision,
 			SourceRef:              sourceRef,
+			Mounts:                 mounts,
 			ResourceRequirement:    resource,
 			AuthorizationRef:       authorizationRef,
 			EndpointVisibility:     endpointVisibility,

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +23,228 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers"
 )
+
+func TestReadRuntimeCA(t *testing.T) {
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(tlsServer.Close)
+	validPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsServer.TLS.Certificates[0].Certificate[0]})
+	validPath := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(validPath, validPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(t.TempDir(), "invalid.crt")
+	if err := os.WriteFile(invalidPath, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		path    string
+		wantLen int
+		wantErr string
+	}{
+		{name: "not configured"},
+		{name: "valid PEM bundle", path: validPath, wantLen: len(validPEM)},
+		{name: "invalid PEM bundle", path: invalidPath, wantErr: "contains no PEM certificates"},
+		{name: "missing file", path: filepath.Join(t.TempDir(), "missing.crt"), wantErr: "read coding runtime MCP CA bundle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readRuntimeCA(tt.path)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("readRuntimeCA() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readRuntimeCA() error = %v", err)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("readRuntimeCA() length = %d, want %d", len(got), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestCodingRuntimeListenerReapsForwarderConnections(t *testing.T) {
+	profile, ok := agentRuntimeServiceProfile(iapiserver.InfraRuntimeProfileIDAgentCoding)
+	if !ok {
+		t.Fatal("agentRuntimeServiceProfile() did not return Coding Runtime profile")
+	}
+	if strings.Contains(profile.command, "nc -lk") {
+		t.Fatalf("Coding Runtime listener uses persistent nc process: %q", profile.command)
+	}
+	if !strings.Contains(profile.command, "printf '#!/bin/sh\\nexec nc -w 1 127.0.0.1 4096\\n'") {
+		t.Fatalf("Coding Runtime forwarder must bound keep-alive connections: %q", profile.command)
+	}
+	if !strings.Contains(profile.command, "while :; do\n  if ! nc -l -s 0.0.0.0 -p 14096 -e /run/omnimam/forward; then\n    sleep 0.1\n  fi\ndone &\nforwarder_pid=$!\nfor attempt in $(seq 1 100); do") {
+		t.Fatalf("Coding Runtime listener does not use a single-connection reaping loop: %q", profile.command)
+	}
+	if !strings.Contains(profile.command, `awk '$2 ~ /:3710$/ && $4 == "0A"`) {
+		t.Fatalf("Coding Runtime must wait for the forwarder listener before starting OpenCode: %q", profile.command)
+	}
+}
+
+func TestEnsurePinsCodingRuntimeCABundle(t *testing.T) {
+	createBody := make(chan []byte, 1)
+	provider := newDockerTestProvider(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/create":
+			createBody <- readDockerTestBody(t, request)
+			writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "container-1"})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/start":
+			http.Error(response, "startup stopped for environment inspection", http.StatusInternalServerError)
+		case request.Method == http.MethodDelete && request.URL.Path == "/v1.44/containers/container-1":
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	provider.images = MapProfileImages{"agent.coding@1.0": "coding-image:test"}
+	provider.runtimeCA = []byte("public CA bundle")
+
+	_, err := provider.Ensure(t.Context(), providers.ProviderRequest{
+		RuntimeID: "runtime-1",
+		Profile: &iapiserver.InfraRuntimeProfile{
+			ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraRuntimeProfileIDAgentCoding},
+			Revision:   "1.0",
+		},
+		Request: &iapiserver.InfraCreateRuntimeRequest{
+			RuntimeMode: iapiserver.InfraRuntimeModeService,
+			ConfigurationBindings: []iapiserver.InfraRuntimeConfigBindingInput{{
+				Name: "NODE_EXTRA_CA_CERTS", BindingType: iapiserver.InfraConfigBindingTypePlainConfig, Reference: "/untrusted/override.crt",
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("Ensure() error = nil, want controlled startup failure")
+	}
+	var request struct {
+		Env []string `json:"Env"`
+	}
+	if err := json.Unmarshal(<-createBody, &request); err != nil {
+		t.Fatal(err)
+	}
+	want := "NODE_EXTRA_CA_CERTS=" + openCodeRuntimeCAPath
+	if len(request.Env) != 2 || request.Env[1] != want || request.Env[0] != "OMNIMAM_BINDING_NODE_EXTRA_CA_CERTS=/untrusted/override.crt" {
+		t.Fatalf("coding runtime environment = %q, want a namespaced binding followed by %q", request.Env, want)
+	}
+}
+
+func TestEnsureConfiguresWritableNginxPreviewPaths(t *testing.T) {
+	createBody := make(chan []byte, 1)
+	provider := newDockerTestProvider(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/create":
+			createBody <- readDockerTestBody(t, request)
+			writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "container-1"})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/start":
+			http.Error(response, "startup stopped for environment inspection", http.StatusInternalServerError)
+		case request.Method == http.MethodDelete && request.URL.Path == "/v1.44/containers/container-1":
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	provider.images = MapProfileImages{"appstudio.preview.static-web@1.0": "nginx:test"}
+	provider.sourceVolume = "omnimam_appstudio_source"
+
+	_, err := provider.Ensure(t.Context(), providers.ProviderRequest{
+		RuntimeID: "runtime-1",
+		Profile: &iapiserver.InfraRuntimeProfile{
+			ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb},
+			Revision:   "1.0",
+		},
+		Request: &iapiserver.InfraCreateRuntimeRequest{
+			RuntimeMode:      iapiserver.InfraRuntimeModeService,
+			OwnerReference:   "preview-1",
+			SourceRef:        iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-1/7",
+			AuthorizationRef: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace-1/preview-1/3",
+			Mounts: []iapiserver.InfraRuntimeMountInput{{
+				SourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-1/7", TargetPath: iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource,
+				ReadOnly: true, MountKind: iapiserver.InfraMountKindStudioWorkspaceRevision,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("Ensure() error = nil, want controlled startup failure")
+	}
+	var request struct {
+		Entrypoint []string `json:"Entrypoint"`
+		Cmd        []string `json:"Cmd"`
+		HostConfig struct {
+			ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
+			Tmpfs          map[string]string `json:"Tmpfs"`
+			CapAdd         []string          `json:"CapAdd"`
+			Mounts         []struct {
+				Type          string `json:"Type"`
+				Source        string `json:"Source"`
+				Target        string `json:"Target"`
+				ReadOnly      bool   `json:"ReadOnly"`
+				VolumeOptions struct {
+					Subpath string `json:"Subpath"`
+				} `json:"VolumeOptions"`
+			} `json:"Mounts"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(<-createBody, &request); err != nil {
+		t.Fatal(err)
+	}
+	if !request.HostConfig.ReadonlyRootfs {
+		t.Fatal("Nginx Preview container rootfs is not read-only")
+	}
+	for _, path := range []string{"/var/cache/nginx", "/var/run", previewContentRoot} {
+		if _, ok := request.HostConfig.Tmpfs[path]; !ok {
+			t.Fatalf("Nginx Preview container is missing writable %s tmpfs", path)
+		}
+	}
+	if fmt.Sprint(request.Entrypoint) != fmt.Sprint([]string{"/bin/sh", "-c"}) || len(request.Cmd) != 1 || request.Cmd[0] != previewRuntimeCommand {
+		t.Fatalf("Nginx Preview startup command = entrypoint=%q cmd=%q", request.Entrypoint, request.Cmd)
+	}
+	wantCapabilities := []string{"CHOWN", "SETGID", "SETUID"}
+	if fmt.Sprint(request.HostConfig.CapAdd) != fmt.Sprint(wantCapabilities) {
+		t.Fatalf("Nginx Preview capabilities = %q, want %q", request.HostConfig.CapAdd, wantCapabilities)
+	}
+	if len(request.HostConfig.Mounts) != 1 {
+		t.Fatalf("Nginx Preview source mounts = %#v, want one", request.HostConfig.Mounts)
+	}
+	mount := request.HostConfig.Mounts[0]
+	if mount.Type != "volume" || mount.Source != "omnimam_appstudio_source" || mount.Target != iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource || !mount.ReadOnly || mount.VolumeOptions.Subpath != "workspace-1/7" {
+		t.Fatalf("Nginx Preview source mount = %#v", mount)
+	}
+}
+
+func TestPreviewSourceSubpathRejectsCrossScopeAndTraversal(t *testing.T) {
+	tests := []struct {
+		name          string
+		sourceRef     string
+		authorization string
+		owner         string
+		want          string
+		wantErr       bool
+	}{
+		{name: "matching scope", sourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-1/7", authorization: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace-1/preview-1/3", owner: "preview-1", want: "workspace-1/7"},
+		{name: "different workspace", sourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-2/7", authorization: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace-1/preview-1/3", owner: "preview-1", wantErr: true},
+		{name: "different Preview owner", sourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-1/7", authorization: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace-1/preview-2/3", owner: "preview-1", wantErr: true},
+		{name: "encoded path segment", sourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace%2Fother/7", authorization: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace%2Fother/preview-1/3", owner: "preview-1", wantErr: true},
+		{name: "negative revision", sourceRef: iapiserver.InfraRefPrefixStudioWorkspaceRevision + "workspace-1/-1", authorization: iapiserver.AppStudioRefPrefixPreviewGrant + "workspace-1/preview-1/3", owner: "preview-1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := previewSourceSubpath(tt.sourceRef, tt.authorization, tt.owner)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("previewSourceSubpath() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("previewSourceSubpath() = (%q, %v), want (%q, nil)", got, err, tt.want)
+			}
+		})
+	}
+}
 
 func TestInjectOpenCodeConfigStreamsSensitiveConfigThroughExecStdin(t *testing.T) {
 	const credential = "credential-must-only-travel-through-stdin"
@@ -395,6 +620,9 @@ func TestEnsureDeletesContainerWhenConfigInjectionFails(t *testing.T) {
 	}
 	if _, ok := createRequest.HostConfig.Tmpfs["/root/.config/opencode"]; !ok {
 		t.Fatal("Docker container is missing writable OpenCode config tmpfs")
+	}
+	if _, ok := createRequest.HostConfig.Tmpfs["/root/.local/state/opencode"]; !ok {
+		t.Fatal("Docker container is missing writable OpenCode state tmpfs")
 	}
 	if _, ok := createRequest.HostConfig.Tmpfs["/run/omnimam"]; !ok {
 		t.Fatal("Docker container is missing writable startup-gate tmpfs")

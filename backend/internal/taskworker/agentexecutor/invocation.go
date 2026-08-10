@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/httpcli"
+	"github.com/wangweihong/gotoolbox/pkg/wait"
 	"golang.org/x/net/websocket"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -26,9 +27,14 @@ import (
 )
 
 const (
-	openCodeRequestTimeout = 10 * time.Minute
-	openCodeCleanupTimeout = 10 * time.Second
-	workspaceToolServerKey = "omnimam-workspace"
+	openCodeRequestTimeout       = 10 * time.Minute
+	openCodeCleanupTimeout       = 10 * time.Second
+	openCodeMCPConnectTimeout    = 10 * time.Second
+	openCodeMCPConnectInterval   = 100 * time.Millisecond
+	openCodeStartupRetryWindow   = 3 * time.Second
+	openCodeStartupRetryInterval = 100 * time.Millisecond
+	workspaceToolServerKey       = "omnimam-workspace"
+	openCodeToolIDsPath          = "/experimental/tool/ids"
 )
 
 var errCodingResultMissing = stderrors.New("coding invocation has no applied changeset and new source revision")
@@ -867,7 +873,102 @@ func (e *InvocationExecutor) configureOpenCode(ctx context.Context, execution *i
 	if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPatch, "/global/config", config, nil); err != nil {
 		return true, fmt.Errorf("configure agent invocation runtime model: %w", err)
 	}
+	if execution.workspaceTool != nil {
+		if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/mcp/"+url.PathEscape(workspaceToolServerKey)+"/connect", nil, nil); err != nil {
+			return true, fmt.Errorf("connect agent invocation workspace tool: %w", err)
+		}
+		if err := waitForOpenCodeMCPConnected(ctx, execution.endpointBase, workspaceToolServerKey); err != nil {
+			return true, fmt.Errorf("wait for agent invocation workspace tool: %w", err)
+		}
+		if err := waitForOpenCodeWorkspaceTools(ctx, execution.endpointBase); err != nil {
+			return true, fmt.Errorf("wait for agent invocation workspace tool IDs: %w", err)
+		}
+	}
 	return true, nil
+}
+
+func waitForOpenCodeMCPConnected(ctx context.Context, baseURL, serverKey string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, openCodeMCPConnectTimeout)
+	defer cancel()
+	var lastStatus string
+	err := wait.PollImmediateUntil(openCodeMCPConnectInterval, func() (bool, error) {
+		statuses := map[string]struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		}{}
+		if err := invokeOpenCode(waitCtx, baseURL, http.MethodGet, "/mcp", nil, &statuses); err != nil {
+			return false, err
+		}
+		status, ok := statuses[serverKey]
+		if !ok {
+			return false, fmt.Errorf("MCP server %q is missing", serverKey)
+		}
+		lastStatus = status.Status
+		switch status.Status {
+		case "connected":
+			return true, nil
+		case "failed":
+			if strings.TrimSpace(status.Error) == "" {
+				return false, fmt.Errorf("MCP server %q failed to connect", serverKey)
+			}
+			return false, fmt.Errorf("MCP server %q failed to connect: %s", serverKey, status.Error)
+		default:
+			return false, nil
+		}
+	}, waitCtx.Done())
+	if err != nil {
+		if waitCtx.Err() != nil {
+			return fmt.Errorf("MCP server %q did not connect within %s (last status %q)", serverKey, openCodeMCPConnectTimeout, lastStatus)
+		}
+		return err
+	}
+	return nil
+}
+
+func waitForOpenCodeWorkspaceTools(ctx context.Context, baseURL string) error {
+	required := []string{
+		workspaceToolServerKey + "_appstudio_source_status",
+		workspaceToolServerKey + "_appstudio_source_list",
+		workspaceToolServerKey + "_appstudio_source_read",
+		workspaceToolServerKey + "_changeset_apply",
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, openCodeMCPConnectTimeout)
+	defer cancel()
+	var lastIDs []string
+	err := wait.PollImmediateUntil(openCodeMCPConnectInterval, func() (bool, error) {
+		var toolIDs []string
+		if err := invokeOpenCode(waitCtx, baseURL, http.MethodGet, openCodeToolIDsPath, nil, &toolIDs); err != nil {
+			return false, err
+		}
+		lastIDs = toolIDs
+		available := make(map[string]struct{}, len(toolIDs))
+		for _, id := range toolIDs {
+			available[id] = struct{}{}
+		}
+		for _, id := range required {
+			if _, ok := available[id]; !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}, waitCtx.Done())
+	if err == nil {
+		return nil
+	}
+	missing := make([]string, 0, len(required))
+	available := make(map[string]struct{}, len(lastIDs))
+	for _, id := range lastIDs {
+		available[id] = struct{}{}
+	}
+	for _, id := range required {
+		if _, ok := available[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if waitCtx.Err() != nil {
+		return fmt.Errorf("required tools did not register within %s (missing: %s)", openCodeMCPConnectTimeout, strings.Join(missing, ", "))
+	}
+	return err
 }
 
 func (e *InvocationExecutor) ensureOpenCodeSession(ctx context.Context, execution *invocationExecution) (string, error) {
@@ -1149,6 +1250,9 @@ func (e *InvocationExecutor) cleanupOpenCodeInvocation(ctx context.Context, exec
 	defer cancel()
 	var cleanupErrors []error
 	if execution != nil && execution.workspaceTool != nil {
+		if err := invokeOpenCode(cleanupCtx, execution.endpointBase, http.MethodPost, "/mcp/"+url.PathEscape(workspaceToolServerKey)+"/disconnect", nil, nil, http.StatusNotFound); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("disconnect runtime workspace tool: %w", err))
+		}
 		config := map[string]any{
 			"mcp": map[string]any{workspaceToolServerKey: map[string]any{
 				"type": "remote", "url": e.workspaceToolURL, "enabled": false, "headers": map[string]string{},
@@ -1166,16 +1270,41 @@ func (e *InvocationExecutor) cleanupOpenCodeInvocation(ctx context.Context, exec
 }
 
 func invokeOpenCode(ctx context.Context, baseURL, method, path string, payload, output any, acceptedStatuses ...int) error {
-	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(strings.TrimRight(baseURL, "/")+path).WithMethod(method).
-		AddHeaderParam("Accept", "application/json")
+	rawPayload, err := json.Marshal(payload)
 	if payload != nil {
-		raw, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("encode runtime request: %w", err)
 		}
-		builder.WithBody("json", json.RawMessage(raw)).AddHeaderParam("Content-Type", "application/json")
 	}
-	response, err := builder.Build().InvokeWithContext(ctx, httpcli.TimeoutCallOption(openCodeRequestTimeout))
+	invoke := func(requestCtx context.Context) (*httpcli.HttpResponse, error) {
+		builder := httpcli.NewHttpRequestBuilder().WithEndpoint(strings.TrimRight(baseURL, "/")+path).WithMethod(method).
+			AddHeaderParam("Accept", "application/json")
+		if payload != nil {
+			builder.WithBody("json", json.RawMessage(rawPayload)).AddHeaderParam("Content-Type", "application/json")
+		}
+		return builder.Build().InvokeWithContext(requestCtx, httpcli.TimeoutCallOption(openCodeRequestTimeout))
+	}
+	var response *httpcli.HttpResponse
+	startupRequest := (method == http.MethodPut && strings.HasPrefix(path, "/auth/")) ||
+		(method == http.MethodPatch && path == "/global/config") ||
+		(method == http.MethodPost && strings.HasSuffix(path, "/connect")) ||
+		(method == http.MethodGet && (path == "/mcp" || path == openCodeToolIDsPath))
+	if !startupRequest {
+		response, err = invoke(ctx)
+	} else {
+		retryCtx, cancel := context.WithTimeout(ctx, openCodeStartupRetryWindow)
+		defer cancel()
+		for {
+			response, err = invoke(retryCtx)
+			if err == nil || retryCtx.Err() != nil {
+				break
+			}
+			select {
+			case <-retryCtx.Done():
+			case <-time.After(openCodeStartupRetryInterval):
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("runtime request failed: %w", err)
 	}
