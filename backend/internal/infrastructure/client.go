@@ -148,6 +148,59 @@ func (c *Client) AttachOutputArtifact(ctx context.Context, outputID string, inpu
 	return &output, nil
 }
 
+// Logs 读取 owner-scoped Runtime 日志快照。
+func (c *Client) Logs(ctx context.Context, runtimeID, ownerReference string, limit int) ([]*iapiserver.InfraRuntimeLogEntry, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 5000
+	}
+	const pageSize = 200
+	entries := make([]*iapiserver.InfraRuntimeLogEntry, 0, limit)
+	for pageNum := 0; len(entries) < limit; pageNum++ {
+		path := "/api/v1/infra/runtimes/" + url.PathEscape(runtimeID) + "/logs?owner_reference=" + url.QueryEscape(ownerReference) + "&page_num=" + strconv.Itoa(pageNum) + "&page_size=" + strconv.Itoa(pageSize)
+		request, err := c.request(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := c.http.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		var result iapiserver.InfraRuntimeLogListResponse
+		decodeErr := decodeInfraJSON(response, &result)
+		response.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		entries = append(entries, result.Items...)
+		if len(result.Items) < pageSize || len(entries) >= int(result.Total) {
+			break
+		}
+	}
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
+}
+
+// Health 执行 owner-scoped Runtime 只读健康探测。
+func (c *Client) Health(ctx context.Context, runtimeID, ownerReference string) (*iapiserver.InfraRuntimeHealthResult, error) {
+	path := "/api/v1/infra/runtimes/" + url.PathEscape(runtimeID) + "/health?owner_reference=" + url.QueryEscape(ownerReference)
+	request, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var result iapiserver.InfraRuntimeHealthResult
+	if err := decodeInfraJSON(response, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {

@@ -941,6 +941,66 @@ func (s *agentStore) GetCurrentAgentRuntime(ctx context.Context, agentID, ownerU
 	return &item, nil
 }
 
+func (s *agentStore) GetCurrentAgentRuntimeForGeneration(ctx context.Context, agentID, ownerUserID string, generation int64) (*iapiserver.AgentRuntimeBinding, error) {
+	var item iapiserver.AgentRuntimeBinding
+	query := s.ds.db.WithContext(ctx).Model(&iapiserver.AgentRuntimeBinding{}).
+		Joins("JOIN agents ON agents.id = agent_runtime_bindings.agent_id").
+		Joins("JOIN agent_runtime_grants ON agent_runtime_grants.runtime_binding_id = agent_runtime_bindings.id").
+		Where("agent_runtime_bindings.agent_id = ? AND agents.owner_user_id = ? AND agent_runtime_grants.agent_generation = ?", agentID, ownerUserID, generation).
+		Where("agent_runtime_bindings.state NOT IN ?", []string{iapiserver.AgentRuntimeStateDeleted}).
+		Order("agent_runtime_bindings.created_at DESC, agent_runtime_bindings.id DESC").First(&item)
+	if query.Error == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if query.Error != nil {
+		return nil, mapNotFound(query.Error, code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	return &item, nil
+}
+
+func (s *agentStore) ListAgentRuntimeHistory(ctx context.Context, agentID, ownerUserID, studioApplicationID string, paging *imachinery.PagingParams) ([]*store.AgentRuntimeHistoryRecord, int64, error) {
+	var rows []struct {
+		iapiserver.AgentRuntimeBinding
+		Generation int64 `gorm:"column:generation"`
+	}
+	base := s.ds.db.WithContext(ctx).Model(&iapiserver.AgentRuntimeBinding{}).
+		Joins("JOIN agents ON agents.id = agent_runtime_bindings.agent_id").
+		Joins("JOIN agent_runtime_grants ON agent_runtime_grants.runtime_binding_id = agent_runtime_bindings.id").
+		Where("agent_runtime_bindings.agent_id = ? AND agents.owner_user_id = ?", agentID, ownerUserID)
+	if studioApplicationID != "" {
+		base = base.Where("agent_runtime_grants.studio_application_id = ?", studioApplicationID)
+	}
+	var total int64
+	if err := base.Distinct("agent_runtime_bindings.id").Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	window, err := paging.Normalize()
+	if err != nil {
+		return nil, 0, err
+	}
+	query := base.Select("agent_runtime_bindings.*, COALESCE(MAX(agent_runtime_grants.agent_generation), 0) AS generation").
+		Group("agent_runtime_bindings.id").
+		Order("generation DESC, agent_runtime_bindings.created_at DESC, agent_runtime_bindings.id DESC")
+	if err := query.Offset(window.Offset).Limit(window.Limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	items := make([]*store.AgentRuntimeHistoryRecord, 0, len(rows))
+	for i := range rows {
+		items = append(items, &store.AgentRuntimeHistoryRecord{Runtime: &rows[i].AgentRuntimeBinding, Generation: rows[i].Generation})
+	}
+	return items, total, nil
+}
+
+func (s *agentStore) GetLatestActiveAgentInvocation(ctx context.Context, runtimeBindingID, agentID string) (*iapiserver.AgentInvocation, error) {
+	var item iapiserver.AgentInvocation
+	statuses := []string{iapiserver.AgentInvocationStatusQueued, iapiserver.AgentInvocationStatusStarting, iapiserver.AgentInvocationStatusRunning, iapiserver.AgentInvocationStatusWaitingForTool, iapiserver.AgentInvocationStatusWaitingForUser, iapiserver.AgentInvocationStatusCanceling}
+	err := s.ds.db.WithContext(ctx).Where("agent_id = ? AND runtime_binding_id = ? AND status IN ?", agentID, runtimeBindingID, statuses).Order("created_at DESC, id DESC").First(&item).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	return &item, err
+}
+
 func (s *agentStore) GetAgentRuntimeByID(ctx context.Context, id string) (*iapiserver.AgentRuntimeBinding, error) {
 	var item iapiserver.AgentRuntimeBinding
 	if err := s.ds.db.WithContext(ctx).Where("id = ?", id).First(&item).Error; err != nil {

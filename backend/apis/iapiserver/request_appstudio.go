@@ -307,6 +307,21 @@ type StudioAgentMessageListRequest struct {
 	imachinery.BasicQueryParam
 }
 
+// StudioAgentRuntimeListRequest 查询 Agent Runtime 历史。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeListRequest struct{ imachinery.BasicQueryParam }
+
+// StudioAgentRuntimeLogsRequest 查询 Runtime 最近日志快照。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeLogsRequest struct{ imachinery.BasicQueryParam }
+
+// StudioAgentRuntimeHealthRequest 请求 Runtime 投影或实时健康结果。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeHealthRequest struct {
+	// Probe 为 true 时执行只读实时探测；默认 false 使用持久化健康投影。
+	Probe bool `form:"probe" json:"probe"`
+}
+
 // SetDefaults 对齐 Studio Agent 消息历史契约的默认分页大小 50。
 func (r *StudioAgentMessageListRequest) SetDefaults() {
 	if r.PageSize == 0 {

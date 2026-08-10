@@ -298,6 +298,8 @@ type InfraActionRequest struct {
 type InfraBasicListRequest struct {
 	imachinery.BasicQueryParam
 	Status string `form:"status" binding:"omitempty,max=256"`
+	// OwnerReference 是 owner-scoped 日志读取所需的 AgentRuntimeBinding ID。
+	OwnerReference string `form:"owner_reference" binding:"omitempty,max=512"`
 }
 
 // Validate 校验 Infrastructure 基础列表的独立分页上限。

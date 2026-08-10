@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 0e6300c8e776df08972a229f48775ed71ad5bff9
-contract_version: spec-v1.20.0
-updated_at: 2026-08-09
+commit: 5a654a1c1e14c1f454e17a5b4190af379f13bb5c
+contract_version: spec-v1.21.0
+updated_at: 2026-08-10
 status: released
-note: Released AppStudio Coding Agent message history and Invocation SSE contracts.
+note: Released Agent Runtime detail, history, logs, and health diagnostics contracts.

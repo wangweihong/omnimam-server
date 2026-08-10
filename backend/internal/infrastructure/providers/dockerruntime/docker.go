@@ -536,6 +536,39 @@ func (d *DockerProvider) Logs(ctx context.Context, ref string, limit int) ([]*ia
 	return items, scanner.Err()
 }
 
+func (d *DockerProvider) Health(ctx context.Context, ref string) (*iapiserver.InfraRuntimeHealthResult, error) {
+	checked := imachinery.Now()
+	result, err := d.Inspect(ctx, ref)
+	if err != nil {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnknown, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonInfrastructureUnavailable}, nil
+	}
+	if result.Status != iapiserver.InfraRuntimeStatusRunning || result.Endpoint == nil {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnhealthy, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonNotRunning}, nil
+	}
+	profileID := ""
+	if inspected, inspectErr := d.inspectContainer(ctx, ref); inspectErr == nil {
+		profileID = inspected.Config.Labels["io.omnimam.profile"]
+	}
+	profile, ok := agentRuntimeServiceProfile(profileID)
+	if !ok {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnknown, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonProbeIndeterminate}, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, result.Endpoint.BaseURL+profile.healthPath, nil)
+	if err != nil {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnknown, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonProbeIndeterminate}, nil
+	}
+	response, err := d.runtimeHTTP.Do(req)
+	if err != nil {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnhealthy, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonServiceUnreachable}, nil
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnhealthy, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonServiceUnhealthy}, nil
+	}
+	return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthHealthy, CheckedAt: checked}, nil
+}
+
 func (d *DockerProvider) inspectContainer(ctx context.Context, ref string) (*dockerContainerInspect, error) {
 	var data dockerContainerInspect
 	if err := d.request(ctx, http.MethodGet, "/containers/"+url.PathEscape(ref)+"/json", nil, &data); err != nil {

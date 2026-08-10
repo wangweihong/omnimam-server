@@ -58,4 +58,5 @@ type RuntimeProvider interface {
 	Delete(context.Context, string) error
 	Inspect(context.Context, string) (*ProviderResult, error)
 	Logs(context.Context, string, int) ([]*iapiserver.InfraRuntimeLogEntry, error)
+	Health(context.Context, string) (*iapiserver.InfraRuntimeHealthResult, error)
 }

@@ -126,6 +126,71 @@ type StudioAgentStatus struct {
 	CurrentInvocationID *string `json:"current_invocation_id,omitempty"`
 }
 
+// StudioAgentRuntimeCurrentTask 是当前非终态 Invocation 的脱敏摘要。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeCurrentTask struct {
+	ID        string           `json:"id"`
+	Type      string           `json:"type"`
+	Status    string           `json:"status"`
+	StartedAt *imachinery.Time `json:"started_at,omitempty"`
+}
+
+// StudioAgentRuntime 是当前 generation 的 Runtime 诊断投影。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntime struct {
+	RuntimeID              string                         `json:"runtime_id"`
+	AgentID                string                         `json:"agent_id"`
+	Generation             int                            `json:"generation"`
+	State                  string                         `json:"state"`
+	ActivityState          string                         `json:"activity_state"`
+	HealthStatus           string                         `json:"health_status"`
+	StartedAt              *imachinery.Time               `json:"started_at,omitempty"`
+	StoppedAt              *imachinery.Time               `json:"stopped_at,omitempty"`
+	LastHealthAt           *imachinery.Time               `json:"last_health_at,omitempty"`
+	UptimeSeconds          int64                          `json:"uptime_seconds"`
+	IdleTimeoutSeconds     int64                          `json:"idle_timeout_seconds"`
+	MaximumLifetimeSeconds int64                          `json:"maximum_lifetime_seconds"`
+	CurrentTask            *StudioAgentRuntimeCurrentTask `json:"current_task,omitempty"`
+}
+
+// StudioAgentRuntimeHistoryItem 是带当前 generation 标记的 Runtime 历史项。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeHistoryItem struct {
+	StudioAgentRuntime
+	IsCurrent bool `json:"is_current"`
+}
+
+// StudioAgentRuntimeListResponse 返回 Runtime 历史。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeListResponse struct {
+	Total int64                            `json:"total"`
+	Items []*StudioAgentRuntimeHistoryItem `json:"items"`
+}
+
+// StudioAgentRuntimeLogEntry 是脱敏 Runtime 日志项。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeLogEntry struct {
+	OccurredAt imachinery.Time `json:"occurred_at"`
+	Level      string          `json:"level"`
+	Message    string          `json:"message"`
+}
+
+// StudioAgentRuntimeLogListResponse 返回最近日志快照的分页结果。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeLogListResponse struct {
+	Total int64                         `json:"total"`
+	Items []*StudioAgentRuntimeLogEntry `json:"items"`
+}
+
+// StudioAgentRuntimeHealth 是 Runtime 投影或实时探测健康结果。
+// +k8s:deepcopy-gen=true
+type StudioAgentRuntimeHealth struct {
+	Status    string          `json:"status"`
+	Source    string          `json:"source"`
+	CheckedAt imachinery.Time `json:"checked_at"`
+	Reason    string          `json:"reason,omitempty"`
+}
+
 // StudioAgentMessage 是应用当前 Coding Agent generation/session 的受限消息投影。
 // +k8s:deepcopy-gen=true
 type StudioAgentMessage struct {

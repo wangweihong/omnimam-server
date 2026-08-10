@@ -34,5 +34,8 @@ func (p UnavailableProvider) Inspect(context.Context, string) (*ProviderResult, 
 func (p UnavailableProvider) Logs(context.Context, string, int) ([]*iapiserver.InfraRuntimeLogEntry, error) {
 	return nil, p.err()
 }
+func (p UnavailableProvider) Health(context.Context, string) (*iapiserver.InfraRuntimeHealthResult, error) {
+	return nil, p.err()
+}
 
 var _ RuntimeProvider = UnavailableProvider{}

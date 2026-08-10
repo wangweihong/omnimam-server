@@ -113,7 +113,17 @@ func (s *Server) registerInfrastructureRoutes(mux *http.ServeMux) {
 		if err != nil {
 			return nil, err
 		}
+		if req.OwnerReference == "" {
+			return nil, toolerrors.NewStatus(code.ErrInfraRequestInvalid, "owner_reference is required")
+		}
 		return s.service.Logs(r.Context(), r.PathValue("runtime_id"), req)
+	}))
+	mux.HandleFunc("GET /runtimes/{runtime_id}/health", s.respond(func(r *http.Request) (any, error) {
+		owner := r.URL.Query().Get("owner_reference")
+		if owner == "" {
+			return nil, toolerrors.NewStatus(code.ErrInfraRequestInvalid, "owner_reference is required")
+		}
+		return s.service.Health(r.Context(), r.PathValue("runtime_id"), owner)
 	}))
 	mux.HandleFunc("GET /nodes", s.respond(func(r *http.Request) (any, error) {
 		req, err := basicListRequest(r, true)
@@ -230,6 +240,7 @@ func basicListRequest(r *http.Request, withStatus bool) (*iapiserver.InfraBasicL
 	if withStatus {
 		req.Status = query.Get("status")
 	}
+	req.OwnerReference = query.Get("owner_reference")
 	if err := parseInfraPaging(query.Get("page_num"), query.Get("page_size"), &req.PagingParams); err != nil {
 		return nil, err
 	}

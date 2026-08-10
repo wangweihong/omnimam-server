@@ -49,25 +49,35 @@ type WorkloadScopeResolver interface {
 	ResolveAgentWorkloadScope(context.Context, string, string) (string, int64, error)
 }
 
+// RuntimeDiagnosticsReader 是 Agent 对 Infrastructure 诊断能力的只读消费边界。
+type RuntimeDiagnosticsReader interface {
+	// Logs 读取 owner-scoped Runtime 最近日志快照。
+	Logs(context.Context, string, string, int) ([]*iapiserver.InfraRuntimeLogEntry, error)
+	// Health 执行 owner-scoped Runtime 只读实时健康探测。
+	Health(context.Context, string, string) (*iapiserver.InfraRuntimeHealthResult, error)
+}
+
 // Service 实现 released Agent API、固定 Workspace、交互持久化和 Runtime Task 编排。
 type Service struct {
-	store      store.AgentStore
-	tasks      TaskClient
-	workspaces WorkspaceBindingValidator
-	models     ModelAccessResolver
-	scopes     WorkloadScopeResolver
-	grants     *agentgrant.Codec
-	profiles   map[string]iapiserver.AgentProfile
+	store       store.AgentStore
+	tasks       TaskClient
+	workspaces  WorkspaceBindingValidator
+	models      ModelAccessResolver
+	scopes      WorkloadScopeResolver
+	diagnostics RuntimeDiagnosticsReader
+	grants      *agentgrant.Codec
+	profiles    map[string]iapiserver.AgentProfile
 }
 
 // Dependencies 是 Agent service 显式消费方依赖。
 type Dependencies struct {
-	Store      store.AgentStore
-	Tasks      TaskClient
-	Workspaces WorkspaceBindingValidator
-	Models     ModelAccessResolver
-	Scopes     WorkloadScopeResolver
-	Grants     *agentgrant.Codec
+	Store       store.AgentStore
+	Tasks       TaskClient
+	Workspaces  WorkspaceBindingValidator
+	Models      ModelAccessResolver
+	Scopes      WorkloadScopeResolver
+	Diagnostics RuntimeDiagnosticsReader
+	Grants      *agentgrant.Codec
 }
 
 // New 构造 Agent service；缺失 Task Center 时 Runtime 操作 fail closed。
@@ -75,7 +85,146 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("agent store is required")
 	}
-	return &Service{store: deps.Store, tasks: deps.Tasks, workspaces: deps.Workspaces, models: deps.Models, scopes: deps.Scopes, grants: deps.Grants, profiles: defaultProfiles()}, nil
+	return &Service{store: deps.Store, tasks: deps.Tasks, workspaces: deps.Workspaces, models: deps.Models, scopes: deps.Scopes, diagnostics: deps.Diagnostics, grants: deps.Grants, profiles: defaultProfiles()}, nil
+}
+
+// GetStudioRuntime 返回指定 AppStudio 当前 generation 的脱敏 Runtime 详情。
+func (s *Service) GetStudioRuntime(ctx context.Context, agentID string, generation int64) (*iapiserver.StudioAgentRuntime, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.store.GetCurrentAgentRuntimeForGeneration(ctx, agentID, owner, generation)
+	if err != nil || runtime == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	return s.runtimeProjection(ctx, runtime, generation)
+}
+
+// ListStudioRuntimeHistory 返回 AgentRuntimeBinding 历史并标记当前项。
+func (s *Service) ListStudioRuntimeHistory(ctx context.Context, agentID, studioApplicationID string, generation int64, req *imachinery.PagingParams) (*iapiserver.StudioAgentRuntimeListResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items, total, err := s.store.ListAgentRuntimeHistory(ctx, agentID, owner, studioApplicationID, req)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*iapiserver.StudioAgentRuntimeHistoryItem, 0, len(items))
+	current, err := s.store.GetCurrentAgentRuntimeForGeneration(ctx, agentID, owner, generation)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range items {
+		if record == nil || record.Runtime == nil {
+			continue
+		}
+		projection, pErr := s.runtimeProjection(ctx, record.Runtime, record.Generation)
+		if pErr != nil {
+			return nil, pErr
+		}
+		out = append(out, &iapiserver.StudioAgentRuntimeHistoryItem{StudioAgentRuntime: *projection, IsCurrent: current != nil && current.ID == record.Runtime.ID})
+	}
+	return &iapiserver.StudioAgentRuntimeListResponse{Total: total, Items: out}, nil
+}
+
+// ListStudioRuntimeLogs 读取并脱敏当前 Runtime 日志。
+func (s *Service) ListStudioRuntimeLogs(ctx context.Context, agentID string, generation int64, req *imachinery.PagingParams) (*iapiserver.StudioAgentRuntimeLogListResponse, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.store.GetCurrentAgentRuntimeForGeneration(ctx, agentID, owner, generation)
+	if err != nil || runtime == nil || runtime.InfraRuntimeID == "" {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	if s.diagnostics == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime diagnostics unavailable")
+	}
+	items, err := s.diagnostics.Logs(ctx, runtime.InfraRuntimeID, runtime.ID, 5000)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime logs unavailable")
+	}
+	window, err := req.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	logs := make([]*iapiserver.StudioAgentRuntimeLogEntry, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			logs = append(logs, &iapiserver.StudioAgentRuntimeLogEntry{OccurredAt: item.OccurredAt, Level: item.Level, Message: item.Message})
+		}
+	}
+	return &iapiserver.StudioAgentRuntimeLogListResponse{Total: int64(len(logs)), Items: imachinery.PaginateSlice(logs, window)}, nil
+}
+
+// GetStudioRuntimeHealth 返回 Runtime 投影或实时探测健康结果。
+func (s *Service) GetStudioRuntimeHealth(ctx context.Context, agentID string, generation int64, probe bool) (*iapiserver.StudioAgentRuntimeHealth, error) {
+	owner, err := currentUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := s.store.GetCurrentAgentRuntimeForGeneration(ctx, agentID, owner, generation)
+	if err != nil || runtime == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeNotVisible, "agent runtime not visible")
+	}
+	if !probe {
+		reason := ""
+		status := runtime.HealthStatus
+		checkedAt := runtime.LastHealthAt
+		if runtime.LastHealthAt.IsZero() {
+			status, reason = iapiserver.AgentRuntimeHealthUnknown, iapiserver.AgentRuntimeHealthReasonNoObservation
+			checkedAt = imachinery.Now()
+		}
+		return &iapiserver.StudioAgentRuntimeHealth{Status: status, Source: iapiserver.AgentRuntimeHealthSourceProjection, CheckedAt: checkedAt, Reason: reason}, nil
+	}
+	if s.diagnostics == nil {
+		return &iapiserver.StudioAgentRuntimeHealth{Status: iapiserver.AgentRuntimeHealthUnknown, Source: iapiserver.AgentRuntimeHealthSourceLive, CheckedAt: imachinery.Now(), Reason: iapiserver.AgentRuntimeHealthReasonInfrastructureUnavailable}, nil
+	}
+	if runtime.InfraRuntimeID == "" {
+		return &iapiserver.StudioAgentRuntimeHealth{Status: iapiserver.AgentRuntimeHealthUnknown, Source: iapiserver.AgentRuntimeHealthSourceLive, CheckedAt: imachinery.Now(), Reason: iapiserver.AgentRuntimeHealthReasonNotProvisioned}, nil
+	}
+	health, err := s.diagnostics.Health(ctx, runtime.InfraRuntimeID, runtime.ID)
+	if err != nil || health == nil {
+		return &iapiserver.StudioAgentRuntimeHealth{Status: iapiserver.AgentRuntimeHealthUnknown, Source: iapiserver.AgentRuntimeHealthSourceLive, CheckedAt: imachinery.Now(), Reason: iapiserver.AgentRuntimeHealthReasonInfrastructureUnavailable}, nil
+	}
+	return &iapiserver.StudioAgentRuntimeHealth{Status: health.Status, Source: iapiserver.AgentRuntimeHealthSourceLive, CheckedAt: health.CheckedAt, Reason: health.Reason}, nil
+}
+
+func (s *Service) runtimeProjection(ctx context.Context, runtime *iapiserver.AgentRuntimeBinding, generation int64) (*iapiserver.StudioAgentRuntime, error) {
+	result := &iapiserver.StudioAgentRuntime{RuntimeID: runtime.ID, AgentID: runtime.AgentID, Generation: int(generation), State: runtime.State, ActivityState: runtime.ActivityState, HealthStatus: runtime.HealthStatus, IdleTimeoutSeconds: int64(agentRuntimeIdleTimeout.Seconds()), MaximumLifetimeSeconds: int64(agentRuntimeMaximumLifetime.Seconds())}
+	if !runtime.StartedAt.IsZero() {
+		value := runtime.StartedAt
+		result.StartedAt = &value
+	}
+	if !runtime.StoppedAt.IsZero() {
+		value := runtime.StoppedAt
+		result.StoppedAt = &value
+	}
+	if !runtime.LastHealthAt.IsZero() {
+		value := runtime.LastHealthAt
+		result.LastHealthAt = &value
+	}
+	end := time.Now()
+	if result.StoppedAt != nil {
+		end = result.StoppedAt.Time
+	}
+	if result.StartedAt != nil {
+		result.UptimeSeconds = int64(end.Sub(result.StartedAt.Time).Seconds())
+		if result.UptimeSeconds < 0 {
+			result.UptimeSeconds = 0
+		}
+	}
+	if invocation, err := s.store.GetLatestActiveAgentInvocation(ctx, runtime.ID, runtime.AgentID); err == nil && invocation != nil {
+		task := &iapiserver.StudioAgentRuntimeCurrentTask{ID: invocation.ID, Type: invocation.Type, Status: invocation.Status}
+		if !invocation.StartedAt.IsZero() {
+			value := invocation.StartedAt
+			task.StartedAt = &value
+		}
+		result.CurrentTask = task
+	}
+	return result, nil
 }
 
 func defaultProfiles() map[string]iapiserver.AgentProfile {

@@ -108,6 +108,32 @@ func (c *Controller) GetAgentStatus(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetAgentStatus(ctx, ctx.Param("studio_application_id")) })
 }
 
+// GetAgentRuntime 返回应用当前 Coding Agent generation 的 Runtime 诊断详情。
+func (c *Controller) GetAgentRuntime(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetAgentRuntime(ctx, ctx.Param("studio_application_id")) })
+}
+
+// ListAgentRuntimes 返回应用当前 Coding Agent 全部 generation 的 Runtime 历史。
+func (c *Controller) ListAgentRuntimes(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentRuntimeListRequest{}, func(req *iapiserver.StudioAgentRuntimeListRequest) (any, error) {
+		return c.service.ListAgentRuntimes(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// ListAgentRuntimeLogs 返回当前 Runtime 最近 5000 行快照内的脱敏日志。
+func (c *Controller) ListAgentRuntimeLogs(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentRuntimeLogsRequest{}, func(req *iapiserver.StudioAgentRuntimeLogsRequest) (any, error) {
+		return c.service.ListAgentRuntimeLogs(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
+// GetAgentRuntimeHealth 返回 Runtime 投影健康或只读实时探测结果。
+func (c *Controller) GetAgentRuntimeHealth(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioAgentRuntimeHealthRequest{}, func(req *iapiserver.StudioAgentRuntimeHealthRequest) (any, error) {
+		return c.service.GetAgentRuntimeHealth(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
+
 // SendAgentMessage 向应用当前 Coding Agent 发送开发指令并创建 CODING Invocation。
 func (c *Controller) SendAgentMessage(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioAgentMessageRequest{}, func(req *iapiserver.StudioAgentMessageRequest) (any, error) {

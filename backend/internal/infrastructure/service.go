@@ -234,6 +234,9 @@ func (s *Service) Logs(ctx context.Context, id string, req *iapiserver.InfraBasi
 	if err != nil {
 		return nil, err
 	}
+	if req.OwnerReference == "" || runtime.OwnerDomain != iapiserver.TaskWorkerOwnerDomainAgent || runtime.OwnerReference != req.OwnerReference {
+		return nil, errors.NewStatus(code.ErrInfraEndpointAccessDenied, "infra runtime owner does not match")
+	}
 	if runtime.ProviderRuntimeRef == "" {
 		return &iapiserver.InfraRuntimeLogListResponse{Items: []*iapiserver.InfraRuntimeLogEntry{}}, nil
 	}
@@ -246,6 +249,20 @@ func (s *Service) Logs(ctx context.Context, id string, req *iapiserver.InfraBasi
 		return nil, errors.NewStatus(code.ErrInfraRequestInvalid, err.Error())
 	}
 	return &iapiserver.InfraRuntimeLogListResponse{Total: int64(len(items)), Items: imachinery.PaginateSlice(items, window)}, nil
+}
+
+func (s *Service) Health(ctx context.Context, id, ownerReference string) (*iapiserver.InfraRuntimeHealthResult, error) {
+	runtime, err := s.store.GetInfraRuntime(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if ownerReference == "" || runtime.OwnerDomain != iapiserver.TaskWorkerOwnerDomainAgent || runtime.OwnerReference != ownerReference {
+		return nil, errors.NewStatus(code.ErrInfraEndpointAccessDenied, "infra runtime owner does not match")
+	}
+	if runtime.ProviderRuntimeRef == "" {
+		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnknown, CheckedAt: imachinery.Now(), Reason: iapiserver.AgentRuntimeHealthReasonNotProvisioned}, nil
+	}
+	return s.provider.Health(ctx, runtime.ProviderRuntimeRef)
 }
 func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreateRuntimeRequest) (*iapiserver.InfraOperationResult, error) {
 	profile, ok := s.profiles[req.RuntimeProfileID]

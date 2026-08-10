@@ -52,6 +52,10 @@ type CodingAgentCreator interface {
 	SuspendCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
 	ResumeCodingAgentForStudio(context.Context, string, string, string, *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error)
 	EnsurePlatformMCPBindingForCodingAgent(context.Context, string, string) error
+	GetStudioRuntime(context.Context, string, int64) (*iapiserver.StudioAgentRuntime, error)
+	ListStudioRuntimeHistory(context.Context, string, string, int64, *imachinery.PagingParams) (*iapiserver.StudioAgentRuntimeListResponse, error)
+	ListStudioRuntimeLogs(context.Context, string, int64, *imachinery.PagingParams) (*iapiserver.StudioAgentRuntimeLogListResponse, error)
+	GetStudioRuntimeHealth(context.Context, string, int64, bool) (*iapiserver.StudioAgentRuntimeHealth, error)
 }
 
 type Service struct {
@@ -235,6 +239,54 @@ func (s *Service) GetAgentStatus(ctx context.Context, appID string) (*iapiserver
 		return nil, err
 	}
 	return studioAgentStatus(app, agent), nil
+}
+
+// GetAgentRuntime 返回当前 generation 的 Runtime 诊断详情。
+func (s *Service) GetAgentRuntime(ctx context.Context, appID string) (*iapiserver.StudioAgentRuntime, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if s.agents == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent service is unavailable")
+	}
+	return s.agents.GetStudioRuntime(ctx, app.CodingAgentID, int64(app.CodingAgentGeneration))
+}
+
+// ListAgentRuntimes 返回当前应用可见的 Runtime 历史。
+func (s *Service) ListAgentRuntimes(ctx context.Context, appID string, req *iapiserver.StudioAgentRuntimeListRequest) (*iapiserver.StudioAgentRuntimeListResponse, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if s.agents == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent service is unavailable")
+	}
+	return s.agents.ListStudioRuntimeHistory(ctx, app.CodingAgentID, app.ID, int64(app.CodingAgentGeneration), &req.PagingParams)
+}
+
+// ListAgentRuntimeLogs 返回当前 Runtime 的脱敏日志。
+func (s *Service) ListAgentRuntimeLogs(ctx context.Context, appID string, req *iapiserver.StudioAgentRuntimeLogsRequest) (*iapiserver.StudioAgentRuntimeLogListResponse, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if s.agents == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent service is unavailable")
+	}
+	return s.agents.ListStudioRuntimeLogs(ctx, app.CodingAgentID, int64(app.CodingAgentGeneration), &req.PagingParams)
+}
+
+// GetAgentRuntimeHealth 返回投影或实时探测健康结果。
+func (s *Service) GetAgentRuntimeHealth(ctx context.Context, appID string, req *iapiserver.StudioAgentRuntimeHealthRequest) (*iapiserver.StudioAgentRuntimeHealth, error) {
+	app, _, _, err := s.currentCodingAgent(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if s.agents == nil {
+		return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding agent service is unavailable")
+	}
+	return s.agents.GetStudioRuntimeHealth(ctx, app.CodingAgentID, int64(app.CodingAgentGeneration), req.Probe)
 }
 
 // SendAgentMessage 持久化应用开发指令并返回当前 generation 的 CODING Invocation 投影。

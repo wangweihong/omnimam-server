@@ -13,6 +13,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	ssectrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/sse"
+	infrastructureclient "github.com/wangweihong/omnimam/backend/internal/apiserver/infrastructureclient"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
 	aichatsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/aichat"
@@ -135,6 +136,10 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent grant codec")
 	}
+	infrastructureClient, err := infrastructureclient.New(cfg.InfrastructureClientOptions.BaseURL, cfg.InfrastructureClientOptions.Token)
+	if err != nil {
+		return nil, errors.Wrap(err, "construct infrastructure client")
+	}
 	userModelGateway, err := engine.NewUserModelGatewayService(engine.UserModelGatewayDependencies{
 		Runtime: runtimeRegistry, Adapters: adapters, Executors: executors, Credentials: credentialBroker,
 	})
@@ -201,7 +206,7 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}
-	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService, Models: userModelService, Scopes: appStudioService, Grants: grantCodec})
+	agentService, err := agentsvc.New(agentsvc.Dependencies{Store: storeIns.Agents(), Tasks: taskCenterService, Workspaces: appStudioService, Models: userModelService, Scopes: appStudioService, Diagnostics: infrastructureClient, Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct agent service")
 	}

@@ -42,6 +42,14 @@ type InfraRuntimeLogListResponse struct {
 	Items []*InfraRuntimeLogEntry `json:"items"`
 }
 
+// InfraRuntimeHealthResult 是 Infrastructure 对 Runtime 的通用实时健康结果。
+// +k8s:deepcopy-gen=true
+type InfraRuntimeHealthResult struct {
+	Status    string          `json:"status"`
+	CheckedAt imachinery.Time `json:"checked_at"`
+	Reason    string          `json:"reason,omitempty"`
+}
+
 // +k8s:deepcopy-gen=true
 type InfraOperationResult struct {
 	Runtime        *InfraRuntime         `json:"runtime"`

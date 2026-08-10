@@ -142,6 +142,8 @@ const (
 	AgentRuntimeStateStopped = "STOPPED"
 	// AgentRuntimeStateFailed 表示 Runtime 操作失败。
 	AgentRuntimeStateFailed = "FAILED"
+	// AgentRuntimeStateDeleted 表示 Runtime 投影已删除且不再作为当前 Runtime。
+	AgentRuntimeStateDeleted = "DELETED"
 	// AgentRuntimeActivityIdle 表示 Runtime 已就绪且无活动 Invocation。
 	AgentRuntimeActivityIdle = "IDLE"
 	// AgentRuntimeActivityActive 表示 Runtime 正在执行至少一个 Invocation。
@@ -154,6 +156,27 @@ const (
 	AgentRuntimeHealthHealthy = "HEALTHY"
 	// AgentRuntimeHealthUnhealthy 表示 Runtime 健康检查失败。
 	AgentRuntimeHealthUnhealthy = "UNHEALTHY"
+)
+
+const (
+	// AgentRuntimeHealthSourceProjection 表示结果来自持久化健康投影。
+	AgentRuntimeHealthSourceProjection = "PROJECTION"
+	// AgentRuntimeHealthSourceLive 表示结果来自 Infrastructure 实时探测。
+	AgentRuntimeHealthSourceLive = "LIVE"
+	// AgentRuntimeHealthReasonNoObservation 表示尚无持久化健康观察。
+	AgentRuntimeHealthReasonNoObservation = "NO_HEALTH_OBSERVATION"
+	// AgentRuntimeHealthReasonNotProvisioned 表示尚未关联 Infrastructure Runtime。
+	AgentRuntimeHealthReasonNotProvisioned = "RUNTIME_NOT_PROVISIONED"
+	// AgentRuntimeHealthReasonNotRunning 表示 Runtime 当前未运行。
+	AgentRuntimeHealthReasonNotRunning = "RUNTIME_NOT_RUNNING"
+	// AgentRuntimeHealthReasonServiceUnreachable 表示 Runtime 内服务不可达。
+	AgentRuntimeHealthReasonServiceUnreachable = "RUNTIME_SERVICE_UNREACHABLE"
+	// AgentRuntimeHealthReasonServiceUnhealthy 表示 Runtime 健康端点返回失败状态。
+	AgentRuntimeHealthReasonServiceUnhealthy = "RUNTIME_SERVICE_UNHEALTHY"
+	// AgentRuntimeHealthReasonInfrastructureUnavailable 表示 Infrastructure/Provider 不可用。
+	AgentRuntimeHealthReasonInfrastructureUnavailable = "INFRASTRUCTURE_UNAVAILABLE"
+	// AgentRuntimeHealthReasonProbeIndeterminate 表示探测无法形成确定结论。
+	AgentRuntimeHealthReasonProbeIndeterminate = "PROBE_INDETERMINATE"
 )
 
 const (

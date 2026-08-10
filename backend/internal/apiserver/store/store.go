@@ -53,6 +53,11 @@ type AgentInvocationActivityCandidate struct {
 	Active       bool
 }
 
+type AgentRuntimeHistoryRecord struct {
+	Runtime    *iapiserver.AgentRuntimeBinding
+	Generation int64
+}
+
 // AgentRuntimeTerminalProjection 是 Runtime 生命周期 Task 允许写回的受栅栏投影。
 // Store 仅在当前 Task、操作和资源版本全部匹配时应用，并在终态清空当前操作。
 type AgentRuntimeTerminalProjection struct {
@@ -165,6 +170,12 @@ type AgentStore interface {
 	RevokeAgentRuntimeGrant(context.Context, string) error
 	RevokeActiveAgentRuntimeGrants(context.Context, string) error
 	GetCurrentAgentRuntime(context.Context, string, string) (*iapiserver.AgentRuntimeBinding, error)
+	// ListAgentRuntimeHistory 按应用授权、所有者和稳定分页顺序读取 Runtime 历史。
+	ListAgentRuntimeHistory(context.Context, string, string, string, *imachinery.PagingParams) ([]*AgentRuntimeHistoryRecord, int64, error)
+	// GetCurrentAgentRuntimeForGeneration 读取指定 Agent generation 的最新 Runtime。
+	GetCurrentAgentRuntimeForGeneration(context.Context, string, string, int64) (*iapiserver.AgentRuntimeBinding, error)
+	// GetLatestActiveAgentInvocation 读取 Runtime 当前最新非终态 Invocation。
+	GetLatestActiveAgentInvocation(context.Context, string, string) (*iapiserver.AgentInvocation, error)
 	GetAgentRuntimeByID(context.Context, string) (*iapiserver.AgentRuntimeBinding, error)
 	CreateAgentRuntime(context.Context, string, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
 	UpdateAgentRuntime(context.Context, *iapiserver.AgentRuntimeBinding) (*iapiserver.AgentRuntimeBinding, error)
