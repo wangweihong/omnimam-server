@@ -607,13 +607,9 @@ func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
 			port:       14096,
 			command: `set -eu
 while [ ! -f /run/omnimam/start ]; do sleep 0.1; done
-printf '#!/bin/sh\nexec nc -w 1 127.0.0.1 4096\n' > /run/omnimam/forward
+printf '#!/bin/sh\nexec nc 127.0.0.1 4096\n' > /run/omnimam/forward
 chmod 500 /run/omnimam/forward
-while :; do
-  if ! nc -l -s 0.0.0.0 -p 14096 -e /run/omnimam/forward; then
-    sleep 0.1
-  fi
-done &
+nc -lk -s 0.0.0.0 -p 14096 -e /run/omnimam/forward &
 forwarder_pid=$!
 for attempt in $(seq 1 100); do
   if awk '$2 ~ /:3710$/ && $4 == "0A" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6; then

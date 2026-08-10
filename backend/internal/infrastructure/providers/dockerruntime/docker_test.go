@@ -67,19 +67,22 @@ func TestReadRuntimeCA(t *testing.T) {
 	}
 }
 
-func TestCodingRuntimeListenerReapsForwarderConnections(t *testing.T) {
+func TestCodingRuntimeListenerKeepsStableListeningSocket(t *testing.T) {
 	profile, ok := agentRuntimeServiceProfile(iapiserver.InfraRuntimeProfileIDAgentCoding)
 	if !ok {
 		t.Fatal("agentRuntimeServiceProfile() did not return Coding Runtime profile")
 	}
-	if strings.Contains(profile.command, "nc -lk") {
-		t.Fatalf("Coding Runtime listener uses persistent nc process: %q", profile.command)
+	if !strings.Contains(profile.command, "printf '#!/bin/sh\\nexec nc 127.0.0.1 4096\\n'") {
+		t.Fatalf("Coding Runtime forwarder does not preserve long-running responses: %q", profile.command)
 	}
-	if !strings.Contains(profile.command, "printf '#!/bin/sh\\nexec nc -w 1 127.0.0.1 4096\\n'") {
-		t.Fatalf("Coding Runtime forwarder must bound keep-alive connections: %q", profile.command)
+	if strings.Contains(profile.command, "nc -w 1 127.0.0.1 4096") {
+		t.Fatalf("Coding Runtime forwarder truncates idle model streams: %q", profile.command)
 	}
-	if !strings.Contains(profile.command, "while :; do\n  if ! nc -l -s 0.0.0.0 -p 14096 -e /run/omnimam/forward; then\n    sleep 0.1\n  fi\ndone &\nforwarder_pid=$!\nfor attempt in $(seq 1 100); do") {
-		t.Fatalf("Coding Runtime listener does not use a single-connection reaping loop: %q", profile.command)
+	if !strings.Contains(profile.command, "nc -lk -s 0.0.0.0 -p 14096 -e /run/omnimam/forward &\nforwarder_pid=$!\nfor attempt in $(seq 1 100); do") {
+		t.Fatalf("Coding Runtime listener does not keep a stable listening socket: %q", profile.command)
+	}
+	if strings.Contains(profile.command, "while :; do\n  if ! nc -l") {
+		t.Fatalf("Coding Runtime listener rebinds after each connection: %q", profile.command)
 	}
 	if !strings.Contains(profile.command, `awk '$2 ~ /:3710$/ && $4 == "0A"`) {
 		t.Fatalf("Coding Runtime must wait for the forwarder listener before starting OpenCode: %q", profile.command)

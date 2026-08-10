@@ -34,7 +34,6 @@ const (
 	openCodeStartupRetryWindow   = 3 * time.Second
 	openCodeStartupRetryInterval = 100 * time.Millisecond
 	workspaceToolServerKey       = "omnimam-workspace"
-	openCodeToolIDsPath          = "/experimental/tool/ids"
 )
 
 var errCodingResultMissing = stderrors.New("coding invocation has no applied changeset and new source revision")
@@ -880,9 +879,6 @@ func (e *InvocationExecutor) configureOpenCode(ctx context.Context, execution *i
 		if err := waitForOpenCodeMCPConnected(ctx, execution.endpointBase, workspaceToolServerKey); err != nil {
 			return true, fmt.Errorf("wait for agent invocation workspace tool: %w", err)
 		}
-		if err := waitForOpenCodeWorkspaceTools(ctx, execution.endpointBase); err != nil {
-			return true, fmt.Errorf("wait for agent invocation workspace tool IDs: %w", err)
-		}
 	}
 	return true, nil
 }
@@ -923,52 +919,6 @@ func waitForOpenCodeMCPConnected(ctx context.Context, baseURL, serverKey string)
 		return err
 	}
 	return nil
-}
-
-func waitForOpenCodeWorkspaceTools(ctx context.Context, baseURL string) error {
-	required := []string{
-		workspaceToolServerKey + "_appstudio_source_status",
-		workspaceToolServerKey + "_appstudio_source_list",
-		workspaceToolServerKey + "_appstudio_source_read",
-		workspaceToolServerKey + "_changeset_apply",
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, openCodeMCPConnectTimeout)
-	defer cancel()
-	var lastIDs []string
-	err := wait.PollImmediateUntil(openCodeMCPConnectInterval, func() (bool, error) {
-		var toolIDs []string
-		if err := invokeOpenCode(waitCtx, baseURL, http.MethodGet, openCodeToolIDsPath, nil, &toolIDs); err != nil {
-			return false, err
-		}
-		lastIDs = toolIDs
-		available := make(map[string]struct{}, len(toolIDs))
-		for _, id := range toolIDs {
-			available[id] = struct{}{}
-		}
-		for _, id := range required {
-			if _, ok := available[id]; !ok {
-				return false, nil
-			}
-		}
-		return true, nil
-	}, waitCtx.Done())
-	if err == nil {
-		return nil
-	}
-	missing := make([]string, 0, len(required))
-	available := make(map[string]struct{}, len(lastIDs))
-	for _, id := range lastIDs {
-		available[id] = struct{}{}
-	}
-	for _, id := range required {
-		if _, ok := available[id]; !ok {
-			missing = append(missing, id)
-		}
-	}
-	if waitCtx.Err() != nil {
-		return fmt.Errorf("required tools did not register within %s (missing: %s)", openCodeMCPConnectTimeout, strings.Join(missing, ", "))
-	}
-	return err
 }
 
 func (e *InvocationExecutor) ensureOpenCodeSession(ctx context.Context, execution *invocationExecution) (string, error) {
@@ -1285,11 +1235,7 @@ func invokeOpenCode(ctx context.Context, baseURL, method, path string, payload, 
 		return builder.Build().InvokeWithContext(requestCtx, httpcli.TimeoutCallOption(openCodeRequestTimeout))
 	}
 	var response *httpcli.HttpResponse
-	startupRequest := (method == http.MethodPut && strings.HasPrefix(path, "/auth/")) ||
-		(method == http.MethodPatch && path == "/global/config") ||
-		(method == http.MethodPost && strings.HasSuffix(path, "/connect")) ||
-		(method == http.MethodGet && (path == "/mcp" || path == openCodeToolIDsPath))
-	if !startupRequest {
+	if !retryOpenCodeTransportFailure(method, path) {
 		response, err = invoke(ctx)
 	} else {
 		retryCtx, cancel := context.WithTimeout(ctx, openCodeStartupRetryWindow)
@@ -1330,6 +1276,14 @@ func invokeOpenCode(ctx context.Context, baseURL, method, path string, payload, 
 		return fmt.Errorf("decode runtime response: %w", err)
 	}
 	return nil
+}
+
+func retryOpenCodeTransportFailure(method, path string) bool {
+	return (method == http.MethodPut && strings.HasPrefix(path, "/auth/")) ||
+		(method == http.MethodDelete && strings.HasPrefix(path, "/auth/")) ||
+		(method == http.MethodPatch && path == "/global/config") ||
+		(method == http.MethodPost && (strings.HasSuffix(path, "/connect") || strings.HasSuffix(path, "/disconnect"))) ||
+		(method == http.MethodGet && path == "/mcp")
 }
 
 func assistantText(message *openCodeMessage) (string, error) {

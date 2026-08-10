@@ -2,61 +2,58 @@
 
 ## Current goal and status
 
-- Goal: implement the released Agent Runtime diagnostics contract for AppStudio.
-- Status: implementation complete; focused verification passed. SSOT `spec-v1.21.0` is pinned at `5a654a1c1e14c1f454e17a5b4190af379f13bb5c`.
+- Goal: diagnose and resolve AppStudio coding-agent workspace tool registration and runtime disconnect failures so a project can be created, code generated, and iterated through follow-up chat.
+- Status: complete. Readiness, stable-listener, and long-running response fixes are deployed and verified through project creation plus follow-up chat iteration.
 
 ## Work completed in this session
 
-- Added AppStudio Runtime detail, history, sanitized logs, and projection/live health APIs.
-- Added Agent runtime projection, generation-scoped history, current non-terminal Invocation lookup, uptime and policy-duration mapping.
-- Added owner-scoped Infrastructure logs/health APIs and diagnostics client wiring through existing `InfrastructureClientOptions`.
-- Added Docker provider health probing through the runtime health endpoint with stable status/reason mapping.
-- Added `appstudio.agent.runtime.logs.read` permission wiring and generated API deepcopy methods.
-- Corrected current task `started_at` to use Invocation `StartedAt` and centralized diagnostic source/reason constants.
-- Enforced Infrastructure `owner_domain=agent` for diagnostics and made Runtime history totals count distinct bindings while preserving stable generation ordering.
-- Updated the API-server Infrastructure diagnostics client to aggregate 200-row Infrastructure pages into the released 5000-row log snapshot window.
-- Updated the existing Infrastructure client log reader to use the same 200-row paging contract when consumed outside the API-server diagnostics adapter.
+- Confirmed the SSOT submodule and `SSOT_VERSION` both point to released `spec-v1.21.0` commit `5a654a1c1e14c1f454e17a5b4190af379f13bb5c`.
+- Reproduced OpenCode `1.18.13` behavior in two live runtimes: `/experimental/tool/ids` returns built-in tools only and never includes remote MCP tools.
+- Confirmed `/mcp` reaches `connected` only after the Workspace MCP initialize and `tools/list` requests succeed; removed the invalid `/experimental/tool/ids` readiness check and retained `/mcp` connected as the readiness gate.
+- Reproduced one `connection refused` in 100 direct requests against the single-connection `nc` forwarder; added transport retries for idempotent MCP connect/disconnect and auth PUT/DELETE cleanup calls.
+- Built and deployed an intermediate TaskWorker, created AppStudio project `2fdc267b-6c35-5e9b-a6bc-ed2733130dec`, and confirmed the old secondary check was the only remaining failure.
+- Rebuilt and redeployed TaskWorker after removing the invalid readiness check. Fresh invocation `c405f2bc-6f86-5675-a88c-d792923a820b` then passed MCP readiness but failed on `GET /session` because runtime `omnimam-e848bff1-fe5b-4066-969f-b126598c4996` refused the connection on port `14096`.
+- Replaced the Coding Runtime one-shot `nc -l -e` rebind loop with BusyBox's supported `nc -lk -e` persistent listener, eliminating the proven gap between listening sockets.
+- Created fresh project `1be36b1c-5e9b-5546-aba3-99c4c8061589`; its new runtime passed 200/200 direct requests without a listener gap. The invocation then failed because `/run/omnimam/forward` used `nc -w 1`, which aborted the model response after one second of idle stream time. OpenCode logged `stream` followed about 1.45 seconds later by `error=Aborted`.
+- Removed the obsolete one-second upstream `nc` timeout; persistent `-lk` listener mode no longer needs it to release the listening socket.
+- Rebuilt and redeployed `omnimam/infraserver:e1aa3f6-amd64` and `omnimam/taskworker:e1aa3f6-amd64`; Infrastructure is healthy and TaskWorker is running.
+- Created final verification project `8dfb0e2c-a5f9-521a-8d34-3a6b82f30ab8`. Its first Coding Agent task `611bda75-508c-42fb-b8a5-6b1308f3cbad` succeeded and created `index.html` at Revision 1.
+- Sent follow-up chat instruction to the same project. Task `a0f246af-7f7d-4fd4-b50a-1097ff406d40` succeeded and applied a second ChangeSet, advancing source to Revision 2.
 
 ## Files added, modified, renamed, or removed
 
-- Added: `backend/internal/apiserver/infrastructureclient/client.go`.
-- Modified: `SSOT_VERSION`, `ssot` gitlink, AppStudio/Agent/Infrastructure API, service, store, provider, route, composition, generated deepcopy files, and `backend/internal/infrastructure/client.go` paging.
-- Modified: `docs/HANDOFF.md`.
+- Modified: `backend/internal/infrastructure/providers/dockerruntime/docker.go`, `backend/internal/infrastructure/providers/dockerruntime/docker_test.go`, `backend/internal/taskworker/agentexecutor/invocation.go`, `docs/HANDOFF.md`.
 
 ## Key architectural or design decisions
 
-- Public `runtime_id` is the Agent Runtime Binding ID; Infrastructure and provider identifiers remain private.
-- History is grant-scoped, deduplicated by Runtime Binding, and ordered by generation, creation time, and ID descending.
-- Logs are bounded to the newest 5000-line snapshot and expose only occurrence time, level, and message.
-- `probe=false` returns the persisted projection; `probe=true` performs a read-only owner-scoped Infrastructure probe. Probe failures remain HTTP 200 diagnostics results.
-- No database migration, event, environment variable, dependency, business error code, or new `backend/cmd/` binary was added.
+- OpenCode `/mcp` `connected` is the supported remote MCP readiness signal for the pinned runtime. `/experimental/tool/ids` is not a remote MCP inventory endpoint in OpenCode `1.18.13`.
+- Retry only transport failures for idempotent configuration/cleanup calls and never replay session creation or prompts.
+- The Coding Runtime `14096` forwarder must keep a stable listener and its per-connection upstream proxy must allow long-running model responses. Listener persistence is provided by BusyBox `nc -lk -e`; the upstream `nc` must not use the previous one-second idle timeout.
 
 ## API, schema, dependency, or configuration changes
 
-- Added `/api/v1/studio-applications/{studio_application_id}/agent/runtime`, `/runtimes`, `/runtime/logs`, and `/runtime/health` routes under the released AppStudio contract.
-- Infrastructure Runtime logs now require `owner_reference`; owner-scoped Runtime health is available internally.
-- API Server constructs the diagnostics client from existing Infrastructure base URL/token options and injects it into Agent service.
+- No external API, schema, dependency, or configuration changes.
 
 ## Verification performed and remaining checks
 
-- Passed: `make gen.deepcopy`, `git diff --check`.
-- Latest targeted command: `go test ./internal/apiserver/service/v1/agent ./internal/apiserver/service/v1/appstudio ./internal/apiserver/controller/v1/appstudio ./internal/apiserver/store/postgresql ./internal/infrastructure/... ./internal/apiserver`.
-- Passed focused packages: Agent service, AppStudio service, identity service, AppStudio and identity controllers, API Server composition, PostgreSQL store, Infrastructure packages, and Docker provider.
-- Rechecked after the Infrastructure client paging correction: `go test ./internal/infrastructure/...`, `go test ./internal/apiserver`, and the Agent/AppStudio/controller/PostgreSQL target packages all passed.
-- Full-repository tests were intentionally not run per task scope.
+- Passed after the final forwarding change: `go test ./internal/infrastructure/providers/dockerruntime` and `go test ./internal/taskworker/agentexecutor`.
+- `git diff --check` passed.
+- The final Coding Runtime listener remained present and passed 200/200 direct health requests without a connection refusal.
+- Live AppStudio verification passed project creation, Runtime provisioning, MCP initialize and tool discovery, source ChangeSet Revision `0 -> 1`, and follow-up chat ChangeSet Revision `1 -> 2`.
+- No remaining checks for the requested workflow. Full-repository tests were intentionally not run per task scope.
 
 ## Outstanding tasks
 
-- None required for this implementation. Existing unrelated runtime/MCP risks remain outside this task.
+- None for the requested workflow.
 
 ## Known issues and risks
 
-- Existing live MCP/Runtime forwarder and queued-cancellation recovery work remains outside this task and was not changed.
-- Existing debug access logging may expose authorization headers; this pre-existing issue remains out of scope.
+- API debug access logs currently include authorization headers. This pre-existing credential exposure was observed during diagnosis and remains a security risk outside the functional fix.
+- Coding Runtime containers created before the final provider deployment retain their generated old startup script. Replace the Coding Agent in an older project before continuing that project; newly created runtimes use the fixed script.
 
 ## Exact recommended next step
 
-Review the focused diff and merge the implementation after CI reruns the same target package tests.
+The requested workflow is complete. When reopening a project created before this fix, use `替换 Coding Agent` once so it receives a new Coding Runtime with the stable forwarder.
 
 Next Prompt:
 
