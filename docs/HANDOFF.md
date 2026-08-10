@@ -2,58 +2,73 @@
 
 ## Current goal and status
 
-- Goal: diagnose and resolve AppStudio coding-agent workspace tool registration and runtime disconnect failures so a project can be created, code generated, and iterated through follow-up chat.
-- Status: complete. Readiness, stable-listener, and long-running response fixes are deployed and verified through project creation plus follow-up chat iteration.
+- Goal: diagnose and fix why AppStudio agent messages contain `The MCP workspace tools aren't loaded into this session...` even though the invocation reports `SUCCEEDED`.
+- Status: minimal TaskWorker fix is implemented, package-level verification passed, and the fixed image is deployed. Fresh AppStudio invocation verification remains outstanding.
 
 ## Work completed in this session
 
-- Confirmed the SSOT submodule and `SSOT_VERSION` both point to released `spec-v1.21.0` commit `5a654a1c1e14c1f454e17a5b4190af379f13bb5c`.
-- Reproduced OpenCode `1.18.13` behavior in two live runtimes: `/experimental/tool/ids` returns built-in tools only and never includes remote MCP tools.
-- Confirmed `/mcp` reaches `connected` only after the Workspace MCP initialize and `tools/list` requests succeed; removed the invalid `/experimental/tool/ids` readiness check and retained `/mcp` connected as the readiness gate.
-- Reproduced one `connection refused` in 100 direct requests against the single-connection `nc` forwarder; added transport retries for idempotent MCP connect/disconnect and auth PUT/DELETE cleanup calls.
-- Built and deployed an intermediate TaskWorker, created AppStudio project `2fdc267b-6c35-5e9b-a6bc-ed2733130dec`, and confirmed the old secondary check was the only remaining failure.
-- Rebuilt and redeployed TaskWorker after removing the invalid readiness check. Fresh invocation `c405f2bc-6f86-5675-a88c-d792923a820b` then passed MCP readiness but failed on `GET /session` because runtime `omnimam-e848bff1-fe5b-4066-969f-b126598c4996` refused the connection on port `14096`.
-- Replaced the Coding Runtime one-shot `nc -l -e` rebind loop with BusyBox's supported `nc -lk -e` persistent listener, eliminating the proven gap between listening sockets.
-- Created fresh project `1be36b1c-5e9b-5546-aba3-99c4c8061589`; its new runtime passed 200/200 direct requests without a listener gap. The invocation then failed because `/run/omnimam/forward` used `nc -w 1`, which aborted the model response after one second of idle stream time. OpenCode logged `stream` followed about 1.45 seconds later by `error=Aborted`.
-- Removed the obsolete one-second upstream `nc` timeout; persistent `-lk` listener mode no longer needs it to release the listening socket.
-- Rebuilt and redeployed `omnimam/infraserver:e1aa3f6-amd64` and `omnimam/taskworker:e1aa3f6-amd64`; Infrastructure is healthy and TaskWorker is running.
-- Created final verification project `8dfb0e2c-a5f9-521a-8d34-3a6b82f30ab8`. Its first Coding Agent task `611bda75-508c-42fb-b8a5-6b1308f3cbad` succeeded and created `index.html` at Revision 1.
-- Sent follow-up chat instruction to the same project. Task `a0f246af-7f7d-4fd4-b50a-1097ff406d40` succeeded and applied a second ChangeSet, advancing source to Revision 2.
+- Confirmed `ssot` and `SSOT_VERSION` are pinned to released `spec-v1.21.0` commit `5a654a1c1e14c1f454e17a5b4190af379f13bb5c`.
+- Confirmed the reported English text is a persisted assistant message, not an API-generated backend error.
+- Traced the message to invocation `b0bdaa8e-8f91-5b58-9147-b5aefc2269a2`, which is recorded as `SUCCEEDED`.
+- Confirmed that invocation's OpenCode model session exposed built-in tools but not the four expected Workspace MCP tools.
+- Confirmed the model worked around the missing tools by reading runtime configuration and issuing direct MCP JSON-RPC HTTP calls through shell scripts.
+- Confirmed `configureOpenCode` enables the temporary MCP server, requests `/mcp/{server}/connect`, waits for `/mcp` status `connected`, then creates the OpenCode session.
+- Confirmed cleanup intentionally disables the temporary Workspace Tool after invocation completion; the current disabled configuration is not the original failure.
+- Confirmed `/experimental/tool/ids` in OpenCode `1.18.13` lists built-in tools only and cannot prove remote MCP tool availability.
+- Confirmed `/experimental/tool` also lists only built-in `ToolRegistry` entries in OpenCode `1.18.13`; it does not expose session-resolved MCP tools despite its broad OpenAPI description.
+- Traced OpenCode `v1.18.13` source: `PATCH /global/config` invalidates configuration and forks `disposeAllInstancesAndEmitGlobalDisposed` after returning the response. Instance disposal clears the MCP client and cached tool definitions.
+- Established the failure race: TaskWorker can connect and observe `/mcp = connected`, then OpenCode's delayed global disposal removes that client before `SessionTools.resolve` assembles the model request.
+- Confirmed the released SSOT requires wildcard deny plus exact allow entries for Workspace Tool IDs. Changing the wildcard to allow all tools would violate the contract.
+- Added a synchronous `POST /global/dispose` barrier after `PATCH /global/config` and before Workspace MCP connect.
+- Added startup transport retry coverage for the idempotent `POST /global/dispose` request.
+- Built and deployed `omnimam/taskworker:811dde4-dispose-amd64`; the replacement TaskWorker started successfully.
+
+## Current in-progress work
+
+- None. Live invocation verification was stopped after local browser attachment and API authentication attempts did not provide a usable authenticated session.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `backend/internal/infrastructure/providers/dockerruntime/docker.go`, `backend/internal/infrastructure/providers/dockerruntime/docker_test.go`, `backend/internal/taskworker/agentexecutor/invocation.go`, `docs/HANDOFF.md`.
+- Modified: `backend/internal/taskworker/agentexecutor/invocation.go`.
+- Modified: `docs/HANDOFF.md`.
 
 ## Key architectural or design decisions
 
-- OpenCode `/mcp` `connected` is the supported remote MCP readiness signal for the pinned runtime. `/experimental/tool/ids` is not a remote MCP inventory endpoint in OpenCode `1.18.13`.
-- Retry only transport failures for idempotent configuration/cleanup calls and never replay session creation or prompts.
-- The Coding Runtime `14096` forwarder must keep a stable listener and its per-connection upstream proxy must allow long-running model responses. Listener persistence is provided by BusyBox `nc -lk -e`; the upstream `nc` must not use the previous one-second idle timeout.
+- The exact SSOT allowlist form is authoritative: `binding-id_*: false`, with each allowed full tool ID set to `true`.
+- `/mcp` status `connected` proves MCP initialization and `tools/list` succeeded, but it has not yet been proven to mean the tools are included in the next model request.
+- The OpenCode global config endpoint is asynchronous with respect to instance disposal. A successful config response is not a safe point for immediately connecting instance-owned MCP state.
+- `POST /global/dispose` is a supported OpenCode `1.18.13` API and synchronously waits for instance disposal; using it as a barrier preserves the SSOT configuration and exact allowlist contract.
+- The backend must not accept a successful invocation when the model silently bypasses the Workspace Tool boundary through shell/HTTP fallback.
 
 ## API, schema, dependency, or configuration changes
 
-- No external API, schema, dependency, or configuration changes.
+- Runtime request sequence now includes `POST /global/dispose` between global configuration update and MCP connect. No public API, schema, dependency, or persisted configuration changed.
 
 ## Verification performed and remaining checks
 
-- Passed after the final forwarding change: `go test ./internal/infrastructure/providers/dockerruntime` and `go test ./internal/taskworker/agentexecutor`.
-- `git diff --check` passed.
-- The final Coding Runtime listener remained present and passed 200/200 direct health requests without a connection refusal.
-- Live AppStudio verification passed project creation, Runtime provisioning, MCP initialize and tool discovery, source ChangeSet Revision `0 -> 1`, and follow-up chat ChangeSet Revision `1 -> 2`.
-- No remaining checks for the requested workflow. Full-repository tests were intentionally not run per task scope.
+- Verified the persisted message and invocation records through the local API/database/runtime paths.
+- Inspected the affected OpenCode session and found no Workspace MCP tool calls.
+- Passed: `go test ./internal/taskworker/agentexecutor` (package compiles; it currently has no test files).
+- Passed: `git diff --check`.
+- Built and deployed `omnimam/taskworker:811dde4-dispose-amd64`; container startup logs show TaskWorker workers registered normally.
+- Remaining: reproduce on a fresh authenticated AppStudio invocation and inspect actual MCP tool parts.
+- Full-repository tests must not be run for this task.
 
 ## Outstanding tasks
 
-- None for the requested workflow.
+- Perform one fresh live AppStudio invocation and confirm real MCP tool parts are present instead of shell/HTTP fallback.
 
 ## Known issues and risks
 
-- API debug access logs currently include authorization headers. This pre-existing credential exposure was observed during diagnosis and remains a security risk outside the functional fix.
-- Coding Runtime containers created before the final provider deployment retain their generated old startup script. Replace the Coding Agent in an older project before continuing that project; newly created runtimes use the fixed script.
+- A model can currently bypass the intended Workspace Tool boundary by extracting runtime MCP authorization and calling the endpoint from shell code.
+- API debug access logs include authorization headers. Do not reproduce credentials in source, tests, logs, or this handoff.
+- Existing Coding Runtime containers may retain startup scripts generated before the preceding forwarder fix.
+- `backend/AGENTS.md` prohibits adding `_test.go` files outside `pkg/`; no focused request-order unit test was added to `internal/taskworker/agentexecutor`.
+- Live verification is incomplete: the in-app browser could not attach to the local page, Basic Auth was rejected, and the deployed Identity login uses a two-step authenticated flow.
 
 ## Exact recommended next step
 
-The requested workflow is complete. When reopening a project created before this fix, use `替换 Coding Agent` once so it receives a new Coding Runtime with the stable forwarder.
+Submit one fresh AppStudio invocation through an already authenticated UI session, then verify its OpenCode message parts include the four `omnimam-workspace_*` tools and no shell/HTTP MCP fallback.
 
 Next Prompt:
 

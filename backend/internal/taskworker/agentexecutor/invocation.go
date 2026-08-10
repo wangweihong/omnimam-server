@@ -872,6 +872,11 @@ func (e *InvocationExecutor) configureOpenCode(ctx context.Context, execution *i
 	if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPatch, "/global/config", config, nil); err != nil {
 		return true, fmt.Errorf("configure agent invocation runtime model: %w", err)
 	}
+	// OpenCode returns from the global config update before its asynchronous instance disposal finishes.
+	// Wait on the synchronous disposal endpoint so a later cleanup cannot remove the MCP client after connect.
+	if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/global/dispose", nil, nil); err != nil {
+		return true, fmt.Errorf("reload agent invocation runtime configuration: %w", err)
+	}
 	if execution.workspaceTool != nil {
 		if err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/mcp/"+url.PathEscape(workspaceToolServerKey)+"/connect", nil, nil); err != nil {
 			return true, fmt.Errorf("connect agent invocation workspace tool: %w", err)
@@ -1282,6 +1287,7 @@ func retryOpenCodeTransportFailure(method, path string) bool {
 	return (method == http.MethodPut && strings.HasPrefix(path, "/auth/")) ||
 		(method == http.MethodDelete && strings.HasPrefix(path, "/auth/")) ||
 		(method == http.MethodPatch && path == "/global/config") ||
+		(method == http.MethodPost && path == "/global/dispose") ||
 		(method == http.MethodPost && (strings.HasSuffix(path, "/connect") || strings.HasSuffix(path, "/disconnect"))) ||
 		(method == http.MethodGet && path == "/mcp")
 }
