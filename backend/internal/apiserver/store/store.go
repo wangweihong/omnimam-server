@@ -18,7 +18,28 @@ var (
 	ErrNotificationNotVisible = errors.New("notification not visible")
 	// ErrNotificationStateConflict 表示收件箱状态机拒绝当前操作。
 	ErrNotificationStateConflict = errors.New("notification state conflict")
+	// ErrGitLabServerNameConflict 表示 GitLabServer 全局名称唯一约束冲突。
+	ErrGitLabServerNameConflict = errors.New("gitlab server name conflict")
+	// ErrGitLabProjectConflict 表示同一 Server 的远端 ID 或完整 path 投影冲突。
+	ErrGitLabProjectConflict = errors.New("gitlab project conflict")
+	// ErrGitLabResourceVersionConflict 表示更新请求使用了过期资源版本。
+	ErrGitLabResourceVersionConflict = errors.New("gitlab resource version conflict")
+	// ErrGitLabServerHasProjects 表示 Server 仍有关联 Project，禁止删除。
+	ErrGitLabServerHasProjects = errors.New("gitlab server has projects")
 )
+
+// GitLabStore 是独立 GitLab domain 的持久化消费边界。
+type GitLabStore interface {
+	ListGitLabServers(context.Context, *iapiserver.GitLabServerListRequest) ([]*iapiserver.GitLabServer, int64, error)
+	GetGitLabServer(context.Context, string) (*iapiserver.GitLabServer, error)
+	CreateGitLabServer(context.Context, *iapiserver.GitLabServer) (*iapiserver.GitLabServer, error)
+	UpdateGitLabServer(context.Context, *iapiserver.GitLabServer, int64) (*iapiserver.GitLabServer, error)
+	DeleteGitLabServer(context.Context, string) error
+	ListGitLabProjects(context.Context, *iapiserver.GitLabProjectListRequest) ([]*iapiserver.GitLabProject, int64, error)
+	GetGitLabProject(context.Context, string) (*iapiserver.GitLabProject, error)
+	CreateGitLabProject(context.Context, *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error)
+	DeleteGitLabProject(context.Context, string) error
+}
 
 // IdentityRegistrationApplicationView 是注册申请及对应用户的最小管理视图。
 type IdentityRegistrationApplicationView struct {

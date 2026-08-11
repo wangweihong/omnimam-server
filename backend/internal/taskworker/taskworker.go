@@ -24,6 +24,7 @@ import (
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	gitlabsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/gitlab"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
 	modeladapters "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters"
 	comfyuiadapter "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway/adapters/providers/comfyui"
@@ -43,6 +44,7 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/comfyuiexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/consumer"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/contracts"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/gitlabexecutor"
 )
 
 // RunTaskWorker starts only Conductor AtomicTask handlers and runtime projection reconciliation.
@@ -99,11 +101,15 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "load task center function registry")
 	}
-	tasks := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, runtime, reconcileRegistry, functionRegistry, nil,
+	tasks := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, runtime, reconcileRegistry, functionRegistry, nil, nil,
 		appplatformsvc.FunctionAssetThumbnailGenerate, iapiserver.TaskWorkerFunctionApplicationRun, iapiserver.TaskWorkerFunctionScheduleAcquire,
 		iapiserver.TaskWorkerFunctionComfyUISubmit, iapiserver.TaskWorkerFunctionComfyUIPoll, iapiserver.TaskWorkerFunctionComfyUICollectPreview,
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
-		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize)
+		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize, iapiserver.GitLabFunctionPipelineRun)
+	gitLabExecutor, err := gitlabexecutor.New(storeIns.GitLab(), gitlabsvc.NewHTTPClientFactory())
+	if err != nil {
+		return errors.Wrap(err, "construct gitlab pipeline executor")
+	}
 	adapters := modeladapters.NewEngineAdapters()
 	executors := modeladapters.NewOperationExecutors()
 	if err := modeladapters.ValidateImplementations(runtimeRegistry, adapters, executors); err != nil {
@@ -237,6 +243,9 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAppStudioProductionStop, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return appstudioexecutor.ExecuteProductionStop(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.GitLabFunctionPipelineRun, 8, gitLabExecutor.Execute); err != nil {
 		return err
 	}
 	if err := comfyuiexecutor.RegisterHandlers(runtime, comfyTestExecutor); err != nil {

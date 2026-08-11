@@ -181,6 +181,8 @@ const (
 	TaskWorkerKeyApplicationVersionID       = "application_version_id"
 	TaskWorkerKeyResolvedInputs             = "resolved_inputs"
 	TaskWorkerKeyInProgress                 = "in_progress"
+	TaskWorkerKeyCallbackAfterSeconds       = "callback_after_seconds"
+	TaskWorkerKeyExternalJobID              = "external_job_id"
 	TaskWorkerKeyThumbnailStatus            = "thumbnail_status"
 	TaskWorkerKeyReconcileSummary           = "reconcile_summary"
 	TaskWorkerKeyTaskScheduleID             = "task_schedule_id"

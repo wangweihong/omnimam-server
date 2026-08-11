@@ -2,73 +2,76 @@
 
 ## Current goal and status
 
-- Goal: diagnose and fix why AppStudio agent messages contain `The MCP workspace tools aren't loaded into this session...` even though the invocation reports `SUCCEEDED`.
-- Status: minimal TaskWorker fix is implemented, package-level verification passed, and the fixed image is deployed. Fresh AppStudio invocation verification remains outstanding.
+- Goal: implement released independent GitLab domain Phase 1 without changing AppStudio contracts, models, APIs, source storage, or behavior.
+- Status: implementation and focused verification are complete in `omnimam-spec`, `omnimam-server`, and `omnimam-devops`.
 
 ## Work completed in this session
 
-- Confirmed `ssot` and `SSOT_VERSION` are pinned to released `spec-v1.21.0` commit `5a654a1c1e14c1f454e17a5b4190af379f13bb5c`.
-- Confirmed the reported English text is a persisted assistant message, not an API-generated backend error.
-- Traced the message to invocation `b0bdaa8e-8f91-5b58-9147-b5aefc2269a2`, which is recorded as `SUCCEEDED`.
-- Confirmed that invocation's OpenCode model session exposed built-in tools but not the four expected Workspace MCP tools.
-- Confirmed the model worked around the missing tools by reading runtime configuration and issuing direct MCP JSON-RPC HTTP calls through shell scripts.
-- Confirmed `configureOpenCode` enables the temporary MCP server, requests `/mcp/{server}/connect`, waits for `/mcp` status `connected`, then creates the OpenCode session.
-- Confirmed cleanup intentionally disables the temporary Workspace Tool after invocation completion; the current disabled configuration is not the original failure.
-- Confirmed `/experimental/tool/ids` in OpenCode `1.18.13` lists built-in tools only and cannot prove remote MCP tool availability.
-- Confirmed `/experimental/tool` also lists only built-in `ToolRegistry` entries in OpenCode `1.18.13`; it does not expose session-resolved MCP tools despite its broad OpenAPI description.
-- Traced OpenCode `v1.18.13` source: `PATCH /global/config` invalidates configuration and forks `disposeAllInstancesAndEmitGlobalDisposed` after returning the response. Instance disposal clears the MCP client and cached tool definitions.
-- Established the failure race: TaskWorker can connect and observe `/mcp = connected`, then OpenCode's delayed global disposal removes that client before `SessionTools.resolve` assembles the model request.
-- Confirmed the released SSOT requires wildcard deny plus exact allow entries for Workspace Tool IDs. Changing the wildcard to allow all tools would violate the contract.
-- Added a synchronous `POST /global/dispose` barrier after `PATCH /global/config` and before Workspace MCP connect.
-- Added startup transport retry coverage for the idempotent `POST /global/dispose` request.
-- Built and deployed `omnimam/taskworker:811dde4-dispose-amd64`; the replacement TaskWorker started successfully.
+- Published `omnimam-spec` content commit `78122d28b412a52279c69cc2ec239b41af2a47a1`, release commit/tag `edcdbcebf8daecec8eaefd129338e829512b00fe` / `spec-v1.22.0`, and follow-up handoff commit `20695380cefb4426b8352bc81e27e21e1a212e9e`.
+- Pinned `ssot` and `SSOT_VERSION` to released `spec-v1.22.0` commit `edcdbcebf8daecec8eaefd129338e829512b00fe`.
+- Added GitLabServer/GitLabProject API types, requests, PostgreSQL Store, HTTP client, service, controller routes, permissions, errors, API Server wiring, and Task Worker executor.
+- Added exact internal-caller/input validation for `gitlab.pipeline.run`; public AtomicTask/Group/DAG creation cannot bypass the GitLab domain boundary.
+- Added recoverable Pipeline execution using `external_job_id`, `IN_PROGRESS`, five-second callbacks, retry/restart checkpoint recovery, and small credential-free outputs.
+- Added non-retryable worker cancellation projection: Conductor blocks DAG continuation, while Task Center records AtomicTask/TaskAttempt `CANCELED` and strips the internal runtime marker.
+- Added API-side GitLab cancellation handler injection. Task Center reads the current runtime checkpoint, invokes best-effort `CancelPipeline`, then terminates the Conductor execution.
+- Added bounded GitLab response parsing, structured `{message}` errors, context-aware HTTP calls, detached Project compensation, remote-404 deletion, SQL constraints/indexes, and SQL-log suppression for credential writes.
+- Repaired legacy `release_v119.go` manual error registration so `make gen.errcode` is reproducible and does not double-register codes.
+- Added devops bootstrap for non-admin user `omnimam-appstudio-api`, Owner membership in Group `omnimam-appstudio`, reusable `api` PAT validation/rotation, and atomic mode-0600 token persistence.
+- The username differs from the original plan because GitLab globally conflicts user personal namespaces with the existing `omnimam-appstudio` Group path; the user authorized the naming adjustment.
 
 ## Current in-progress work
 
-- None. Live invocation verification was stopped after local browser attachment and API authentication attempts did not provide a usable authenticated session.
+- None.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `backend/internal/taskworker/agentexecutor/invocation.go`.
-- Modified: `docs/HANDOFF.md`.
+- Added: `backend/apis/iapiserver/meta_gitlab.go`, `backend/apis/iapiserver/request_gitlab.go`.
+- Added: `backend/internal/apiserver/controller/v1/gitlab/gitlab.go`.
+- Added: `backend/internal/apiserver/service/v1/gitlab/client.go`, `client_gitlab.go`, `service.go`.
+- Added: `backend/internal/apiserver/store/postgresql/gitlab.go`, `backend/internal/pkg/code/release_v122.go`, `backend/internal/taskworker/gitlabexecutor/executor.go`.
+- Modified: `SSOT_VERSION`, `ssot`, API Server route/bootstrap, Store interfaces/schema bootstrap, identity defaults, WorkflowRuntime/Task Center cancellation projection, Task Worker registration, generated deepcopy/error files and focused existing tests.
+- Modified in devops: `bootstrap/bootstrap.sh`, `deploy.sh`, and `README.md`.
+- Existing unrelated server docs and devops `.gitignore`, plus spec `archive/`, `docs/identity_fix.md`, and `设计图/`, remain untouched.
 
 ## Key architectural or design decisions
 
-- The exact SSOT allowlist form is authoritative: `binding-id_*: false`, with each allowed full tool ID set to `true`.
-- `/mcp` status `connected` proves MCP initialization and `tools/list` succeeded, but it has not yet been proven to mean the tools are included in the next model request.
-- The OpenCode global config endpoint is asynchronous with respect to instance disposal. A successful config response is not a safe point for immediately connecting instance-owned MCP state.
-- `POST /global/dispose` is a supported OpenCode `1.18.13` API and synchronously waits for instance disposal; using it as a barrier preserves the SSOT configuration and exact allowlist contract.
-- The backend must not accept a successful invocation when the model silently bypasses the Workspace Tool boundary through shell/HTTP fallback.
+- GitLab is an independent domain; AppStudio has no Phase 1 dependency or binding.
+- Credential persists only in `GitLabServer.Credential`, uses `json:"-"`, is redacted from errors, and is excluded from SQL logging sessions.
+- `gitlab.pipeline.run` is not Infra-backed and is not in the Agent/AppStudio Docker Function Registry.
+- External cancellation is a source-domain handler injected into Task Center; the handler performs only the remote side effect and never writes Task Center state.
+- No new `backend/cmd/` binary, Secret Provider, deployment environment variable, or `.env` management path was added.
 
 ## API, schema, dependency, or configuration changes
 
-- Runtime request sequence now includes `POST /global/dispose` between global configuration update and MCP connect. No public API, schema, dependency, or persisted configuration changed.
+- Added administrator GitLab Server/Project APIs under `/api/v1/gitlab` with `gitlab.server.read/manage` and `gitlab.project.read/manage`.
+- Added `gitlab_servers` and `gitlab_projects`, status/FK/unique/index constraints, and `ON DELETE RESTRICT` Server ownership.
+- Added GitLab errors in `250200-250999` and generated documentation.
+- Devops writes the PAT to `/state/appstudio-api-token`, exposed on the host as `./data/bootstrap/appstudio-api-token`; deploy output prints only this path.
 
 ## Verification performed and remaining checks
 
-- Verified the persisted message and invocation records through the local API/database/runtime paths.
-- Inspected the affected OpenCode session and found no Workspace MCP tool calls.
-- Passed: `go test ./internal/taskworker/agentexecutor` (package compiles; it currently has no test files).
-- Passed: `git diff --check`.
-- Built and deployed `omnimam/taskworker:811dde4-dispose-amd64`; container startup logs show TaskWorker workers registered normally.
-- Remaining: reproduce on a fresh authenticated AppStudio invocation and inspect actual MCP tool parts.
-- Full-repository tests must not be run for this task.
+- Ran `make gen.deepcopy` and `make gen.errcode`; generated code compiles without duplicate registration.
+- Passed focused Task Center tests for caller/input validation, cancellation checkpoint dispatch, and canceled projection cleanup.
+- Passed focused Task Worker tests for credential redaction, Server READY/ERROR, delete restriction, Project compensation, remote 404 deletion, Pipeline success/failure/cancel, checkpoint recovery/no duplicate create, remote cancellation, and HTTP token/error parsing.
+- Passed focused WorkflowRuntime checkpoint/retry recovery tests and compile checks for API, code, GitLab service/controller/store/executor, API Server, and Task Worker packages.
+- Passed `git diff --check` in server and devops.
+- Passed `sh -n bootstrap/bootstrap.sh`, `bash -n deploy.sh`, and `docker compose --env-file .env.runtime config --quiet`.
+- Ran bootstrap twice against healthy local GitLab 19.2.1: second run reused the same PAT digest; token file remained mode `0600`; user is `admin=false`; Group membership access level is `50` (Owner).
+- Remaining checks: none for the requested scope. Devops intentionally does not call the OmniMAM API to create the first GitLabServer.
 
 ## Outstanding tasks
 
-- Perform one fresh live AppStudio invocation and confirm real MCP tool parts are present instead of shell/HTTP fallback.
+- Administrator operational step: use `./data/bootstrap/appstudio-api-token` to create and test the first GitLabServer through the new API.
 
 ## Known issues and risks
 
-- A model can currently bypass the intended Workspace Tool boundary by extracting runtime MCP authorization and calling the endpoint from shell code.
-- API debug access logs include authorization headers. Do not reproduce credentials in source, tests, logs, or this handoff.
-- Existing Coding Runtime containers may retain startup scripts generated before the preceding forwarder fix.
-- `backend/AGENTS.md` prohibits adding `_test.go` files outside `pkg/`; no focused request-order unit test was added to `internal/taskworker/agentexecutor`.
-- Live verification is incomplete: the in-app browser could not attach to the local page, Basic Auth was rejected, and the deployed Identity login uses a two-step authenticated flow.
+- Existing unrelated dirty/untracked files were excluded from the GitLab implementation commits and must remain untouched.
+- GitLab remote cancellation is best-effort. If no Pipeline checkpoint exists yet, local Task Center cancellation still completes without a remote ID to cancel.
+- `make gen.deepcopy` emits pre-existing unsupported-type warnings but completes successfully.
 
 ## Exact recommended next step
 
-Submit one fresh AppStudio invocation through an already authenticated UI session, then verify its OpenCode message parts include the four `omnimam-workspace_*` tools and no shell/HTTP MCP fallback.
+Configure the first GitLabServer with the generated token file and call its test endpoint.
 
 Next Prompt:
 

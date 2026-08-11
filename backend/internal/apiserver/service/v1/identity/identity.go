@@ -46,6 +46,8 @@ func DefaultPermissions() []*iapiserver.IdentityPermissionDefinition {
 		{"appstudio.snapshot.manage", "appstudio", "studio_source_snapshot, studio_application_version", "create, read"}, {"appstudio.build.manage", "appstudio", "studio_build", "create, read, cancel, retry"},
 		{"appstudio.preview.operate", "appstudio", "studio_preview_runtime", "read, check, refresh, stop"}, {"appstudio.runtime_config.manage", "appstudio", "studio_runtime_config", "read, replace"},
 		{"appstudio.release.manage", "appstudio", "studio_release, studio_runtime_instance", "create, read, rollback, deploy"},
+		{"gitlab.server.read", "gitlab", "gitlab_server", "read, list, test"}, {"gitlab.server.manage", "gitlab", "gitlab_server", "create, update, delete, test"},
+		{"gitlab.project.read", "gitlab", "gitlab_project", "read, list"}, {"gitlab.project.manage", "gitlab", "gitlab_project", "create, delete"},
 		{"asset.read", "asset-library", "asset", "read"}, {"asset.artifact.read", "asset-library", "artifact", "read"},
 		{"asset.create", "asset-library", "asset", "create"}, {"asset.update", "asset-library", "asset", "update"},
 		{"asset.delete", "asset-library", "asset", "delete"}, {"asset.upload", "asset-library", "asset_upload", "manage"},
@@ -134,6 +136,7 @@ func DefaultRolePermissions() map[string][]string {
 		"aiapp.engine_instance.manage", "aiapp.engine_binding.manage", "aiapp.provider_capability.read_diagnostics",
 		"asset.storage.read", "asset.storage.manage", "notification.admin.receive",
 		"task.schedule.manage", "task.operation.admin", "workflow.node_definition.manage",
+		"gitlab.server.read", "gitlab.server.manage", "gitlab.project.read", "gitlab.project.manage",
 	)
 	superAdminPermissions := append(append([]string(nil), adminPermissions...),
 		"identity.role.manage", "identity.service_account.manage", "platform.auth_config.manage",

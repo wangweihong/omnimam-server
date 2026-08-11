@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 5a654a1c1e14c1f454e17a5b4190af379f13bb5c
-contract_version: spec-v1.21.0
-updated_at: 2026-08-10
+commit: edcdbcebf8daecec8eaefd129338e829512b00fe
+contract_version: spec-v1.22.0
+updated_at: 2026-08-11
 status: released
-note: Released Agent Runtime detail, history, logs, and health diagnostics contracts.
+note: Released independent GitLab domain, project management, and recoverable Pipeline task contracts.

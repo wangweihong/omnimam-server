@@ -66,6 +66,51 @@ type applicationRunBindingStore struct {
 	calls           int
 }
 
+type cancellationStoreStub struct {
+	store.TaskCenterStore
+	task    *iapiserver.AtomicTask
+	updated *iapiserver.AtomicTask
+}
+
+func (s *cancellationStoreStub) GetAtomicTask(context.Context, string) (*iapiserver.AtomicTask, error) {
+	return s.task, nil
+}
+
+func (s *cancellationStoreStub) ListScheduleSources(context.Context, string, []string) (map[string]*iapiserver.ScheduleSourceSummary, error) {
+	return map[string]*iapiserver.ScheduleSourceSummary{}, nil
+}
+
+func (s *cancellationStoreStub) UpdateAtomicTask(_ context.Context, task *iapiserver.AtomicTask) (*iapiserver.AtomicTask, error) {
+	s.updated = task
+	return task, nil
+}
+
+type cancellationRuntimeStub struct {
+	workflowruntime.WorkflowRuntime
+	execution workflowruntime.Execution
+	canceled  string
+}
+
+func (r *cancellationRuntimeStub) GetExecution(context.Context, string) (workflowruntime.Execution, error) {
+	return r.execution, nil
+}
+
+func (r *cancellationRuntimeStub) CancelExecution(_ context.Context, id, _ string) error {
+	r.canceled = id
+	return nil
+}
+
+type cancellationHandlerStub struct {
+	checkpoint map[string]any
+	calls      int
+}
+
+func (h *cancellationHandlerStub) CancelTask(_ context.Context, _ *iapiserver.AtomicTask, checkpoint map[string]any) error {
+	h.calls++
+	h.checkpoint = checkpoint
+	return nil
+}
+
 func (s *applicationRunBindingStore) BindApplicationRunToAtomicTask(
 	_ context.Context,
 	atomicTaskID, applicationRunID, canvasRunID, canvasNodeRunID, executionKey string,
@@ -711,5 +756,81 @@ func TestBindApplicationRunUsesTransactionalStoreCommand(t *testing.T) {
 		target.canvasNodeRunID != "node-run-1" ||
 		target.executionKey != "node-a" || target.arguments["resolved_inputs"] == nil {
 		t.Fatalf("binding command = %#v", target)
+	}
+}
+
+func TestPrepareGitLabPipelineRequestEnforcesCallerAndExactInput(t *testing.T) {
+	service := &taskCenterService{functions: map[string]struct{}{iapiserver.GitLabFunctionPipelineRun: {}}}
+	tests := []struct {
+		name     string
+		caller   string
+		input    map[string]any
+		wantCode int
+	}{
+		{
+			name:     "public caller cannot create pipeline task",
+			input:    map[string]any{"gitlab_project_id": "project-1", "ref": "main"},
+			wantCode: code.ErrTaskFunctionRefNotRegistered,
+		},
+		{
+			name:   "gitlab caller accepts exact input",
+			caller: iapiserver.GitLabTaskDomain,
+			input:  map[string]any{"gitlab_project_id": " project-1 ", "ref": " main ", "variables": map[string]any{"DEPLOY": "true"}},
+		},
+		{
+			name:     "gitlab caller rejects connection fields",
+			caller:   iapiserver.GitLabTaskDomain,
+			input:    map[string]any{"gitlab_project_id": "project-1", "ref": "main", "api_url": "https://gitlab.example/api/v4"},
+			wantCode: code.ErrTaskFunctionInputInvalid,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &iapiserver.AtomicTaskCreateRequest{FunctionRef: iapiserver.GitLabFunctionPipelineRun, Arguments: tt.input}
+			err := service.prepareFunctionRequest(tt.caller, req, 0)
+			if tt.wantCode != 0 {
+				if err == nil || toolboxerrors.ToStatus(err).Code != tt.wantCode {
+					t.Fatalf("error = %v, code = %d", err, toolboxerrors.ToStatus(err).Code)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.Arguments["gitlab_project_id"] != "project-1" || req.Arguments["ref"] != "main" || len(req.Arguments) != 3 {
+				t.Fatalf("normalized arguments = %#v", req.Arguments)
+			}
+		})
+	}
+}
+
+func TestCancelAtomicTaskInvokesDomainHandlerWithRuntimeCheckpoint(t *testing.T) {
+	task := &iapiserver.AtomicTask{
+		FunctionRef: iapiserver.GitLabFunctionPipelineRun, RuntimeExecutionID: "execution-1",
+		Status: iapiserver.AtomicTaskStatusRunning, CreatedBy: iapiserver.DefaultTaskCenterCreatedBy,
+	}
+	task.ID = "task-1"
+	storage := &cancellationStoreStub{task: task}
+	runtime := &cancellationRuntimeStub{execution: workflowruntime.Execution{ID: "execution-1", Tasks: []workflowruntime.ExecutionTask{{
+		Input: map[string]any{"atomic_task_id": task.ID}, Output: map[string]any{iapiserver.TaskWorkerKeyExternalJobID: "99"},
+	}}}}
+	handler := &cancellationHandlerStub{}
+	registry := NewCancellationRegistry()
+	if err := registry.Register(iapiserver.GitLabFunctionPipelineRun, handler); err != nil {
+		t.Fatal(err)
+	}
+	service := &taskCenterService{store: storage, runtime: runtime, functions: map[string]struct{}{}, reconciles: NewReconcileRegistry(), cancels: registry}
+	result, err := service.CancelAtomicTask(t.Context(), task.ID, &iapiserver.ActionReasonRequest{Reason: "operator request"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handler.calls != 1 || handler.checkpoint[iapiserver.TaskWorkerKeyExternalJobID] != "99" {
+		t.Fatalf("handler checkpoint = %#v, calls = %d", handler.checkpoint, handler.calls)
+	}
+	if runtime.canceled != task.RuntimeExecutionID {
+		t.Fatalf("canceled execution = %q", runtime.canceled)
+	}
+	if result.Status != iapiserver.AtomicTaskStatusCancelRequested || storage.updated != result {
+		t.Fatalf("updated task = %#v", result)
 	}
 }

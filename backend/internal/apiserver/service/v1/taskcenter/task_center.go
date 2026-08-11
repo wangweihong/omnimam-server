@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/errors"
+	"github.com/wangweihong/gotoolbox/pkg/log"
 	"github.com/wangweihong/gotoolbox/pkg/sliceutil"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -87,6 +88,39 @@ type taskCenterService struct {
 	functions  map[string]struct{}
 	registry   *taskfunctionregistry.Registry
 	reconciles *ReconcileRegistry
+	cancels    *CancellationRegistry
+}
+
+// TaskCancellationHandler 由 functionRef 所属领域实现，只执行外部副作用，不修改 Task Center 状态。
+type TaskCancellationHandler interface {
+	CancelTask(context.Context, *iapiserver.AtomicTask, map[string]any) error
+}
+
+// CancellationRegistry 保存 API Server 启动时注入的外部任务取消 handler。
+type CancellationRegistry struct {
+	handlers map[string]TaskCancellationHandler
+}
+
+func NewCancellationRegistry() *CancellationRegistry {
+	return &CancellationRegistry{handlers: make(map[string]TaskCancellationHandler)}
+}
+
+func (r *CancellationRegistry) Register(functionRef string, handler TaskCancellationHandler) error {
+	if r == nil || functionRef == "" || handler == nil {
+		return fmt.Errorf("task cancellation registration is incomplete")
+	}
+	if _, exists := r.handlers[functionRef]; exists {
+		return fmt.Errorf("task cancellation handler %s is already registered", functionRef)
+	}
+	r.handlers[functionRef] = handler
+	return nil
+}
+
+func (r *CancellationRegistry) handler(functionRef string) TaskCancellationHandler {
+	if r == nil {
+		return nil
+	}
+	return r.handlers[functionRef]
 }
 
 // ArtifactSummaryReader 是 Task Center 消费的跨域只读能力；实现必须由 asset-library 提供 owner 裁剪。
@@ -123,11 +157,13 @@ func NewServiceWithFunctionRegistry(
 	runtime workflowruntime.WorkflowRuntime,
 	reconciles *ReconcileRegistry,
 	registry *taskfunctionregistry.Registry,
+	cancels *CancellationRegistry,
 	artifacts ArtifactSummaryReader,
 	functionRefs ...string,
 ) TaskCenterSrv {
 	service := NewServiceWithDependencies(factory, runtime, reconciles, artifacts, functionRefs...).(*taskCenterService)
 	service.registry = registry
+	service.cancels = cancels
 	return service
 }
 
@@ -317,6 +353,23 @@ func (s *taskCenterService) CancelAtomicTask(ctx context.Context, id string, req
 	if iapiserver.IsAtomicTaskTerminal(task.Status) {
 		return nil, errors.NewStatusF(code.ErrAtomicTaskStateBlocked, "terminal atomic task cannot be canceled")
 	}
+	if handler := s.cancels.handler(task.FunctionRef); handler != nil {
+		checkpoint := task.Output
+		if task.RuntimeExecutionID != "" {
+			if execution, getErr := s.runtime.GetExecution(ctx, task.RuntimeExecutionID); getErr == nil {
+				for _, runtimeTask := range execution.Tasks {
+					atomicTaskID, _ := runtimeTask.Input["atomic_task_id"].(string)
+					if atomicTaskID == task.ID {
+						checkpoint = runtimeTask.Output
+						break
+					}
+				}
+			}
+		}
+		if cancelErr := handler.CancelTask(ctx, task, checkpoint); cancelErr != nil {
+			log.Warnf("external atomic task cancellation failed: function_ref=%s atomic_task_id=%s error=%v", task.FunctionRef, task.ID, cancelErr)
+		}
+	}
 	if task.RuntimeExecutionID != "" {
 		if err := s.runtime.CancelExecution(ctx, task.RuntimeExecutionID, req.Reason); err != nil {
 			return nil, runtimeError(err)
@@ -342,6 +395,8 @@ func (s *taskCenterService) RetryAtomicTask(ctx context.Context, id string, _ *i
 			return nil, errors.NewStatus(code.ErrTaskFunctionContractUnavailable, resolveErr.Error())
 		}
 		caller, generation = contract.OwningDomain, 1
+	} else if source.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+		caller, generation = iapiserver.GitLabTaskDomain, 1
 	}
 	retried, err := s.createAtomicTask(ctx, caller, req, generation)
 	if err != nil {
@@ -1116,6 +1171,14 @@ func (s *taskCenterService) prepareFunctionRequest(caller string, req *iapiserve
 	if req == nil {
 		return errors.NewStatus(code.ErrTaskFunctionInputInvalid, "atomic task request is required")
 	}
+	if req.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+		if caller != iapiserver.GitLabTaskDomain {
+			return errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "function ref is not available to this caller")
+		}
+		if err := prepareGitLabPipelineArguments(req); err != nil {
+			return errors.NewStatus(code.ErrTaskFunctionInputInvalid, err.Error())
+		}
+	}
 	if s.registry == nil || !s.registry.IsManaged(req.FunctionRef) {
 		return s.validateFunctionRef(req.FunctionRef)
 	}
@@ -1166,6 +1229,40 @@ func (s *taskCenterService) validateFunctionRef(ref string) error {
 	}
 	return nil
 }
+
+func prepareGitLabPipelineArguments(req *iapiserver.AtomicTaskCreateRequest) error {
+	for key := range req.Arguments {
+		switch key {
+		case "gitlab_project_id", "ref", "variables":
+		default:
+			return fmt.Errorf("gitlab pipeline argument %q is not allowed", key)
+		}
+	}
+	raw, err := json.Marshal(req.Arguments)
+	if err != nil {
+		return fmt.Errorf("gitlab pipeline arguments cannot be encoded")
+	}
+	var input iapiserver.GitLabPipelineRunTaskArguments
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return fmt.Errorf("gitlab pipeline arguments cannot be decoded")
+	}
+	input.GitLabProjectID = strings.TrimSpace(input.GitLabProjectID)
+	input.Ref = strings.TrimSpace(input.Ref)
+	if input.GitLabProjectID == "" || len(input.GitLabProjectID) > 128 || input.Ref == "" || len(input.Ref) > 255 || len(input.Variables) > 100 {
+		return fmt.Errorf("gitlab_project_id, ref, or variables are invalid")
+	}
+	normalized := map[string]any{"gitlab_project_id": input.GitLabProjectID, "ref": input.Ref}
+	if len(input.Variables) > 0 {
+		variables := make(map[string]string, len(input.Variables))
+		for key, value := range input.Variables {
+			variables[key] = value
+		}
+		normalized["variables"] = variables
+	}
+	req.Arguments = normalized
+	return nil
+}
+
 func (s *taskCenterService) validateTemplates(templates []iapiserver.AtomicTaskTemplate) error {
 	if len(templates) == 0 || len(templates) > iapiserver.MaxTaskGraphNodes {
 		return errors.NewStatusF(code.ErrTaskGroupInvalid, "task group size is invalid")
@@ -1179,6 +1276,9 @@ func (s *taskCenterService) validateTemplates(templates []iapiserver.AtomicTaskT
 			return errors.NewStatusF(code.ErrTaskGroupInvalid, "child key must be unique")
 		}
 		keys[template.Key] = struct{}{}
+		if template.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+			return errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "gitlab pipeline tasks must be created by the gitlab domain")
+		}
 		if err := s.validateFunctionRef(template.FunctionRef); err != nil {
 			return err
 		}
@@ -1199,6 +1299,9 @@ func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapi
 		}
 		if _, exists := keys[node.Key]; exists {
 			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag node key must be unique")
+		}
+		if node.Task.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+			return nil, errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "gitlab pipeline tasks must be created by the gitlab domain")
 		}
 		if err := s.validateFunctionRef(node.Task.FunctionRef); err != nil {
 			return nil, err

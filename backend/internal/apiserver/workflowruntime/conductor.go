@@ -2,6 +2,7 @@ package workflowruntime
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -290,6 +291,17 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 			},
 		})
 		if err != nil {
+			if stderrors.Is(err, ErrWorkerTaskCanceled) {
+				logger.Log(ctx, LifecycleLog("attempt.canceled", TaskLogLevelWarn, "Execution attempt was canceled."))
+				if output == nil {
+					output = map[string]any{}
+				}
+				output[WorkerOutputTerminalStatusKey] = WorkerTerminalStatusCanceled
+				return &model.TaskResult{
+					WorkflowInstanceId: ctx.WorkflowInstanceID(), TaskId: ctx.TaskID(), Status: model.FailedWithTerminalErrorTask,
+					ReasonForIncompletion: err.Error(), OutputData: output,
+				}, nil
+			}
 			logger.Log(ctx, LifecycleLog("attempt.failed", TaskLogLevelError, "Execution attempt failed."))
 			return nil, err
 		}

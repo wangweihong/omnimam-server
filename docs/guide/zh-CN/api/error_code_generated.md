@@ -397,3 +397,20 @@
 | ErrInfraOutputCollectionFailed | 240805 | 200 | The declared output is missing, is not a regular file, escapes the output root, or could not be collected. | 声明输出缺失、不是普通文件、路径逃逸或实际字节收集失败。 |
 | ErrInfraOutputContentUnavailable | 240806 | 200 | The RuntimeOutput content has not been collected, has been cleaned up, or is unavailable to the current Task Worker. | RuntimeOutput 内容尚未收集、已清理或当前 Task Worker 无法读取。 |
 | ErrInfraOutputIntegrityMismatch | 240807 | 200 | The size or SHA-256 differs across the RuntimeOutput, transferred bytes, and Artifact. | RuntimeOutput、传输字节与 Artifact 的大小或 SHA-256 不一致。 |
+| ErrAgentMCPBindingInvalid | 200206 | 200 | The MCP binding is invalid. | MCP Binding 无效。 |
+| ErrAgentMCPBindingNameConflict | 200207 | 200 | An active MCP binding with the same name already exists for the Agent. | 当前 Agent 下存在同名的活动 MCP Binding。 |
+| ErrAgentMCPBindingVersionConflict | 200208 | 200 | The MCP binding was modified; refresh it and retry. | MCP Binding 已被更新，请刷新后重试。 |
+| ErrAgentMCPBindingRevisionUnavailable | 200209 | 200 | The MCP binding revision is unavailable. | MCP Binding revision 不可用。 |
+| ErrGitLabServerNameConflict | 250200 | 200 | The GitLabServer name already exists. | GitLabServer 名称已存在。 |
+| ErrGitLabServerNotFound | 250201 | 200 | The GitLabServer does not exist or is not visible. | GitLabServer 不存在或当前不可见。 |
+| ErrGitLabServerConnectionFailed | 250202 | 200 | GitLabServer connectivity, credential, or Namespace validation failed. | GitLabServer 连接、credential 或 Namespace 检测失败。 |
+| ErrGitLabServerHasProjects | 250203 | 200 | The GitLabServer still has GitLabProject projections and cannot be deleted. | GitLabServer 仍有关联 GitLabProject，不能删除。 |
+| ErrGitLabProjectNotFound | 250400 | 200 | The GitLabProject does not exist or is not visible. | GitLabProject 不存在或当前不可见。 |
+| ErrGitLabProjectServerNotReady | 250401 | 200 | The GitLabServer has not passed the connectivity test. | GitLabServer 尚未通过连接检测。 |
+| ErrGitLabProjectRemoteFailed | 250402 | 200 | The remote GitLab Project operation failed. | GitLab 远端 Project 操作失败。 |
+| ErrGitLabProjectProjectionFailed | 250403 | 200 | The local GitLabProject projection could not be persisted. | GitLabProject 本地投影写入失败。 |
+| ErrGitLabPipelineInvalid | 250600 | 200 | The GitLab Pipeline task input is invalid. | GitLab Pipeline 任务输入无效。 |
+| ErrGitLabPipelineCreateFailed | 250601 | 200 | The GitLab Pipeline could not be created. | GitLab Pipeline 创建失败。 |
+| ErrGitLabPipelineFailed | 250602 | 200 | The GitLab Pipeline failed. | GitLab Pipeline 执行失败。 |
+| ErrGitLabPipelineCanceled | 250603 | 200 | The GitLab Pipeline was canceled. | GitLab Pipeline 已取消。 |
+| ErrGitLabAccessDenied | 250800 | 200 | The current principal is not authorized to access the GitLab resource. | 当前主体无权访问 GitLab 资源。 |

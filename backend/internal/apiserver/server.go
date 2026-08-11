@@ -21,6 +21,7 @@ import (
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	gitlabsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/gitlab"
 	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	mcpsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/mcp"
 	engine "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/modelgateway"
@@ -49,6 +50,7 @@ type server struct {
 	applicationPlatform    appsvc.ApplicationPlatformSrv
 	agent                  *agentsvc.Service
 	appStudio              *appstudiosvc.Service
+	gitLab                 *gitlabsvc.Service
 	taskCenter             taskcentersvc.TaskCenterSrv
 	userModel              *usermodelsvc.Service
 	aiChat                 aichatsvc.AIChatSrv
@@ -174,10 +176,18 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "load task center function registry")
 	}
-	taskCenterService := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, workflowRuntime, reconcileRegistry, functionRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
+	gitLabService, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storeIns.GitLab(), Clients: gitlabsvc.NewHTTPClientFactory()})
+	if err != nil {
+		return nil, errors.Wrap(err, "construct gitlab service")
+	}
+	cancellationRegistry := taskcentersvc.NewCancellationRegistry()
+	if err := cancellationRegistry.Register(iapiserver.GitLabFunctionPipelineRun, gitLabService); err != nil {
+		return nil, errors.Wrap(err, "register gitlab task cancellation handler")
+	}
+	taskCenterService := taskcentersvc.NewServiceWithFunctionRegistry(storeIns, workflowRuntime, reconcileRegistry, functionRegistry, cancellationRegistry, assetlibrarysvc.NewArtifactSummaryReader(storeIns.AssetsV1()),
 		appplatformsvc.FunctionAssetThumbnailGenerate, "application-platform.run", "task.schedule.acquire",
 		"comfyui.submit", "comfyui.poll", "comfyui.collect_preview",
-		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize)
+		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationFinalize, iapiserver.GitLabFunctionPipelineRun)
 	applicationPlatformService, err := appsvc.NewService(appsvc.Dependencies{
 		Store: storeIns, Runtime: runtimeRegistry, Capabilities: capabilityRegistry,
 		Adapters: adapters, Tasks: taskCenterService, Assets: assets, Events: events,
@@ -250,6 +260,7 @@ func createServer(cfg *config.Config) (*server, error) {
 		applicationPlatform: applicationPlatformService,
 		agent:               agentService,
 		appStudio:           appStudioService,
+		gitLab:              gitLabService,
 		taskCenter:          taskCenterService,
 		userModel:           userModelService,
 		aiChat:              aiChatService,
@@ -365,6 +376,8 @@ func (c *CompletedExtraConfig) New() error {
 		&iapiserver.UserEvent{},
 		&iapiserver.FeatureFlag{},
 		&iapiserver.Permission{},
+		&iapiserver.GitLabServer{},
+		&iapiserver.GitLabProject{},
 
 		// agent
 		&iapiserver.Agent{},
@@ -505,7 +518,7 @@ func buildExtraConfig(cfg *config.Config) (*ExtraConfig, error) {
 // PrepareRun prepares the server to run, by setting up the server instance.
 func (s *server) PrepareRun() preparedServer {
 	s.userEventCleanupCtx, s.userEventCleanupCancel = context.WithCancel(context.Background())
-	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.userModel, s.aiChat, s.agent, s.appStudio, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
+	initRouter(s.httpServer.Engine, s.applicationPlatform, s.taskCenter, s.userModel, s.aiChat, s.agent, s.appStudio, s.gitLab, s.authOptions, s.sseOptions, s.mcpProcessor, s.mcpOptions)
 	// 设置服务优雅退出回调处理
 	s.gracefulShutdown.AddShutdownCallback(shutdown.ShutdownFunc(func(string) error {
 		ssectrl.BeginDraining()

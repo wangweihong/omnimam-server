@@ -10,6 +10,14 @@ var (
 	ErrUnavailable       = errors.New("workflow runtime unavailable")
 	ErrExecutionNotFound = errors.New("workflow execution not found")
 	ErrTaskLogNotFound   = errors.New("workflow task log not found")
+	// ErrWorkerTaskCanceled 让外部 handler 终止当前 runtime task，而不直接调用整个 DAG execution 的取消接口。
+	ErrWorkerTaskCanceled = errors.New("workflow worker task canceled")
+)
+
+const (
+	// WorkerOutputTerminalStatusKey 只在 WorkflowRuntime 与 Task Center reconciler 之间传递，不进入业务输出。
+	WorkerOutputTerminalStatusKey = "_omnimam_terminal_status"
+	WorkerTerminalStatusCanceled  = "CANCELED"
 )
 
 type Task struct {

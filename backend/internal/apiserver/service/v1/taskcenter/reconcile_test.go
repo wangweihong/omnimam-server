@@ -473,3 +473,26 @@ func TestDynamicTasksFromExecutionMaterializesActualChildren(t *testing.T) {
 		t.Fatalf("actual task = %#v", actual)
 	}
 }
+
+func TestWorkerCanceledProjectionStripsRuntimeControlMarker(t *testing.T) {
+	runtimeTask := workflowruntime.ExecutionTask{
+		Status: "FAILED_WITH_TERMINAL_ERROR",
+		Output: map[string]any{
+			workflowruntime.WorkerOutputTerminalStatusKey: workflowruntime.WorkerTerminalStatusCanceled,
+			"pipeline_id": int64(42),
+		},
+	}
+	if status := projectedRuntimeTaskStatus(runtimeTask); status != iapiserver.AtomicTaskStatusCanceled {
+		t.Fatalf("task status = %q", status)
+	}
+	if status := projectedTaskAttemptStatus(runtimeTask); status != iapiserver.TaskAttemptStatusCanceled {
+		t.Fatalf("attempt status = %q", status)
+	}
+	output := businessRuntimeTaskOutput(runtimeTask.Output)
+	if _, leaked := output[workflowruntime.WorkerOutputTerminalStatusKey]; leaked || output["pipeline_id"] != int64(42) {
+		t.Fatalf("business output = %#v", output)
+	}
+	if _, retained := runtimeTask.Output[workflowruntime.WorkerOutputTerminalStatusKey]; !retained {
+		t.Fatal("runtime output was mutated")
+	}
+}

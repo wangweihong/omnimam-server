@@ -7,23 +7,138 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
+	gitlabsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/gitlab"
 	workflowcanvassvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/workflowcanvas"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/workflowruntime"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/taskfunctionregistry"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/appstudioexecutor"
 	"github.com/wangweihong/omnimam/backend/internal/taskworker/consumer"
+	"github.com/wangweihong/omnimam/backend/internal/taskworker/gitlabexecutor"
 )
+
+type gitLabStoreStub struct {
+	store.GitLabStore
+	server             *iapiserver.GitLabServer
+	project            *iapiserver.GitLabProject
+	createProjectErr   error
+	deleteServerErr    error
+	deletedProjectID   string
+	updatedServer      *iapiserver.GitLabServer
+	createProjectCalls int
+}
+
+func (s *gitLabStoreStub) GetGitLabServer(context.Context, string) (*iapiserver.GitLabServer, error) {
+	return s.server, nil
+}
+
+func (s *gitLabStoreStub) UpdateGitLabServer(_ context.Context, server *iapiserver.GitLabServer, _ int64) (*iapiserver.GitLabServer, error) {
+	s.updatedServer = server
+	return server, nil
+}
+
+func (s *gitLabStoreStub) DeleteGitLabServer(context.Context, string) error {
+	return s.deleteServerErr
+}
+
+func (s *gitLabStoreStub) GetGitLabProject(context.Context, string) (*iapiserver.GitLabProject, error) {
+	return s.project, nil
+}
+
+func (s *gitLabStoreStub) CreateGitLabProject(_ context.Context, project *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error) {
+	s.createProjectCalls++
+	return project, s.createProjectErr
+}
+
+func (s *gitLabStoreStub) DeleteGitLabProject(_ context.Context, id string) error {
+	s.deletedProjectID = id
+	return nil
+}
+
+type gitLabClientStub struct {
+	versionErr       error
+	userErr          error
+	namespaceErr     error
+	createProject    *gitlabsvc.RemoteProject
+	createProjectErr error
+	createPipeline   *gitlabsvc.Pipeline
+	createCalls      int
+	getCalls         int
+	cancelCalls      int
+	deleteErr        error
+	deleteCalls      int
+	deleteContextErr error
+}
+
+func (c *gitLabClientStub) GetVersion(context.Context) (*gitlabsvc.Version, error) {
+	return &gitlabsvc.Version{Version: "18.2"}, c.versionErr
+}
+
+func (c *gitLabClientStub) GetCurrentUser(context.Context) (*gitlabsvc.User, error) {
+	return &gitlabsvc.User{ID: 1, Username: "omnimam-appstudio"}, c.userErr
+}
+
+func (c *gitLabClientStub) ResolveNamespace(context.Context, string) (*gitlabsvc.Namespace, error) {
+	return &gitlabsvc.Namespace{ID: 2, FullPath: "omnimam-appstudio"}, c.namespaceErr
+}
+
+func (c *gitLabClientStub) CreateProject(context.Context, gitlabsvc.CreateProjectRequest) (*gitlabsvc.RemoteProject, error) {
+	return c.createProject, c.createProjectErr
+}
+
+func (c *gitLabClientStub) GetProject(context.Context, int64) (*gitlabsvc.RemoteProject, error) {
+	return c.createProject, nil
+}
+
+func (c *gitLabClientStub) DeleteProject(ctx context.Context, _ int64) error {
+	c.deleteCalls++
+	c.deleteContextErr = ctx.Err()
+	return c.deleteErr
+}
+
+func (c *gitLabClientStub) CreatePipeline(context.Context, int64, gitlabsvc.CreatePipelineRequest) (*gitlabsvc.Pipeline, error) {
+	c.createCalls++
+	return c.createPipeline, nil
+}
+
+func (c *gitLabClientStub) GetPipeline(context.Context, int64, int64) (*gitlabsvc.Pipeline, error) {
+	c.getCalls++
+	return c.createPipeline, nil
+}
+
+func (c *gitLabClientStub) RetryPipeline(context.Context, int64, int64) (*gitlabsvc.Pipeline, error) {
+	return c.createPipeline, nil
+}
+
+func (c *gitLabClientStub) CancelPipeline(context.Context, int64, int64) (*gitlabsvc.Pipeline, error) {
+	c.cancelCalls++
+	return c.createPipeline, nil
+}
+
+func (c *gitLabClientStub) ListPipelineJobs(context.Context, int64, int64) ([]gitlabsvc.Job, error) {
+	return nil, nil
+}
+
+type gitLabClientFactoryStub struct{ client *gitLabClientStub }
+
+func (f gitLabClientFactoryStub) NewClient(*iapiserver.GitLabServer) (gitlabsvc.Client, error) {
+	return f.client, nil
+}
 
 type recordingInfrastructureExecutor struct {
 	requests       []*infrastructure.CommandRequest
@@ -743,5 +858,214 @@ func TestExecuteAppStudioRejectsIncorrectContractPinBeforeInfrastructure(t *test
 				t.Fatalf("infrastructure calls = %d, want 0", len(executor.requests))
 			}
 		})
+	}
+}
+
+func TestGitLabServerTestProjectsReadyAndSanitizedError(t *testing.T) {
+	const credential = "glpat-sensitive-value"
+	server := &iapiserver.GitLabServer{
+		ObjectMeta: imachinery.ObjectMeta{ID: "server-1", ResourceVersion: 1}, APIURL: "https://gitlab.example/api/v4",
+		NamespacePath: "omnimam-appstudio", Credential: credential, Status: iapiserver.GitLabServerStatusUnknown,
+	}
+	serialized, err := json.Marshal(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serialized), credential) || strings.Contains(string(serialized), "credential") {
+		t.Fatalf("credential leaked in JSON: %s", serialized)
+	}
+
+	for _, tt := range []struct {
+		name       string
+		versionErr error
+		wantStatus string
+	}{
+		{name: "ready", wantStatus: iapiserver.GitLabServerStatusReady},
+		{name: "error", versionErr: fmt.Errorf("remote rejected %s", credential), wantStatus: iapiserver.GitLabServerStatusError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := server.DeepCopy()
+			storage := &gitLabStoreStub{server: current}
+			client := &gitLabClientStub{versionErr: tt.versionErr}
+			service, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storage, Clients: gitLabClientFactoryStub{client: client}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.TestServer(t.Context(), current.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != tt.wantStatus || result.LastCheckedAt == nil {
+				t.Fatalf("server projection = %#v", result)
+			}
+			if strings.Contains(result.LastError, credential) {
+				t.Fatalf("credential leaked in error: %q", result.LastError)
+			}
+		})
+	}
+}
+
+func TestGitLabProjectCompensationAndRemoteNotFoundDeletion(t *testing.T) {
+	server := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{ID: "server-1"}, Credential: "secret", Status: iapiserver.GitLabServerStatusReady}
+	project := &iapiserver.GitLabProject{ObjectMeta: imachinery.ObjectMeta{ID: "project-1"}, GitLabServerID: server.ID, ExternalProjectID: 42}
+	remote := &gitlabsvc.RemoteProject{ID: 42, Name: "demo", Path: "demo", PathWithNamespace: "omnimam-appstudio/demo", DefaultBranch: "main"}
+
+	t.Run("projection failure compensates with live cleanup context", func(t *testing.T) {
+		storage := &gitLabStoreStub{server: server, createProjectErr: fmt.Errorf("database unavailable")}
+		client := &gitLabClientStub{createProject: remote}
+		service, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storage, Clients: gitLabClientFactoryStub{client: client}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err = service.CreateProject(ctx, &iapiserver.GitLabProjectCreateRequest{GitLabServerID: server.ID, Name: "demo", Path: "demo"})
+		if err == nil || toolboxerrors.ToStatus(err).Code != code.ErrGitLabProjectProjectionFailed {
+			t.Fatalf("error = %v", err)
+		}
+		if client.deleteCalls != 1 || client.deleteContextErr != nil {
+			t.Fatalf("compensation calls = %d, context error = %v", client.deleteCalls, client.deleteContextErr)
+		}
+	})
+
+	t.Run("remote 404 deletes local projection", func(t *testing.T) {
+		storage := &gitLabStoreStub{server: server, project: project}
+		client := &gitLabClientStub{deleteErr: &gitlabsvc.RemoteError{StatusCode: http.StatusNotFound, Operation: "delete project"}}
+		service, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storage, Clients: gitLabClientFactoryStub{client: client}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.DeleteProject(t.Context(), project.ID); err != nil {
+			t.Fatal(err)
+		}
+		if storage.deletedProjectID != project.ID {
+			t.Fatalf("deleted local project = %q", storage.deletedProjectID)
+		}
+	})
+}
+
+func TestGitLabServerDeleteRejectsAssociatedProjects(t *testing.T) {
+	storage := &gitLabStoreStub{deleteServerErr: store.ErrGitLabServerHasProjects}
+	service, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storage, Clients: gitLabClientFactoryStub{client: &gitLabClientStub{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.DeleteServer(t.Context(), "server-1")
+	if err == nil || toolboxerrors.ToStatus(err).Code != code.ErrGitLabServerHasProjects {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestGitLabPipelineExecutorMapsInitialRemoteStatus(t *testing.T) {
+	server := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{ID: "server-1"}, APIURL: "https://gitlab.example/api/v4", Credential: "secret"}
+	project := &iapiserver.GitLabProject{ObjectMeta: imachinery.ObjectMeta{ID: "project-1"}, GitLabServerID: server.ID, ExternalProjectID: 42}
+	tests := []struct {
+		name       string
+		status     string
+		wantCode   int
+		wantCancel bool
+		wantWait   bool
+	}{
+		{name: "running", status: "running", wantWait: true},
+		{name: "success", status: "success"},
+		{name: "failed", status: "failed", wantCode: code.ErrGitLabPipelineFailed},
+		{name: "canceled", status: "canceled", wantCancel: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &gitLabClientStub{createPipeline: &gitlabsvc.Pipeline{ID: 99, Status: tt.status, WebURL: "https://gitlab.example/pipelines/99"}}
+			executor, err := gitlabexecutor.New(&gitLabStoreStub{server: server, project: project}, gitLabClientFactoryStub{client: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			atomic := &iapiserver.AtomicTask{FunctionRef: iapiserver.GitLabFunctionPipelineRun}
+			atomic.ID = "atomic-1"
+			output, err := executor.Execute(t.Context(), workflowruntime.WorkerTask{Arguments: map[string]any{"gitlab_project_id": project.ID, "ref": "main"}}, atomic)
+			if tt.wantCancel {
+				if !stderrors.Is(err, workflowruntime.ErrWorkerTaskCanceled) {
+					t.Fatalf("error = %v", err)
+				}
+			} else if tt.wantCode != 0 {
+				if err == nil || toolboxerrors.ToStatus(err).Code != tt.wantCode {
+					t.Fatalf("error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if client.createCalls != 1 {
+				t.Fatalf("pipeline create calls = %d", client.createCalls)
+			}
+			if tt.wantWait {
+				if output[iapiserver.TaskWorkerKeyInProgress] != true || output[iapiserver.TaskWorkerKeyCallbackAfterSeconds] != 5 {
+					t.Fatalf("waiting output = %#v", output)
+				}
+			}
+			if output != nil && (output["pipeline_id"] == nil || output["gitlab_project_id"] != project.ID) {
+				t.Fatalf("pipeline output = %#v", output)
+			}
+			if fmt.Sprint(output) == server.Credential || strings.Contains(fmt.Sprint(output), server.Credential) {
+				t.Fatalf("credential leaked in output: %#v", output)
+			}
+		})
+	}
+}
+
+func TestGitLabTaskCancellationUsesCheckpointPipeline(t *testing.T) {
+	server := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{ID: "server-1"}, Credential: "secret"}
+	project := &iapiserver.GitLabProject{ObjectMeta: imachinery.ObjectMeta{ID: "project-1"}, GitLabServerID: server.ID, ExternalProjectID: 42}
+	storage := &gitLabStoreStub{server: server, project: project}
+	client := &gitLabClientStub{createPipeline: &gitlabsvc.Pipeline{ID: 99, Status: "canceled"}}
+	service, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storage, Clients: gitLabClientFactoryStub{client: client}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &iapiserver.AtomicTask{FunctionRef: iapiserver.GitLabFunctionPipelineRun, Arguments: map[string]any{"gitlab_project_id": project.ID}}
+	if err := service.CancelTask(t.Context(), task, map[string]any{iapiserver.TaskWorkerKeyExternalJobID: "99"}); err != nil {
+		t.Fatal(err)
+	}
+	if client.cancelCalls != 1 {
+		t.Fatalf("pipeline cancel calls = %d", client.cancelCalls)
+	}
+}
+
+func TestGitLabPipelineExecutorResumesProjectedCheckpointWithoutCreate(t *testing.T) {
+	server := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{ID: "server-1"}, Credential: "secret"}
+	project := &iapiserver.GitLabProject{ObjectMeta: imachinery.ObjectMeta{ID: "project-1"}, GitLabServerID: server.ID, ExternalProjectID: 42}
+	client := &gitLabClientStub{createPipeline: &gitlabsvc.Pipeline{ID: 99, Status: "running"}}
+	executor, err := gitlabexecutor.New(&gitLabStoreStub{server: server, project: project}, gitLabClientFactoryStub{client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	atomic := &iapiserver.AtomicTask{
+		FunctionRef: iapiserver.GitLabFunctionPipelineRun,
+		Output:      map[string]any{iapiserver.TaskWorkerKeyExternalJobID: "99"},
+	}
+	output, err := executor.Execute(t.Context(), workflowruntime.WorkerTask{Arguments: map[string]any{"gitlab_project_id": project.ID, "ref": "main"}}, atomic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.createCalls != 0 || client.getCalls != 1 || output[iapiserver.TaskWorkerKeyInProgress] != true {
+		t.Fatalf("create=%d get=%d output=%#v", client.createCalls, client.getCalls, output)
+	}
+}
+
+func TestGitLabHTTPClientSendsTokenAndParsesMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("PRIVATE-TOKEN") != "secret" {
+			t.Errorf("PRIVATE-TOKEN header = %q", req.Header.Get("PRIVATE-TOKEN"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":{"path":["has already been taken"]}}`))
+	}))
+	defer server.Close()
+	client, err := gitlabsvc.NewHTTPClientFactory().NewClient(&iapiserver.GitLabServer{APIURL: server.URL, Credential: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.GetVersion(t.Context())
+	var remoteErr *gitlabsvc.RemoteError
+	if !stderrors.As(err, &remoteErr) || remoteErr.StatusCode != http.StatusBadRequest || !strings.Contains(remoteErr.Message, "path: has already been taken") {
+		t.Fatalf("remote error = %#v, %v", remoteErr, err)
 	}
 }

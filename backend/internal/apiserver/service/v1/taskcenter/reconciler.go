@@ -247,15 +247,20 @@ func dynamicTasksFromExecution(group *iapiserver.DAGTaskGroup, existing []*iapis
 		if len(childKey) > 128 {
 			childKey = childKey[:128]
 		}
+		projectedStatus := projectedRuntimeTaskStatus(runtimeTask)
+		progress := float64(0)
+		if iapiserver.IsAtomicTaskTerminal(projectedStatus) {
+			progress = 1
+		}
 		task := &iapiserver.AtomicTask{
-			FunctionRef: functionRef, Arguments: arguments, Status: runtimeTaskStatus(runtimeTask.Status), Progress: runtimeTaskProgress(runtimeTask.Status),
+			FunctionRef: functionRef, Arguments: arguments, Status: projectedStatus, Progress: progress,
 			RootTaskID: atomicTaskID, OwnerType: iapiserver.TaskOwnerTypeDAGGroup, OwnerID: group.ID,
 			ChildKey: childKey, ChildOrder: dynamicChildOrder(runtimeTask.Input["child_order"]), DAGNodeKey: nodeKey, RuntimeExecutionID: execution.ID, RuntimeTaskID: runtimeTask.ID,
 			StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt),
-			Output: runtimeTask.Output, ProjectID: group.ProjectID, Namespace: group.Namespace, CreatedBy: group.CreatedBy,
+			Output: businessRuntimeTaskOutput(runtimeTask.Output), ProjectID: group.ProjectID, Namespace: group.Namespace, CreatedBy: group.CreatedBy,
 		}
 		task.ID, task.Name = atomicTaskID, childKey
-		if runtimeTask.FailureReason != "" {
+		if runtimeTask.FailureReason != "" && projectedStatus != iapiserver.AtomicTaskStatusCanceled {
 			task.LastError = iapiserver.TaskError{Message: runtimeTask.FailureReason, OccurredAt: imachinery.Now()}
 		}
 		result = append(result, task)
@@ -443,7 +448,8 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 		latest = &current
 		attemptNo := runtimeTask.RetryCount + 1
 		executorType, executorName := taskExecutorSnapshot(task.FunctionRef)
-		attempt := &iapiserver.TaskAttempt{AtomicTaskID: task.ID, AttemptNo: attemptNo, RuntimeTaskID: runtimeTask.ID, Status: attemptStatus(runtimeTask.Status), InputSnapshot: runtimeTask.Input, OutputSnapshot: runtimeTask.Output, ExecutorType: executorType, ExecutorDisplayName: executorName, StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt)}
+		projectedStatus := projectedRuntimeTaskStatus(runtimeTask)
+		attempt := &iapiserver.TaskAttempt{AtomicTaskID: task.ID, AttemptNo: attemptNo, RuntimeTaskID: runtimeTask.ID, Status: projectedTaskAttemptStatus(runtimeTask), InputSnapshot: runtimeTask.Input, OutputSnapshot: businessRuntimeTaskOutput(runtimeTask.Output), ExecutorType: executorType, ExecutorDisplayName: executorName, StartedAt: imachinery.NewTime(runtimeTask.StartedAt), CompletedAt: imachinery.NewTime(runtimeTask.CompletedAt)}
 		if externalJobID, ok := runtimeTask.Output["external_job_id"].(string); ok {
 			attempt.ExternalJobID = externalJobID
 		}
@@ -451,7 +457,7 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 		if !runtimeTask.StartedAt.IsZero() && !runtimeTask.CompletedAt.IsZero() {
 			attempt.DurationMS = runtimeTask.CompletedAt.Sub(runtimeTask.StartedAt).Milliseconds()
 		}
-		if runtimeTask.FailureReason != "" {
+		if runtimeTask.FailureReason != "" && projectedStatus != iapiserver.AtomicTaskStatusCanceled {
 			attempt.Error = iapiserver.TaskError{Message: runtimeTask.FailureReason, OccurredAt: imachinery.Now()}
 		}
 		attempt.LogsRef = iapiserver.TaskAttemptLogsRef(attempt.ID)
@@ -466,11 +472,11 @@ func (r *Reconciler) project(ctx context.Context, task *iapiserver.AtomicTask, e
 		return false, nil
 	}
 	task.RuntimeExecutionID = execution.ID
-	task.Status = runtimeTaskStatus(latest.Status)
+	task.Status = projectedRuntimeTaskStatus(*latest)
 	task.StartedAt = imachinery.NewTime(latest.StartedAt)
 	task.CompletedAt = imachinery.NewTime(latest.CompletedAt)
-	task.Output = latest.Output
-	if latest.FailureReason != "" {
+	task.Output = businessRuntimeTaskOutput(latest.Output)
+	if latest.FailureReason != "" && task.Status != iapiserver.AtomicTaskStatusCanceled {
 		task.LastError = iapiserver.TaskError{Message: latest.FailureReason, OccurredAt: imachinery.Now()}
 	}
 	if iapiserver.IsAtomicTaskTerminal(task.Status) {
@@ -544,6 +550,33 @@ func runtimeTaskStatus(status string) string {
 	default:
 		return iapiserver.AtomicTaskStatusRunning
 	}
+}
+
+func projectedRuntimeTaskStatus(task workflowruntime.ExecutionTask) string {
+	if task.Output[workflowruntime.WorkerOutputTerminalStatusKey] == workflowruntime.WorkerTerminalStatusCanceled {
+		return iapiserver.AtomicTaskStatusCanceled
+	}
+	return runtimeTaskStatus(task.Status)
+}
+
+func projectedTaskAttemptStatus(task workflowruntime.ExecutionTask) string {
+	if projectedRuntimeTaskStatus(task) == iapiserver.AtomicTaskStatusCanceled {
+		return iapiserver.TaskAttemptStatusCanceled
+	}
+	return attemptStatus(task.Status)
+}
+
+func businessRuntimeTaskOutput(output map[string]any) map[string]any {
+	if _, internal := output[workflowruntime.WorkerOutputTerminalStatusKey]; !internal {
+		return output
+	}
+	clean := make(map[string]any, len(output)-1)
+	for key, value := range output {
+		if key != workflowruntime.WorkerOutputTerminalStatusKey {
+			clean[key] = value
+		}
+	}
+	return clean
 }
 
 func scheduleExecutionStatus(status string) (string, bool, error) {

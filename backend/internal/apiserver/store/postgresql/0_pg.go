@@ -118,6 +118,22 @@ DO $$ BEGIN
 END $$;
 `
 
+const gitLabConstraintsSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gitlab_servers_name ON gitlab_servers(name);
+CREATE INDEX IF NOT EXISTS idx_gitlab_servers_status_updated_at ON gitlab_servers(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_gitlab_projects_server_created_at ON gitlab_projects(gitlab_server_id, created_at);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_gitlab_servers_status') THEN
+    ALTER TABLE gitlab_servers ADD CONSTRAINT ck_gitlab_servers_status
+      CHECK (status IN ('UNKNOWN', 'READY', 'ERROR'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_gitlab_projects_server') THEN
+    ALTER TABLE gitlab_projects ADD CONSTRAINT fk_gitlab_projects_server
+      FOREIGN KEY (gitlab_server_id) REFERENCES gitlab_servers(id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+`
+
 const agentConstraintsSQL = `
 CREATE INDEX IF NOT EXISTS idx_agents_owner_status ON agents(owner_user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_type, workspace_id);
@@ -513,6 +529,9 @@ func (ds *datastore) EnsureScheme(metaTypes ...any) error {
 	if err := ds.db.AutoMigrate(metaTypes...); err != nil {
 		return err
 	}
+	if err := ds.db.Exec(gitLabConstraintsSQL).Error; err != nil {
+		return err
+	}
 	if err := ds.db.Exec(identityRegistrationConstraintsSQL).Error; err != nil {
 		return err
 	}
@@ -744,6 +763,7 @@ func (ds *datastore) TaskCenters() store.TaskCenterStore {
 func (ds *datastore) Agents() store.AgentStore                  { return newAgentStore(ds) }
 func (ds *datastore) AppStudio() store.AppStudioStore           { return newAppStudioStore(ds) }
 func (ds *datastore) Infrastructure() store.InfrastructureStore { return newInfrastructureStore(ds) }
+func (ds *datastore) GitLab() store.GitLabStore                 { return newGitLabStore(ds) }
 
 func (ds *datastore) UserEvents() store.UserEventStore { return newUserEventStore(ds) }
 

@@ -10,6 +10,7 @@ import (
 	appstudioctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/appstudio"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/asset"
 	assetlibraryctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/assetlibrary"
+	gitlabctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/gitlab"
 	identityctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/identity"
 	mcpctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/mcp"
 	notificationctrl "github.com/wangweihong/omnimam/backend/internal/apiserver/controller/v1/notification"
@@ -28,6 +29,7 @@ import (
 	legacyappsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/applicationplatform"
 	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	assetlibrarysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/assetlibrary"
+	gitlabsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/gitlab"
 	identitysvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/identity"
 	notificationsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/notification"
 	platformmanagementsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/platformmanagement"
@@ -49,13 +51,14 @@ func initRouter(
 	aiChat aichatsvc.AIChatSrv,
 	agent *agentsvc.Service,
 	appStudio *appstudiosvc.Service,
+	gitLab *gitlabsvc.Service,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
 	mcpOptions *options.MCPOptions,
 ) {
 	InstallMiddleware(g)
-	installApis(g, applicationPlatform, taskCenter, userModel, aiChat, agent, appStudio, authOptions, sseOptions, mcpProcessor, mcpOptions)
+	installApis(g, applicationPlatform, taskCenter, userModel, aiChat, agent, appStudio, gitLab, authOptions, sseOptions, mcpProcessor, mcpOptions)
 }
 
 func InstallMiddleware(g *gin.Engine) {
@@ -69,7 +72,7 @@ func InstallApis(
 	applicationPlatform appplatformsvc.ApplicationPlatformSrv,
 	taskCenter taskcentersvc.TaskCenterSrv,
 ) *gin.Engine {
-	return installApis(g, applicationPlatform, taskCenter, nil, nil, nil, nil, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
+	return installApis(g, applicationPlatform, taskCenter, nil, nil, nil, nil, nil, options.NewAuthOptions(), options.NewSSEOptions(), nil, options.NewMCPOptions())
 }
 
 func installApis(
@@ -80,6 +83,7 @@ func installApis(
 	aiChat aichatsvc.AIChatSrv,
 	agent *agentsvc.Service,
 	appStudio *appstudiosvc.Service,
+	gitLab *gitlabsvc.Service,
 	authOptions *options.AuthOptions,
 	sseOptions *options.SSEOptions,
 	mcpProcessor *mcpprotocol.Processor,
@@ -121,6 +125,9 @@ func installApis(
 			if appStudio != nil {
 				installAppStudioApis(v1, appStudio)
 			}
+			if gitLab != nil {
+				installGitLabApis(v1, gitLab)
+			}
 			if taskCenter != nil {
 				installTaskCenterApis(v1, taskCenter)
 				installCanvasApis(v1, workflowcanvassvc.New(storeIns, taskCenter, applicationPlatform))
@@ -136,6 +143,29 @@ func installApis(
 	}
 
 	return g
+}
+
+func installGitLabApis(rg *gin.RouterGroup, service *gitlabsvc.Service) {
+	c := gitlabctrl.NewController(service)
+	serverRead := rg.Group("/gitlab/servers")
+	serverRead.Use(authmiddleware.RequireIdentityPermission("gitlab.server.read"))
+	serverRead.GET("", c.ListServers)
+	serverRead.GET("/:server_id", c.GetServer)
+	serverManage := rg.Group("/gitlab/servers")
+	serverManage.Use(authmiddleware.RequireIdentityPermission("gitlab.server.manage"))
+	serverManage.POST("", c.CreateServer)
+	serverManage.PATCH("/:server_id", c.UpdateServer)
+	serverManage.DELETE("/:server_id", c.DeleteServer)
+	serverManage.POST("/:server_id/test", c.TestServer)
+
+	projectRead := rg.Group("/gitlab/projects")
+	projectRead.Use(authmiddleware.RequireIdentityPermission("gitlab.project.read"))
+	projectRead.GET("", c.ListProjects)
+	projectRead.GET("/:project_id", c.GetProject)
+	projectManage := rg.Group("/gitlab/projects")
+	projectManage.Use(authmiddleware.RequireIdentityPermission("gitlab.project.manage"))
+	projectManage.POST("", c.CreateProject)
+	projectManage.DELETE("/:project_id", c.DeleteProject)
 }
 
 func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {

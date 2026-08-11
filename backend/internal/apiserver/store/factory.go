@@ -52,6 +52,8 @@ type Factory interface {
 	Agents() AgentStore
 	AppStudio() AppStudioStore
 	Infrastructure() InfrastructureStore
+	// GitLab 返回独立 GitLab domain 的 Server/Project 持久化边界。
+	GitLab() GitLabStore
 
 	EnsureScheme(metaTypes ...any) error
 	Close() error
