@@ -76,6 +76,10 @@ type GitLabProject struct {
 	SSHURLToRepo string `json:"ssh_url_to_repo" gorm:"column:ssh_url_to_repo;type:text;not null;default:''"`
 	// DefaultBranch 是 GitLab 返回的默认分支；空仓库时按合同回退为 main。
 	DefaultBranch string `json:"default_branch" gorm:"column:default_branch;type:text;not null;default:'main'"`
+	// AppStudioWebhookID 是 GitLab Project Hook 的远端 ID，不对公共 API 暴露。
+	AppStudioWebhookID int64 `json:"-" gorm:"column:appstudio_webhook_id"`
+	// AppStudioWebhookTokenDigest 仅保存 sha256 摘要，绝不保存或返回明文 token。
+	AppStudioWebhookTokenDigest string `json:"-" gorm:"column:appstudio_webhook_token_digest;type:text"`
 }
 
 func (GitLabProject) TableName() string { return "gitlab_projects" }

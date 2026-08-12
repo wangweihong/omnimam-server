@@ -25,6 +25,11 @@ type ProjectAccessTokenClient interface {
 	RevokeProjectAccessToken(context.Context, int64, int64) error
 }
 
+type ProjectHookClient interface {
+	CreateProjectHook(context.Context, int64, CreateProjectHookRequest) (*ProjectHook, error)
+	GetProjectHook(context.Context, int64, int64) (*ProjectHook, error)
+}
+
 // Client 定义 GitLab Service 与 Pipeline Worker 消费的最小远端 API。
 type Client interface {
 	GetVersion(context.Context) (*Version, error)
@@ -38,6 +43,10 @@ type Client interface {
 	RetryPipeline(context.Context, int64, int64) (*Pipeline, error)
 	CancelPipeline(context.Context, int64, int64) (*Pipeline, error)
 	ListPipelineJobs(context.Context, int64, int64) ([]Job, error)
+}
+
+type PipelineArtifactClient interface {
+	DownloadJobArtifact(context.Context, int64, int64, string) (io.ReadCloser, error)
 }
 
 // ClientFactory 从持久化 GitLabServer 构造不泄露 credential 的远端 Client。
@@ -88,12 +97,27 @@ type Pipeline struct {
 	ID     int64  `json:"id"`
 	Status string `json:"status"`
 	WebURL string `json:"web_url"`
+	SHA    string `json:"sha"`
 }
 
 type Job struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+}
+
+type CreateProjectHookRequest struct {
+	URL            string
+	Token          string
+	PushEvents     bool
+	PipelineEvents bool
+}
+
+type ProjectHook struct {
+	ID             int64  `json:"id"`
+	URL            string `json:"url"`
+	PushEvents     bool   `json:"push_events"`
+	PipelineEvents bool   `json:"pipeline_events"`
 }
 
 type RepositoryTreeEntry struct {

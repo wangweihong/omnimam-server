@@ -95,6 +95,22 @@ func (c *httpClient) GetProjectByPath(ctx context.Context, path string) (*Remote
 	return result, c.do(ctx, http.MethodGet, "/projects/"+url.PathEscape(path), nil, result)
 }
 
+func (c *httpClient) CreateProjectHook(ctx context.Context, projectID int64, input CreateProjectHookRequest) (*ProjectHook, error) {
+	body := struct {
+		URL            string `json:"url"`
+		Token          string `json:"token"`
+		PushEvents     bool   `json:"push_events"`
+		PipelineEvents bool   `json:"pipeline_events"`
+	}{input.URL, input.Token, input.PushEvents, input.PipelineEvents}
+	result := &ProjectHook{}
+	return result, c.do(ctx, http.MethodPost, projectPath(projectID)+"/hooks", body, result)
+}
+
+func (c *httpClient) GetProjectHook(ctx context.Context, projectID, hookID int64) (*ProjectHook, error) {
+	result := &ProjectHook{}
+	return result, c.do(ctx, http.MethodGet, projectPath(projectID)+"/hooks/"+strconv.FormatInt(hookID, 10), nil, result)
+}
+
 func (c *httpClient) DeleteProject(ctx context.Context, projectID int64) error {
 	return c.do(ctx, http.MethodDelete, projectPath(projectID), nil, nil)
 }
@@ -137,6 +153,28 @@ func (c *httpClient) ListPipelineJobs(ctx context.Context, projectID, pipelineID
 		return nil, err
 	}
 	return result, nil
+}
+
+func (c *httpClient) DownloadJobArtifact(ctx context.Context, projectID, jobID int64, artifactPath string) (io.ReadCloser, error) {
+	if artifactPath != "appstudio-bundle.tar.gz" {
+		return nil, fmt.Errorf("gitlab artifact path is not allowed")
+	}
+	path := projectPath(projectID) + "/jobs/" + strconv.FormatInt(jobID, 10) + "/artifacts/" + url.PathEscape(artifactPath)
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(http.MethodGet).
+		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/gzip")
+	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("download gitlab pipeline artifact: %w", err)
+	}
+	if response == nil || response.Response == nil {
+		return nil, fmt.Errorf("download gitlab pipeline artifact returned no response")
+	}
+	if response.GetStatusCode() < 200 || response.GetStatusCode() >= 300 {
+		defer response.Response.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(response.Response.Body, gitLabMaxResponseBytes+1))
+		return nil, &RemoteError{StatusCode: response.GetStatusCode(), Operation: "download pipeline artifact", Message: gitLabErrorMessage(data)}
+	}
+	return response.Response.Body, nil
 }
 
 func (c *httpClient) ListRepositoryTree(ctx context.Context, projectID int64, ref, path string) ([]RepositoryTreeEntry, error) {

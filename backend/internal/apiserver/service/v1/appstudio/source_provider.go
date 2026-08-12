@@ -23,6 +23,22 @@ type ProjectInitializer interface {
 	EnsureProject(context.Context, string, string, string, string, map[string][]byte) (*ProjectInitialization, error)
 }
 
+// WebhookInitializer ensures the single GitLab Push/Pipeline Hook owned by an AppStudio project.
+type WebhookInitializer interface {
+	EnsureAppStudioWebhook(context.Context, string) (int64, error)
+	AuthenticateAppStudioWebhook(context.Context, int64, string) (string, error)
+}
+
+type PipelineBundle struct {
+	Content       []byte
+	ContentDigest string
+	MediaType     string
+}
+
+type PipelineArtifactReader interface {
+	DownloadAppStudioBundle(context.Context, string, int64) (*PipelineBundle, error)
+}
+
 type ProjectInitialization struct {
 	GitLabProjectID string
 	DefaultBranch   string

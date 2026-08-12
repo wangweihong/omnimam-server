@@ -347,6 +347,8 @@ func init() {
 	register(ErrAgentRuntimeUnhealthy, 200, map[string]string{"CN": "AgentRuntime 健康检查失败。", "EN": "The AgentRuntime health check failed."})
 	register(ErrAppStudioApplicationNotVisible, 200, map[string]string{"CN": "StudioApplication 不存在或当前主体不可见。", "EN": "The StudioApplication does not exist or is not visible to the current principal."})
 	register(ErrAppStudioApplicationInvalidState, 200, map[string]string{"CN": "StudioApplication 当前状态不允许该操作。", "EN": "The StudioApplication is not in a state that permits this operation."})
+	register(ErrAppStudioWebhookUnauthorized, 200, map[string]string{"CN": "AppStudio GitLab Webhook token 无效或 Project 不可用。", "EN": "The AppStudio GitLab webhook token is invalid or the project is unavailable."})
+	register(ErrAppStudioWebhookPayloadInvalid, 200, map[string]string{"CN": "AppStudio GitLab Webhook 事件类型或载荷无效。", "EN": "The AppStudio GitLab webhook event type or payload is invalid."})
 	register(ErrAppStudioSourceNotVisible, 200, map[string]string{"CN": "Studio Source 不存在或当前主体不可见。", "EN": "The Studio Source does not exist or is not visible to the current principal."})
 	register(ErrAppStudioSourceRevisionConflict, 200, map[string]string{"CN": "Source 当前 Revision 与 base_revision 冲突。", "EN": "The Source current Revision conflicts with base_revision."})
 	register(ErrAppStudioSourceChangeRejected, 200, map[string]string{"CN": "ChangeSet 未通过路径、依赖或安全校验。", "EN": "The ChangeSet failed path, dependency, or security validation."})

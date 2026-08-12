@@ -96,6 +96,10 @@ infrastructure-client:
   base-url: ${APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL}
   token: ${APISERVER_INFRASTRUCTURE_CLIENT_TOKEN}
 
+appstudio:
+  # GitLab Project Hook 必须使用部署显式提供、GitLab 可访问的 API Origin。
+  webhook-base-url: ${APISERVER_APPSTUDIO_WEBHOOK_BASE_URL}
+
 auth:
   jwt-secret: ${APISERVER_AUTH_JWT_SECRET}
   opaque-server-setup: ${APISERVER_OPAQUE_SERVER_SETUP}

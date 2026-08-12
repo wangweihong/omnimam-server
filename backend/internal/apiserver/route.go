@@ -166,6 +166,7 @@ func installGitLabApis(rg *gin.RouterGroup, service *gitlabsvc.Service) {
 
 func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	c := appstudioctrl.NewController(service)
+	rg.POST("/appstudio/webhook", c.ReceiveGitLabWebhook)
 	applicationRead := rg.Group("/studio-applications")
 	applicationRead.Use(authmiddleware.RequireIdentityPermission("appstudio.application.read"))
 	applicationRead.GET("", c.ListApplications)

@@ -98,6 +98,14 @@ touch /run/omnimam/git-ready`
 while [ ! -f /var/run/omnimam-source-ready ]; do sleep 0.05; done
 chmod -R a+rX,a-w /usr/share/nginx/html
 exec /docker-entrypoint.sh nginx -g 'daemon off;'`
+	previewBackendRuntimeCommand = `set -eu
+while [ ! -f /run/omnimam/source-ready ]; do sleep 0.05; done
+mkdir -p /tmp/app
+cp -a /workspace/. /tmp/app/
+cd /tmp/app
+export COREPACK_HOME=/tmp/corepack
+corepack pnpm install --frozen-lockfile
+exec corepack pnpm start -- --host 0.0.0.0 --port 3000`
 	buildRuntimeCommand = `set -eu
 while [ ! -f /run/omnimam/source-ready ]; do sleep 0.05; done
 cd /workspace
@@ -205,8 +213,8 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	}
 	hostConfig := map[string]any{"ReadonlyRootfs": true, "Privileged": false, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges:true"}, "NetworkMode": d.networkMode, "AutoRemove": false, "PidsLimit": 256}
 	body := map[string]any{"Image": image, "Env": env, "Labels": map[string]string{"io.omnimam.runtime_id": input.RuntimeID, "io.omnimam.profile": input.Profile.ID}, "HostConfig": hostConfig}
-	serviceProfile, agentService := agentRuntimeServiceProfile(input.Profile.ID)
-	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb {
+	serviceProfile, agentService := serviceRuntimeProfile(input.Profile.ID)
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb || input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI {
 		// 官方 Nginx 镜像需要写入缓存/PID，并由 master 将缓存目录交给 worker；仅恢复该启动路径所需权限。
 		hostConfig["Tmpfs"] = map[string]string{
 			"/var/cache/nginx": "rw,nosuid,nodev,noexec,size=16m",
@@ -250,8 +258,8 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, err
 	}
-	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb {
-		if err := d.execWithInput(ctx, created.ID, []string{"/bin/sh", "-c", "tar -xzf - -C /usr/share/nginx/html --strip-components=1 && touch /var/run/omnimam-source-ready"}, input.SourceArchive); err != nil {
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb || input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI {
+		if err := d.injectPreviewSource(ctx, created.ID, input.Profile.ID, input.SourceArchive); err != nil {
 			_ = d.Delete(context.Background(), created.ID)
 			return nil, fmt.Errorf("inject preview source archive: %w", err)
 		}
@@ -337,8 +345,25 @@ func (d *DockerProvider) configurePreviewSource(input providers.ProviderRequest,
 		return err
 	}
 	body["Entrypoint"] = []string{"/bin/sh", "-c"}
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI {
+		hostConfig["Tmpfs"] = map[string]string{
+			"/workspace":   "rw,nosuid,nodev,noexec,size=256m",
+			"/tmp":         "rw,nosuid,nodev,noexec,size=256m",
+			"/run/omnimam": "rw,nosuid,nodev,noexec,size=1m",
+			"/root/.cache": "rw,nosuid,nodev,noexec,size=128m",
+		}
+		body["Cmd"] = []string{previewBackendRuntimeCommand}
+		return nil
+	}
 	body["Cmd"] = []string{previewRuntimeCommand}
 	return nil
+}
+
+func (d *DockerProvider) injectPreviewSource(ctx context.Context, ref, profileID string, archive []byte) error {
+	if profileID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI {
+		return d.execWithInput(ctx, ref, []string{"/bin/sh", "-c", "tar -xzf - -C /workspace --strip-components=1 && chmod -R a+rX,a-w /workspace && touch /run/omnimam/source-ready"}, archive)
+	}
+	return d.execWithInput(ctx, ref, []string{"/bin/sh", "-c", "tar -xzf - -C /usr/share/nginx/html --strip-components=1 && touch /var/run/omnimam-source-ready"}, archive)
 }
 
 func (d *DockerProvider) configureBuildSource(input providers.ProviderRequest, body, hostConfig map[string]any) error {
@@ -667,7 +692,7 @@ func (d *DockerProvider) Start(ctx context.Context, ref string) (*providers.Prov
 	if err != nil {
 		return nil, err
 	}
-	if profile, ok := agentRuntimeServiceProfile(data.Config.Labels["io.omnimam.profile"]); ok {
+	if profile, ok := serviceRuntimeProfile(data.Config.Labels["io.omnimam.profile"]); ok {
 		return d.waitForAgentService(ctx, ref, profile)
 	}
 	return &providers.ProviderResult{ProviderRuntimeRef: ref, Status: iapiserver.InfraRuntimeStatusRunning}, nil
@@ -702,7 +727,7 @@ func (d *DockerProvider) Inspect(ctx context.Context, ref string) (*providers.Pr
 		status = iapiserver.InfraRuntimeStatusFailed
 	}
 	result := &providers.ProviderResult{ProviderRuntimeRef: ref, Status: status}
-	if profile, ok := agentRuntimeServiceProfile(data.Config.Labels["io.omnimam.profile"]); ok && data.State.Running {
+	if profile, ok := serviceRuntimeProfile(data.Config.Labels["io.omnimam.profile"]); ok && data.State.Running {
 		endpoint, endpointErr := d.agentServiceEndpoint(data, profile)
 		if endpointErr != nil {
 			return nil, endpointErr
@@ -752,7 +777,7 @@ func (d *DockerProvider) Health(ctx context.Context, ref string) (*iapiserver.In
 	if inspected, inspectErr := d.inspectContainer(ctx, ref); inspectErr == nil {
 		profileID = inspected.Config.Labels["io.omnimam.profile"]
 	}
-	profile, ok := agentRuntimeServiceProfile(profileID)
+	profile, ok := serviceRuntimeProfile(profileID)
 	if !ok {
 		return &iapiserver.InfraRuntimeHealthResult{Status: iapiserver.AgentRuntimeHealthUnknown, CheckedAt: checked, Reason: iapiserver.AgentRuntimeHealthReasonProbeIndeterminate}, nil
 	}
@@ -802,7 +827,7 @@ func (d *DockerProvider) detectNetwork(ctx context.Context) string {
 	return names[0]
 }
 
-func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
+func serviceRuntimeProfile(profileID string) (agentServiceProfile, bool) {
 	switch profileID {
 	case iapiserver.InfraRuntimeProfileIDAgentCoding:
 		return agentServiceProfile{
@@ -869,9 +894,26 @@ exec hermes serve --host 127.0.0.1 --port 9119 --skip-build`,
 				"/root/.hermes": "rw,nosuid,nodev,noexec,size=128m",
 			},
 		}, true
+	case iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI:
+		return agentServiceProfile{
+			healthPath: "/health",
+			port:       3000,
+			command:    previewBackendRuntimeCommand,
+			tmpfs: map[string]string{
+				"/workspace":   "rw,nosuid,nodev,noexec,size=256m",
+				"/tmp":         "rw,nosuid,nodev,noexec,size=256m",
+				"/run/omnimam": "rw,nosuid,nodev,noexec,size=1m",
+				"/root/.cache": "rw,nosuid,nodev,noexec,size=128m",
+			},
+		}, true
 	default:
 		return agentServiceProfile{}, false
 	}
+}
+
+// agentRuntimeServiceProfile 保留测试和既有内部调用的兼容名称；运行时 profile 已同时覆盖 AppStudio service。
+func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
+	return serviceRuntimeProfile(profileID)
 }
 
 func (d *DockerProvider) agentServiceEndpoint(data *dockerContainerInspect, profile agentServiceProfile) (*providers.ProviderEndpoint, error) {

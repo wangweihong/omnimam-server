@@ -40,6 +40,7 @@ type GitLabStore interface {
 	DeleteGitLabServer(context.Context, string) error
 	ListGitLabProjects(context.Context, *iapiserver.GitLabProjectListRequest) ([]*iapiserver.GitLabProject, int64, error)
 	GetGitLabProject(context.Context, string) (*iapiserver.GitLabProject, error)
+	GetGitLabProjectByExternalID(context.Context, int64) (*iapiserver.GitLabProject, error)
 	CreateGitLabProject(context.Context, *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error)
 	UpdateGitLabProject(context.Context, *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error)
 	MarkGitLabProjectError(context.Context, string) (*iapiserver.GitLabProject, error)
@@ -226,6 +227,12 @@ type StudioApplicationInitialization struct {
 	InitialInvocation *iapiserver.AgentInvocation
 }
 
+type StudioApplicationGitLabScope struct {
+	ApplicationID string
+	OwnerUserID   string
+	WorkspaceID   string
+}
+
 // StudioCodingAgentReplacement 是 AppStudio 切换当前 Coding Agent generation 的原子写入集合。
 type StudioCodingAgentReplacement struct {
 	Agent            *iapiserver.Agent
@@ -245,6 +252,7 @@ type StudioSourceArchiveAccess struct {
 type AppStudioStore interface {
 	CreateStudioApplicationInitialization(context.Context, *StudioApplicationInitialization) (bool, error)
 	GetStudioApplicationInitialization(context.Context, string, string) (*StudioApplicationInitialization, error)
+	GetStudioApplicationGitLabScope(context.Context, string) (*StudioApplicationGitLabScope, error)
 	ListStudioApplications(context.Context, *iapiserver.StudioApplicationListRequest) ([]*iapiserver.StudioApplication, int64, error)
 	GetStudioApplication(context.Context, string, string) (*iapiserver.StudioApplication, error)
 	GetStudioApplicationByCodingAgent(context.Context, string, string) (*iapiserver.StudioApplication, error)
@@ -258,6 +266,7 @@ type AppStudioStore interface {
 	ResolveStudioBuildSource(context.Context, string, string, string, int64) (*StudioSourceArchiveAccess, error)
 	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)
 	GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error)
+	GetStudioWorkspaceRevisionByCommit(context.Context, string, string, string) (*iapiserver.StudioWorkspaceRevision, error)
 	GetStudioChangeSetByIdempotencyKey(context.Context, string, string, string) (*iapiserver.StudioChangeSet, error)
 	ApplyStudioChangeSet(context.Context, string, *iapiserver.StudioChangeSet, *iapiserver.StudioWorkspaceRevision, []*iapiserver.StudioSourceFile) (*iapiserver.StudioChangeSet, error)
 	ResolveStudioInvocationChangeSets(context.Context, string, string, []string) (map[string]*iapiserver.StudioChangeSet, error)
@@ -271,6 +280,7 @@ type AppStudioStore interface {
 	GetStudioBuild(context.Context, string, string) (*iapiserver.StudioBuild, error)
 	ResolveStudioBuildSummaries(context.Context, string, []string) (map[string]*iapiserver.StudioBuildProducerProjection, error)
 	UpdateStudioBuild(context.Context, *iapiserver.StudioBuild) (*iapiserver.StudioBuild, error)
+	ProjectStudioBuildPipeline(context.Context, string, string, int64, string, string) (*iapiserver.StudioBuild, error)
 	GetStudioPreviewRuntime(context.Context, string, string) (*iapiserver.StudioPreviewRuntime, error)
 	CreateStudioPreviewRuntime(context.Context, string, *iapiserver.StudioPreviewRuntime) (*iapiserver.StudioPreviewRuntime, error)
 	UpdateStudioPreviewRuntime(context.Context, *iapiserver.StudioPreviewRuntime) (*iapiserver.StudioPreviewRuntime, error)

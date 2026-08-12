@@ -133,8 +133,11 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "construct appstudio gitlab source provider")
 	}
+	if err := sourceProvider.SetAppStudioWebhookBaseURL(cfg.AppStudioOptions.WebhookBaseURL); err != nil {
+		return errors.Wrap(err, "configure appstudio gitlab webhook")
+	}
 	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{
-		Store: storeIns.AppStudio(), Tasks: tasks, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec,
+		Store: storeIns.AppStudio(), Tasks: tasks, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, WebhookInitializer: sourceProvider, PipelineArtifacts: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct appstudio service for agent projector")
@@ -145,6 +148,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "construct agent runtime projector")
 	}
+	appStudioService.SetCodingAgentCreator(agentProjector)
 	invocationExecutor, err := agentexecutor.NewInvocationExecutor(agentexecutor.InvocationExecutorDependencies{
 		Store: storeIns.Agents(), Endpoints: infrastructureClient, Models: userModelService,
 		Credentials: credentialBroker, Grants: grantCodec, Workspaces: appStudioService, Registry: functionRegistry,
@@ -199,6 +203,58 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "register representation backfill handler")
 	}
 	comfyTestExecutor := comfyuiadapter.NewTestExecutor(storeIns)
+	initializationHandler := func(functionRef string, execute func(context.Context, iapiserver.AppStudioInitializationTaskArguments) (map[string]any, error)) error {
+		return registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), functionRef, 8, func(ctx context.Context, _ workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+			arguments, err := appStudioInitializationArguments(atomicTask.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			ctx = context.WithValue(ctx, iapiserver.GinContextKeyUser, &iapiserver.User{ObjectMeta: imachinery.ObjectMeta{ID: arguments.OwnerUserID}})
+			return execute(ctx, arguments)
+		})
+	}
+	if err := initializationHandler(iapiserver.AppStudioFunctionInitializationProjectEnsure, appStudioService.EnsureInitializationProject); err != nil {
+		return err
+	}
+	if err := initializationHandler(iapiserver.AppStudioFunctionInitializationWebhookEnsure, appStudioService.EnsureInitializationWebhook); err != nil {
+		return err
+	}
+	if err := initializationHandler(iapiserver.AppStudioFunctionInitializationFinalize, appStudioService.FinalizeInitialization); err != nil {
+		return err
+	}
+	if err := initializationHandler(iapiserver.AppStudioFunctionInitializationInvocationStart, appStudioService.StartInitializationInvocation); err != nil {
+		return err
+	}
+	automationHandler := func(functionRef string, execute func(context.Context, iapiserver.AppStudioAutomationTaskArguments) (map[string]any, error)) error {
+		return registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), functionRef, 8, func(ctx context.Context, _ workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+			arguments, err := appStudioAutomationArguments(atomicTask.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			return execute(ctx, arguments)
+		})
+	}
+	if err := automationHandler(iapiserver.AppStudioFunctionAutomationSnapshotEnsure, appStudioService.EnsureAutomationSnapshot); err != nil {
+		return err
+	}
+	if err := automationHandler(iapiserver.AppStudioFunctionAutomationBuildEnsure, appStudioService.EnsureAutomationBuild); err != nil {
+		return err
+	}
+	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.AppStudioFunctionAutomationArtifactComplete, 8, func(ctx context.Context, workerTask workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
+		arguments, err := appStudioAutomationArguments(atomicTask.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		resolved, _ := workerTask.Arguments["resolved_inputs"].(map[string]any)
+		pipelineID, err := automationPipelineID(resolved["pipeline_id"])
+		if err != nil {
+			return nil, err
+		}
+		pipelineURL, _ := resolved["pipeline_url"].(string)
+		return appStudioService.CompleteAutomationArtifact(ctx, arguments, pipelineID, pipelineURL, atomicTask.ID, workerTask.RuntimeTaskID, artifactLifecycle)
+	}); err != nil {
+		return err
+	}
 	if err := registerAtomicTaskHandler(runtime, storeIns.TaskCenters(), iapiserver.TaskWorkerFunctionAgentRuntimeEnsure, 8, func(ctx context.Context, task workflowruntime.WorkerTask, atomicTask *iapiserver.AtomicTask) (map[string]any, error) {
 		return agentexecutor.ExecuteRuntimeEnsure(ctx, infrastructureClient, functionRegistry, task, atomicTask)
 	}); err != nil {
@@ -506,6 +562,50 @@ func registerAtomicTaskHandler(
 		}
 		return executor(ctx, task, atomicTask)
 	})
+}
+
+func appStudioInitializationArguments(input map[string]any) (iapiserver.AppStudioInitializationTaskArguments, error) {
+	applicationID, applicationOK := input["studio_application_id"].(string)
+	owner, ownerOK := input["owner_user_id"].(string)
+	idempotencyKey, keyOK := input["create_idempotency_key"].(string)
+	if !applicationOK || !ownerOK || !keyOK || applicationID == "" || owner == "" || idempotencyKey == "" || len(input) != 3 {
+		return iapiserver.AppStudioInitializationTaskArguments{}, fmt.Errorf("appstudio initialization arguments are invalid")
+	}
+	return iapiserver.AppStudioInitializationTaskArguments{
+		StudioApplicationID: applicationID, OwnerUserID: owner, CreateIdempotencyKey: idempotencyKey,
+	}, nil
+}
+
+func appStudioAutomationArguments(input map[string]any) (iapiserver.AppStudioAutomationTaskArguments, error) {
+	applicationID, applicationOK := input["studio_application_id"].(string)
+	owner, ownerOK := input["owner_user_id"].(string)
+	projectID, projectOK := input["gitlab_project_id"].(string)
+	commitSHA, commitOK := input["commit_sha"].(string)
+	gitRef, refOK := input["git_ref"].(string)
+	if !applicationOK || !ownerOK || !projectOK || !commitOK || !refOK || applicationID == "" || owner == "" || projectID == "" || commitSHA == "" || gitRef == "" || len(input) != 5 {
+		return iapiserver.AppStudioAutomationTaskArguments{}, fmt.Errorf("appstudio automation arguments are invalid")
+	}
+	return iapiserver.AppStudioAutomationTaskArguments{
+		StudioApplicationID: applicationID, OwnerUserID: owner, GitLabProjectID: projectID, CommitSHA: commitSHA, GitRef: gitRef,
+	}, nil
+}
+
+func automationPipelineID(value any) (int64, error) {
+	switch typed := value.(type) {
+	case int64:
+		if typed > 0 {
+			return typed, nil
+		}
+	case float64:
+		if typed > 0 && typed == float64(int64(typed)) {
+			return int64(typed), nil
+		}
+	case json.Number:
+		if id, err := typed.Int64(); err == nil && id > 0 {
+			return id, nil
+		}
+	}
+	return 0, fmt.Errorf("appstudio pipeline id is invalid")
 }
 
 type workerArtifactLifecycle struct {

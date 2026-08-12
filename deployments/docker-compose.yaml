@@ -107,6 +107,7 @@ services:
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
       APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
+      APISERVER_APPSTUDIO_WEBHOOK_BASE_URL: ${OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
@@ -171,6 +172,7 @@ services:
             APISERVER_AUTH_JWT_SECRET \
             APISERVER_OPAQUE_SERVER_SETUP \
             APISERVER_MCP_PUBLIC_BASE_URL \
+            APISERVER_APPSTUDIO_WEBHOOK_BASE_URL \
             APISERVER_WORKFLOW_RUNTIME_ENABLED \
             APISERVER_CONDUCTOR_BASE_URL \
             APISERVER_CONDUCTOR_AUTH_KEY \
@@ -240,6 +242,7 @@ services:
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
       APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
+      APISERVER_APPSTUDIO_WEBHOOK_BASE_URL: ${OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
       APISERVER_CONDUCTOR_BASE_URL: ""
       APISERVER_CONDUCTOR_AUTH_KEY: ""
@@ -251,7 +254,7 @@ services:
       OMNIMAM_MCP_RUNTIME_CA_FILE: ${OMNIMAM_MCP_RUNTIME_CA_FILE:-/etc/omnimam/mcp-tls/ca.crt}
       OMNIMAM_INFRA_LISTEN_ADDRESS: 0.0.0.0:8082
       OMNIMAM_INFRA_SERVICE_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
-      OMNIMAM_INFRA_PROFILE_IMAGES: '${OMNIMAM_INFRA_PROFILE_IMAGES:-{"agent.hermes@1.0":"omnimam/hermes-agent:v2026.8.3","agent.coding@1.0":"omnimam/coding-agent:1.18.13","appstudio.preview.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.build.static-web@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.production.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.production.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine"}}'
+      OMNIMAM_INFRA_PROFILE_IMAGES: '${OMNIMAM_INFRA_PROFILE_IMAGES:-{"agent.hermes@1.0":"omnimam/hermes-agent:v2026.8.3","agent.coding@1.0":"omnimam/coding-agent:1.18.13","appstudio.preview.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.static-web@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.production.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.production.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine"}}'
     ports:
       - "${OMNIMAM_INFRA_PORT:-8082}:8082"
     healthcheck:
@@ -301,6 +304,7 @@ services:
           APISERVER_AUTH_JWT_SECRET \
           APISERVER_OPAQUE_SERVER_SETUP \
           APISERVER_MCP_PUBLIC_BASE_URL \
+          APISERVER_APPSTUDIO_WEBHOOK_BASE_URL \
           APISERVER_WORKFLOW_RUNTIME_ENABLED \
           APISERVER_CONDUCTOR_BASE_URL \
           APISERVER_CONDUCTOR_AUTH_KEY \
@@ -354,6 +358,7 @@ services:
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
       # 与 API Server 共用可信公开 Origin；远程 Coding Runtime 场景必须显式配置可达的 HTTPS 地址。
       APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
+      APISERVER_APPSTUDIO_WEBHOOK_BASE_URL: ${OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "true"
       APISERVER_CONDUCTOR_BASE_URL: http://conductor:8080/api
       APISERVER_CONDUCTOR_AUTH_KEY: ${OMNIMAM_CONDUCTOR_AUTH_KEY:-}
@@ -400,6 +405,7 @@ services:
           APISERVER_AUTH_JWT_SECRET \
           APISERVER_OPAQUE_SERVER_SETUP \
           APISERVER_MCP_PUBLIC_BASE_URL \
+          APISERVER_APPSTUDIO_WEBHOOK_BASE_URL \
           APISERVER_WORKFLOW_RUNTIME_ENABLED \
           APISERVER_CONDUCTOR_BASE_URL \
           APISERVER_CONDUCTOR_AUTH_KEY \
@@ -448,6 +454,7 @@ services:
       APISERVER_AUTH_JWT_SECRET: ${OMNIMAM_AUTH_JWT_SECRET:-omnimam-local-development-jwt-secret-change-me}
       APISERVER_OPAQUE_SERVER_SETUP: ${OMNIMAM_OPAQUE_SERVER_SETUP:-010020abc0c2392ed018c208ad37c5244d207242b90d3ba4ba4f27c1b0ac6e777bd800002074739b77bd3c26c247dad430b6d3a110cc20d1f25ea1a6f209d96bdfad51503f0040e1735bdb4d9b7cef37fe280642b65f448a0c498cc0d7d67b78d9209d03d669b65ae8be55d6b4d7b325b0f4ae7ee7769b1b8ff9fcb4ab3e6e0a1f468ac866a7f90000}
       APISERVER_MCP_PUBLIC_BASE_URL: ${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}
+      APISERVER_APPSTUDIO_WEBHOOK_BASE_URL: ${OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL:-https://apiserver:8443}
       APISERVER_WORKFLOW_RUNTIME_ENABLED: "false"
       APISERVER_CONDUCTOR_BASE_URL: ""
       APISERVER_CONDUCTOR_AUTH_KEY: ""
@@ -491,6 +498,7 @@ services:
           APISERVER_AUTH_JWT_SECRET \
           APISERVER_OPAQUE_SERVER_SETUP \
           APISERVER_MCP_PUBLIC_BASE_URL \
+          APISERVER_APPSTUDIO_WEBHOOK_BASE_URL \
           APISERVER_WORKFLOW_RUNTIME_ENABLED \
           APISERVER_CONDUCTOR_BASE_URL \
           APISERVER_CONDUCTOR_AUTH_KEY \

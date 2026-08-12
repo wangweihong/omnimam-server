@@ -57,35 +57,39 @@ func (s *appStudioStore) CreateStudioApplicationInitialization(ctx context.Conte
 					return err
 				}
 			}
+			for _, value := range []any{
+				initialization.Agent,
+				initialization.Session,
+				initialization.WorkspaceBinding,
+				initialization.ModelBinding,
+				initialization.MCPBinding,
+				initialization.UserMessage,
+				initialization.InitialInvocation,
+			} {
+				if value == nil {
+					continue
+				}
+				if err := tx.Create(value).Error; err != nil {
+					return err
+				}
+			}
+			if initialization.MCPBinding != nil {
+				if err := createMCPBindingRevision(tx, initialization.MCPBinding); err != nil {
+					return err
+				}
+			}
 			if initialization.Revision == nil {
 				app := initialization.Application
 				return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil))
 			}
 		}
-		for _, value := range []any{
-			initialization.Revision,
-			initialization.Agent,
-			initialization.Session,
-			initialization.WorkspaceBinding,
-			initialization.ModelBinding,
-			initialization.MCPBinding,
-			initialization.UserMessage,
-			initialization.InitialInvocation,
-		} {
-			if value == nil {
-				continue
-			}
-			if err := tx.Create(value).Error; err != nil {
+		if initialization.Revision != nil {
+			if err := tx.Create(initialization.Revision).Error; err != nil {
 				return err
 			}
 		}
 		if len(initialization.SourceFiles) > 0 {
 			if err := tx.Create(&initialization.SourceFiles).Error; err != nil {
-				return err
-			}
-		}
-		if initialization.MCPBinding != nil {
-			if err := createMCPBindingRevision(tx, initialization.MCPBinding); err != nil {
 				return err
 			}
 		}
@@ -116,6 +120,19 @@ func (s *appStudioStore) GetStudioApplicationInitialization(ctx context.Context,
 		return nil, mapNotFound(err, code.ErrAgentInitializationFailed, "initial coding invocation is incomplete")
 	}
 	return &store.StudioApplicationInitialization{Application: &app, Agent: &agent, Session: &session, InitialInvocation: &invocation}, nil
+}
+
+func (s *appStudioStore) GetStudioApplicationGitLabScope(ctx context.Context, gitLabProjectID string) (*store.StudioApplicationGitLabScope, error) {
+	var scope store.StudioApplicationGitLabScope
+	err := s.ds.db.WithContext(ctx).Table("studio_source_repositories").
+		Select("studio_applications.id AS application_id, studio_applications.owner_user_id, studio_workspaces.id AS workspace_id").
+		Joins("JOIN studio_applications ON studio_applications.id = studio_source_repositories.studio_application_id").
+		Joins("JOIN studio_workspaces ON studio_workspaces.repository_id = studio_source_repositories.id").
+		Where("studio_source_repositories.gitlab_project_id = ?", gitLabProjectID).Take(&scope).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application is unavailable")
+	}
+	return &scope, nil
 }
 
 func (s *appStudioStore) GetStudioApplicationByCodingAgent(ctx context.Context, agentID, owner string) (*iapiserver.StudioApplication, error) {
@@ -419,9 +436,9 @@ func (s *appStudioStore) CreateStudioSourceSnapshot(ctx context.Context, owner s
 		if count == 0 {
 			return errors.NewStatus(code.ErrAppStudioSnapshotNotVisible, "studio source snapshot not visible")
 		}
-		if snapshot.ContentDigest != "" {
+		if snapshot.CommitSHA != "" {
 			var existing iapiserver.StudioSourceSnapshot
-			if err := tx.Where("studio_application_id = ? AND content_digest = ?", snapshot.StudioApplicationID, snapshot.ContentDigest).First(&existing).Error; err == nil {
+			if err := tx.Where("studio_application_id = ? AND commit_sha = ?", snapshot.StudioApplicationID, snapshot.CommitSHA).First(&existing).Error; err == nil {
 				*snapshot = existing
 				return nil
 			} else if err != gorm.ErrRecordNotFound {
@@ -434,6 +451,18 @@ func (s *appStudioStore) CreateStudioSourceSnapshot(ctx context.Context, owner s
 		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeSourceSnapshot, snapshot.ID, iapiserver.AppStudioEventSourceSnapshotCreated, appStudioEventKey(iapiserver.AppStudioEventSourceSnapshotCreated, snapshot.ID, snapshot.ResourceVersion), snapshot.ResourceVersion, studioSourceSnapshotPayload(snapshot))
 	})
 	return snapshot, err
+}
+
+func (s *appStudioStore) GetStudioWorkspaceRevisionByCommit(ctx context.Context, workspaceID, commitSHA, owner string) (*iapiserver.StudioWorkspaceRevision, error) {
+	var item iapiserver.StudioWorkspaceRevision
+	err := s.ds.db.WithContext(ctx).Joins("JOIN studio_workspaces ON studio_workspaces.id = studio_workspace_revisions.workspace_id").
+		Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
+		Where("studio_workspace_revisions.workspace_id = ? AND studio_workspace_revisions.commit_sha = ? AND studio_applications.owner_user_id = ?", workspaceID, commitSHA, owner).
+		First(&item).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioSourceRevisionConflict, "canonical source revision is unavailable")
+	}
+	return &item, nil
 }
 
 func (s *appStudioStore) GetStudioSourceSnapshot(ctx context.Context, id, owner string) (*iapiserver.StudioSourceSnapshot, error) {
@@ -550,6 +579,43 @@ func (s *appStudioStore) UpdateStudioBuild(ctx context.Context, build *iapiserve
 	return build, err
 }
 
+func (s *appStudioStore) ProjectStudioBuildPipeline(ctx context.Context, appID, commitSHA string, pipelineID int64, pipelineURL, pipelineStatus string) (*iapiserver.StudioBuild, error) {
+	var build iapiserver.StudioBuild
+	found := false
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("studio_application_id = ? AND commit_sha = ?", appID, commitSHA).First(&build).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return nil
+			}
+			return err
+		}
+		found = true
+		if build.PipelineID != 0 && build.PipelineID != pipelineID {
+			return errors.NewStatus(code.ErrAppStudioBuildFailed, "pipeline projection conflicts with existing build")
+		}
+		previous := build
+		build.PipelineID, build.PipelineURL = pipelineID, pipelineURL
+		switch strings.ToLower(pipelineStatus) {
+		case "failed", "canceled", "skipped":
+			if build.Status != iapiserver.AppStudioBuildStatusSucceeded {
+				build.Status = iapiserver.AppStudioBuildStatusFailed
+			}
+		case "created", "pending", "running":
+			if build.Status == iapiserver.AppStudioBuildStatusPending {
+				build.Status = iapiserver.AppStudioBuildStatusRunning
+			}
+		}
+		if err := tx.Save(&build).Error; err != nil {
+			return err
+		}
+		return appendStudioBuildOutbox(tx, &previous, &build)
+	})
+	if !found {
+		return nil, err
+	}
+	return &build, err
+}
+
 func (s *appStudioStore) GetStudioPreviewRuntime(ctx context.Context, workspaceID, owner string) (*iapiserver.StudioPreviewRuntime, error) {
 	var item iapiserver.StudioPreviewRuntime
 	err := s.ds.db.WithContext(ctx).Joins("JOIN studio_applications ON studio_applications.id = studio_preview_runtimes.studio_application_id").Where("studio_preview_runtimes.workspace_id = ? AND studio_applications.owner_user_id = ?", workspaceID, owner).Order("studio_preview_runtimes.created_at DESC").First(&item).Error
@@ -572,6 +638,18 @@ func (s *appStudioStore) CreateStudioPreviewRuntime(ctx context.Context, owner s
 		}
 		if count == 0 {
 			return errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio preview runtime not visible")
+		}
+		if runtime.ID != "" {
+			var existing iapiserver.StudioPreviewRuntime
+			if err := tx.Where("id = ?", runtime.ID).First(&existing).Error; err == nil {
+				if existing.StudioApplicationID != runtime.StudioApplicationID || existing.WorkspaceID != runtime.WorkspaceID || existing.WorkspaceRevision != runtime.WorkspaceRevision {
+					return errors.NewStatus(code.ErrAppStudioRuntimeDeployFailed, "preview idempotency identity conflicts")
+				}
+				*runtime = existing
+				return nil
+			} else if err != gorm.ErrRecordNotFound {
+				return err
+			}
 		}
 		if err := tx.Create(runtime).Error; err != nil {
 			return err
@@ -776,6 +854,30 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 		return nil
 	}
 	switch task.FunctionRef {
+	case iapiserver.AppStudioFunctionInitializationProjectEnsure,
+		iapiserver.AppStudioFunctionInitializationWebhookEnsure,
+		iapiserver.AppStudioFunctionInitializationFinalize,
+		iapiserver.AppStudioFunctionInitializationInvocationStart:
+		arguments, err := decodeAppStudioTaskValue[iapiserver.AppStudioInitializationTaskArguments](task.Arguments)
+		if err != nil {
+			return err
+		}
+		var app iapiserver.StudioApplication
+		if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ?", arguments.StudioApplicationID, arguments.OwnerUserID).First(&app).Error; err != nil {
+			return err
+		}
+		status := ""
+		if task.Status == iapiserver.AtomicTaskStatusSuccess && task.FunctionRef == iapiserver.AppStudioFunctionInitializationInvocationStart {
+			status = iapiserver.AppStudioApplicationStatusReady
+		} else if task.Status != iapiserver.AtomicTaskStatusSuccess {
+			status = iapiserver.AppStudioApplicationStatusError
+		}
+		if status == "" || app.Status == status || app.Status == iapiserver.AppStudioApplicationStatusReady {
+			return nil
+		}
+		app.Status = status
+		_, err = s.UpdateStudioApplication(ctx, &app, app.ResourceVersion)
+		return err
 	case iapiserver.AppStudioFunctionPreviewEnsure, iapiserver.AppStudioFunctionPreviewStop:
 		arguments, err := decodeAppStudioTaskValue[iapiserver.AppStudioTaskProjectionArguments](task.Arguments)
 		if err != nil {

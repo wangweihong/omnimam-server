@@ -84,6 +84,16 @@ const (
 	ErrAppStudioApplicationInvalidState int = 210201
 
 	// @HTTP 200
+	// @CN AppStudio GitLab Webhook token 无效或 Project 不可用。
+	// @EN The AppStudio GitLab webhook token is invalid or the project is unavailable.
+	ErrAppStudioWebhookUnauthorized int = 210206
+
+	// @HTTP 200
+	// @CN AppStudio GitLab Webhook 事件类型或载荷无效。
+	// @EN The AppStudio GitLab webhook event type or payload is invalid.
+	ErrAppStudioWebhookPayloadInvalid int = 210207
+
+	// @HTTP 200
 	// @CN Studio Source 不存在或当前主体不可见。
 	// @EN The Studio Source does not exist or is not visible to the current principal.
 	ErrAppStudioSourceNotVisible int = 210400

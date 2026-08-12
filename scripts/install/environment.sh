@@ -48,6 +48,7 @@ readonly APISERVER_ASSET_UPLOAD_CHUNK_TEMP_DIR=${APISERVER_ASSET_UPLOAD_CHUNK_TE
 readonly APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS=${APISERVER_ASSET_UPLOAD_CHUNK_CLEANUP_HOURS:-24}
 readonly APISERVER_ENGINE_HEALTH_INTERVAL=${APISERVER_ENGINE_HEALTH_INTERVAL:-30s}
 readonly APISERVER_MCP_PUBLIC_BASE_URL=${APISERVER_MCP_PUBLIC_BASE_URL:-http://127.0.0.1:8080}
+readonly APISERVER_APPSTUDIO_WEBHOOK_BASE_URL=${APISERVER_APPSTUDIO_WEBHOOK_BASE_URL:-http://127.0.0.1:8080}
 
 # workflow runtime 配置
 readonly APISERVER_WORKFLOW_RUNTIME_ENABLED=${APISERVER_WORKFLOW_RUNTIME_ENABLED:-true}
@@ -68,11 +69,12 @@ readonly OMNIMAM_AUTH_JWT_SECRET="${OMNIMAM_AUTH_JWT_SECRET:-${APISERVER_AUTH_JW
 readonly OMNIMAM_OPAQUE_SERVER_SETUP="${OMNIMAM_OPAQUE_SERVER_SETUP:-${APISERVER_OPAQUE_SERVER_SETUP}}"
 readonly OMNIMAM_INFRA_SERVICE_TOKEN="${OMNIMAM_INFRA_SERVICE_TOKEN:-${APISERVER_INFRASTRUCTURE_CLIENT_TOKEN}}"
 readonly OMNIMAM_MCP_PUBLIC_BASE_URL="${OMNIMAM_MCP_PUBLIC_BASE_URL:-https://apiserver:8443}"
+readonly OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL="${OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL:-https://apiserver:8443}"
 readonly OMNIMAM_MCP_RUNTIME_CA_FILE="${OMNIMAM_MCP_RUNTIME_CA_FILE:-/etc/omnimam/mcp-tls/ca.crt}"
 readonly OMNIMAM_DOCKER_API_VERSION="${OMNIMAM_DOCKER_API_VERSION:-v1.45}"
 readonly OMNIMAM_STORAGE_ROOT="${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}"
 if [[ -z "${OMNIMAM_INFRA_PROFILE_IMAGES:-}" ]]; then
-    OMNIMAM_INFRA_PROFILE_IMAGES='{"agent.hermes@1.0":"omnimam/hermes-agent:v2026.8.3","agent.coding@1.0":"omnimam/coding-agent:1.18.13","appstudio.preview.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.build.static-web@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.production.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.production.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine"}'
+    OMNIMAM_INFRA_PROFILE_IMAGES='{"agent.hermes@1.0":"omnimam/hermes-agent:v2026.8.3","agent.coding@1.0":"omnimam/coding-agent:1.18.13","appstudio.preview.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.static-web@1.0":"omnimam/appstudio-node:22-alpine","appstudio.build.web-backend@1.0":"omnimam/appstudio-node:22-alpine","appstudio.production.static-web@1.0":"omnimam/appstudio-nginx:1.27-alpine","appstudio.production.web-backend@1.0":"omnimam/appstudio-nginx:1.27-alpine"}'
 fi
 readonly OMNIMAM_INFRA_PROFILE_IMAGES
 
@@ -82,6 +84,7 @@ export OMNIMAM_AUTH_JWT_SECRET
 export OMNIMAM_OPAQUE_SERVER_SETUP
 export OMNIMAM_INFRA_SERVICE_TOKEN
 export OMNIMAM_MCP_PUBLIC_BASE_URL
+export OMNIMAM_APPSTUDIO_WEBHOOK_BASE_URL
 export OMNIMAM_MCP_RUNTIME_CA_FILE
 export OMNIMAM_DOCKER_API_VERSION
 export OMNIMAM_STORAGE_ROOT

@@ -2,72 +2,63 @@
 
 ## Current goal and status
 
-- Goal: extend the OmniMAM derived-image pattern to the Hermes agent and all related default Alpine runtime images, install Git in each, and update the corresponding Infrastructure profile image defaults.
-- Status: complete and verified locally.
+- Goal: implement AppStudio phase 3 against released `spec-v1.23.2`: asynchronous initialization DAG, GitLab webhooks, push-to-build/artifact/preview orchestration, and the required Infrastructure/DevOps integration.
+- Status: implementation complete for code/configuration scope; authorized local cleanup and full E2E acceptance remain pending.
 
 ## Work completed in this session
 
-- Started the follow-up image task and revalidated the released SSOT pin and backend implementation rules.
-- Read `skills/omnimam-server-backend/SKILL.md` and `backend/AGENTS.md`.
-- Verified `ssot` and `SSOT_VERSION` both point to released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab`.
-- Classified this as a deployment/runtime packaging change that does not alter SSOT product semantics or S1/S2 contracts, so no additional SSOT files are required.
-- Located and replaced the former direct `ghcr.io/anomalyco/opencode:1.18.13` coding-agent defaults in `scripts/install/environment.sh` and the self-contained Compose fallback.
-- Added an independent coding-agent Dockerfile and Make target; the image remains based on OpenCode `1.18.13` and installs Git through Alpine `apk`.
-- Updated the synchronized `agent.coding@1.0` defaults to `omnimam/coding-agent:1.18.13` and documented the build command.
-- Added derived Dockerfiles for Hermes, AppStudio Nginx and AppStudio Node; Hermes explicitly installs Git with Debian `apt`, while both Alpine images use `apk`.
-- Replaced the single coding image Make rule with `infrastructure.images` plus four independently callable image targets.
-- Updated all eight Infrastructure profile defaults: Hermes and Coding each use their own agent image, Preview/Production share the AppStudio Nginx image, and Build profiles share the AppStudio Node image.
+- Read the phase-3 design, repository rules, backend skill, relevant Go implementation skills, and current handoff state.
+- Confirmed the current Server pin is released `spec-v1.23.2` commit `9e1bf2291dd1925e982a5dd728e05a27c334f8d9`.
+- Locked implementation boundaries: HTTP 200 creation response, hashed per-project webhook secrets, canonical Revision ancestry, SourceArchive previews, existing Release/Artifact production authority, and precise domain-only cleanup.
+- Released and pushed `spec-v1.23.2`; Server `ssot` and `SSOT_VERSION` now point to release commit `9e1bf2291dd1925e982a5dd728e05a27c334f8d9`.
+- Added the phase-3 DTO fields, webhook error codes, and a trusted AppStudio-only `CreateDomainDAGTaskGroup` path while preserving the public DAG `gitlab.pipeline.run` rejection.
+- Replaced synchronous application creation with deterministic CREATING reservation plus a stable four-node initialization DAG.
+- Added idempotent initialization handlers, GitLab Project Hook client/adapter support, and Worker registrations. Hook tokens use `crypto/rand`; only `sha256:<hex>` is persisted.
+- Added `appstudio.webhook-base-url` configuration and injected it into API Server and Task Worker GitLab adapters.
+- Added unauthenticated `POST /api/v1/appstudio/webhook`, constant-time Project token authentication, stable Push DAG submission, Pipeline Hook projection, canonical Revision-gated Snapshot/Build handlers, fixed-commit Pipeline validation, constrained Bundle download/validation, Artifact completion, and automatic SourceArchive Preview submission.
+- Fixed manual Snapshot/Build creation to populate the new immutable CommitSHA/GitRef fields.
 
 ## Current in-progress work
 
-- None.
+- No implementation work is in progress. Local domain-only cleanup and E2E acceptance remain.
 
 ## Files added, modified, renamed, or removed
 
-- Added: `build/docker/coding-agent/Dockerfile`, `build/docker/hermes-agent/Dockerfile`, `build/docker/appstudio-nginx/Dockerfile`, `build/docker/appstudio-node/Dockerfile`, `scripts/make-rules/infrastructure-images.mk`.
-- Removed/replaced: `scripts/make-rules/coding-agent-image.mk` was superseded before commit by the consolidated Infrastructure image rules.
-- Modified: `Makefile`, `scripts/make-rules/frontend-image.mk`, `scripts/install/environment.sh`, `deployments/docker-compose.yaml`, `deployments/README.md`, `docs/HANDOFF.md`.
+- Modified: `ssot` gitlink, `SSOT_VERSION`, AppStudio/GitLab/Task Center APIs/services, Infrastructure provider, Compose/configuration, install environment, and `docs/HANDOFF.md`.
 - Existing unrelated untracked design documents under `docs/` remain untouched.
 
 ## Key architectural or design decisions
 
-- Keep OpenCode pinned at `1.18.13`; add only Git in a derived OmniMAM image.
-- Keep Hermes pinned at `v2026.8.3`, Nginx at `1.27-alpine`, and Node at `22-alpine`; each derived image guarantees Git independently of upstream contents.
-- Reuse one Nginx-derived image for all Preview/Production profiles and one Node-derived image for all Build profiles.
-- Preserve `scripts/install/environment.sh` as the deployment environment-variable fact source and keep its Compose fallback synchronized.
-- Keep the Go Docker provider image-agnostic: its existing `ProfileImageResolver` consumes the injected profile mapping, so no hardcoded image defaults were added to backend code.
+- AppStudio submits trusted internal DAGs while the public Task Center DAG API continues to reject `gitlab.pipeline.run`.
+- GitLab webhook plaintext tokens are generated with `crypto/rand`, sent once to GitLab, and never persisted or logged; only a SHA-256 digest is stored on the GitLab project projection.
+- Push processing waits for the canonical AppStudio Revision projector before creating Snapshot/Build state.
+- Preview writes remain Task Worker to Infrastructure operations; GitLab CI only builds a constrained Bundle artifact.
 
 ## API, schema, dependency, or configuration changes
 
-- No API, database schema, error code, permission, event, or Go dependency changes.
-- Configuration change: every `OMNIMAM_INFRA_PROFILE_IMAGES` entry now defaults to one of the four local `omnimam/*` derived images in both the environment fact source and Compose fallback.
+- Server API structs contain the released phase-3 fields; deepcopy/error-code generation has been refreshed. GORM AutoMigrate will add the new columns, but destructive cleanup has not run.
+- No dependency change has been made.
 
 ## Verification performed and remaining checks
 
-- `make infrastructure.images` passed and produced all four local images.
-- Container Git checks passed: Coding/Node use Git `2.54.0`; Hermes/Nginx use Git `2.47.3`.
-- Runtime checks passed: OpenCode `1.18.13`, Hermes Agent `v0.20.0 (2026.8.3)`, Nginx `1.27.5`, and Node `v22.23.0`.
-- Image inspection confirmed all upstream entrypoints, commands and users remain inherited.
-- `go test ./backend/internal/infrastructure/providers/dockerruntime` passed.
-- `docker compose -f deployments/docker-compose.yaml config` passed without sourcing an environment file and rendered all eight new profile defaults.
-- A `jq` assertion confirmed `scripts/install/environment.sh` exports the exact intended eight-entry mapping.
-- `make -pn` confirmed all four standalone runtime image directories remain excluded from the Go service image list.
-- `git diff --check` passed.
+- `make gen.deepcopy` and `make gen.errcode.code` passed.
+- `go test ./backend/internal/apiserver/service/v1/appstudio`, `go test ./backend/internal/apiserver/service/v1/gitlab`, `go test ./backend/internal/taskworker`, and targeted Task Center DAG/functionRef tests passed.
+- AppStudio tests now cover invalid token rejection, duplicate Push stable DAG identity, and canonical Revision race; GitLab tests cover digest-only token authentication and tar traversal rejection.
+- Full Task Center package currently fails only `TestAssignSystemName` because an unrelated existing Chinese localization value differs; this task did not modify that module.
+- Passed: targeted Go tests, DevOps YAML/shell checks, Compose config rendering, and diff checks. Not run: destructive cleanup, image build, and full E2E.
 
 ## Outstanding tasks
 
-- This derived-image task has no remaining implementation work.
-- Pre-existing project acceptance work remains: run the local GitLab AppStudio smoke test against a clean-data deployment with one READY default GitLabServer.
+- Execute the approved local cleanup, restart Compose, and perform admin-authenticated E2E acceptance.
 
 ## Known issues and risks
 
-- All four Infrastructure runtime image targets are intentionally independent of the Go service image rules because they contain no repository Go binary.
-- The four derived images exist only in the local Docker daemon until explicitly published; another deployment host must build them or override `OMNIMAM_INFRA_PROFILE_IMAGES` with published tags.
-- Existing unrelated untracked files under `docs/` must not be modified.
+- Task Center is shared; cleanup must select only AppStudio/GitLab-owned records and their Conductor executions.
+- Existing unrelated untracked files must not be modified.
 
 ## Exact recommended next step
 
-Use the four locally built images for the AppStudio smoke test; publish or override their tags first if the Runtime Docker daemon is on another host.
+Inspect the local deployment, identify exact owner predicates, perform authorized domain-only cleanup, and record results before restart.
 
 Next Prompt:
 

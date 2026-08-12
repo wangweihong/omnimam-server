@@ -111,9 +111,16 @@ type StudioApplicationListResponse struct {
 
 // +k8s:deepcopy-gen=true
 type StudioApplicationCreateResponse struct {
-	Application       *StudioApplication     `json:"application"`
-	CodingAgent       *StudioAgentStatus     `json:"coding_agent"`
-	InitialInvocation *StudioAgentInvocation `json:"initial_invocation"`
+	Application    *StudioApplication `json:"application"`
+	DAGTaskGroupID string             `json:"dag_task_group_id"`
+}
+
+// AppStudioGitLabWebhookAccepted 是 GitLab Hook 的幂等接受结果。
+// +k8s:deepcopy-gen=true
+type AppStudioGitLabWebhookAccepted struct {
+	Accepted       bool   `json:"accepted"`
+	Duplicate      bool   `json:"duplicate"`
+	DAGTaskGroupID string `json:"dag_task_group_id,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

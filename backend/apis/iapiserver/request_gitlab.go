@@ -162,6 +162,14 @@ type GitLabPipelineRunTaskArguments struct {
 	Variables map[string]string `json:"variables,omitempty" binding:"max=100"`
 }
 
+func (a GitLabPipelineRunTaskArguments) AtomicTaskArguments() map[string]any {
+	result := map[string]any{"gitlab_project_id": a.GitLabProjectID, "ref": a.Ref}
+	if len(a.Variables) > 0 {
+		result["variables"] = a.Variables
+	}
+	return result
+}
+
 type GitLabServerListResponse struct {
 	Total int64           `json:"total"`
 	Items []*GitLabServer `json:"items"`

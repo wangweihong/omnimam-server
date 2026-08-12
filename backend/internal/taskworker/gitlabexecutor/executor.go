@@ -79,7 +79,7 @@ func (e *Executor) Execute(ctx context.Context, task workflowruntime.WorkerTask,
 		if createErr != nil {
 			return nil, errors.NewStatus(code.ErrGitLabPipelineCreateFailed, "gitlab pipeline creation failed")
 		}
-		return pipelineResult(project.ID, pipeline)
+		return pipelineResult(project.ID, arguments, pipeline)
 	}
 	if err := ctx.Err(); err != nil {
 		e.cancelPipeline(ctx, project.ExternalProjectID, pipelineID, client)
@@ -89,10 +89,13 @@ func (e *Executor) Execute(ctx context.Context, task workflowruntime.WorkerTask,
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrGitLabPipelineCreateFailed, "gitlab pipeline status is unavailable")
 	}
-	return pipelineResult(project.ID, pipeline)
+	return pipelineResult(project.ID, arguments, pipeline)
 }
 
-func pipelineResult(projectID string, pipeline *gitlabsvc.Pipeline) (map[string]any, error) {
+func pipelineResult(projectID string, arguments *iapiserver.GitLabPipelineRunTaskArguments, pipeline *gitlabsvc.Pipeline) (map[string]any, error) {
+	if expected := strings.ToLower(strings.TrimSpace(arguments.Variables["APPSTUDIO_COMMIT_SHA"])); expected != "" && strings.ToLower(strings.TrimSpace(pipeline.SHA)) != expected {
+		return nil, errors.NewStatus(code.ErrGitLabPipelineInvalid, "gitlab pipeline commit does not match the requested AppStudio revision")
+	}
 	switch strings.ToLower(pipeline.Status) {
 	case "success":
 		return pipelineOutput(projectID, pipeline, false), nil

@@ -1,7 +1,9 @@
 package appstudio
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +19,22 @@ import (
 type Controller struct{ service *appstudiosvc.Service }
 
 func NewController(service *appstudiosvc.Service) *Controller { return &Controller{service: service} }
+
+func (c *Controller) ReceiveGitLabWebhook(ctx *gin.Context) {
+	token, event := ctx.GetHeader("X-Gitlab-Token"), ctx.GetHeader("X-Gitlab-Event")
+	if token == "" {
+		core.WriteResponse(ctx, errors.NewStatus(code.ErrAppStudioWebhookUnauthorized, "appstudio webhook token is invalid or project is unavailable"), nil)
+		return
+	}
+	decoder := json.NewDecoder(io.LimitReader(ctx.Request.Body, (1<<20)+1))
+	var payload iapiserver.AppStudioGitLabWebhookPayload
+	if err := decoder.Decode(&payload); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		core.WriteResponse(ctx, errors.NewStatus(code.ErrAppStudioWebhookPayloadInvalid, "appstudio webhook payload is invalid"), nil)
+		return
+	}
+	result, err := c.service.ReceiveGitLabWebhook(ctx, event, token, &payload)
+	core.WriteResponse(ctx, err, result)
+}
 
 func (c *Controller) ListApplications(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioApplicationListRequest{}, func(req *iapiserver.StudioApplicationListRequest) (any, error) {

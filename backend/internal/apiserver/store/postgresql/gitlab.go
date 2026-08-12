@@ -138,6 +138,14 @@ func (s *gitLabStore) GetGitLabProject(ctx context.Context, id string) (*iapiser
 	return &item, nil
 }
 
+func (s *gitLabStore) GetGitLabProjectByExternalID(ctx context.Context, externalID int64) (*iapiserver.GitLabProject, error) {
+	var item iapiserver.GitLabProject
+	if err := s.ds.db.WithContext(ctx).Where("external_project_id = ?", externalID).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *gitLabStore) CreateGitLabProject(ctx context.Context, item *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error) {
 	if err := s.ds.db.WithContext(ctx).Create(item).Error; err != nil {
 		if isGitLabUniqueError(err) {

@@ -19,7 +19,9 @@ type StudioApplication struct {
 	CodingAgentID         string `json:"-" gorm:"column:coding_agent_id;type:text"`
 	CodingSessionID       string `json:"-" gorm:"column:coding_session_id;type:text"`
 	CodingAgentGeneration int    `json:"-" gorm:"column:coding_agent_generation;not null;default:0"`
-	CreateIdempotencyKey  string `json:"-" gorm:"column:create_idempotency_key;type:text;uniqueIndex:idx_studio_applications_owner_create_key,priority:2"`
+	// InitializationDAGTaskGroupID 关联唯一初始化 DAG；CREATING 阶段通过该 ID 查询异步进度。
+	InitializationDAGTaskGroupID string `json:"initialization_dag_task_group_id,omitempty" gorm:"column:initialization_dag_task_group_id;type:text;not null"`
+	CreateIdempotencyKey         string `json:"-" gorm:"column:create_idempotency_key;type:text;uniqueIndex:idx_studio_applications_owner_create_key,priority:2"`
 }
 
 func (StudioApplication) TableName() string { return "studio_applications" }
@@ -135,11 +137,15 @@ type StudioSourceSnapshot struct {
 	StudioApplicationID string `json:"studio_application_id,omitempty" gorm:"column:studio_application_id;type:text;not null"`
 	WorkspaceID         string `json:"-" gorm:"column:workspace_id;type:text;not null"`
 	WorkspaceRevision   int64  `json:"source_revision" gorm:"column:workspace_revision;not null"`
-	ContentDigest       string `json:"content_digest,omitempty" gorm:"column:content_digest;type:text"`
-	ManifestDigest      string `json:"manifest_digest,omitempty" gorm:"column:manifest_digest;type:text"`
-	Status              string `json:"status" gorm:"column:status;type:text;not null"`
-	FailureCode         string `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
-	CreatedBy           string `json:"-" gorm:"column:created_by;type:text;not null"`
+	// CommitSHA 固定 Snapshot 对应 canonical Revision 的 Git commit。
+	CommitSHA string `json:"commit_sha" gorm:"column:commit_sha;type:text;not null"`
+	// GitRef 是创建 Snapshot 时使用的受控默认分支引用。
+	GitRef         string `json:"git_ref" gorm:"column:git_ref;type:text;not null"`
+	ContentDigest  string `json:"content_digest,omitempty" gorm:"column:content_digest;type:text"`
+	ManifestDigest string `json:"manifest_digest,omitempty" gorm:"column:manifest_digest;type:text"`
+	Status         string `json:"status" gorm:"column:status;type:text;not null"`
+	FailureCode    string `json:"failure_code,omitempty" gorm:"column:failure_code;type:text"`
+	CreatedBy      string `json:"-" gorm:"column:created_by;type:text;not null"`
 }
 
 func (StudioSourceSnapshot) TableName() string { return "studio_source_snapshots" }
@@ -227,17 +233,23 @@ func (c *StudioRuntimeConfig) marshalJSON() error {
 // +k8s:deepcopy-gen=true
 type StudioBuild struct {
 	imachinery.ObjectMeta
-	OwnerUserID                string          `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null"`
-	StudioApplicationID        string          `json:"studio_application_id" gorm:"column:studio_application_id;type:text;not null"`
-	SourceSnapshotID           string          `json:"source_snapshot_id" gorm:"column:source_snapshot_id;type:text;not null"`
-	StudioApplicationVersionID string          `json:"studio_application_version_id,omitempty" gorm:"column:studio_application_version_id;type:text"`
-	AtomicTaskID               string          `json:"atomic_task_id,omitempty" gorm:"column:atomic_task_id;type:text"`
-	ArtifactID                 string          `json:"artifact_id,omitempty" gorm:"column:artifact_id;type:text"`
-	ArtifactDigest             string          `json:"artifact_digest,omitempty" gorm:"column:artifact_digest;type:text"`
-	Status                     string          `json:"status" gorm:"column:status;type:text;not null"`
-	DiagnosticsSummary         json.RawMessage `json:"diagnostics_summary,omitempty" gorm:"-"`
-	DiagnosticsSummaryShadow   string          `json:"-" gorm:"column:diagnostics_summary_json;type:text;not null;default:'{}'"`
-	IdempotencyKey             string          `json:"-" gorm:"column:idempotency_key;type:text;not null"`
+	OwnerUserID                string `json:"owner_user_id" gorm:"column:owner_user_id;type:text;not null"`
+	StudioApplicationID        string `json:"studio_application_id" gorm:"column:studio_application_id;type:text;not null"`
+	SourceSnapshotID           string `json:"source_snapshot_id" gorm:"column:source_snapshot_id;type:text;not null"`
+	StudioApplicationVersionID string `json:"studio_application_version_id,omitempty" gorm:"column:studio_application_version_id;type:text"`
+	AtomicTaskID               string `json:"atomic_task_id,omitempty" gorm:"column:atomic_task_id;type:text"`
+	// PipelineID 是 GitLab Pipeline 的 numeric ID，只用于状态投影和 Artifact 定位。
+	PipelineID int64 `json:"pipeline_id,omitempty" gorm:"column:pipeline_id"`
+	// PipelineURL 是 GitLab 返回的无凭证 Web URL。
+	PipelineURL string `json:"pipeline_url,omitempty" gorm:"column:pipeline_url;type:text"`
+	// CommitSHA 固定本次 Build 的 Snapshot commit，不随分支 HEAD 漂移。
+	CommitSHA                string          `json:"commit_sha" gorm:"column:commit_sha;type:text;not null"`
+	ArtifactID               string          `json:"artifact_id,omitempty" gorm:"column:artifact_id;type:text"`
+	ArtifactDigest           string          `json:"artifact_digest,omitempty" gorm:"column:artifact_digest;type:text"`
+	Status                   string          `json:"status" gorm:"column:status;type:text;not null"`
+	DiagnosticsSummary       json.RawMessage `json:"diagnostics_summary,omitempty" gorm:"-"`
+	DiagnosticsSummaryShadow string          `json:"-" gorm:"column:diagnostics_summary_json;type:text;not null;default:'{}'"`
+	IdempotencyKey           string          `json:"-" gorm:"column:idempotency_key;type:text;not null"`
 }
 
 func (StudioBuild) TableName() string { return "studio_builds" }

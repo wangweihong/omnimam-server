@@ -2,13 +2,18 @@ package gitlab
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -26,12 +31,15 @@ const (
 	maxRepositoryArchiveFileBytes = 2 << 20
 	maxRepositoryContentBytes     = 64 << 20
 	maxRepositoryFileCount        = 10000
+	maxPipelineBundleBytes        = 32 << 20
+	maxPipelineBundleFiles        = 10000
 )
 
 // SourceProvider 是 GitLab domain 提供给 AppStudio 的 Repository adapter。
 type SourceProvider struct {
-	store   store.GitLabStore
-	clients ClientFactory
+	store      store.GitLabStore
+	clients    ClientFactory
+	webhookURL string
 }
 
 // NewSourceProvider 构造 GitLab-only AppStudio SourceProvider。
@@ -40,6 +48,157 @@ func NewSourceProvider(store store.GitLabStore, clients ClientFactory) (*SourceP
 		return nil, fmt.Errorf("gitlab source provider dependencies are required")
 	}
 	return &SourceProvider{store: store, clients: clients}, nil
+}
+
+func (p *SourceProvider) SetAppStudioWebhookBaseURL(baseURL string) error {
+	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/"))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("appstudio webhook base URL must be an absolute HTTP URL")
+	}
+	p.webhookURL = parsed.String() + "/api/v1/appstudio/webhook"
+	return nil
+}
+
+func (p *SourceProvider) EnsureAppStudioWebhook(ctx context.Context, projectID string) (int64, error) {
+	if p.webhookURL == "" {
+		return 0, fmt.Errorf("appstudio webhook base URL is unavailable")
+	}
+	client, project, err := p.client(ctx, projectID)
+	if err != nil {
+		return 0, err
+	}
+	hooks, ok := client.(ProjectHookClient)
+	if !ok {
+		return 0, fmt.Errorf("gitlab client does not support project hooks")
+	}
+	if project.AppStudioWebhookID > 0 && project.AppStudioWebhookTokenDigest != "" {
+		hook, hookErr := hooks.GetProjectHook(ctx, project.ExternalProjectID, project.AppStudioWebhookID)
+		if hookErr == nil && hook != nil && hook.ID == project.AppStudioWebhookID && hook.URL == p.webhookURL && hook.PushEvents && hook.PipelineEvents {
+			return hook.ID, nil
+		}
+		if remoteErr, ok := hookErr.(*RemoteError); hookErr != nil && (!ok || remoteErr.StatusCode != 404) {
+			return 0, fmt.Errorf("read appstudio gitlab project hook: %w", hookErr)
+		}
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return 0, fmt.Errorf("generate appstudio webhook token: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	hook, err := hooks.CreateProjectHook(ctx, project.ExternalProjectID, CreateProjectHookRequest{
+		URL: p.webhookURL, Token: token, PushEvents: true, PipelineEvents: true,
+	})
+	if err != nil || hook == nil || hook.ID <= 0 {
+		return 0, fmt.Errorf("create appstudio gitlab project hook: %w", err)
+	}
+	digest := sha256.Sum256([]byte(token))
+	project.AppStudioWebhookID = hook.ID
+	project.AppStudioWebhookTokenDigest = "sha256:" + hex.EncodeToString(digest[:])
+	if _, err := p.store.UpdateGitLabProject(ctx, project); err != nil {
+		return 0, fmt.Errorf("persist appstudio gitlab project hook projection: %w", err)
+	}
+	return hook.ID, nil
+}
+
+func (p *SourceProvider) AuthenticateAppStudioWebhook(ctx context.Context, externalProjectID int64, token string) (string, error) {
+	project, err := p.store.GetGitLabProjectByExternalID(ctx, externalProjectID)
+	if err != nil || project == nil || project.Status != iapiserver.GitLabProjectStatusReady || project.AppStudioWebhookTokenDigest == "" {
+		return "", fmt.Errorf("appstudio gitlab project is unavailable")
+	}
+	digest := sha256.Sum256([]byte(token))
+	presented := []byte("sha256:" + hex.EncodeToString(digest[:]))
+	expected := []byte(project.AppStudioWebhookTokenDigest)
+	if len(presented) != len(expected) || subtle.ConstantTimeCompare(presented, expected) != 1 {
+		return "", fmt.Errorf("appstudio webhook token is invalid")
+	}
+	return project.ID, nil
+}
+
+func (p *SourceProvider) DownloadAppStudioBundle(ctx context.Context, projectID string, pipelineID int64) (*appstudio.PipelineBundle, error) {
+	if pipelineID <= 0 {
+		return nil, fmt.Errorf("gitlab pipeline id is invalid")
+	}
+	client, project, err := p.client(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	downloader, ok := client.(PipelineArtifactClient)
+	if !ok {
+		return nil, fmt.Errorf("gitlab client does not support pipeline artifacts")
+	}
+	pipelines, ok := client.(Client)
+	if !ok {
+		return nil, fmt.Errorf("gitlab client does not support pipelines")
+	}
+	jobs, err := pipelines.ListPipelineJobs(ctx, project.ExternalProjectID, pipelineID)
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab pipeline jobs: %w", err)
+	}
+	jobID := int64(0)
+	for _, job := range jobs {
+		if job.Name == "build" && strings.EqualFold(job.Status, "success") {
+			if jobID != 0 {
+				return nil, fmt.Errorf("gitlab pipeline has multiple successful build jobs")
+			}
+			jobID = job.ID
+		}
+	}
+	if jobID == 0 {
+		return nil, fmt.Errorf("gitlab pipeline build artifact is unavailable")
+	}
+	reader, err := downloader.DownloadJobArtifact(ctx, project.ExternalProjectID, jobID, "appstudio-bundle.tar.gz")
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	content, err := io.ReadAll(io.LimitReader(reader, maxPipelineBundleBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read gitlab pipeline artifact: %w", err)
+	}
+	if len(content) == 0 || len(content) > maxPipelineBundleBytes {
+		return nil, fmt.Errorf("gitlab pipeline artifact size is invalid")
+	}
+	if err := validateAppStudioBundle(content); err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(content)
+	return &appstudio.PipelineBundle{Content: content, ContentDigest: "sha256:" + hex.EncodeToString(digest[:]), MediaType: "application/gzip"}, nil
+}
+
+func validateAppStudioBundle(content []byte) error {
+	gzipReader, err := gzip.NewReader(bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("gitlab pipeline artifact is not gzip")
+	}
+	defer gzipReader.Close()
+	archive := tar.NewReader(gzipReader)
+	files := 0
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("gitlab pipeline artifact tar is invalid")
+		}
+		clean := path.Clean(strings.TrimPrefix(header.Name, "./"))
+		if clean == "." || clean == "" || strings.HasPrefix(clean, "../") || path.IsAbs(clean) || header.Linkname != "" {
+			return fmt.Errorf("gitlab pipeline artifact contains an unsafe path")
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir {
+			return fmt.Errorf("gitlab pipeline artifact contains an unsupported entry")
+		}
+		if header.Typeflag == tar.TypeReg {
+			files++
+			if files > maxPipelineBundleFiles || header.Size < 0 || header.Size > maxRepositoryArchiveFileBytes {
+				return fmt.Errorf("gitlab pipeline artifact entry limit exceeded")
+			}
+		}
+	}
+	if files == 0 {
+		return fmt.Errorf("gitlab pipeline artifact is empty")
+	}
+	return nil
 }
 
 func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name, projectPath, description string, files map[string][]byte) (*appstudio.ProjectInitialization, error) {
@@ -401,3 +560,5 @@ func toRemoteActions(actions []appstudio.SourceAction) []CommitAction {
 
 var _ appstudio.SourceProvider = (*SourceProvider)(nil)
 var _ appstudio.ProjectInitializer = (*SourceProvider)(nil)
+var _ appstudio.WebhookInitializer = (*SourceProvider)(nil)
+var _ appstudio.PipelineArtifactReader = (*SourceProvider)(nil)

@@ -62,17 +62,24 @@ const (
 	AppStudioDeploymentReasonRollback = "ROLLBACK"
 	AppStudioArtifactProcessingReady  = "ready"
 
-	AppStudioFunctionPreviewEnsure      = "appstudio.preview.ensure"
-	AppStudioFunctionPreviewStop        = "appstudio.preview.stop"
-	AppStudioFunctionBuildExecute       = "appstudio.build.execute"
-	AppStudioFunctionProductionEnsure   = "appstudio.production.reconcile"
-	AppStudioFunctionProductionStop     = "appstudio.production.stop"
-	AppStudioTaskDomain                 = "appstudio"
-	AppStudioRuntimeProfileRevision     = "1.0"
-	AppStudioPreviewProfileStaticWeb    = "appstudio.preview.static-web"
-	AppStudioBuildProfileStaticWeb      = "appstudio.build.static-web"
-	AppStudioProductionProfileStaticWeb = "appstudio.production.static-web"
-	AppStudioDefaultWorkspaceName       = "main"
+	AppStudioFunctionPreviewEnsure                 = "appstudio.preview.ensure"
+	AppStudioFunctionPreviewStop                   = "appstudio.preview.stop"
+	AppStudioFunctionBuildExecute                  = "appstudio.build.execute"
+	AppStudioFunctionProductionEnsure              = "appstudio.production.reconcile"
+	AppStudioFunctionProductionStop                = "appstudio.production.stop"
+	AppStudioTaskDomain                            = "appstudio"
+	AppStudioFunctionInitializationProjectEnsure   = "appstudio.initialization.project.ensure"
+	AppStudioFunctionInitializationWebhookEnsure   = "appstudio.initialization.webhook.ensure"
+	AppStudioFunctionInitializationFinalize        = "appstudio.initialization.finalize"
+	AppStudioFunctionInitializationInvocationStart = "appstudio.initialization.invocation.start"
+	AppStudioFunctionAutomationSnapshotEnsure      = "appstudio.automation.snapshot.ensure"
+	AppStudioFunctionAutomationBuildEnsure         = "appstudio.automation.build.ensure"
+	AppStudioFunctionAutomationArtifactComplete    = "appstudio.automation.artifact.complete"
+	AppStudioRuntimeProfileRevision                = "1.0"
+	AppStudioPreviewProfileStaticWeb               = "appstudio.preview.static-web"
+	AppStudioBuildProfileStaticWeb                 = "appstudio.build.static-web"
+	AppStudioProductionProfileStaticWeb            = "appstudio.production.static-web"
+	AppStudioDefaultWorkspaceName                  = "main"
 
 	AppStudioRefPrefixSecret            = "secret://"
 	AppStudioRefPrefixIntegration       = "integration://"
@@ -100,6 +107,52 @@ const (
 	AppStudioEventReleaseStatusChanged        = "studio_release_status_changed"
 	AppStudioEventRuntimeInstanceChanged      = "studio_runtime_instance_status_changed"
 )
+
+// AppStudioInitializationTaskArguments 只携带初始化聚合的稳定引用，不包含需求正文、token 或源码。
+// +k8s:deepcopy-gen=true
+type AppStudioInitializationTaskArguments struct {
+	StudioApplicationID  string `json:"studio_application_id"`
+	OwnerUserID          string `json:"owner_user_id"`
+	CreateIdempotencyKey string `json:"create_idempotency_key"`
+}
+
+func (a AppStudioInitializationTaskArguments) AtomicTaskArguments() map[string]any {
+	return map[string]any{"studio_application_id": a.StudioApplicationID, "owner_user_id": a.OwnerUserID, "create_idempotency_key": a.CreateIdempotencyKey}
+}
+
+// AppStudioAutomationTaskArguments pins one verified GitLab push to its AppStudio aggregate.
+// +k8s:deepcopy-gen=true
+type AppStudioAutomationTaskArguments struct {
+	StudioApplicationID string `json:"studio_application_id"`
+	OwnerUserID         string `json:"owner_user_id"`
+	GitLabProjectID     string `json:"gitlab_project_id"`
+	CommitSHA           string `json:"commit_sha"`
+	GitRef              string `json:"git_ref"`
+}
+
+// AppStudioGitLabWebhookPayload is the restricted subset parsed from GitLab Push/Pipeline hooks.
+// +k8s:deepcopy-gen=true
+type AppStudioGitLabWebhookPayload struct {
+	Project struct {
+		ID int64 `json:"id"`
+	} `json:"project"`
+	Ref              string `json:"ref"`
+	CheckoutSHA      string `json:"checkout_sha"`
+	ObjectAttributes struct {
+		ID     int64  `json:"id"`
+		Status string `json:"status"`
+		SHA    string `json:"sha"`
+		Ref    string `json:"ref"`
+		URL    string `json:"url"`
+	} `json:"object_attributes"`
+}
+
+func (a AppStudioAutomationTaskArguments) AtomicTaskArguments() map[string]any {
+	return map[string]any{
+		"studio_application_id": a.StudioApplicationID, "owner_user_id": a.OwnerUserID,
+		"gitlab_project_id": a.GitLabProjectID, "commit_sha": a.CommitSHA, "git_ref": a.GitRef,
+	}
+}
 
 // AppStudioBuildTaskArguments 是 AppStudio 构建任务的结构化参数。
 type AppStudioBuildTaskArguments struct {

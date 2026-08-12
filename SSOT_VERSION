@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: d1b24118091e52d60fc20a3faa4cf47647f467ab
-contract_version: spec-v1.23.1
+commit: 9e1bf2291dd1925e982a5dd728e05a27c334f8d9
+contract_version: spec-v1.23.2
 updated_at: 2026-08-12
 status: released
 note: Released AppStudio GitLab-only source, Blueprint, Runtime Git workspace, archive injection, commit projection, and pre-remote Project reservation contracts.

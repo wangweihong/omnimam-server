@@ -33,6 +33,8 @@ var errStudioSourceRevisionEmpty = fmt.Errorf("source revision is empty")
 
 type TaskClient interface {
 	CreateDomainAtomicTask(context.Context, string, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
+	CreateDomainDAGTaskGroup(context.Context, string, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+	DomainDAGTaskGroupExists(context.Context, string, string) bool
 	CancelAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
 }
 
@@ -65,6 +67,8 @@ type Service struct {
 	tasks              TaskClient
 	sourceProvider     SourceProvider
 	projectInitializer ProjectInitializer
+	webhooks           WebhookInitializer
+	pipelineArtifacts  PipelineArtifactReader
 	artifacts          ArtifactReader
 	agents             CodingAgentCreator
 	grants             *agentgrant.Codec
@@ -74,6 +78,8 @@ type Dependencies struct {
 	Tasks              TaskClient
 	SourceProvider     SourceProvider
 	ProjectInitializer ProjectInitializer
+	WebhookInitializer WebhookInitializer
+	PipelineArtifacts  PipelineArtifactReader
 	Artifacts          ArtifactReader
 	Grants             *agentgrant.Codec
 }
@@ -85,7 +91,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.SourceProvider == nil {
 		return nil, fmt.Errorf("appstudio source provider is required")
 	}
-	return &Service{store: deps.Store, tasks: deps.Tasks, sourceProvider: deps.SourceProvider, projectInitializer: deps.ProjectInitializer, artifacts: deps.Artifacts, grants: deps.Grants}, nil
+	return &Service{store: deps.Store, tasks: deps.Tasks, sourceProvider: deps.SourceProvider, projectInitializer: deps.ProjectInitializer, webhooks: deps.WebhookInitializer, pipelineArtifacts: deps.PipelineArtifacts, artifacts: deps.Artifacts, grants: deps.Grants}, nil
 }
 
 func (s *Service) SetCodingAgentCreator(creator CodingAgentCreator) {
@@ -363,11 +369,12 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	repoID := stableStudioInitializationID(owner, req.IdempotencyKey, "repository")
 	workspaceID := stableStudioInitializationID(owner, req.IdempotencyKey, "workspace")
 	gitLabProjectID := stableStudioInitializationID(owner, req.IdempotencyKey, "gitlab-project")
+	dagID := stableStudioInitializationID(owner, req.IdempotencyKey, "initialization-dag")
 	app := &iapiserver.StudioApplication{
 		ObjectMeta:  imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description},
 		OwnerUserID: owner, Status: iapiserver.AppStudioApplicationStatusCreating, DefaultWorkspaceID: workspaceID,
 		BlueprintID: blueprint.ID, BlueprintVersion: blueprint.Version,
-		CodingAgentGeneration: 1, CreateIdempotencyKey: req.IdempotencyKey,
+		CodingAgentGeneration: 1, InitializationDAGTaskGroupID: dagID, CreateIdempotencyKey: req.IdempotencyKey,
 	}
 	starterFiles := make(map[string][]byte, len(blueprint.Files))
 	for path, content := range blueprint.Files {
@@ -376,36 +383,6 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	starterDigest, _ := revisionRows(workspaceID, 0, starterFiles)
 	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: iapiserver.AppStudioSourceProviderGitLab, GitLabProjectID: gitLabProjectID, Status: iapiserver.AppStudioRepositoryStatusCreating}
 	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: iapiserver.AppStudioDefaultWorkspaceName}, StudioApplicationID: appID, RepositoryID: repoID, Status: iapiserver.AppStudioWorkspaceStatusCreating, CurrentRevisionDigest: starterDigest}
-	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(owner, req.IdempotencyKey, "revision-0")}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: starterDigest, CreatedBy: owner}
-	if _, err := s.store.CreateStudioApplicationInitialization(ctx, &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace}); err != nil {
-		return nil, err
-	}
-	if s.projectInitializer == nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio source provider is unavailable")
-	}
-	projectPath := deterministicGitLabProjectPath(owner, req.IdempotencyKey, req.Name)
-	initialized, initErr := s.projectInitializer.EnsureProject(ctx, gitLabProjectID, req.Name, projectPath, req.Description, starterFiles)
-	if initErr != nil || initialized == nil || initialized.GitLabProjectID == "" || initialized.CommitSHA == "" {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio gitlab project initialization failed")
-	}
-	committedFiles, listErr := s.sourceProvider.ListFiles(ctx, initialized.GitLabProjectID, initialized.CommitSHA, "")
-	if listErr != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit is unavailable")
-	}
-	starterFiles, err = sourceFileContents(committedFiles)
-	if err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit is invalid")
-	}
-	committedDigest, starterRows := revisionRows(workspaceID, 0, starterFiles)
-	if committedDigest != starterDigest {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit conflicts with blueprint")
-	}
-	starterDigest = committedDigest
-	repository.GitLabProjectID = initialized.GitLabProjectID
-	revision.CommitSHA = initialized.CommitSHA
-	revision.ContentDigest = starterDigest
-	workspace.CurrentRevisionDigest = starterDigest
-	app.Status, repository.Status, workspace.Status = iapiserver.AppStudioApplicationStatusReady, iapiserver.AppStudioRepositoryStatusReady, iapiserver.AppStudioWorkspaceStatusReady
 	modelInput := &iapiserver.AgentModelBindingInput{SourceType: req.CodingModelSelection.SourceType, SourceRef: req.CodingModelSelection.SourceRef, Purpose: iapiserver.AgentModelBindingPurposeCoding}
 	authorization := &iapiserver.AgentAuthorizationSummary{Source: iapiserver.AppStudioTaskDomain, ValidatedAt: imachinery.Now()}
 	agent, session, workspaceBinding, modelBinding, err := s.agents.PrepareCodingAgentForStudio(ctx, appID, workspaceID, owner, appID, req.CodingAgentProfile, modelInput, authorization)
@@ -427,7 +404,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		AssistantMessageID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent-invocation-assistant:"+invocationID)).String(),
 		IdempotencyKey:     "studio-create:" + req.IdempotencyKey,
 	}
-	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, SourceFiles: starterRows, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
+	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
 	if _, err := s.store.CreateStudioApplicationInitialization(ctx, initialization); err != nil {
 		return nil, err
 	}
@@ -435,17 +412,14 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	if err != nil {
 		return nil, err
 	}
-	if err := s.agents.EnsurePlatformMCPBindingForCodingAgent(ctx, canonical.Agent.ID, canonical.Application.ID); err != nil {
-		return nil, err
+	if s.tasks == nil {
+		return nil, errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "task center is unavailable")
 	}
-	if _, err := s.agents.StartCodingInvocation(ctx, canonical.Agent.ID, canonical.InitialInvocation.ID); err != nil {
-		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, err.Error())
-	}
-	canonical, err = s.store.GetStudioApplicationInitialization(ctx, owner, req.IdempotencyKey)
+	dag, err := s.tasks.CreateDomainDAGTaskGroup(ctx, iapiserver.AppStudioTaskDomain, studioInitializationDAG(dagID, appID, owner, req.IdempotencyKey))
 	if err != nil {
 		return nil, err
 	}
-	return studioApplicationCreateResponse(canonical), nil
+	return &iapiserver.StudioApplicationCreateResponse{Application: canonical.Application, DAGTaskGroupID: dag.ID}, nil
 }
 func (s *Service) GetApplication(ctx context.Context, id string) (*iapiserver.StudioApplication, error) {
 	owner, err := studioUserID(ctx)
@@ -890,7 +864,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, appID string, req *iapiser
 		}
 		return nil, errors.NewStatus(code.ErrAppStudioSnapshotInvalid, "source revision is empty")
 	}
-	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: iapiserver.AppStudioSnapshotStatusReady, CreatedBy: owner}
+	snapshot := &iapiserver.StudioSourceSnapshot{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, StudioApplicationID: appID, WorkspaceID: workspace.ID, WorkspaceRevision: revision, CommitSHA: record.CommitSHA, GitRef: "refs/heads/main", ContentDigest: record.ContentDigest, ManifestDigest: record.ContentDigest, Status: iapiserver.AppStudioSnapshotStatusReady, CreatedBy: owner}
 	return s.store.CreateStudioSourceSnapshot(ctx, owner, snapshot)
 }
 func (s *Service) GetSnapshot(ctx context.Context, appID, id string) (*iapiserver.StudioSourceSnapshot, error) {
@@ -968,7 +942,7 @@ func (s *Service) CreateBuild(ctx context.Context, appID string, req *iapiserver
 		return nil, errors.NewStatus(code.ErrAppStudioBuildFailed, "task center is unavailable")
 	}
 	buildID := uuid.NewString()
-	build := &iapiserver.StudioBuild{ObjectMeta: imachinery.ObjectMeta{ID: buildID, Name: "Build " + buildID}, OwnerUserID: owner, StudioApplicationID: appID, SourceSnapshotID: snapshot.ID, StudioApplicationVersionID: req.StudioApplicationVersionID, Status: iapiserver.AppStudioBuildStatusPending, IdempotencyKey: req.IdempotencyKey}
+	build := &iapiserver.StudioBuild{ObjectMeta: imachinery.ObjectMeta{ID: buildID, Name: "Build " + buildID}, OwnerUserID: owner, StudioApplicationID: appID, SourceSnapshotID: snapshot.ID, StudioApplicationVersionID: req.StudioApplicationVersionID, CommitSHA: snapshot.CommitSHA, Status: iapiserver.AppStudioBuildStatusPending, IdempotencyKey: req.IdempotencyKey}
 	created, err := s.store.CreateStudioBuild(ctx, owner, build)
 	if err != nil {
 		return nil, err
@@ -1436,40 +1410,6 @@ func deterministicGitLabProjectPath(owner, idempotencyKey, name string) string {
 	}
 	sum := sha256.Sum256([]byte(owner + ":" + idempotencyKey))
 	return fmt.Sprintf("%s-%s", base, hex.EncodeToString(sum[:])[:12])
-}
-
-func studioApplicationCreateResponse(initialization *store.StudioApplicationInitialization) *iapiserver.StudioApplicationCreateResponse {
-	app, agent, invocation := initialization.Application, initialization.Agent, initialization.InitialInvocation
-	return &iapiserver.StudioApplicationCreateResponse{
-		Application: app,
-		CodingAgent: &iapiserver.StudioAgentStatus{
-			StudioApplicationID: app.ID,
-			AgentID:             app.CodingAgentID,
-			SessionID:           app.CodingSessionID,
-			Generation:          app.CodingAgentGeneration,
-			Status:              agent.Status,
-		},
-		InitialInvocation: &iapiserver.StudioAgentInvocation{
-			ID:                   invocation.ID,
-			AgentID:              invocation.AgentID,
-			SessionID:            invocation.SessionID,
-			Generation:           app.CodingAgentGeneration,
-			Type:                 invocation.Type,
-			Status:               invocation.Status,
-			UserMessageID:        invocation.UserMessageID,
-			AssistantMessageID:   invocation.AssistantMessageID,
-			AtomicTaskID:         invocation.AtomicTaskID,
-			RuntimeBindingID:     invocation.RuntimeBindingID,
-			RuntimeSessionRef:    invocation.RuntimeSessionRef,
-			RuntimeInvocationRef: invocation.RuntimeInvocationRef,
-			LastEventSequence:    invocation.LastEventSequence,
-			FailureCode:          invocation.FailureCode,
-			FailureMessage:       invocation.FailureMessage,
-			CompletedAt:          invocation.CompletedAt,
-			CreatedAt:            invocation.CreatedAt,
-			UpdatedAt:            invocation.UpdatedAt,
-		},
-	}
 }
 
 func (s *Service) currentCodingAgent(ctx context.Context, appID string) (*iapiserver.StudioApplication, *iapiserver.Agent, *iapiserver.AgentSession, error) {

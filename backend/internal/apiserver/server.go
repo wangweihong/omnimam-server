@@ -208,7 +208,10 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio gitlab source provider")
 	}
-	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec})
+	if err := sourceProvider.SetAppStudioWebhookBaseURL(cfg.AppStudioOptions.WebhookBaseURL); err != nil {
+		return nil, errors.Wrap(err, "configure appstudio gitlab webhook")
+	}
+	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, WebhookInitializer: sourceProvider, PipelineArtifacts: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}

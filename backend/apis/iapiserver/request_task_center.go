@@ -149,6 +149,7 @@ type DAGTaskGroupListRequest struct {
 }
 
 type DAGTaskGroupCreateRequest struct {
+	ID                string          `json:"-"` // 仅领域内部幂等创建可提供的稳定 DAG ID。
 	Name              string          `json:"name" binding:"required,max=256"`
 	Description       string          `json:"description" binding:"omitempty,max=2048"`
 	Nodes             []DAGNode       `json:"nodes" binding:"required,min=1,max=1000,dive"`

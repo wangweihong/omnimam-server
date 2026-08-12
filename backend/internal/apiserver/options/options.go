@@ -39,6 +39,19 @@ type Options struct {
 	InfrastructureClientOptions *InfrastructureClientOptions    `json:"infrastructure-client" mapstructure:"infrastructure-client"`
 	SSEOptions                  *SSEOptions                     `json:"sse" mapstructure:"sse"`
 	MCPOptions                  *MCPOptions                     `json:"mcp" mapstructure:"mcp"`
+	AppStudioOptions            *AppStudioOptions               `json:"appstudio" mapstructure:"appstudio"`
+}
+
+type AppStudioOptions struct {
+	WebhookBaseURL string `json:"webhook-base-url" mapstructure:"webhook-base-url"`
+}
+
+func NewAppStudioOptions() *AppStudioOptions {
+	return &AppStudioOptions{WebhookBaseURL: "http://127.0.0.1:8080"}
+}
+
+func (o *AppStudioOptions) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVar(&o.WebhookBaseURL, "appstudio.webhook-base-url", o.WebhookBaseURL, "public API base URL reachable by GitLab project hooks")
 }
 
 // AuthOptions 配置 Identity Access Token 签名和 OPAQUE 稳定部署密钥。
@@ -212,6 +225,7 @@ func NewOptions() *Options {
 		InfrastructureClientOptions: NewInfrastructureClientOptions(),
 		SSEOptions:                  NewSSEOptions(),
 		MCPOptions:                  NewMCPOptions(),
+		AppStudioOptions:            NewAppStudioOptions(),
 	}
 
 	return &s
@@ -233,6 +247,7 @@ func (o *Options) Flags() (fss cliflag.NamedFlagSets) {
 	o.InfrastructureClientOptions.AddFlags(fss.FlagSet("infrastructure client"))
 	o.SSEOptions.AddFlags(fss.FlagSet("sse"))
 	o.MCPOptions.AddFlags(fss.FlagSet("mcp"))
+	o.AppStudioOptions.AddFlags(fss.FlagSet("appstudio"))
 	fs := fss.FlagSet("authentication")
 	fs.StringVar(&o.AuthOptions.JWTSecret, "auth.jwt-secret", o.AuthOptions.JWTSecret, "signing secret for Identity access tokens")
 	fs.StringVar(&o.AuthOptions.OpaqueServerSetup, "auth.opaque-server-setup", o.AuthOptions.OpaqueServerSetup, "stable OPAQUE server key material encoded as hex")
@@ -300,6 +315,14 @@ func (o *Options) Complete() error {
 		o.MCPOptions.ToolBurst < 1 || o.MCPOptions.MaxUploadBytes < 1 || o.MCPOptions.MaxLimiterScopes < 1 {
 		return fmt.Errorf("MCP limits, timeout, cache TTLs, task TTL, poll interval, and upload TTL are invalid")
 	}
+	if o.AppStudioOptions == nil {
+		o.AppStudioOptions = NewAppStudioOptions()
+	}
+	webhookBaseURL, err := normalizeHTTPOrigin(o.AppStudioOptions.WebhookBaseURL, "AppStudio webhook base URL")
+	if err != nil {
+		return err
+	}
+	o.AppStudioOptions.WebhookBaseURL = webhookBaseURL
 	publicBaseURL, err := normalizeMCPBaseURL(o.MCPOptions.PublicBaseURL)
 	if err != nil {
 		return err
@@ -316,6 +339,16 @@ func (o *Options) Complete() error {
 		return fmt.Errorf("SSE retention, intervals, and connection limit must be positive")
 	}
 	return nil
+}
+
+func normalizeHTTPOrigin(raw, name string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%s must be an absolute HTTP origin", name)
+	}
+	parsed.Path = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func normalizeMCPBaseURL(raw string) (string, error) {

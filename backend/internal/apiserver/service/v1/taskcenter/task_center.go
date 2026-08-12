@@ -48,6 +48,9 @@ type TaskCenterSrv interface {
 	RetryTaskGroup(context.Context, string) (*iapiserver.TaskGroup, error)
 	ListDAGTaskGroups(context.Context, *iapiserver.DAGTaskGroupListRequest) (*iapiserver.DAGTaskGroupListResponse, error)
 	CreateDAGTaskGroup(context.Context, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+	// CreateDomainDAGTaskGroup 只允许受信领域提交已发布的固定内部 DAG functionRef。
+	CreateDomainDAGTaskGroup(context.Context, string, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
+	DomainDAGTaskGroupExists(context.Context, string, string) bool
 	GetDAGTaskGroup(context.Context, string) (*iapiserver.DAGTaskGroup, error)
 	GetDAGTaskGroupDetail(context.Context, string) (*iapiserver.DAGTaskGroupDetail, error)
 	// GetDAGTaskGroupSummaries 批量返回当前主体可见的 DAGTaskGroup 一跳摘要。
@@ -613,7 +616,47 @@ func (s *taskCenterService) ListDAGTaskGroupTasks(ctx context.Context, id string
 }
 
 func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error) {
-	layers, err := s.validateDAG(req.Nodes, req.Edges)
+	return s.createDAGTaskGroup(ctx, req, false)
+}
+
+// CreateDomainDAGTaskGroup 校验 caller 和内部 functionRef allowlist 后复用 canonical DAG 持久化与运行时启动。
+func (s *taskCenterService) CreateDomainDAGTaskGroup(ctx context.Context, caller string, req *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error) {
+	if caller != iapiserver.AppStudioTaskDomain || req == nil {
+		return nil, errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "domain DAG caller is not allowed")
+	}
+	for index := range req.Nodes {
+		template := &req.Nodes[index].Task
+		if !isAppStudioDomainDAGFunction(template.FunctionRef) {
+			return nil, errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "function ref is not available to the appstudio domain")
+		}
+		atomic := &iapiserver.AtomicTaskCreateRequest{FunctionRef: template.FunctionRef, Arguments: template.Arguments, RetryPolicy: template.RetryPolicy, TimeoutPolicy: template.TimeoutPolicy}
+		prepareCaller := caller
+		if template.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+			prepareCaller = iapiserver.GitLabTaskDomain
+		}
+		if isAppStudioInternalFunction(template.FunctionRef) {
+			if err := validateAppStudioInternalArguments(template.FunctionRef, template.Arguments); err != nil {
+				return nil, errors.NewStatus(code.ErrTaskFunctionInputInvalid, err.Error())
+			}
+		} else if err := s.prepareFunctionRequest(prepareCaller, atomic, 0); err != nil {
+			return nil, err
+		}
+		template.Arguments, template.RequiredCapabilities = atomic.Arguments, atomic.RequiredCapabilities
+		template.RetryPolicy, template.TimeoutPolicy = atomic.RetryPolicy, atomic.TimeoutPolicy
+	}
+	return s.createDAGTaskGroup(ctx, req, true)
+}
+
+func (s *taskCenterService) DomainDAGTaskGroupExists(ctx context.Context, caller, id string) bool {
+	if caller != iapiserver.AppStudioTaskDomain || id == "" {
+		return false
+	}
+	group, err := s.store.GetDAGTaskGroup(ctx, id)
+	return err == nil && group != nil && group.ID == id
+}
+
+func (s *taskCenterService) createDAGTaskGroup(ctx context.Context, req *iapiserver.DAGTaskGroupCreateRequest, trustedAppStudio bool) (*iapiserver.DAGTaskGroup, error) {
+	layers, err := s.validateDAGMode(req.Nodes, req.Edges, trustedAppStudio)
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +682,10 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 		triggerSourceID = req.CanvasVersionID
 	}
 	group := &iapiserver.DAGTaskGroup{Nodes: req.Nodes, Edges: req.Edges, Input: req.Input, OutputMapping: req.OutputMapping, Status: iapiserver.TaskGroupStatusPending, Summary: iapiserver.TaskSummary{Total: len(req.Nodes), Pending: len(req.Nodes)}, TriggerType: triggerType, TriggerSourceID: triggerSourceID, TriggerSourceName: req.TriggerSourceName, TriggeredAt: triggeredAt, CanvasVersionID: req.CanvasVersionID, IdempotencyScope: req.IdempotencyScope, IdempotencyKey: req.IdempotencyKey, ProjectID: req.ProjectID, Namespace: req.Namespace, CreatedBy: createdBy}
-	group.ID = uuid.NewString()
+	group.ID = req.ID
+	if group.ID == "" {
+		group.ID = uuid.NewString()
+	}
 	group.Name = req.Name
 	group.Description = req.Description
 	if err := assignSystemName(&group.Name, &group.TaskNameMeta, req.SystemName); err != nil {
@@ -675,6 +721,42 @@ func (s *taskCenterService) CreateDAGTaskGroup(ctx context.Context, req *iapiser
 	createdGroup.Status = iapiserver.TaskGroupStatusRunning
 	createdGroup.StartedAt = imachinery.NewTime(execution.StartedAt)
 	return s.store.UpdateDAGTaskGroup(ctx, createdGroup)
+}
+
+func isAppStudioDomainDAGFunction(ref string) bool {
+	return isAppStudioInternalFunction(ref) || ref == iapiserver.GitLabFunctionPipelineRun || ref == iapiserver.TaskWorkerFunctionAppStudioPreviewEnsure
+}
+
+func isAppStudioInternalFunction(ref string) bool {
+	switch ref {
+	case iapiserver.AppStudioFunctionInitializationProjectEnsure,
+		iapiserver.AppStudioFunctionInitializationWebhookEnsure,
+		iapiserver.AppStudioFunctionInitializationFinalize,
+		iapiserver.AppStudioFunctionInitializationInvocationStart,
+		iapiserver.AppStudioFunctionAutomationSnapshotEnsure,
+		iapiserver.AppStudioFunctionAutomationBuildEnsure,
+		iapiserver.AppStudioFunctionAutomationArtifactComplete:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateAppStudioInternalArguments(functionRef string, arguments map[string]any) error {
+	keys := []string{"studio_application_id", "owner_user_id", "create_idempotency_key"}
+	if functionRef == iapiserver.AppStudioFunctionAutomationSnapshotEnsure || functionRef == iapiserver.AppStudioFunctionAutomationBuildEnsure || functionRef == iapiserver.AppStudioFunctionAutomationArtifactComplete {
+		keys = []string{"studio_application_id", "owner_user_id", "gitlab_project_id", "commit_sha", "git_ref"}
+	}
+	if len(arguments) != len(keys) {
+		return fmt.Errorf("appstudio internal task arguments are invalid")
+	}
+	for _, key := range keys {
+		value, ok := arguments[key].(string)
+		if !ok || strings.TrimSpace(value) == "" || len(value) > 200 {
+			return fmt.Errorf("appstudio internal task argument %q is invalid", key)
+		}
+	}
+	return nil
 }
 
 func (s *taskCenterService) CancelDAGTaskGroup(ctx context.Context, id string) (*iapiserver.DAGTaskGroup, error) {
@@ -1287,6 +1369,10 @@ func (s *taskCenterService) validateTemplates(templates []iapiserver.AtomicTaskT
 }
 
 func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapiserver.DAGEdge) ([][]string, error) {
+	return s.validateDAGMode(nodes, edges, false)
+}
+
+func (s *taskCenterService) validateDAGMode(nodes []iapiserver.DAGNode, edges []iapiserver.DAGEdge, trustedAppStudio bool) ([][]string, error) {
 	if len(nodes) == 0 || len(nodes) > iapiserver.MaxTaskGraphNodes || len(edges) > iapiserver.MaxTaskGraphEdges {
 		return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag graph size is invalid")
 	}
@@ -1300,11 +1386,20 @@ func (s *taskCenterService) validateDAG(nodes []iapiserver.DAGNode, edges []iapi
 		if _, exists := keys[node.Key]; exists {
 			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dag node key must be unique")
 		}
-		if node.Task.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
+		if !trustedAppStudio && node.Task.FunctionRef == iapiserver.GitLabFunctionPipelineRun {
 			return nil, errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "gitlab pipeline tasks must be created by the gitlab domain")
 		}
-		if err := s.validateFunctionRef(node.Task.FunctionRef); err != nil {
-			return nil, err
+		if trustedAppStudio && !isAppStudioDomainDAGFunction(node.Task.FunctionRef) {
+			return nil, errors.NewStatus(code.ErrTaskFunctionRefNotRegistered, "function ref is not available to the appstudio domain")
+		}
+		if !trustedAppStudio {
+			if err := s.validateFunctionRef(node.Task.FunctionRef); err != nil {
+				return nil, err
+			}
+		} else if !isAppStudioInternalFunction(node.Task.FunctionRef) {
+			if err := s.validateFunctionRef(node.Task.FunctionRef); err != nil {
+				return nil, err
+			}
 		}
 		if node.DynamicFork && (node.MaxDynamicTasks < 1 || node.MaxDynamicTasks > iapiserver.MaxDynamicForkTasks) {
 			return nil, errors.NewStatusF(code.ErrDAGTaskGroupInvalid, "dynamic fork limit is invalid")

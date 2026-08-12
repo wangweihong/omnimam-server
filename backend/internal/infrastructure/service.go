@@ -330,7 +330,7 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 	}
 	providerRequest := providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req}
 	runtimeGitReferences := make([]string, 0, 1)
-	needsSourceArchive := (profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb && len(req.Mounts) > 0) ||
+	needsSourceArchive := ((profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb || profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI) && len(req.Mounts) > 0) ||
 		(profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb && strings.HasPrefix(req.SourceRef, iapiserver.InfraRefPrefixStudioSnapshot))
 	if needsSourceArchive {
 		if s.sourceResolver == nil {
