@@ -674,7 +674,8 @@ func (s *Service) StartCodingInvocation(ctx context.Context, agentID, invocation
 		return s.failInvocationSubmission(ctx, invocation, err)
 	}
 	if runtime == nil || runtime.State != iapiserver.AgentRuntimeStateReady {
-		runtime, err = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{})
+		runtimeRequestID := fmt.Sprintf("coding-invocation:%s:%d", invocation.ID, invocation.SubmissionGeneration)
+		runtime, err = s.ensureRuntimeForAgent(ctx, agent, iapiserver.AgentRuntimeOperationStart, &iapiserver.AgentRuntimeActionRequest{RequestID: runtimeRequestID})
 		if err != nil {
 			return s.failInvocationSubmission(ctx, invocation, err)
 		}

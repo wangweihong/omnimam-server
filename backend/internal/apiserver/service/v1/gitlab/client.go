@@ -22,6 +22,7 @@ type RepositoryClient interface {
 // ProjectAccessTokenClient 是 Runtime Git access 的最小 token 生命周期边界。
 type ProjectAccessTokenClient interface {
 	CreateProjectAccessToken(context.Context, int64, CreateProjectAccessTokenRequest) (*ProjectAccessToken, error)
+	GetUser(context.Context, int64) (*User, error)
 	RevokeProjectAccessToken(context.Context, int64, int64) error
 }
 
@@ -184,6 +185,7 @@ type CreateProjectAccessTokenRequest struct {
 
 type ProjectAccessToken struct {
 	ID        int64    `json:"id"`
+	UserID    int64    `json:"user_id"`
 	Name      string   `json:"name"`
 	Username  string   `json:"username"`
 	Token     string   `json:"token"`

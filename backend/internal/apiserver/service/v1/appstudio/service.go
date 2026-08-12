@@ -35,6 +35,7 @@ type TaskClient interface {
 	CreateDomainAtomicTask(context.Context, string, *iapiserver.AtomicTaskCreateRequest) (*iapiserver.AtomicTask, error)
 	CreateDomainDAGTaskGroup(context.Context, string, *iapiserver.DAGTaskGroupCreateRequest) (*iapiserver.DAGTaskGroup, error)
 	DomainDAGTaskGroupExists(context.Context, string, string) bool
+	GetDAGTaskGroupDetail(context.Context, string) (*iapiserver.DAGTaskGroupDetail, error)
 	CancelAtomicTask(context.Context, string, *iapiserver.ActionReasonRequest) (*iapiserver.AtomicTask, error)
 }
 
@@ -413,10 +414,12 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		return nil, err
 	}
 	if s.tasks == nil {
+		_ = s.store.RollbackStudioApplicationInitializationRetry(ctx, appID, owner, dagID)
 		return nil, errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "task center is unavailable")
 	}
-	dag, err := s.tasks.CreateDomainDAGTaskGroup(ctx, iapiserver.AppStudioTaskDomain, studioInitializationDAG(dagID, appID, owner, req.IdempotencyKey))
+	dag, err := s.tasks.CreateDomainDAGTaskGroup(ctx, iapiserver.AppStudioTaskDomain, studioInitializationDAG(dagID, appID, owner, req.IdempotencyKey, req.IdempotencyKey))
 	if err != nil {
+		_ = s.store.RollbackStudioApplicationInitializationRetry(ctx, appID, owner, dagID)
 		return nil, err
 	}
 	return &iapiserver.StudioApplicationCreateResponse{Application: canonical.Application, DAGTaskGroupID: dag.ID}, nil

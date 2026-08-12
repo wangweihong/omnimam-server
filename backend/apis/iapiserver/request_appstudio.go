@@ -80,6 +80,14 @@ const (
 	AppStudioBuildProfileStaticWeb                 = "appstudio.build.static-web"
 	AppStudioProductionProfileStaticWeb            = "appstudio.production.static-web"
 	AppStudioDefaultWorkspaceName                  = "main"
+	AppStudioInitializationStageGitLabProject      = "GITLAB_PROJECT"
+	AppStudioInitializationStageGitLabWebhook      = "GITLAB_WEBHOOK"
+	AppStudioInitializationStageApplication        = "APPLICATION_INITIALIZATION"
+	AppStudioInitializationStageFirstInvocation    = "FIRST_CODING_INVOCATION"
+	AppStudioInitializationStatusPending           = "PENDING"
+	AppStudioInitializationStatusRunning           = "RUNNING"
+	AppStudioInitializationStatusSuccess           = "SUCCESS"
+	AppStudioInitializationStatusError             = "ERROR"
 
 	AppStudioRefPrefixSecret            = "secret://"
 	AppStudioRefPrefixIntegration       = "integration://"
@@ -331,6 +339,13 @@ type StudioApplicationCreateRequest struct {
 	CodingModelSelection StudioCodingModelSelection `json:"coding_model_selection" binding:"required"`
 	Attachments          []StudioAgentAttachment    `json:"attachments,omitempty" binding:"omitempty,max=50,dive"`
 	IdempotencyKey       string                     `json:"idempotency_key" binding:"required,min=1,max=200"`
+}
+
+// StudioApplicationInitializationRetryRequest 请求为 ERROR reservation 创建或复用一轮初始化 DAG。
+// +k8s:deepcopy-gen=true
+type StudioApplicationInitializationRetryRequest struct {
+	// IdempotencyKey 与 Application ID 稳定派生重试 DAG；同一键重复请求复用同一轮次。
+	IdempotencyKey string `json:"idempotency_key" binding:"required,min=1,max=200"`
 }
 
 // +k8s:deepcopy-gen=true

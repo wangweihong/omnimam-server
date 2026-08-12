@@ -115,6 +115,44 @@ type StudioApplicationCreateResponse struct {
 	DAGTaskGroupID string             `json:"dag_task_group_id"`
 }
 
+// StudioApplicationInitializationMessages 是初始化安全错误的固定中英文文案。
+// +k8s:deepcopy-gen=true
+type StudioApplicationInitializationMessages struct {
+	ZhCN string `json:"zh-CN"`
+	EnUS string `json:"en-US"`
+}
+
+// StudioApplicationInitializationSafeError 只公开稳定业务码和本地化文案。
+// +k8s:deepcopy-gen=true
+type StudioApplicationInitializationSafeError struct {
+	Code       string                                  `json:"code"`
+	Message    string                                  `json:"message"`
+	Messages   StudioApplicationInitializationMessages `json:"messages"`
+	OccurredAt imachinery.Time                         `json:"occurred_at"`
+}
+
+// StudioApplicationInitializationStage 是固定初始化阶段的安全任务聚合。
+// +k8s:deepcopy-gen=true
+type StudioApplicationInitializationStage struct {
+	Stage        string                                    `json:"stage"`
+	Status       string                                    `json:"status"`
+	AttemptCount int                                       `json:"attempt_count"`
+	FailedAt     *imachinery.Time                          `json:"failed_at,omitempty"`
+	LatestError  *StudioApplicationInitializationSafeError `json:"latest_error,omitempty"`
+	UpdatedAt    imachinery.Time                           `json:"updated_at"`
+}
+
+// StudioApplicationInitialization 返回当前初始化 DAG 的四阶段安全诊断。
+// +k8s:deepcopy-gen=true
+type StudioApplicationInitialization struct {
+	StudioApplicationID string                                  `json:"studio_application_id"`
+	DAGTaskGroupID      string                                  `json:"dag_task_group_id"`
+	Status              string                                  `json:"status"`
+	Progress            float64                                 `json:"progress"`
+	Stages              []*StudioApplicationInitializationStage `json:"stages"`
+	UpdatedAt           imachinery.Time                         `json:"updated_at"`
+}
+
 // AppStudioGitLabWebhookAccepted 是 GitLab Hook 的幂等接受结果。
 // +k8s:deepcopy-gen=true
 type AppStudioGitLabWebhookAccepted struct {

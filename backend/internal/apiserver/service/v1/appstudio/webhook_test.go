@@ -2,7 +2,9 @@ package appstudio
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
@@ -67,6 +69,37 @@ func (s *webhookTaskStub) CreateDomainDAGTaskGroup(_ context.Context, _ string, 
 	return &iapiserver.DAGTaskGroup{ObjectMeta: imachinery.ObjectMeta{ID: req.ID}}, nil
 }
 
+func (s *webhookTaskStub) GetDAGTaskGroupDetail(context.Context, string) (*iapiserver.DAGTaskGroupDetail, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func TestProjectInitializationReturnsFourSafeStages(t *testing.T) {
+	now := imachinery.Now()
+	failed := now
+	secret := "glpat-must-not-leak"
+	detail := &iapiserver.DAGTaskGroupDetail{
+		DAGTaskGroup: &iapiserver.DAGTaskGroup{ObjectMeta: imachinery.ObjectMeta{ID: "dag-1", UpdatedAt: now}, Status: iapiserver.TaskGroupStatusFailed, Progress: 0.25},
+		ExecutionNodes: []*iapiserver.DAGNodeExecutionSummary{
+			{NodeKey: "project-ensure", Status: iapiserver.AtomicTaskStatusFailed, AttemptCount: 5, CompletedAt: &failed, LatestError: &iapiserver.TaskError{Message: "No READY GitLabServer is configured as the AppStudio default: " + secret, OccurredAt: now}},
+		},
+	}
+	result := projectInitialization(&iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: "app-1"}}, detail)
+	if result.Status != iapiserver.AppStudioInitializationStatusError || len(result.Stages) != 4 {
+		t.Fatalf("initialization = %#v, want ERROR with four stages", result)
+	}
+	stage := result.Stages[0]
+	if stage.Stage != iapiserver.AppStudioInitializationStageGitLabProject || stage.AttemptCount != 5 || stage.LatestError == nil || stage.LatestError.Code != "ERR_GITLAB_APPSTUDIO_DEFAULT_SERVER_UNAVAILABLE" {
+		t.Fatalf("project stage = %#v", stage)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Fatalf("initialization response leaked secret: %s", payload)
+	}
+}
+
 func TestReceiveGitLabWebhookRejectsInvalidTokenWithoutSubmittingDAG(t *testing.T) {
 	tasks := &webhookTaskStub{seen: map[string]bool{}}
 	service := &Service{store: &webhookStoreStub{}, tasks: tasks, webhooks: webhookAuthStub{err: fmt.Errorf("invalid")}}
@@ -128,6 +161,18 @@ func TestLoadBlueprintIncludesRequiredDotfiles(t *testing.T) {
 		if len(blueprint.Files[name]) == 0 {
 			t.Errorf("LoadBlueprint() file %q is empty", name)
 		}
+	}
+}
+
+func TestMatchesInitializationRevisionRequiresCanonicalRevisionZero(t *testing.T) {
+	workspace := &iapiserver.StudioWorkspace{CurrentRevisionDigest: "sha256:starter"}
+	revision := &iapiserver.StudioWorkspaceRevision{Revision: 0, CommitSHA: "commit-1", ContentDigest: "sha256:starter"}
+	if !matchesInitializationRevision(revision, workspace, "commit-1") {
+		t.Fatal("matchesInitializationRevision() rejected persisted initialization revision")
+	}
+	revision.Revision = 1
+	if matchesInitializationRevision(revision, workspace, "commit-1") {
+		t.Fatal("matchesInitializationRevision() accepted non-initial revision")
 	}
 }
 

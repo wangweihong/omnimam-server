@@ -171,11 +171,13 @@ func installAppStudioApis(rg *gin.RouterGroup, service *appstudiosvc.Service) {
 	applicationRead.Use(authmiddleware.RequireIdentityPermission("appstudio.application.read"))
 	applicationRead.GET("", c.ListApplications)
 	applicationRead.GET("/:studio_application_id", c.GetApplication)
+	applicationRead.GET("/:studio_application_id/initialization", c.GetInitialization)
 	applicationManage := rg.Group("/studio-applications")
 	applicationManage.Use(authmiddleware.RequireIdentityPermission("appstudio.application.manage"))
 	applicationManage.POST("", c.CreateApplication)
 	applicationManage.PATCH("/:studio_application_id", c.UpdateApplication)
 	applicationManage.POST("/:studio_application_id/archive", c.ArchiveApplication)
+	applicationManage.POST("/:studio_application_id/initialization/retry", c.RetryInitialization)
 
 	agentRead := rg.Group("/studio-applications/:studio_application_id/agent")
 	agentRead.Use(authmiddleware.RequireIdentityPermission("appstudio.agent.read"))

@@ -365,6 +365,8 @@
 | ErrAgentRuntimeUnhealthy | 200802 | 200 | The AgentRuntime health check failed. | AgentRuntime 健康检查失败。 |
 | ErrAppStudioApplicationNotVisible | 210200 | 200 | The StudioApplication does not exist or is not visible to the current principal. | StudioApplication 不存在或当前主体不可见。 |
 | ErrAppStudioApplicationInvalidState | 210201 | 200 | The StudioApplication is not in a state that permits this operation. | StudioApplication 当前状态不允许该操作。 |
+| ErrAppStudioWebhookUnauthorized | 210206 | 200 | The AppStudio GitLab webhook token is invalid or the project is unavailable. | AppStudio GitLab Webhook token 无效或 Project 不可用。 |
+| ErrAppStudioWebhookPayloadInvalid | 210207 | 200 | The AppStudio GitLab webhook event type or payload is invalid. | AppStudio GitLab Webhook 事件类型或载荷无效。 |
 | ErrAppStudioSourceNotVisible | 210400 | 200 | The Studio Source does not exist or is not visible to the current principal. | Studio Source 不存在或当前主体不可见。 |
 | ErrAppStudioSourceRevisionConflict | 210401 | 200 | The Source current Revision conflicts with base_revision. | Source 当前 Revision 与 base_revision 冲突。 |
 | ErrAppStudioSourceChangeRejected | 210402 | 200 | The ChangeSet failed path, dependency, or security validation. | ChangeSet 未通过路径、依赖或安全校验。 |
@@ -414,3 +416,4 @@
 | ErrGitLabPipelineFailed | 250602 | 200 | The GitLab Pipeline failed. | GitLab Pipeline 执行失败。 |
 | ErrGitLabPipelineCanceled | 250603 | 200 | The GitLab Pipeline was canceled. | GitLab Pipeline 已取消。 |
 | ErrGitLabAccessDenied | 250800 | 200 | The current principal is not authorized to access the GitLab resource. | 当前主体无权访问 GitLab 资源。 |
+| ErrGitLabAppStudioDefaultServerUnavailable | 250204 | 200 | No READY GitLabServer is configured as the AppStudio default. Configure and test a repository connection first. | 没有 READY 且标记为 AppStudio 默认的 GitLabServer，请先完成代码仓库配置和连接检测。 |

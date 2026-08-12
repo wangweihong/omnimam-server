@@ -258,6 +258,8 @@ type AppStudioStore interface {
 	GetStudioApplicationByCodingAgent(context.Context, string, string) (*iapiserver.StudioApplication, error)
 	GetStudioApplicationWorkloadScope(context.Context, string, string, int64) (*iapiserver.StudioApplication, error)
 	UpdateStudioApplication(context.Context, *iapiserver.StudioApplication, int64) (*iapiserver.StudioApplication, error)
+	BeginStudioApplicationInitializationRetry(context.Context, string, string, string) (*iapiserver.StudioApplication, error)
+	RollbackStudioApplicationInitializationRetry(context.Context, string, string, string) error
 	ReplaceStudioCodingAgent(context.Context, string, string, *StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error)
 	GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
 	GetStudioWorkspace(context.Context, string, string) (*iapiserver.StudioWorkspace, error)

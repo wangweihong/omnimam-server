@@ -94,6 +94,41 @@ func TestPostgresProjectStudioPreviewEnsureTerminal(t *testing.T) {
 	}
 }
 
+func TestPostgresProjectStudioInitializationTerminalFencesOldDAG(t *testing.T) {
+	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("OMNIMAM_TEST_POSTGRES_DSN is not set")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+
+	ownerID, applicationID := uuid.NewString(), uuid.NewString()
+	currentDAGID, oldDAGID := uuid.NewString(), uuid.NewString()
+	app := &iapiserver.StudioApplication{ObjectMeta: imachinery.ObjectMeta{ID: applicationID}, OwnerUserID: ownerID, Status: iapiserver.AppStudioApplicationStatusCreating, InitializationDAGTaskGroupID: currentDAGID, CreateIdempotencyKey: uuid.NewString()}
+	if err := tx.Create(app).Error; err != nil {
+		t.Fatal(err)
+	}
+	storage := newAppStudioStore(&datastore{db: tx})
+	task := &iapiserver.AtomicTask{FunctionRef: iapiserver.AppStudioFunctionInitializationInvocationStart, OwnerID: oldDAGID, Status: iapiserver.AtomicTaskStatusFailed, Arguments: iapiserver.AppStudioInitializationTaskArguments{StudioApplicationID: applicationID, OwnerUserID: ownerID, CreateIdempotencyKey: app.CreateIdempotencyKey}.AtomicTaskArguments()}
+	if err := storage.ProjectStudioTaskTerminal(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	var persisted iapiserver.StudioApplication
+	if err := tx.Where("id = ?", applicationID).First(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != iapiserver.AppStudioApplicationStatusCreating || persisted.InitializationDAGTaskGroupID != currentDAGID {
+		t.Fatalf("old DAG overwrote current initialization: %#v", persisted)
+	}
+}
+
 func TestPostgresAgentInvocationSubmissionFailureFence(t *testing.T) {
 	dsn := os.Getenv("OMNIMAM_TEST_POSTGRES_DSN")
 	if dsn == "" {

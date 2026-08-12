@@ -49,6 +49,18 @@ func (c *Controller) CreateApplication(ctx *gin.Context) {
 func (c *Controller) GetApplication(ctx *gin.Context) {
 	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetApplication(ctx, ctx.Param("studio_application_id")) })
 }
+
+// GetInitialization 返回当前初始化 DAG 的四阶段安全诊断，不返回任务原始 payload。
+func (c *Controller) GetInitialization(ctx *gin.Context) {
+	core.Run(ctx, nil, func(any) (any, error) { return c.service.GetInitialization(ctx, ctx.Param("studio_application_id")) })
+}
+
+// RetryInitialization 为 ERROR Application 显式创建或复用幂等初始化 DAG。
+func (c *Controller) RetryInitialization(ctx *gin.Context) {
+	core.Run(ctx, &iapiserver.StudioApplicationInitializationRetryRequest{}, func(req *iapiserver.StudioApplicationInitializationRetryRequest) (any, error) {
+		return c.service.RetryInitialization(ctx, ctx.Param("studio_application_id"), req)
+	})
+}
 func (c *Controller) UpdateApplication(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioApplicationUpdateRequest{}, func(req *iapiserver.StudioApplicationUpdateRequest) (any, error) {
 		return c.service.UpdateApplication(ctx, ctx.Param("studio_application_id"), req)

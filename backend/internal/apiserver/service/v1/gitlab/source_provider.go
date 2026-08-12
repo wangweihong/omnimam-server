@@ -19,10 +19,12 @@ import (
 	"strings"
 	"time"
 
+	toolboxerrors "github.com/wangweihong/gotoolbox/pkg/errors"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
 	appstudio "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"gorm.io/gorm"
 )
 
@@ -61,7 +63,7 @@ func (p *SourceProvider) SetAppStudioWebhookBaseURL(baseURL string) error {
 
 func (p *SourceProvider) EnsureAppStudioWebhook(ctx context.Context, projectID string) (int64, error) {
 	if p.webhookURL == "" {
-		return 0, fmt.Errorf("appstudio webhook base URL is unavailable")
+		return 0, toolboxerrors.NewStatus(code.ErrGitLabProjectRemoteFailed, "appstudio webhook base URL is unavailable")
 	}
 	client, project, err := p.client(ctx, projectID)
 	if err != nil {
@@ -69,7 +71,7 @@ func (p *SourceProvider) EnsureAppStudioWebhook(ctx context.Context, projectID s
 	}
 	hooks, ok := client.(ProjectHookClient)
 	if !ok {
-		return 0, fmt.Errorf("gitlab client does not support project hooks")
+		return 0, toolboxerrors.NewStatus(code.ErrGitLabServerConnectionFailed, "gitlab client does not support project hooks")
 	}
 	if project.AppStudioWebhookID > 0 && project.AppStudioWebhookTokenDigest != "" {
 		hook, hookErr := hooks.GetProjectHook(ctx, project.ExternalProjectID, project.AppStudioWebhookID)
@@ -77,7 +79,7 @@ func (p *SourceProvider) EnsureAppStudioWebhook(ctx context.Context, projectID s
 			return hook.ID, nil
 		}
 		if remoteErr, ok := hookErr.(*RemoteError); hookErr != nil && (!ok || remoteErr.StatusCode != 404) {
-			return 0, fmt.Errorf("read appstudio gitlab project hook: %w", hookErr)
+			return 0, toolboxerrors.NewStatus(code.ErrGitLabProjectRemoteFailed, "read appstudio gitlab project hook")
 		}
 	}
 	tokenBytes := make([]byte, 32)
@@ -89,13 +91,13 @@ func (p *SourceProvider) EnsureAppStudioWebhook(ctx context.Context, projectID s
 		URL: p.webhookURL, Token: token, PushEvents: true, PipelineEvents: true,
 	})
 	if err != nil || hook == nil || hook.ID <= 0 {
-		return 0, fmt.Errorf("create appstudio gitlab project hook: %w", err)
+		return 0, toolboxerrors.NewStatus(code.ErrGitLabProjectRemoteFailed, "create appstudio gitlab project hook")
 	}
 	digest := sha256.Sum256([]byte(token))
 	project.AppStudioWebhookID = hook.ID
 	project.AppStudioWebhookTokenDigest = "sha256:" + hex.EncodeToString(digest[:])
 	if _, err := p.store.UpdateGitLabProject(ctx, project); err != nil {
-		return 0, fmt.Errorf("persist appstudio gitlab project hook projection: %w", err)
+		return 0, toolboxerrors.NewStatus(code.ErrGitLabProjectProjectionFailed, "persist appstudio gitlab project hook projection")
 	}
 	return hook.ID, nil
 }
@@ -204,19 +206,19 @@ func validateAppStudioBundle(content []byte) error {
 func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name, projectPath, description string, files map[string][]byte) (*appstudio.ProjectInitialization, error) {
 	project, projectErr := p.store.GetGitLabProject(ctx, localProjectID)
 	if projectErr != nil && !stderrors.Is(projectErr, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("load appstudio gitlab project projection: %w", projectErr)
+		return nil, toolboxerrors.NewStatus(code.ErrGitLabProjectProjectionFailed, "load appstudio gitlab project projection")
 	}
 	var server *iapiserver.GitLabServer
 	if projectErr != nil {
 		server, projectErr = p.store.GetDefaultGitLabServer(ctx)
 		if projectErr != nil || server == nil {
-			return nil, fmt.Errorf("appstudio default gitlab server is unavailable")
+			return nil, toolboxerrors.NewStatus(code.ErrGitLabAppStudioDefaultServerUnavailable, "ERR_GITLAB_APPSTUDIO_DEFAULT_SERVER_UNAVAILABLE")
 		}
 		project = &iapiserver.GitLabProject{ObjectMeta: imachinery.ObjectMeta{ID: localProjectID, Name: name, Description: description}, GitLabServerID: server.ID, Status: iapiserver.GitLabProjectStatusCreating, Path: projectPath, PathWithNamespace: strings.Trim(server.NamespacePath, "/") + "/" + strings.Trim(projectPath, "/"), DefaultBranch: "main"}
 		if project, projectErr = p.store.CreateGitLabProject(ctx, project); projectErr != nil {
 			project, projectErr = p.store.GetGitLabProject(ctx, localProjectID)
 			if projectErr != nil {
-				return nil, projectErr
+				return nil, toolboxerrors.NewStatus(code.ErrGitLabProjectProjectionFailed, "persist appstudio gitlab project reservation")
 			}
 		}
 	} else {
@@ -224,16 +226,16 @@ func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name
 		// The current default may have changed after the first durable reservation.
 		server, projectErr = p.store.GetGitLabServer(ctx, project.GitLabServerID)
 		if projectErr != nil || server == nil || server.Status != iapiserver.GitLabServerStatusReady {
-			return nil, fmt.Errorf("reserved appstudio gitlab server is unavailable")
+			return nil, toolboxerrors.NewStatus(code.ErrGitLabServerConnectionFailed, "reserved appstudio gitlab server is unavailable")
 		}
 	}
 	client, err := p.clients.NewClient(server)
 	if err != nil {
-		return nil, p.reservationFailure(ctx, project, err)
+		return nil, p.reservationFailure(ctx, project, code.ErrGitLabServerConnectionFailed, err)
 	}
 	repository, ok := client.(RepositoryClient)
 	if !ok {
-		return nil, p.reservationFailure(ctx, project, fmt.Errorf("gitlab client does not support repository operations"))
+		return nil, p.reservationFailure(ctx, project, code.ErrGitLabServerConnectionFailed, fmt.Errorf("gitlab client does not support repository operations"))
 	}
 	var remote *RemoteProject
 	createdRemote := false
@@ -246,18 +248,18 @@ func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name
 		remote, err = repository.GetProjectByPath(ctx, project.PathWithNamespace)
 		if err != nil {
 			if remoteErr, ok := err.(*RemoteError); !ok || remoteErr.StatusCode != 404 {
-				return nil, p.reservationFailure(ctx, project, err)
+				return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, err)
 			}
 			namespace, resolveErr := client.ResolveNamespace(ctx, server.NamespacePath)
 			if resolveErr != nil {
-				return nil, p.reservationFailure(ctx, project, resolveErr)
+				return nil, p.reservationFailure(ctx, project, code.ErrGitLabServerConnectionFailed, resolveErr)
 			}
 			remote, err = client.CreateProject(ctx, CreateProjectRequest{Name: project.Name, Path: project.Path, Description: project.Description, NamespaceID: namespace.ID, DefaultBranch: "main"})
 			createdRemote = err == nil && remote != nil
 		}
 	}
 	if err != nil || remote == nil {
-		return nil, p.reservationFailure(ctx, project, fmt.Errorf("ensure appstudio gitlab project: %w", err))
+		return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, fmt.Errorf("ensure appstudio gitlab project: %w", err))
 	}
 	branch := remote.DefaultBranch
 	if branch == "" {
@@ -272,29 +274,29 @@ func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name
 	if headErr != nil {
 		remoteErr, ok := headErr.(*RemoteError)
 		if !ok || remoteErr.StatusCode != 404 {
-			return nil, p.reservationFailure(ctx, project, headErr)
+			return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, headErr)
 		}
 		commit, commitErr := repository.CreateCommit(ctx, remote.ID, CreateCommitRequest{Branch: branch, CommitMessage: "chore(appstudio): initialize web-react@v1", Actions: toRemoteActions(starterActions)})
 		if commitErr != nil {
-			return nil, p.reservationFailure(ctx, project, commitErr)
+			return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, commitErr)
 		}
 		if commit == nil || commit.ID == "" {
-			return nil, p.reservationFailure(ctx, project, fmt.Errorf("gitlab starter commit is unavailable"))
+			return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, fmt.Errorf("gitlab starter commit is unavailable"))
 		}
 		commitSHA = commit.ID
 	} else {
 		commitSHA = head.Commit.ID
 		if commitSHA == "" {
-			return nil, p.reservationFailure(ctx, project, fmt.Errorf("gitlab project branch head is empty"))
+			return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, fmt.Errorf("gitlab project branch head is empty"))
 		}
 		for _, file := range starterActions {
 			current, readErr := repository.GetRepositoryFile(ctx, remote.ID, commitSHA, file.Path)
 			if readErr != nil {
-				return nil, p.reservationFailure(ctx, project, fmt.Errorf("appstudio starter template is missing %s", file.Path))
+				return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, fmt.Errorf("appstudio starter template is missing %s", file.Path))
 			}
 			content, decodeErr := decodeRepositoryFileContent(current)
 			if decodeErr != nil || string(content) != string(file.Content) {
-				return nil, p.reservationFailure(ctx, project, fmt.Errorf("appstudio starter template conflicts with existing project"))
+				return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectRemoteFailed, fmt.Errorf("appstudio starter template conflicts with existing project"))
 			}
 		}
 	}
@@ -307,41 +309,41 @@ func (p *SourceProvider) EnsureProject(ctx context.Context, localProjectID, name
 			cleanupErr := client.DeleteProject(cleanupCtx, remote.ID)
 			cancel()
 			if cleanupErr != nil {
-				return nil, p.reservationFailure(ctx, project, fmt.Errorf("compensate appstudio gitlab project: %w", cleanupErr))
+				return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectProjectionFailed, fmt.Errorf("compensate appstudio gitlab project: %w", cleanupErr))
 			}
 		}
-		return nil, p.reservationFailure(ctx, project, fmt.Errorf("persist appstudio gitlab project projection: %w", err))
+		return nil, p.reservationFailure(ctx, project, code.ErrGitLabProjectProjectionFailed, fmt.Errorf("persist appstudio gitlab project projection: %w", err))
 	}
 	return &appstudio.ProjectInitialization{GitLabProjectID: project.ID, DefaultBranch: branch, CommitSHA: commitSHA}, nil
 }
 
 // reservationFailure preserves a retryable but unavailable remote initialization.
-func (p *SourceProvider) reservationFailure(ctx context.Context, project *iapiserver.GitLabProject, cause error) error {
+func (p *SourceProvider) reservationFailure(ctx context.Context, project *iapiserver.GitLabProject, businessCode int, cause error) error {
 	if project == nil || project.Status == iapiserver.GitLabProjectStatusReady {
-		return cause
+		return toolboxerrors.NewStatus(businessCode, cause.Error())
 	}
 	if _, err := p.store.MarkGitLabProjectError(ctx, project.ID); err != nil {
-		return fmt.Errorf("record appstudio gitlab project reservation failure: %w", cause)
+		return toolboxerrors.NewStatus(code.ErrGitLabProjectProjectionFailed, "record appstudio gitlab project reservation failure")
 	}
-	return cause
+	return toolboxerrors.NewStatus(businessCode, cause.Error())
 }
 
 func (p *SourceProvider) client(ctx context.Context, projectID string) (RepositoryClient, *iapiserver.GitLabProject, error) {
 	project, err := p.store.GetGitLabProject(ctx, projectID)
 	if err != nil || project == nil || project.Status != iapiserver.GitLabProjectStatusReady || project.ExternalProjectID <= 0 {
-		return nil, nil, fmt.Errorf("gitlab project is unavailable")
+		return nil, nil, toolboxerrors.NewStatus(code.ErrGitLabProjectNotFound, "gitlab project is unavailable")
 	}
 	server, err := p.store.GetGitLabServer(ctx, project.GitLabServerID)
 	if err != nil || server == nil || server.Status != iapiserver.GitLabServerStatusReady {
-		return nil, nil, fmt.Errorf("gitlab server is unavailable")
+		return nil, nil, toolboxerrors.NewStatus(code.ErrGitLabProjectServerNotReady, "gitlab server is unavailable")
 	}
 	client, err := p.clients.NewClient(server)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, toolboxerrors.NewStatus(code.ErrGitLabServerConnectionFailed, "create gitlab client")
 	}
 	repository, ok := client.(RepositoryClient)
 	if !ok {
-		return nil, nil, fmt.Errorf("gitlab client does not support repository operations")
+		return nil, nil, toolboxerrors.NewStatus(code.ErrGitLabServerConnectionFailed, "gitlab client does not support repository operations")
 	}
 	return repository, project, nil
 }
@@ -385,6 +387,9 @@ func (p *SourceProvider) ListFiles(ctx context.Context, projectID, commitSHA, pr
 		if nextErr != nil {
 			return nil, fmt.Errorf("gitlab repository archive is truncated")
 		}
+		if isRepositoryArchiveMetadata(header.Typeflag) {
+			continue
+		}
 		name := strings.TrimPrefix(strings.ReplaceAll(header.Name, "\\", "/"), "./")
 		parts := strings.Split(name, "/")
 		if len(parts) < 2 {
@@ -394,6 +399,14 @@ func (p *SourceProvider) ListFiles(ctx context.Context, projectID, commitSHA, pr
 			return nil, fmt.Errorf("gitlab repository archive entry has no project root")
 		}
 		filePath := strings.Join(parts[1:], "/")
+		// GitLab emits the archive root as a normal directory entry. Its path is
+		// intentionally empty after removing the generated project-root segment.
+		if isRepositoryArchiveRootDirectory(filePath, header.Typeflag) {
+			continue
+		}
+		if header.Typeflag == tar.TypeDir {
+			filePath = strings.TrimSuffix(filePath, "/")
+		}
 		clean := path.Clean(filePath)
 		if clean == "." || clean != filePath || path.IsAbs(clean) || strings.HasPrefix(clean, "../") || strings.ContainsRune(clean, '\x00') {
 			return nil, fmt.Errorf("gitlab repository archive path is unsafe")
@@ -424,6 +437,19 @@ func (p *SourceProvider) ListFiles(ctx context.Context, projectID, commitSHA, pr
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+func isRepositoryArchiveRootDirectory(filePath string, typeflag byte) bool {
+	return filePath == "" && typeflag == tar.TypeDir
+}
+
+func isRepositoryArchiveMetadata(typeflag byte) bool {
+	switch typeflag {
+	case tar.TypeXHeader, tar.TypeXGlobalHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *SourceProvider) Commit(ctx context.Context, projectID, branch, baseSHA, message string, actions []appstudio.SourceAction) (*appstudio.SourceCommit, error) {
@@ -520,8 +546,18 @@ func (p *SourceProvider) CreateRuntimeGitAccess(ctx context.Context, projectID, 
 	if err != nil {
 		return nil, fmt.Errorf("create gitlab runtime access token: %w", err)
 	}
-	if token == nil || token.ID <= 0 || token.Username == "" || token.Token == "" {
+	if token == nil || token.ID <= 0 || token.Token == "" {
 		return nil, fmt.Errorf("create gitlab runtime access token returned an invalid response")
+	}
+	if token.Username == "" && token.UserID > 0 {
+		user, userErr := tokenClient.GetUser(ctx, token.UserID)
+		if userErr == nil && user != nil {
+			token.Username = user.Username
+		}
+	}
+	if token.Username == "" {
+		_ = tokenClient.RevokeProjectAccessToken(context.WithoutCancel(ctx), project.ExternalProjectID, token.ID)
+		return nil, fmt.Errorf("create gitlab runtime access token returned no username")
 	}
 	return &appstudio.RuntimeGitAccess{CloneURL: remote.HTTPURLToRepo, Username: token.Username, Token: token.Token, RemoteTokenID: token.ID}, nil
 }

@@ -160,7 +160,7 @@ func (c *httpClient) DownloadJobArtifact(ctx context.Context, projectID, jobID i
 		return nil, fmt.Errorf("gitlab artifact path is not allowed")
 	}
 	path := projectPath(projectID) + "/jobs/" + strconv.FormatInt(jobID, 10) + "/artifacts/" + url.PathEscape(artifactPath)
-	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(http.MethodGet).
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL+path).WithMethod(http.MethodGet).
 		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/gzip")
 	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
 	if err != nil {
@@ -206,7 +206,7 @@ func (c *httpClient) ListRepositoryTree(ctx context.Context, projectID int64, re
 }
 
 func (c *httpClient) doPage(ctx context.Context, path string, output any) (string, error) {
-	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(http.MethodGet).
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL+path).WithMethod(http.MethodGet).
 		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/json")
 	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
 	if err != nil {
@@ -277,12 +277,17 @@ func (c *httpClient) CreateProjectAccessToken(ctx context.Context, projectID int
 	return result, c.do(ctx, http.MethodPost, projectPath(projectID)+"/access_tokens", body, result)
 }
 
+func (c *httpClient) GetUser(ctx context.Context, userID int64) (*User, error) {
+	result := &User{}
+	return result, c.do(ctx, http.MethodGet, "/users/"+strconv.FormatInt(userID, 10), nil, result)
+}
+
 func (c *httpClient) RevokeProjectAccessToken(ctx context.Context, projectID, tokenID int64) error {
 	return c.do(ctx, http.MethodDelete, projectPath(projectID)+"/access_tokens/"+strconv.FormatInt(tokenID, 10), nil, nil)
 }
 
 func (c *httpClient) do(ctx context.Context, method, path string, body, output any) error {
-	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(method).
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL+path).WithMethod(method).
 		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/json")
 	if body != nil {
 		builder.AddHeaderParam("Content-Type", "application/json").WithBody("application/json", body)
@@ -319,7 +324,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, output a
 }
 
 func (c *httpClient) stream(ctx context.Context, method, path string) (io.ReadCloser, error) {
-	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(method).
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL+path).WithMethod(method).
 		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/gzip")
 	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
 	if err != nil {

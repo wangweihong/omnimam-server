@@ -75,6 +75,8 @@ services:
     image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/apiserver:${OMNIMAM_IMAGE_TAG:-latest-amd64}
     container_name: omnimam-apiserver
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -321,6 +323,8 @@ services:
     image: ${OMNIMAM_REGISTRY_PREFIX:-omnimam}/taskworker:${OMNIMAM_IMAGE_TAG:-latest-amd64}
     container_name: omnimam-taskworker
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

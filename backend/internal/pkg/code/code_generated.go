@@ -398,4 +398,5 @@ func init() {
 	register(ErrGitLabPipelineFailed, 200, map[string]string{"CN": "GitLab Pipeline 执行失败。", "EN": "The GitLab Pipeline failed."})
 	register(ErrGitLabPipelineCanceled, 200, map[string]string{"CN": "GitLab Pipeline 已取消。", "EN": "The GitLab Pipeline was canceled."})
 	register(ErrGitLabAccessDenied, 200, map[string]string{"CN": "当前主体无权访问 GitLab 资源。", "EN": "The current principal is not authorized to access the GitLab resource."})
+	register(ErrGitLabAppStudioDefaultServerUnavailable, 200, map[string]string{"CN": "没有 READY 且标记为 AppStudio 默认的 GitLabServer，请先完成代码仓库配置和连接检测。", "EN": "No READY GitLabServer is configured as the AppStudio default. Configure and test a repository connection first."})
 }

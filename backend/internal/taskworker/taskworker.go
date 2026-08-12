@@ -143,7 +143,7 @@ func RunTaskWorker(cfg *config.Config) error {
 		return errors.Wrap(err, "construct appstudio service for agent projector")
 	}
 	agentProjector, err := agentsvc.New(agentsvc.Dependencies{
-		Store: storeIns.Agents(), Tasks: tasks, Workspaces: appStudioService, Models: userModelService, Grants: grantCodec,
+		Store: storeIns.Agents(), Tasks: tasks, Workspaces: appStudioService, Models: userModelService, Scopes: appStudioService, Grants: grantCodec,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct agent runtime projector")

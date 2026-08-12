@@ -196,6 +196,49 @@ func (s *appStudioStore) UpdateStudioApplication(ctx context.Context, app *iapis
 	return app, err
 }
 
+// BeginStudioApplicationInitializationRetry 原子校验 ERROR 状态并切换当前 DAG 与 CREATING。
+func (s *appStudioStore) BeginStudioApplicationInitializationRetry(ctx context.Context, appID, owner, dagID string) (*iapiserver.StudioApplication, error) {
+	var app iapiserver.StudioApplication
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", appID, owner).First(&app).Error; err != nil {
+			return mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application not visible")
+		}
+		if app.InitializationDAGTaskGroupID == dagID {
+			return nil
+		}
+		if app.Status != iapiserver.AppStudioApplicationStatusError {
+			return errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "studio application initialization is already running or completed")
+		}
+		previousStatus := app.Status
+		app.InitializationDAGTaskGroupID = dagID
+		app.Status = iapiserver.AppStudioApplicationStatusCreating
+		if err := tx.Save(&app).Error; err != nil {
+			return err
+		}
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(&app, previousStatus))
+	})
+	return &app, err
+}
+
+// RollbackStudioApplicationInitializationRetry 仅回滚仍指向候选 DAG 的 CREATING Application。
+func (s *appStudioStore) RollbackStudioApplicationInitializationRetry(ctx context.Context, appID, owner, dagID string) error {
+	return s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var app iapiserver.StudioApplication
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", appID, owner).First(&app).Error; err != nil {
+			return mapNotFound(err, code.ErrAppStudioApplicationNotVisible, "studio application not visible")
+		}
+		if app.InitializationDAGTaskGroupID != dagID || app.Status != iapiserver.AppStudioApplicationStatusCreating {
+			return nil
+		}
+		previousStatus := app.Status
+		app.Status = iapiserver.AppStudioApplicationStatusError
+		if err := tx.Save(&app).Error; err != nil {
+			return err
+		}
+		return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(&app, previousStatus))
+	})
+}
+
 // ReplaceStudioCodingAgent 创建新 Agent 聚合并在同一事务中切换应用当前 generation。
 func (s *appStudioStore) ReplaceStudioCodingAgent(ctx context.Context, appID, owner string, replacement *store.StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error) {
 	var app iapiserver.StudioApplication
@@ -865,6 +908,10 @@ func (s *appStudioStore) ProjectStudioTaskTerminal(ctx context.Context, task *ia
 		var app iapiserver.StudioApplication
 		if err := s.ds.db.WithContext(ctx).Where("id = ? AND owner_user_id = ?", arguments.StudioApplicationID, arguments.OwnerUserID).First(&app).Error; err != nil {
 			return err
+		}
+		// 旧初始化 DAG 的迟到终态只保留 Task Center 历史，不得覆盖当前轮次。
+		if task.OwnerID != app.InitializationDAGTaskGroupID {
+			return nil
 		}
 		status := ""
 		if task.Status == iapiserver.AtomicTaskStatusSuccess && task.FunctionRef == iapiserver.AppStudioFunctionInitializationInvocationStart {
