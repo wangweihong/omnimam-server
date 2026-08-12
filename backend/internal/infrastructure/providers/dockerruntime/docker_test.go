@@ -1,8 +1,12 @@
 package dockerruntime
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -119,6 +123,7 @@ func TestEnsurePinsCodingRuntimeCABundle(t *testing.T) {
 				Name: "NODE_EXTRA_CA_CERTS", BindingType: iapiserver.InfraConfigBindingTypePlainConfig, Reference: "/untrusted/override.crt",
 			}},
 		},
+		RuntimeGitAccess: &providers.RuntimeGitAccess{CloneURL: "https://gitlab.example.test/group/project.git", Username: "project_bot", Token: "runtime-token"},
 	})
 	if err == nil {
 		t.Fatal("Ensure() error = nil, want controlled startup failure")
@@ -151,8 +156,8 @@ func TestEnsureConfiguresWritableNginxPreviewPaths(t *testing.T) {
 		}
 	}))
 	provider.images = MapProfileImages{"appstudio.preview.static-web@1.0": "nginx:test"}
-	provider.sourceVolume = "omnimam_appstudio_source"
 
+	archive, digest := previewSourceArchive(t)
 	_, err := provider.Ensure(t.Context(), providers.ProviderRequest{
 		RuntimeID: "runtime-1",
 		Profile: &iapiserver.InfraRuntimeProfile{
@@ -169,6 +174,7 @@ func TestEnsureConfiguresWritableNginxPreviewPaths(t *testing.T) {
 				ReadOnly: true, MountKind: iapiserver.InfraMountKindStudioWorkspaceRevision,
 			}},
 		},
+		SourceArchive: archive, SourceContentDigest: digest,
 	})
 	if err == nil {
 		t.Fatal("Ensure() error = nil, want controlled startup failure")
@@ -180,15 +186,6 @@ func TestEnsureConfiguresWritableNginxPreviewPaths(t *testing.T) {
 			ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
 			Tmpfs          map[string]string `json:"Tmpfs"`
 			CapAdd         []string          `json:"CapAdd"`
-			Mounts         []struct {
-				Type          string `json:"Type"`
-				Source        string `json:"Source"`
-				Target        string `json:"Target"`
-				ReadOnly      bool   `json:"ReadOnly"`
-				VolumeOptions struct {
-					Subpath string `json:"Subpath"`
-				} `json:"VolumeOptions"`
-			} `json:"Mounts"`
 		} `json:"HostConfig"`
 	}
 	if err := json.Unmarshal(<-createBody, &request); err != nil {
@@ -209,13 +206,134 @@ func TestEnsureConfiguresWritableNginxPreviewPaths(t *testing.T) {
 	if fmt.Sprint(request.HostConfig.CapAdd) != fmt.Sprint(wantCapabilities) {
 		t.Fatalf("Nginx Preview capabilities = %q, want %q", request.HostConfig.CapAdd, wantCapabilities)
 	}
-	if len(request.HostConfig.Mounts) != 1 {
-		t.Fatalf("Nginx Preview source mounts = %#v, want one", request.HostConfig.Mounts)
+}
+
+func previewSourceArchive(t *testing.T) ([]byte, string) {
+	t.Helper()
+	content := []byte("<main>preview</main>\n")
+	var compressed bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressed)
+	tarWriter := tar.NewWriter(gzipWriter)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "project/index.html", Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
 	}
-	mount := request.HostConfig.Mounts[0]
-	if mount.Type != "volume" || mount.Source != "omnimam_appstudio_source" || mount.Target != iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource || !mount.ReadOnly || mount.VolumeOptions.Subpath != "workspace-1/7" {
-		t.Fatalf("Nginx Preview source mount = %#v", mount)
+	if _, err := tarWriter.Write(content); err != nil {
+		t.Fatal(err)
 	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fileDigest := sha256.Sum256(content)
+	manifest := sha256.Sum256([]byte("index.html\x00sha256:" + hex.EncodeToString(fileDigest[:]) + "\x00" + fmt.Sprint(len(content)) + "\n"))
+	return compressed.Bytes(), "sha256:" + hex.EncodeToString(manifest[:])
+}
+
+func TestEnsureBuildInjectsArchiveAndCollectsBundle(t *testing.T) {
+	createBody := make(chan []byte, 1)
+	execBody := make(chan []byte, 1)
+	archiveInput := make(chan []byte, 1)
+	bundle := []byte("bundle-content")
+	provider := newDockerTestProvider(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/create":
+			createBody <- readDockerTestBody(t, request)
+			writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "container-1"})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/start":
+			response.WriteHeader(http.StatusNoContent)
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/exec":
+			execBody <- readDockerTestBody(t, request)
+			writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "exec-1"})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/exec/exec-1/start":
+			hijackDockerTestStream(t, response, archiveInput)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1.44/exec/exec-1/json":
+			writeDockerTestJSON(t, response, http.StatusOK, map[string]any{"Running": false, "ExitCode": 0})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/wait":
+			writeDockerTestJSON(t, response, http.StatusOK, map[string]any{"StatusCode": 0})
+		case request.Method == http.MethodGet && request.URL.Path == "/v1.44/containers/container-1/archive":
+			if request.URL.Query().Get("path") != "/output/bundle.tar.gz" {
+				t.Errorf("output archive path = %q", request.URL.Query().Get("path"))
+			}
+			response.WriteHeader(http.StatusOK)
+			_, _ = response.Write(dockerTestTar(t, "bundle.tar.gz", bundle))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	provider.images = MapProfileImages{"appstudio.build.static-web@1.0": "node:test"}
+	source, digest := previewSourceArchive(t)
+	result, err := provider.Ensure(t.Context(), providers.ProviderRequest{
+		RuntimeID: "runtime-build-1",
+		Profile:   &iapiserver.InfraRuntimeProfile{ObjectMeta: imachinery.ObjectMeta{ID: iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb}, Revision: "1.0"},
+		Request: &iapiserver.InfraCreateRuntimeRequest{
+			RuntimeMode: iapiserver.InfraRuntimeModeJob, SourceRef: iapiserver.InfraRefPrefixStudioSnapshot + "snapshot-1",
+			OutputDeclarations: []iapiserver.InfraRuntimeOutputDeclaration{{OutputKey: "bundle", RelativePath: "bundle.tar.gz", MediaType: "application/gzip"}},
+		},
+		SourceArchive: source, SourceContentDigest: digest,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Status != iapiserver.InfraRuntimeStatusSucceeded || len(result.Outputs) != 1 || result.Outputs[0].OutputKey != "bundle" {
+		t.Fatalf("Ensure() result = %#v", result)
+	}
+	output, ok := result.OutputContents["bundle"]
+	if !ok || output.SizeBytes != int64(len(bundle)) || output.Open == nil {
+		t.Fatalf("collected output = %#v", output)
+	}
+	reader, err := output.Open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	collected, err := io.ReadAll(reader)
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || !bytes.Equal(collected, bundle) {
+		t.Fatalf("collected output = %q, error = %v", collected, err)
+	}
+	var create struct {
+		Cmd        []string `json:"Cmd"`
+		HostConfig struct {
+			Tmpfs map[string]string `json:"Tmpfs"`
+		} `json:"HostConfig"`
+	}
+	createRaw := <-createBody
+	if err := json.Unmarshal(createRaw, &create); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/workspace", "/output", "/run/omnimam"} {
+		if _, ok := create.HostConfig.Tmpfs[target]; !ok {
+			t.Fatalf("Build container is missing tmpfs %s", target)
+		}
+	}
+	if len(create.Cmd) != 1 || !strings.Contains(create.Cmd[0], "while [ ! -f /run/omnimam/source-ready ]") || !strings.Contains(create.Cmd[0], "corepack pnpm build") {
+		t.Fatalf("Build command = %q", create.Cmd)
+	}
+	if bytes.Contains(<-execBody, source) || bytes.Contains(createRaw, source) {
+		t.Fatal("source archive leaked into Docker metadata")
+	}
+	if got := <-archiveInput; !bytes.Equal(got, source) {
+		t.Fatal("Build source archive stdin does not match the resolved archive")
+	}
+}
+
+func dockerTestTar(t *testing.T, name string, content []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := tar.NewWriter(&buffer)
+	if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
 
 func TestPreviewSourceSubpathRejectsCrossScopeAndTraversal(t *testing.T) {
@@ -553,9 +671,12 @@ func TestExecWithInputWaitsForTerminalStateAfterStreamCompletion(t *testing.T) {
 
 func TestEnsureDeletesContainerWhenConfigInjectionFails(t *testing.T) {
 	const credential = "cleanup-path-credential"
+	const runtimeGitToken = "runtime-git-token"
 	deleted := make(chan string, 1)
 	containerCreateBody := make(chan []byte, 1)
-	execCreateBody := make(chan []byte, 1)
+	execCreateBody := make(chan []byte, 2)
+	gitExecInput := make(chan []byte, 1)
+	execCount := 0
 	provider := newDockerTestProvider(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/create":
@@ -564,9 +685,19 @@ func TestEnsureDeletesContainerWhenConfigInjectionFails(t *testing.T) {
 		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/start":
 			response.WriteHeader(http.StatusNoContent)
 		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/containers/container-1/exec":
+			execCount++
 			execCreateBody <- readDockerTestBody(t, request)
-			writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "exec-1"})
-		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/exec/exec-1/start":
+			if execCount == 1 {
+				writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "git-exec"})
+			} else {
+				writeDockerTestJSON(t, response, http.StatusCreated, map[string]any{"Id": "config-exec"})
+			}
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/exec/git-exec/start":
+			_ = readDockerTestBody(t, request)
+			hijackDockerTestStream(t, response, gitExecInput)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1.44/exec/git-exec/json":
+			writeDockerTestJSON(t, response, http.StatusOK, map[string]any{"Running": false, "ExitCode": 0})
+		case request.Method == http.MethodPost && request.URL.Path == "/v1.44/exec/config-exec/start":
 			_ = readDockerTestBody(t, request)
 			http.Error(response, "upgrade unavailable", http.StatusBadRequest)
 		case request.Method == http.MethodDelete && request.URL.Path == "/v1.44/containers/container-1":
@@ -596,12 +727,13 @@ func TestEnsureDeletesContainerWhenConfigInjectionFails(t *testing.T) {
 			Credential:    credential,
 			Configuration: map[string]any{"timeout": 30},
 		}},
+		RuntimeGitAccess: &providers.RuntimeGitAccess{CloneURL: "https://gitlab.example.test/group/project.git", Username: "project_bot", Token: runtimeGitToken},
 	})
 	if err == nil || result != nil {
 		t.Fatalf("Ensure() = (%v, %v), want nil result and config injection error", result, err)
 	}
-	if strings.Contains(err.Error(), credential) {
-		t.Fatal("Ensure() leaked the resolved credential in its error")
+	if strings.Contains(err.Error(), credential) || strings.Contains(err.Error(), runtimeGitToken) {
+		t.Fatal("Ensure() leaked a resolved credential in its error")
 	}
 	createBody := <-containerCreateBody
 	if bytes.Contains(createBody, []byte(credential)) {
@@ -630,11 +762,20 @@ func TestEnsureDeletesContainerWhenConfigInjectionFails(t *testing.T) {
 	if _, ok := createRequest.HostConfig.Tmpfs["/run/omnimam"]; !ok {
 		t.Fatal("Docker container is missing writable startup-gate tmpfs")
 	}
-	if len(createRequest.Cmd) != 1 || !strings.Contains(createRequest.Cmd[0], "while [ ! -f /run/omnimam/start ]") {
+	if _, ok := createRequest.HostConfig.Tmpfs["/workspace"]; !ok {
+		t.Fatal("Docker container is missing disposable workspace tmpfs")
+	}
+	if len(createRequest.Cmd) != 1 || !strings.Contains(createRequest.Cmd[0], "[ ! -f /run/omnimam/start ] || [ ! -f /run/omnimam/git-ready ]") {
 		t.Fatalf("Docker container command does not preserve the startup gate: %q", createRequest.Cmd)
 	}
-	if bytes.Contains(<-execCreateBody, []byte(credential)) {
-		t.Fatal("credential leaked into Docker exec create metadata")
+	for i := 0; i < 2; i++ {
+		execBody := <-execCreateBody
+		if bytes.Contains(execBody, []byte(credential)) || bytes.Contains(execBody, []byte(runtimeGitToken)) {
+			t.Fatal("credential leaked into Docker exec create metadata")
+		}
+	}
+	if input := <-gitExecInput; !bytes.Contains(input, []byte(runtimeGitToken)) {
+		t.Fatal("runtime Git token was not sent through Docker exec stdin")
 	}
 	if query := <-deleted; query != "force=true&v=true" {
 		t.Fatalf("Delete container query = %q, want force=true&v=true", query)

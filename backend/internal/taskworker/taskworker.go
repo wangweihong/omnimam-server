@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -58,9 +57,6 @@ func RunTaskWorker(cfg *config.Config) error {
 	if cfg.InfrastructureClientOptions == nil {
 		return fmt.Errorf("infrastructure client options are required for taskworker")
 	}
-	if cfg.MCPOptions == nil {
-		return fmt.Errorf("MCP options are required for taskworker workspace tools")
-	}
 	infrastructureClient, err := infrastructure.NewClient(cfg.InfrastructureClientOptions.BaseURL, cfg.InfrastructureClientOptions.Token)
 	if err != nil {
 		return errors.Wrap(err, "construct infrastructure client")
@@ -106,7 +102,8 @@ func RunTaskWorker(cfg *config.Config) error {
 		iapiserver.TaskWorkerFunctionComfyUISubmit, iapiserver.TaskWorkerFunctionComfyUIPoll, iapiserver.TaskWorkerFunctionComfyUICollectPreview,
 		assetlibrarysvc.FunctionArtifactProcess, assetlibrarysvc.FunctionRepresentationInspect,
 		assetlibrarysvc.FunctionRepresentationGenerate, assetlibrarysvc.FunctionRepresentationFinalize, iapiserver.GitLabFunctionPipelineRun)
-	gitLabExecutor, err := gitlabexecutor.New(storeIns.GitLab(), gitlabsvc.NewHTTPClientFactory())
+	gitLabClientFactory := gitlabsvc.NewHTTPClientFactory()
+	gitLabExecutor, err := gitlabexecutor.New(storeIns.GitLab(), gitLabClientFactory)
 	if err != nil {
 		return errors.Wrap(err, "construct gitlab pipeline executor")
 	}
@@ -132,16 +129,12 @@ func RunTaskWorker(cfg *config.Config) error {
 	if err != nil {
 		return errors.Wrap(err, "construct user model service")
 	}
-	sourceDir := os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_DIR")
-	if sourceDir == "" {
-		sourceDir = "data/appstudio/source"
-	}
-	sourceStore, err := appstudiosvc.NewLocalSourceContentStore(sourceDir)
+	sourceProvider, err := gitlabsvc.NewSourceProvider(storeIns.GitLab(), gitLabClientFactory)
 	if err != nil {
-		return errors.Wrap(err, "construct appstudio source content store")
+		return errors.Wrap(err, "construct appstudio gitlab source provider")
 	}
 	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{
-		Store: storeIns.AppStudio(), Tasks: tasks, Sources: sourceStore, Artifacts: storeIns.AssetsV1(), Grants: grantCodec,
+		Store: storeIns.AppStudio(), Tasks: tasks, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct appstudio service for agent projector")
@@ -154,8 +147,7 @@ func RunTaskWorker(cfg *config.Config) error {
 	}
 	invocationExecutor, err := agentexecutor.NewInvocationExecutor(agentexecutor.InvocationExecutorDependencies{
 		Store: storeIns.Agents(), Endpoints: infrastructureClient, Models: userModelService,
-		Credentials: credentialBroker, Grants: grantCodec, Workspaces: storeIns.AppStudio(),
-		WorkspaceToolBaseURL: cfg.MCPOptions.PublicBaseURL, Registry: functionRegistry,
+		Credentials: credentialBroker, Grants: grantCodec, Workspaces: appStudioService, Registry: functionRegistry,
 	})
 	if err != nil {
 		return errors.Wrap(err, "construct agent invocation executor")

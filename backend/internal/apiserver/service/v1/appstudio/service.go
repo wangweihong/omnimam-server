@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +22,6 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/ctxvalue"
-	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
 )
 
 const (
@@ -59,38 +61,31 @@ type CodingAgentCreator interface {
 }
 
 type Service struct {
-	store                  store.AppStudioStore
-	tasks                  TaskClient
-	sources                SourceContentStore
-	artifacts              ArtifactReader
-	agents                 CodingAgentCreator
-	grants                 *agentgrant.Codec
-	workspaceToolProcessor *mcpprotocol.Processor
+	store              store.AppStudioStore
+	tasks              TaskClient
+	sourceProvider     SourceProvider
+	projectInitializer ProjectInitializer
+	artifacts          ArtifactReader
+	agents             CodingAgentCreator
+	grants             *agentgrant.Codec
 }
 type Dependencies struct {
-	Store     store.AppStudioStore
-	Tasks     TaskClient
-	Sources   SourceContentStore
-	Artifacts ArtifactReader
-	Grants    *agentgrant.Codec
+	Store              store.AppStudioStore
+	Tasks              TaskClient
+	SourceProvider     SourceProvider
+	ProjectInitializer ProjectInitializer
+	Artifacts          ArtifactReader
+	Grants             *agentgrant.Codec
 }
 
 func New(deps Dependencies) (*Service, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("appstudio store is required")
 	}
-	if deps.Sources == nil {
-		return nil, fmt.Errorf("appstudio source content store is required")
+	if deps.SourceProvider == nil {
+		return nil, fmt.Errorf("appstudio source provider is required")
 	}
-	service := &Service{store: deps.Store, tasks: deps.Tasks, sources: deps.Sources, artifacts: deps.Artifacts, grants: deps.Grants}
-	if deps.Grants != nil {
-		processor, err := mcpprotocol.NewProcessor(workspaceToolDispatcher{service: service})
-		if err != nil {
-			return nil, fmt.Errorf("construct appstudio workspace tool processor: %w", err)
-		}
-		service.workspaceToolProcessor = processor
-	}
-	return service, nil
+	return &Service{store: deps.Store, tasks: deps.Tasks, sourceProvider: deps.SourceProvider, projectInitializer: deps.ProjectInitializer, artifacts: deps.Artifacts, grants: deps.Grants}, nil
 }
 
 func (s *Service) SetCodingAgentCreator(creator CodingAgentCreator) {
@@ -117,6 +112,228 @@ func (s *Service) ResolveAgentWorkloadOwner(ctx context.Context, applicationID, 
 	return app.OwnerUserID, nil
 }
 
+// ResolveCodingInvocationContext returns the immutable source fence consumed by an Invocation grant.
+func (s *Service) ResolveCodingInvocationContext(ctx context.Context, owner, agentID, invocationID string) (string, string, int64, string, string, error) {
+	app, err := s.store.GetStudioApplicationByCodingAgent(ctx, agentID, owner)
+	if err != nil || app == nil {
+		return "", "", 0, "", "", errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "coding application context is unavailable")
+	}
+	workspace, err := s.store.GetStudioWorkspaceByApplication(ctx, app.ID, owner)
+	if err != nil {
+		return "", "", 0, "", "", err
+	}
+	revision, err := s.store.GetStudioWorkspaceRevision(ctx, workspace.ID, workspace.CurrentRevision, owner)
+	if err != nil || revision.CommitSHA == "" {
+		return "", "", 0, "", "", errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "coding source revision is unavailable")
+	}
+	return app.ID, workspace.ID, revision.Revision, revision.CommitSHA, app.BlueprintVersion, nil
+}
+
+// SynchronizeCodingInvocation verifies the Runtime Git push and atomically
+// projects its single fast-forward commit as the Invocation's ChangeSet/Revision.
+func (s *Service) SynchronizeCodingInvocation(ctx context.Context, owner, applicationID, workspaceID, agentID, sessionID, invocationID string, baseRevision int64, baseCommitSHA string) (*iapiserver.StudioChangeSet, error) {
+	if owner == "" || applicationID == "" || workspaceID == "" || agentID == "" || sessionID == "" || invocationID == "" || baseRevision < 0 || baseCommitSHA == "" {
+		return nil, fmt.Errorf("coding invocation synchronization scope is invalid")
+	}
+	app, err := s.store.GetStudioApplicationByCodingAgent(ctx, agentID, owner)
+	if err != nil || app == nil || app.ID != applicationID {
+		return nil, fmt.Errorf("coding invocation application fence is invalid")
+	}
+	workspace, err := s.store.GetStudioWorkspaceByApplication(ctx, applicationID, owner)
+	if err != nil || workspace == nil || workspace.ID != workspaceID {
+		return nil, fmt.Errorf("coding invocation workspace fence is invalid")
+	}
+	key := "coding-invocation:" + invocationID
+	existing, existingErr := s.store.GetStudioChangeSetByIdempotencyKey(ctx, workspaceID, key, owner)
+	if existingErr == nil {
+		if existing.AgentID != agentID || existing.AgentSessionID != sessionID || existing.AgentInvocationID != invocationID || existing.BaseRevision != baseRevision || existing.Status != iapiserver.AppStudioChangeSetStatusApplied {
+			return nil, fmt.Errorf("coding invocation ChangeSet idempotency conflicts")
+		}
+		existing.StudioApplicationID = applicationID
+		return existing, nil
+	}
+	if errors.ToStatus(existingErr).Code != code.ErrAppStudioSourceNotVisible {
+		return nil, existingErr
+	}
+	if workspace.CurrentRevision != baseRevision {
+		return nil, fmt.Errorf("coding invocation workspace base revision conflicts")
+	}
+	base, err := s.store.GetStudioWorkspaceRevision(ctx, workspaceID, baseRevision, owner)
+	if err != nil || base.CommitSHA != baseCommitSHA {
+		return nil, fmt.Errorf("coding invocation base revision fence is invalid")
+	}
+	repository, err := s.store.GetStudioSourceRepository(ctx, workspaceID, owner)
+	if err != nil || repository.GitLabProjectID == "" {
+		return nil, fmt.Errorf("coding invocation repository is unavailable")
+	}
+	headSHA, err := s.sourceProvider.BranchHead(ctx, repository.GitLabProjectID, "main")
+	if err != nil || headSHA == "" || headSHA == baseCommitSHA {
+		return nil, fmt.Errorf("coding invocation did not push a source commit")
+	}
+	commits, err := s.sourceProvider.Compare(ctx, repository.GitLabProjectID, baseCommitSHA, headSHA)
+	if err != nil || len(commits) != 1 || commits[0].SHA != headSHA || commits[0].ParentSHA != baseCommitSHA {
+		return nil, fmt.Errorf("coding invocation source branch is not a single fast-forward commit")
+	}
+	baseFiles, err := s.loadRevision(ctx, workspaceID, baseRevision, owner)
+	if err != nil {
+		return nil, err
+	}
+	remoteFiles, err := s.sourceProvider.ListFiles(ctx, repository.GitLabProjectID, headSHA, "")
+	if err != nil {
+		return nil, err
+	}
+	targetFiles := make(map[string][]byte, len(remoteFiles))
+	for _, file := range remoteFiles {
+		filePath, pathErr := cleanSourcePath(file.Path)
+		if pathErr != nil || filePath != file.Path || file.SizeBytes != int64(len(file.Content)) {
+			return nil, fmt.Errorf("coding invocation remote source file is invalid")
+		}
+		if _, exists := targetFiles[filePath]; exists {
+			return nil, fmt.Errorf("coding invocation remote source contains duplicate files")
+		}
+		targetFiles[filePath] = append([]byte(nil), file.Content...)
+	}
+	targetRevision := baseRevision + 1
+	digest, rows := revisionRows(workspaceID, targetRevision, targetFiles)
+	operations := diffOperations(baseFiles, targetFiles)
+	changeSet := &iapiserver.StudioChangeSet{
+		ObjectMeta:          imachinery.ObjectMeta{ID: uuid.NewString(), Description: "Coding invocation " + invocationID},
+		StudioApplicationID: applicationID,
+		WorkspaceID:         workspaceID,
+		BaseRevision:        baseRevision,
+		TargetRevision:      &targetRevision,
+		ActorID:             owner,
+		AgentID:             agentID,
+		AgentSessionID:      sessionID,
+		AgentInvocationID:   invocationID,
+		Operations:          operations,
+		Status:              iapiserver.AppStudioChangeSetStatusApplied,
+		IdempotencyKey:      key,
+	}
+	parent := baseRevision
+	revision := &iapiserver.StudioWorkspaceRevision{
+		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspaceID, Revision: targetRevision,
+		CommitSHA: headSHA, ContentDigest: digest, ParentRevision: &parent, CreatedBy: owner, ChangeSetID: changeSet.ID,
+	}
+	projected, err := s.store.ApplyStudioChangeSet(ctx, owner, changeSet, revision, rows)
+	if projected != nil {
+		projected.StudioApplicationID = applicationID
+	}
+	return projected, err
+}
+
+// ResolveStudioInvocationChangeSets exposes AppStudio's existing Invocation projection to the Agent Worker.
+func (s *Service) ResolveStudioInvocationChangeSets(ctx context.Context, applicationID, owner string, invocationIDs []string) (map[string]*iapiserver.StudioChangeSet, error) {
+	return s.store.ResolveStudioInvocationChangeSets(ctx, applicationID, owner, invocationIDs)
+}
+
+// IssueCodingRuntimeGitAccess creates a short-lived project token and returns
+// only an encrypted reference suitable for an Infrastructure SECRET_REF binding.
+func (s *Service) IssueCodingRuntimeGitAccess(ctx context.Context, owner, agentID, runtimeID, applicationID, workspaceID string, generation int64, expiresAt time.Time) (string, error) {
+	if s.grants == nil || s.sourceProvider == nil || owner == "" || agentID == "" || runtimeID == "" || applicationID == "" || workspaceID == "" || generation < 1 || !expiresAt.After(time.Now()) {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is unavailable")
+	}
+	app, err := s.store.GetStudioApplicationByCodingAgent(ctx, agentID, owner)
+	if err != nil || app == nil || app.ID != applicationID || app.CodingAgentID != agentID || int64(app.CodingAgentGeneration) != generation {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime application scope is invalid")
+	}
+	workspace, err := s.store.GetStudioWorkspaceByApplication(ctx, app.ID, owner)
+	if err != nil || workspace == nil || workspace.ID != workspaceID {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime workspace is unavailable")
+	}
+	repository, err := s.store.GetStudioSourceRepository(ctx, workspace.ID, owner)
+	if err != nil || repository == nil || repository.GitLabProjectID == "" {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime repository is unavailable")
+	}
+	access, err := s.sourceProvider.CreateRuntimeGitAccess(ctx, repository.GitLabProjectID, runtimeID, expiresAt)
+	if err != nil || access == nil || access.CloneURL == "" || access.Username == "" || access.Token == "" || access.RemoteTokenID <= 0 {
+		return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access could not be created")
+	}
+	issuedAt := time.Now().UTC()
+	reference, issueErr := s.grants.Issue(iapiserver.AppStudioRefPrefixRuntimeGitAccess, agentgrant.RuntimeGitAccessClaims{
+		OwnerUserID: owner, AgentID: agentID, RuntimeID: runtimeID, AgentGeneration: generation,
+		StudioApplicationID: applicationID, WorkspaceID: workspaceID, GitLabProjectID: repository.GitLabProjectID,
+		CloneURL: access.CloneURL, Username: access.Username, Token: access.Token, RemoteTokenID: access.RemoteTokenID, IssuedAt: issuedAt, ExpiresAt: expiresAt,
+	})
+	if issueErr == nil {
+		return reference, nil
+	}
+	_ = s.sourceProvider.RevokeRuntimeGitAccess(context.WithoutCancel(ctx), repository.GitLabProjectID, access.RemoteTokenID)
+	return "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access could not be issued")
+}
+
+// ResolveRuntimeGitAccess decrypts a SECRET_REF only for the Infrastructure startup chain.
+func (s *Service) ResolveRuntimeGitAccess(ctx context.Context, reference, runtimeID string) (string, string, string, error) {
+	if s.grants == nil {
+		return "", "", "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is unavailable")
+	}
+	var claims agentgrant.RuntimeGitAccessClaims
+	if err := s.grants.Resolve(reference, iapiserver.AppStudioRefPrefixRuntimeGitAccess, &claims); err != nil || agentgrant.ValidateWindow(claims.IssuedAt, claims.ExpiresAt) != nil || runtimeID == "" || claims.RuntimeID != runtimeID || claims.OwnerUserID == "" || claims.AgentID == "" || claims.AgentGeneration < 1 || claims.StudioApplicationID == "" || claims.WorkspaceID == "" || claims.GitLabProjectID == "" || claims.CloneURL == "" || claims.Username == "" || claims.Token == "" || claims.RemoteTokenID <= 0 {
+		return "", "", "", errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is invalid")
+	}
+	return claims.CloneURL, claims.Username, claims.Token, nil
+}
+
+// RevokeRuntimeGitAccess revokes the token referenced by a Runtime SECRET_REF.
+func (s *Service) RevokeRuntimeGitAccess(ctx context.Context, reference string) error {
+	if s.grants == nil || s.sourceProvider == nil {
+		return errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is unavailable")
+	}
+	var claims agentgrant.RuntimeGitAccessClaims
+	if err := s.grants.Resolve(reference, iapiserver.AppStudioRefPrefixRuntimeGitAccess, &claims); err != nil || claims.GitLabProjectID == "" || claims.RemoteTokenID <= 0 {
+		return errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is invalid")
+	}
+	if err := s.sourceProvider.RevokeRuntimeGitAccess(ctx, claims.GitLabProjectID, claims.RemoteTokenID); err != nil {
+		return errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access could not be revoked")
+	}
+	return nil
+}
+
+// ResolveSourceArchive 校验 Preview grant 后按固定 Revision CommitSHA 返回 GitLab archive 流。
+func (s *Service) ResolveSourceArchive(ctx context.Context, sourceRef, authorizationRef string) (io.ReadCloser, string, error) {
+	if s.sourceProvider == nil {
+		return nil, "", errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio source provider is unavailable")
+	}
+	access, err := s.resolveSourceArchiveAccess(ctx, sourceRef, authorizationRef)
+	if err != nil {
+		return nil, "", err
+	}
+	archive, err := s.sourceProvider.Archive(ctx, access.GitLabProjectID, access.CommitSHA)
+	if err != nil {
+		return nil, "", errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio source archive is unavailable")
+	}
+	return archive, access.ContentDigest, nil
+}
+
+func (s *Service) resolveSourceArchiveAccess(ctx context.Context, sourceRef, authorizationRef string) (*store.StudioSourceArchiveAccess, error) {
+	if source := strings.TrimPrefix(sourceRef, iapiserver.AppStudioRefPrefixWorkspaceRevision); source != sourceRef {
+		grant := strings.TrimPrefix(authorizationRef, iapiserver.AppStudioRefPrefixPreviewGrant)
+		sourceParts, grantParts := strings.Split(source, "/"), strings.Split(grant, "/")
+		if grant == authorizationRef || len(sourceParts) != 2 || len(grantParts) != 3 || sourceParts[0] != grantParts[0] || sourceParts[0] == "" || grantParts[1] == "" {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio preview source authorization is invalid")
+		}
+		revision, revisionErr := strconv.ParseInt(sourceParts[1], 10, 64)
+		resourceVersion, versionErr := strconv.ParseInt(grantParts[2], 10, 64)
+		if revisionErr != nil || versionErr != nil || revision < 0 || resourceVersion < 0 {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio preview source authorization is invalid")
+		}
+		return s.store.ResolveStudioPreviewSource(ctx, sourceParts[0], revision, grantParts[1], resourceVersion)
+	}
+	if snapshotID := strings.TrimPrefix(sourceRef, iapiserver.AppStudioRefPrefixStudioSnapshot); snapshotID != sourceRef {
+		grant := strings.TrimPrefix(authorizationRef, iapiserver.AppStudioRefPrefixBuildGrant)
+		grantParts := strings.Split(grant, "/")
+		if snapshotID == "" || grant == authorizationRef || len(grantParts) != 3 || grantParts[0] == "" || grantParts[1] == "" {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio build source authorization is invalid")
+		}
+		resourceVersion, versionErr := strconv.ParseInt(grantParts[2], 10, 64)
+		if versionErr != nil || resourceVersion < 0 {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio build source authorization is invalid")
+		}
+		return s.store.ResolveStudioBuildSource(ctx, snapshotID, grantParts[0], grantParts[1], resourceVersion)
+	}
+	return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio source authorization is invalid")
+}
+
 func (s *Service) ListApplications(ctx context.Context, req *iapiserver.StudioApplicationListRequest) (*iapiserver.StudioApplicationListResponse, error) {
 	owner, err := studioUserID(ctx)
 	if err != nil {
@@ -141,21 +358,43 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	if s.agents == nil {
 		return nil, errors.NewStatus(code.ErrAgentInitializationFailed, "coding agent initialization is unavailable")
 	}
+	blueprint, err := LoadBlueprint(BlueprintWebReactID, BlueprintWebReactVersion)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAppStudioApplicationInvalidState, "web-react blueprint is unavailable")
+	}
 
 	appID := stableStudioInitializationID(owner, req.IdempotencyKey, "application")
 	repoID := stableStudioInitializationID(owner, req.IdempotencyKey, "repository")
 	workspaceID := stableStudioInitializationID(owner, req.IdempotencyKey, "workspace")
+	gitLabProjectID := stableStudioInitializationID(owner, req.IdempotencyKey, "gitlab-project")
 	app := &iapiserver.StudioApplication{
 		ObjectMeta:  imachinery.ObjectMeta{ID: appID, Name: req.Name, Description: req.Description},
-		OwnerUserID: owner, Status: iapiserver.AppStudioApplicationStatusReady, DefaultWorkspaceID: workspaceID,
+		OwnerUserID: owner, Status: iapiserver.AppStudioApplicationStatusCreating, DefaultWorkspaceID: workspaceID,
+		BlueprintID: blueprint.ID, BlueprintVersion: blueprint.Version,
 		CodingAgentGeneration: 1, CreateIdempotencyKey: req.IdempotencyKey,
 	}
-	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: iapiserver.AppStudioSourceProviderBuiltIn, Status: iapiserver.AppStudioRepositoryStatusReady}
-	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: iapiserver.AppStudioDefaultWorkspaceName}, StudioApplicationID: appID, RepositoryID: repoID, Status: iapiserver.AppStudioWorkspaceStatusReady, CurrentRevisionDigest: emptyTreeDigest()}
-	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(owner, req.IdempotencyKey, "revision-0")}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: emptyTreeDigest(), CreatedBy: owner}
-	if err := s.sources.WriteRevision(ctx, workspaceID, 0, map[string][]byte{}); err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
+	starterFiles := make(map[string][]byte, len(blueprint.Files))
+	for path, content := range blueprint.Files {
+		starterFiles[path] = append([]byte(nil), content...)
 	}
+	starterDigest, starterRows := revisionRows(workspaceID, 0, starterFiles)
+	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: iapiserver.AppStudioSourceProviderGitLab, GitLabProjectID: gitLabProjectID, Status: iapiserver.AppStudioRepositoryStatusCreating}
+	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: iapiserver.AppStudioDefaultWorkspaceName}, StudioApplicationID: appID, RepositoryID: repoID, Status: iapiserver.AppStudioWorkspaceStatusCreating, CurrentRevisionDigest: starterDigest}
+	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(owner, req.IdempotencyKey, "revision-0")}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: starterDigest, CreatedBy: owner}
+	if _, err := s.store.CreateStudioApplicationInitialization(ctx, &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace}); err != nil {
+		return nil, err
+	}
+	if s.projectInitializer == nil {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio source provider is unavailable")
+	}
+	projectPath := deterministicGitLabProjectPath(owner, req.IdempotencyKey, req.Name)
+	initialized, initErr := s.projectInitializer.EnsureProject(ctx, gitLabProjectID, req.Name, projectPath, req.Description, starterFiles)
+	if initErr != nil || initialized == nil || initialized.GitLabProjectID == "" || initialized.CommitSHA == "" {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio gitlab project initialization failed")
+	}
+	repository.GitLabProjectID = initialized.GitLabProjectID
+	revision.CommitSHA = initialized.CommitSHA
+	app.Status, repository.Status, workspace.Status = iapiserver.AppStudioApplicationStatusReady, iapiserver.AppStudioRepositoryStatusReady, iapiserver.AppStudioWorkspaceStatusReady
 	modelInput := &iapiserver.AgentModelBindingInput{SourceType: req.CodingModelSelection.SourceType, SourceRef: req.CodingModelSelection.SourceRef, Purpose: iapiserver.AgentModelBindingPurposeCoding}
 	authorization := &iapiserver.AgentAuthorizationSummary{Source: iapiserver.AppStudioTaskDomain, ValidatedAt: imachinery.Now()}
 	agent, session, workspaceBinding, modelBinding, err := s.agents.PrepareCodingAgentForStudio(ctx, appID, workspaceID, owner, appID, req.CodingAgentProfile, modelInput, authorization)
@@ -177,7 +416,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 		AssistantMessageID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("agent-invocation-assistant:"+invocationID)).String(),
 		IdempotencyKey:     "studio-create:" + req.IdempotencyKey,
 	}
-	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
+	initialization := &store.StudioApplicationInitialization{Application: app, Repository: repository, Workspace: workspace, Revision: revision, SourceFiles: starterRows, Agent: agent, Session: session, WorkspaceBinding: workspaceBinding, ModelBinding: modelBinding, MCPBinding: mcpBinding, UserMessage: message, InitialInvocation: invocation}
 	if _, err := s.store.CreateStudioApplicationInitialization(ctx, initialization); err != nil {
 		return nil, err
 	}
@@ -481,7 +720,7 @@ func (s *Service) ListFiles(ctx context.Context, appID string, req *iapiserver.S
 }
 
 func (s *Service) GetFileContent(ctx context.Context, appID string, req *iapiserver.StudioFileContentRequest) (*iapiserver.StudioFileContent, error) {
-	_, workspace, err := s.sourceWorkspace(ctx, appID)
+	owner, workspace, err := s.sourceWorkspace(ctx, appID)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +728,7 @@ func (s *Service) GetFileContent(ctx context.Context, appID string, req *iapiser
 	if revision == 0 {
 		revision = workspace.CurrentRevision
 	}
-	content, err := s.sources.ReadFile(ctx, workspace.ID, revision, req.Path)
+	content, err := s.readSourceFile(ctx, workspace.ID, revision, req.Path, owner)
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrAppStudioSourceNotVisible, "studio source file not visible")
 	}
@@ -531,13 +770,26 @@ func (s *Service) ApplyChangeSet(ctx context.Context, appID string, req *iapiser
 	}
 	target := req.BaseRevision + 1
 	digest, rows := revisionRows(workspace.ID, target, files)
-	if err := s.sources.WriteRevision(ctx, workspace.ID, target, files); err != nil {
-		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, err.Error())
+	commitSHA := ""
+	repository, repoErr := s.store.GetStudioSourceRepository(ctx, workspace.ID, owner)
+	baseRevision, revisionErr := s.store.GetStudioWorkspaceRevision(ctx, workspace.ID, req.BaseRevision, owner)
+	if repoErr != nil || revisionErr != nil || repository.GitLabProjectID == "" || baseRevision.CommitSHA == "" {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source commit is unavailable")
 	}
+	actions := make([]SourceAction, 0, len(req.Operations))
+	for _, operation := range req.Operations {
+		action := SourceAction{Operation: operation.Operation, Path: operation.Path, Content: []byte(pointerStringValue(operation.Content)), TargetPath: pointerStringValue(operation.TargetPath)}
+		actions = append(actions, action)
+	}
+	commit, commitErr := s.sourceProvider.Commit(ctx, repository.GitLabProjectID, "main", baseRevision.CommitSHA, "appstudio:changeset:"+req.IdempotencyKey, actions)
+	if commitErr != nil || commit == nil || commit.SHA == "" {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source branch head conflicts with base commit")
+	}
+	commitSHA = commit.SHA
 	targetPtr := target
 	changeSet := &iapiserver.StudioChangeSet{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Description: req.Summary}, StudioApplicationID: appID, WorkspaceID: workspace.ID, BaseRevision: req.BaseRevision, TargetRevision: &targetPtr, ActorID: owner, AgentID: req.AgentID, AgentSessionID: req.AgentSessionID, AgentInvocationID: req.AgentInvocationID, Operations: req.Operations, Status: iapiserver.AppStudioChangeSetStatusApplied, IdempotencyKey: req.IdempotencyKey}
 	parent := req.BaseRevision
-	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspace.ID, Revision: target, ContentDigest: digest, ParentRevision: &parent, CreatedBy: owner, ChangeSetID: changeSet.ID}
+	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, WorkspaceID: workspace.ID, Revision: target, CommitSHA: commitSHA, ContentDigest: digest, ParentRevision: &parent, CreatedBy: owner, ChangeSetID: changeSet.ID}
 	result, err := s.store.ApplyStudioChangeSet(ctx, owner, changeSet, revision, rows)
 	if result != nil {
 		result.StudioApplicationID = appID
@@ -1013,13 +1265,40 @@ func (s *Service) loadRevision(ctx context.Context, workspaceID string, revision
 	}
 	result := make(map[string][]byte, len(rows))
 	for _, row := range rows {
-		content, readErr := s.sources.ReadFile(ctx, workspaceID, revision, row.Path)
+		content, readErr := s.readSourceFile(ctx, workspaceID, revision, row.Path, owner)
 		if readErr != nil {
 			return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source content is unavailable")
 		}
 		result[row.Path] = content
 	}
 	return result, nil
+}
+
+func pointerStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func cleanSourcePath(value string) (string, error) {
+	clean := path.Clean(value)
+	if clean == "." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) || strings.ContainsRune(clean, '\x00') {
+		return "", fmt.Errorf("invalid source path")
+	}
+	return clean, nil
+}
+
+func (s *Service) readSourceFile(ctx context.Context, workspaceID string, revision int64, filePath, owner string) ([]byte, error) {
+	repository, err := s.store.GetStudioSourceRepository(ctx, workspaceID, owner)
+	if err != nil {
+		return nil, err
+	}
+	version, err := s.store.GetStudioWorkspaceRevision(ctx, workspaceID, revision, owner)
+	if err != nil || repository.GitLabProjectID == "" || version.CommitSHA == "" {
+		return nil, errStudioSourceRevisionEmpty
+	}
+	return s.sourceProvider.ReadFile(ctx, repository.GitLabProjectID, version.CommitSHA, filePath)
 }
 
 func applyOperations(files map[string][]byte, operations []iapiserver.StudioChangeOperation) error {
@@ -1097,6 +1376,24 @@ func emptyTreeDigest() string {
 
 func stableStudioInitializationID(owner, idempotencyKey, resource string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("appstudio:"+owner+":"+idempotencyKey+":"+resource)).String()
+}
+
+func deterministicGitLabProjectPath(owner, idempotencyKey, name string) string {
+	base := strings.ToLower(strings.TrimSpace(name))
+	var builder strings.Builder
+	for _, char := range base {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			builder.WriteRune(char)
+		} else if builder.Len() == 0 || !strings.HasSuffix(builder.String(), "-") {
+			builder.WriteByte('-')
+		}
+	}
+	base = strings.Trim(builder.String(), "-._")
+	if base == "" {
+		base = "web-app"
+	}
+	sum := sha256.Sum256([]byte(owner + ":" + idempotencyKey))
+	return fmt.Sprintf("%s-%s", base, hex.EncodeToString(sum[:])[:12])
 }
 
 func studioApplicationCreateResponse(initialization *store.StudioApplicationInitialization) *iapiserver.StudioApplicationCreateResponse {

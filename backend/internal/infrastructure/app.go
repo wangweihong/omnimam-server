@@ -16,8 +16,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/config"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/options"
 	agentsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/agent"
+	appstudiosvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
+	gitlabsvc "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/gitlab"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"github.com/wangweihong/omnimam/backend/internal/infrastructure/providers/dockerruntime"
+	"github.com/wangweihong/omnimam/backend/internal/pkg/agentgrant"
 	"github.com/wangweihong/omnimam/backend/pkg/app"
 )
 
@@ -48,7 +51,6 @@ func Run(cfg *config.Config) error {
 		os.Getenv("OMNIMAM_DOCKER_API_VERSION"),
 		images,
 		os.Getenv("OMNIMAM_MCP_RUNTIME_CA_FILE"),
-		os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_VOLUME"),
 	)
 	if err != nil {
 		return err
@@ -58,6 +60,31 @@ func Run(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	gitLabSourceProvider, err := gitlabsvc.NewSourceProvider(store.Client().GitLab(), gitlabsvc.NewHTTPClientFactory())
+	if err != nil {
+		return err
+	}
+	sourceResolver, err := appstudiosvc.New(appstudiosvc.Dependencies{
+		Store: store.Client().AppStudio(), SourceProvider: gitLabSourceProvider, ProjectInitializer: gitLabSourceProvider,
+	})
+	if err != nil {
+		return err
+	}
+	service.SetSourceArchiveResolver(sourceResolver)
+	if cfg.InfrastructureClientOptions == nil {
+		return fmt.Errorf("infrastructure client options are required")
+	}
+	grantCodec, err := agentgrant.NewCodec(cfg.InfrastructureClientOptions.Token, time.Hour)
+	if err != nil {
+		return err
+	}
+	runtimeGitResolver, err := appstudiosvc.New(appstudiosvc.Dependencies{
+		Store: store.Client().AppStudio(), SourceProvider: gitLabSourceProvider, ProjectInitializer: gitLabSourceProvider, Grants: grantCodec,
+	})
+	if err != nil {
+		return err
+	}
+	service.SetRuntimeGitAccessResolver(runtimeGitResolver)
 	agentResolver, err := agentsvc.NewMCPResolver(agentsvc.MCPResolverDependencies{
 		Store: store.Client().Agents(), JWTSecret: []byte(cfg.AuthOptions.JWTSecret),
 		PlatformMCPBaseURL: cfg.MCPOptions.PublicBaseURL,

@@ -2,76 +2,79 @@
 
 ## Current goal and status
 
-- Goal: implement released independent GitLab domain Phase 1 without changing AppStudio contracts, models, APIs, source storage, or behavior.
-- Status: implementation and focused verification are complete in `omnimam-spec`, `omnimam-server`, and `omnimam-devops`.
+- Goal: implement AppStudio GitLab Phase 2 using GitLab as the only source-content provider while preserving AppStudio Revision/ChangeSet semantics and Platform MCP.
+- Status: implementation complete for the released reservation correction. The remaining acceptance work is the local GitLab smoke test, which requires a configured READY default GitLabServer.
 
 ## Work completed in this session
 
-- Published `omnimam-spec` content commit `78122d28b412a52279c69cc2ec239b41af2a47a1`, release commit/tag `edcdbcebf8daecec8eaefd129338e829512b00fe` / `spec-v1.22.0`, and follow-up handoff commit `20695380cefb4426b8352bc81e27e21e1a212e9e`.
-- Pinned `ssot` and `SSOT_VERSION` to released `spec-v1.22.0` commit `edcdbcebf8daecec8eaefd129338e829512b00fe`.
-- Added GitLabServer/GitLabProject API types, requests, PostgreSQL Store, HTTP client, service, controller routes, permissions, errors, API Server wiring, and Task Worker executor.
-- Added exact internal-caller/input validation for `gitlab.pipeline.run`; public AtomicTask/Group/DAG creation cannot bypass the GitLab domain boundary.
-- Added recoverable Pipeline execution using `external_job_id`, `IN_PROGRESS`, five-second callbacks, retry/restart checkpoint recovery, and small credential-free outputs.
-- Added non-retryable worker cancellation projection: Conductor blocks DAG continuation, while Task Center records AtomicTask/TaskAttempt `CANCELED` and strips the internal runtime marker.
-- Added API-side GitLab cancellation handler injection. Task Center reads the current runtime checkpoint, invokes best-effort `CancelPipeline`, then terminates the Conductor execution.
-- Added bounded GitLab response parsing, structured `{message}` errors, context-aware HTTP calls, detached Project compensation, remote-404 deletion, SQL constraints/indexes, and SQL-log suppression for credential writes.
-- Repaired legacy `release_v119.go` manual error registration so `make gen.errcode` is reproducible and does not double-register codes.
-- Added devops bootstrap for non-admin user `omnimam-appstudio-api`, Owner membership in Group `omnimam-appstudio`, reusable `api` PAT validation/rotation, and atomic mode-0600 token persistence.
-- The username differs from the original plan because GitLab globally conflicts user personal namespaces with the existing `omnimam-appstudio` Group path; the user authorized the naming adjustment.
+- Revalidated the current pin: `ssot` and `SSOT_VERSION` both point to released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab`.
+- Confirmed the approved design decisions: fixed `web-react@v1` Blueprint, existing `agent.coding@1.0` profile, Runtime-scoped project token, Worker commit-to-Revision projection, and destructive clean-data rollout without BUILT_IN migration.
+- Loaded the repository backend rules and the applicable Go design, database, security, error-handling, DI, naming, style, and testing guidance.
+- Completed the scoped SSOT S1/S2/Context draft for AppStudio GitLab Phase 2 across appstudio, agent, gitlab, infrastructure, and task-center.
+- Added the design contracts for `web-react@v1`, GitLab-only source bytes, `gitlab_project_id`, Revision `commit_sha`, unique READY default GitLabServer, Runtime Git access, archive injection, and Worker commit-to-ChangeSet synchronization.
+- Published SSOT content commit `7010953df6130caa1f59c8b19dd9feaa5e06d467`, release commit/tag `ee0cf7f7732a74d1ca36cc1e73a5541a333ed025` (`spec-v1.23.0`), pushed and verified the remote tag.
+- Updated the server `ssot` gitlink and `SSOT_VERSION` to the released `spec-v1.23.0` commit.
+- Formatted and compiled the direct API server, Task Worker, Infrastructure, Docker provider, AppStudio, GitLab and PostgreSQL store packages.
+- Removed the local `SourceContentStore` and `source_store.go`; AppStudio now requires a GitLab `SourceProvider` for creation, reads and commits.
+- Implemented deterministic GitLab Project/Starter commit recovery, including empty-project initialization and verification-only reuse of an existing remote template.
+- Implemented Worker-side single-commit synchronization: a Coding Invocation now projects only a single default-branch fast-forward commit from the frozen base CommitSHA to one idempotent ChangeSet and next Revision.
+- Wired the Infrastructure source archive resolver through AppStudio/GitLab consumer interfaces for Preview archive resolution.
+- Added Build Snapshot grant resolution to the AppStudio archive resolver; it binds Snapshot, StudioBuild, Application, resource version and the Snapshot Revision CommitSHA before an archive can be opened.
+- Wired Snapshot archive resolution into Infrastructure for the static-web Build profile. Docker now injects the validated archive into a disposable `/workspace` tmpfs behind a startup gate, runs the fixed pnpm build command, then safely collects `bundle.tar.gz` from Docker's archive API with a size limit and SHA-256 descriptor.
+- Updated the local static-web Build profile from Alpine to `node:22-alpine` so the fixed pnpm command has a Node/Corepack runtime.
+- Completed Runtime Git access wiring: GitLab Project Access Token credentials are encrypted in `appstudio-runtime-git-access://` references, scope-bind owner/Agent/Runtime/generation/Application/Workspace/Project/expiry, reach Task Worker only as `SECRET_REF`, are resolved only in Infrastructure memory, and enter Docker only through stdin into a tmpfs credential helper. Coding Runtime clones the default branch into disposable `/workspace`, gates OpenCode on clone completion, recreates instead of restarting its stopped Infra runtime, and revokes the Project token on startup failure or runtime stop/delete with expiry as fallback.
+- Published and pinned `spec-v1.23.1` at `d1b24118091e52d60fc20a3faa4cf47647f467ab`; it adds the released GitLabProject `CREATING/READY/ERROR` reservation representation.
+- Implemented the reservation path: `CreateApplication` first creates CREATING Application/Repository/Workspace rows with deterministic IDs, GitLabSourceProvider persists the matching CREATING Project projection before remote Project creation, then the existing initialization aggregate completes Revision 0/Agent/Session/Bindings and READY statuses.
+- Hardened reservation recovery: retries use the Server and deterministic path persisted in the reservation, remote/template failures move non-READY reservations to `ERROR` through a PostgreSQL row-locked transition, and a failed projection after a newly created remote Project triggers bounded best-effort deletion before retaining the failed reservation.
+- Added the release-required PostgreSQL constraint migration for nullable GitLab `external_project_id` and `CREATING|READY|ERROR` project status validation.
 
 ## Current in-progress work
 
-- None.
+- No code change is in progress. Run the local GitLab smoke test against a clean-data deployment with one READY default GitLabServer.
 
 ## Files added, modified, renamed, or removed
 
-- Added: `backend/apis/iapiserver/meta_gitlab.go`, `backend/apis/iapiserver/request_gitlab.go`.
-- Added: `backend/internal/apiserver/controller/v1/gitlab/gitlab.go`.
-- Added: `backend/internal/apiserver/service/v1/gitlab/client.go`, `client_gitlab.go`, `service.go`.
-- Added: `backend/internal/apiserver/store/postgresql/gitlab.go`, `backend/internal/pkg/code/release_v122.go`, `backend/internal/taskworker/gitlabexecutor/executor.go`.
-- Modified: `SSOT_VERSION`, `ssot`, API Server route/bootstrap, Store interfaces/schema bootstrap, identity defaults, WorkflowRuntime/Task Center cancellation projection, Task Worker registration, generated deepcopy/error files and focused existing tests.
-- Modified in devops: `bootstrap/bootstrap.sh`, `deploy.sh`, and `README.md`.
-- Existing unrelated server docs and devops `.gitignore`, plus spec `archive/`, `docs/identity_fix.md`, and `设计图/`, remain untouched.
+- Modified: `SSOT_VERSION`, AppStudio/GitLab API metadata and requests, AppStudio/GitLab services and stores (including `service/v1/gitlab/source_provider.go` reservation recovery and `store/postgresql/0_pg.go` constraints), API/worker wiring, Agent invocation flow, Infrastructure/Docker source injection, deployment configuration, and `docs/HANDOFF.md`.
+- Added: `backend/internal/apiserver/service/v1/appstudio/blueprint.go`, embedded `web-react@v1` blueprint assets, `appstudio/source_provider.go`, and `gitlab/source_provider.go`.
+- Removed: `backend/internal/apiserver/service/v1/appstudio/workspace_tool.go` and its route/controller/MCP claim references.
+- Removed: `backend/internal/apiserver/service/v1/appstudio/source_store.go`.
+- Modified in the independent `ssot` repository: `GLOBAL_CONTEXT.md`, `CONTEXT_MAP.md`, five domain Context/S1 pairs, and the scoped AppStudio/GitLab/Agent/Infrastructure/Task Center S2 schema/API/module contracts.
+- Existing unrelated untracked files under `docs/` remain untouched.
 
 ## Key architectural or design decisions
 
-- GitLab is an independent domain; AppStudio has no Phase 1 dependency or binding.
-- Credential persists only in `GitLabServer.Credential`, uses `json:"-"`, is redacted from errors, and is excluded from SQL logging sessions.
-- `gitlab.pipeline.run` is not Infra-backed and is not in the Agent/AppStudio Docker Function Registry.
-- External cancellation is a source-domain handler injected into Task Center; the handler performs only the remote side effect and never writes Task Center state.
-- No new `backend/cmd/` binary, Secret Provider, deployment environment variable, or `.env` management path was added.
+- GitLab stores canonical file bytes; AppStudio retains monotonically increasing Revision and atomic ChangeSet facts, linked by `StudioWorkspaceRevision.CommitSHA`.
+- Coding Runtime uses a disposable `/workspace` Git clone. Platform MCP remains; AppStudio Workspace Tool is removed.
+- Git credentials are Runtime-scoped, project-limited, resolved from an opaque reference, injected through tmpfs, and revoked on Runtime teardown or expiry.
+- `web-react@v1` is embedded, read-only, versioned with the server, and fixed for current STATIC_WEB creation. `fix.md` ships but is not routed in this phase.
+- Existing BUILT_IN data is not migrated. Rollout deletes only the PostgreSQL and legacy AppStudio source volumes before rebuilding.
+- A GitLabProject reservation fixes its Server/path at first persistence. Later retries use those stored values even if the global default changes; non-READY reservations become `ERROR` through a row-locked transition that cannot downgrade READY, and a failed READY projection compensates a newly created remote Project within a bounded context.
 
 ## API, schema, dependency, or configuration changes
 
-- Added administrator GitLab Server/Project APIs under `/api/v1/gitlab` with `gitlab.server.read/manage` and `gitlab.project.read/manage`.
-- Added `gitlab_servers` and `gitlab_projects`, status/FK/unique/index constraints, and `ON DELETE RESTRICT` Server ownership.
-- Added GitLab errors in `250200-250999` and generated documentation.
-- Devops writes the PAT to `/state/appstudio-api-token`, exposed on the host as `./data/bootstrap/appstudio-api-token`; deploy output prints only this path.
+- Released SSOT changes: GitLabServer default flag; AppStudio Blueprint fields, GitLabProject reference and CommitSHA; Agent Git workspace claims; Infrastructure secret/source resolution; Task Worker commit synchronization.
+- PostgreSQL now explicitly drops the obsolete non-null constraint on `gitlab_projects.external_project_id` and enforces `CREATING|READY|ERROR` for GitLabProject status.
+- No new error code, permission, event, `.env` file, or `backend/cmd/` binary is planned.
 
 ## Verification performed and remaining checks
 
-- Ran `make gen.deepcopy` and `make gen.errcode`; generated code compiles without duplicate registration.
-- Passed focused Task Center tests for caller/input validation, cancellation checkpoint dispatch, and canceled projection cleanup.
-- Passed focused Task Worker tests for credential redaction, Server READY/ERROR, delete restriction, Project compensation, remote 404 deletion, Pipeline success/failure/cancel, checkpoint recovery/no duplicate create, remote cancellation, and HTTP token/error parsing.
-- Passed focused WorkflowRuntime checkpoint/retry recovery tests and compile checks for API, code, GitLab service/controller/store/executor, API Server, and Task Worker packages.
-- Passed `git diff --check` in server and devops.
-- Passed `sh -n bootstrap/bootstrap.sh`, `bash -n deploy.sh`, and `docker compose --env-file .env.runtime config --quiet`.
-- Ran bootstrap twice against healthy local GitLab 19.2.1: second run reused the same PAT digest; token file remained mode `0600`; user is `admin=false`; Group membership access level is `50` (Owner).
-- Remaining checks: none for the requested scope. Devops intentionally does not call the OmniMAM API to create the first GitLabServer.
+- Confirmed the server submodule is at released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab` and `SSOT_VERSION` declares the same release.
+- Passed after Runtime Git wiring: focused `go test` for Agent, AppStudio, GitLab, Agent executor, Infrastructure, Docker provider and PostgreSQL store packages; the Docker provider suite verifies coding credential stdin injection, no Docker metadata leak, clone gate and disposable `/workspace` tmpfs.
+- Passed after the reservation correction: `make gen.deepcopy`, `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/gitlab ./backend/internal/apiserver/store/postgresql`, `go test ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker ./backend/internal/taskworker/gitlabexecutor ./backend/internal/infrastructure ./backend/internal/infrastructure/providers/dockerruntime`, Blueprint `pnpm install --frozen-lockfile && pnpm build`, `docker compose -f deployments/docker-compose.yaml config`, and `git diff --check`.
+- `make gen.deepcopy` reports its pre-existing unsupported alias warnings but exits successfully. The direct AppStudio/GitLab service packages currently contain no test files; repository rules prohibit adding arbitrary non-`pkg/` test files.
 
 ## Outstanding tasks
 
-- Administrator operational step: use `./data/bootstrap/appstudio-api-token` to create and test the first GitLabServer through the new API.
+- Run the local GitLab smoke test for Create, initial/follow-up Invocation, Source, Restore, Preview and Build by fixed CommitSHA.
 
 ## Known issues and risks
 
-- Existing unrelated dirty/untracked files were excluded from the GitLab implementation commits and must remain untouched.
-- GitLab remote cancellation is best-effort. If no Pipeline checkpoint exists yet, local Task Center cancellation still completes without a remote ID to cancel.
-- `make gen.deepcopy` emits pre-existing unsupported-type warnings but completes successfully.
+- AppStudio/GitLab S2 is resolved by `spec-v1.23.1`; the server reservation/store/adapter state machine is implemented and directly compiled/tested. The unexecuted local GitLab smoke test is the remaining deployment-level risk.
+- The worktree contains unrelated untracked design documents that must not be modified or committed.
 
 ## Exact recommended next step
 
-Configure the first GitLabServer with the generated token file and call its test endpoint.
+Deploy against a clean local GitLab, configure/detect/set exactly one READY AppStudio default GitLabServer, then run the Create/initial-follow-up Invocation/Source/Restore/Preview/Build smoke test. Do not repeat completed reservation or Runtime Git work.
 
 Next Prompt:
 

@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,6 +64,14 @@ func (c *httpClient) ResolveNamespace(ctx context.Context, path string) (*Namesp
 }
 
 func (c *httpClient) CreateProject(ctx context.Context, input CreateProjectRequest) (*RemoteProject, error) {
+	initializeWithReadme := input.InitializeWithReadme
+	if !input.InitializeWithReadme && input.DefaultBranch == "" {
+		initializeWithReadme = false
+	}
+	defaultBranch := input.DefaultBranch
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
 	body := struct {
 		Name                 string `json:"name"`
 		Path                 string `json:"path"`
@@ -71,7 +80,7 @@ func (c *httpClient) CreateProject(ctx context.Context, input CreateProjectReque
 		Visibility           string `json:"visibility"`
 		InitializeWithReadme bool   `json:"initialize_with_readme"`
 		DefaultBranch        string `json:"default_branch"`
-	}{input.Name, input.Path, input.Description, input.NamespaceID, "private", true, "main"}
+	}{input.Name, input.Path, input.Description, input.NamespaceID, "private", initializeWithReadme, defaultBranch}
 	result := &RemoteProject{}
 	return result, c.do(ctx, http.MethodPost, "/projects", body, result)
 }
@@ -79,6 +88,11 @@ func (c *httpClient) CreateProject(ctx context.Context, input CreateProjectReque
 func (c *httpClient) GetProject(ctx context.Context, projectID int64) (*RemoteProject, error) {
 	result := &RemoteProject{}
 	return result, c.do(ctx, http.MethodGet, projectPath(projectID), nil, result)
+}
+
+func (c *httpClient) GetProjectByPath(ctx context.Context, path string) (*RemoteProject, error) {
+	result := &RemoteProject{}
+	return result, c.do(ctx, http.MethodGet, "/projects/"+url.PathEscape(path), nil, result)
 }
 
 func (c *httpClient) DeleteProject(ctx context.Context, projectID int64) error {
@@ -125,6 +139,66 @@ func (c *httpClient) ListPipelineJobs(ctx context.Context, projectID, pipelineID
 	return result, nil
 }
 
+func (c *httpClient) ListRepositoryTree(ctx context.Context, projectID int64, ref, path string) ([]RepositoryTreeEntry, error) {
+	result := make([]RepositoryTreeEntry, 0)
+	query := url.Values{"ref": []string{ref}, "per_page": []string{"100"}}
+	if path != "" {
+		query.Set("path", path)
+	}
+	if err := c.do(ctx, http.MethodGet, projectPath(projectID)+"/repository/tree?"+query.Encode(), nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *httpClient) GetRepositoryFile(ctx context.Context, projectID int64, ref, path string) (*RepositoryFile, error) {
+	result := &RepositoryFile{}
+	query := url.Values{"ref": []string{ref}}
+	return result, c.do(ctx, http.MethodGet, projectPath(projectID)+"/repository/files/"+url.PathEscape(path)+"?"+query.Encode(), nil, result)
+}
+
+func (c *httpClient) GetRepositoryArchive(ctx context.Context, projectID int64, ref string) (io.ReadCloser, error) {
+	query := url.Values{"sha": []string{ref}}
+	return c.stream(ctx, http.MethodGet, projectPath(projectID)+"/repository/archive.tar.gz?"+query.Encode())
+}
+
+func (c *httpClient) GetBranchHead(ctx context.Context, projectID int64, branch string) (*BranchHead, error) {
+	result := &BranchHead{}
+	return result, c.do(ctx, http.MethodGet, projectPath(projectID)+"/repository/branches/"+url.PathEscape(branch), nil, result)
+}
+
+func (c *httpClient) CompareCommits(ctx context.Context, projectID int64, from, to string) (*CommitComparison, error) {
+	result := &CommitComparison{}
+	query := url.Values{"from": []string{from}, "to": []string{to}}
+	return result, c.do(ctx, http.MethodGet, projectPath(projectID)+"/repository/compare?"+query.Encode(), nil, result)
+}
+
+func (c *httpClient) CreateCommit(ctx context.Context, projectID int64, input CreateCommitRequest) (*Commit, error) {
+	body := struct {
+		Branch        string         `json:"branch"`
+		CommitMessage string         `json:"commit_message"`
+		StartBranch   string         `json:"start_branch,omitempty"`
+		Actions       []CommitAction `json:"actions"`
+	}{Branch: input.Branch, CommitMessage: input.CommitMessage, StartBranch: input.StartBranch, Actions: input.Actions}
+	result := &Commit{}
+	return result, c.do(ctx, http.MethodPost, projectPath(projectID)+"/repository/commits", body, result)
+}
+
+func (c *httpClient) CreateProjectAccessToken(ctx context.Context, projectID int64, input CreateProjectAccessTokenRequest) (*ProjectAccessToken, error) {
+	body := struct {
+		Name        string   `json:"name"`
+		Scopes      []string `json:"scopes"`
+		AccessLevel int      `json:"access_level"`
+		ExpiresAt   string   `json:"expires_at"`
+	}{input.Name, input.Scopes, input.AccessLevel, input.ExpiresAt}
+	result := &ProjectAccessToken{}
+	return result, c.do(ctx, http.MethodPost, projectPath(projectID)+"/access_tokens", body, result)
+}
+
+func (c *httpClient) RevokeProjectAccessToken(ctx context.Context, projectID, tokenID int64) error {
+	return c.do(ctx, http.MethodDelete, projectPath(projectID)+"/access_tokens/"+strconv.FormatInt(tokenID, 10), nil, nil)
+}
+
 func (c *httpClient) do(ctx context.Context, method, path string, body, output any) error {
 	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(method).
 		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/json")
@@ -160,6 +234,37 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, output a
 		return fmt.Errorf("decode gitlab %s response: %w", operationName(method, path), err)
 	}
 	return nil
+}
+
+func (c *httpClient) stream(ctx context.Context, method, path string) (io.ReadCloser, error) {
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(method).
+		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/gzip")
+	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab %s request failed: %w", operationName(method, path), err)
+	}
+	if response == nil || response.Response == nil {
+		return nil, fmt.Errorf("gitlab %s returned no response", operationName(method, path))
+	}
+	if status := response.GetStatusCode(); status < 200 || status >= 300 {
+		defer response.Response.Body.Close()
+		data, readErr := io.ReadAll(io.LimitReader(response.Response.Body, gitLabMaxResponseBytes+1))
+		if readErr != nil {
+			return nil, fmt.Errorf("gitlab %s response failed", operationName(method, path))
+		}
+		return nil, &RemoteError{StatusCode: status, Operation: operationName(method, path), Message: gitLabErrorMessage(data)}
+	}
+	return response.Response.Body, nil
+}
+
+func decodeRepositoryFileContent(file *RepositoryFile) ([]byte, error) {
+	if file == nil {
+		return nil, fmt.Errorf("repository file is nil")
+	}
+	if file.Encoding == "" || file.Encoding == "base64" {
+		return base64.StdEncoding.DecodeString(strings.Join(strings.Fields(file.Content), ""))
+	}
+	return []byte(file.Content), nil
 }
 
 func gitLabErrorMessage(data []byte) string {

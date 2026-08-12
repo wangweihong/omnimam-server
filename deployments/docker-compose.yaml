@@ -114,7 +114,6 @@ services:
       APISERVER_INFRASTRUCTURE_CLIENT_BASE_URL: http://infraserver:8082
       APISERVER_INFRASTRUCTURE_CLIENT_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
       OMNIMAM_STORAGE_ROOT: ${OMNIMAM_STORAGE_ROOT:-/var/lib/omnimam/assets}
-      OMNIMAM_APPSTUDIO_SOURCE_DIR: ${OMNIMAM_APPSTUDIO_SOURCE_DIR:-/var/lib/omnimam/appstudio-source}
     ports:
       - "${OMNIMAM_APISERVER_PORT:-8080}:8080"
     entrypoint:
@@ -204,7 +203,6 @@ services:
       - omnimam_logs:/var/log/omnimam
       - omnimam_debug:/var/lib/omnimam/debug
       - omnimam_assets:/var/lib/omnimam/assets
-      - omnimam_appstudio_source:/var/lib/omnimam/appstudio-source
       - omnimam_mcp_tls:/etc/omnimam/cert
 
   infraserver:
@@ -251,10 +249,9 @@ services:
       OMNIMAM_DOCKER_SOCKET: /var/run/docker.sock
       OMNIMAM_DOCKER_API_VERSION: ${OMNIMAM_DOCKER_API_VERSION:-v1.45}
       OMNIMAM_MCP_RUNTIME_CA_FILE: ${OMNIMAM_MCP_RUNTIME_CA_FILE:-/etc/omnimam/mcp-tls/ca.crt}
-      OMNIMAM_APPSTUDIO_SOURCE_VOLUME: ${OMNIMAM_APPSTUDIO_SOURCE_VOLUME:-deployments_omnimam_appstudio_source}
       OMNIMAM_INFRA_LISTEN_ADDRESS: 0.0.0.0:8082
       OMNIMAM_INFRA_SERVICE_TOKEN: ${OMNIMAM_INFRA_SERVICE_TOKEN:-omnimam-local-development-infrastructure-service-token-change-me}
-      OMNIMAM_INFRA_PROFILE_IMAGES: '${OMNIMAM_INFRA_PROFILE_IMAGES:-{"agent.hermes@1.0":"nousresearch/hermes-agent:v2026.8.3","agent.coding@1.0":"ghcr.io/anomalyco/opencode:1.18.13","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"alpine:3.20","appstudio.build.web-backend@1.0":"alpine:3.20","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}}'
+      OMNIMAM_INFRA_PROFILE_IMAGES: '${OMNIMAM_INFRA_PROFILE_IMAGES:-{"agent.hermes@1.0":"nousresearch/hermes-agent:v2026.8.3","agent.coding@1.0":"ghcr.io/anomalyco/opencode:1.18.13","appstudio.preview.static-web@1.0":"nginx:1.27-alpine","appstudio.preview.web-backend@1.0":"nginx:1.27-alpine","appstudio.build.static-web@1.0":"node:22-alpine","appstudio.build.web-backend@1.0":"node:22-alpine","appstudio.production.static-web@1.0":"nginx:1.27-alpine","appstudio.production.web-backend@1.0":"nginx:1.27-alpine"}}'
     ports:
       - "${OMNIMAM_INFRA_PORT:-8082}:8082"
     healthcheck:
@@ -512,6 +509,4 @@ volumes:
   omnimam_logs:
   omnimam_debug:
   omnimam_assets:
-  omnimam_appstudio_source:
-    name: ${OMNIMAM_APPSTUDIO_SOURCE_VOLUME:-deployments_omnimam_appstudio_source}
   omnimam_mcp_tls:

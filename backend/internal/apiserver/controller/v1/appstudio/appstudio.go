@@ -2,8 +2,6 @@ package appstudio
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,72 +12,11 @@ import (
 	"github.com/wangweihong/omnimam/backend/internal/pkg/code"
 	"github.com/wangweihong/omnimam/backend/internal/pkg/invocationsse"
 	"github.com/wangweihong/omnimam/backend/pkg/core"
-	mcpprotocol "github.com/wangweihong/omnimam/backend/pkg/mcp"
-)
-
-const (
-	workspaceToolMaxRequestBytes = 1 << 20
-	workspaceToolHeartbeat       = 15 * time.Second
 )
 
 type Controller struct{ service *appstudiosvc.Service }
 
 func NewController(service *appstudiosvc.Service) *Controller { return &Controller{service: service} }
-
-// HandleWorkspaceTool 处理 Runtime 使用 Invocation 短期 grant 发起的内部 MCP 请求，不接受 Identity JWT。
-func (c *Controller) HandleWorkspaceTool(ctx *gin.Context) {
-	if ctx.Request.Method == http.MethodGet {
-		// OpenCode keeps this SSE transport open after the initialize handshake.
-		// Closing it after the acknowledgement makes the client reconnect without
-		// ever publishing the Workspace Tool IDs to the invocation runtime.
-		if err := c.service.ValidateWorkspaceToolGrant(ctx, ctx.GetHeader("Authorization")); err != nil {
-			ctx.Status(http.StatusUnauthorized)
-			return
-		}
-		ctx.Header("Content-Type", "text/event-stream")
-		ctx.Header("Cache-Control", "no-cache")
-		ctx.Header("Connection", "keep-alive")
-		ctx.Header("X-Accel-Buffering", "no")
-		ctx.Status(http.StatusOK)
-		_, _ = ctx.Writer.WriteString(": workspace tool connected\n\n")
-		ctx.Writer.Flush()
-		heartbeat := time.NewTicker(workspaceToolHeartbeat)
-		defer heartbeat.Stop()
-		for {
-			select {
-			case <-ctx.Request.Context().Done():
-				return
-			case <-heartbeat.C:
-				if _, err := ctx.Writer.WriteString(": workspace tool heartbeat\n\n"); err != nil {
-					return
-				}
-				ctx.Writer.Flush()
-			}
-		}
-	}
-	ctx.Header("MCP-Protocol-Version", mcpprotocol.ProtocolVersion)
-	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, workspaceToolMaxRequestBytes)
-	body, err := io.ReadAll(ctx.Request.Body)
-	if err != nil {
-		ctx.JSON(http.StatusRequestEntityTooLarge, mcpprotocol.Response{
-			JSONRPC: "2.0", ID: mcpprotocol.RequestIDOrNull(nil),
-			Error: &mcpprotocol.RPCError{Code: mcpprotocol.JSONRPCInvalidRequest, Message: "workspace tool request is too large"},
-		})
-		return
-	}
-	response, status := c.service.ProcessWorkspaceToolRequest(ctx, ctx.GetHeader("Authorization"), mcpprotocol.Headers{
-		ProtocolVersion: ctx.GetHeader("MCP-Protocol-Version"),
-		Method:          ctx.GetHeader("Mcp-Method"),
-		Name:            ctx.GetHeader("Mcp-Name"),
-		Accept:          ctx.GetHeader("Accept"),
-		ContentType:     ctx.GetHeader("Content-Type"),
-	}, body)
-	if response == nil {
-		ctx.Status(status)
-		return
-	}
-	ctx.JSON(status, response)
-}
 
 func (c *Controller) ListApplications(ctx *gin.Context) {
 	core.Run(ctx, &iapiserver.StudioApplicationListRequest{}, func(req *iapiserver.StudioApplicationListRequest) (any, error) {

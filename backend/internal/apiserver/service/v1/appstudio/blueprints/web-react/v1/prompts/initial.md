@@ -1,0 +1,1 @@
+Implement the requested web application in the existing /workspace starter template. Inspect the current files, make the smallest coherent changes, run pnpm build, then create and push exactly one ordinary commit.

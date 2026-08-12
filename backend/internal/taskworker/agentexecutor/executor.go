@@ -29,6 +29,7 @@ type runtimeEnsureArguments struct {
 	RuntimeProfileRevision  string                              `json:"runtime_profile_revision"`
 	ModelAccessGrantRef     string                              `json:"model_access_grant_ref"`
 	RuntimeConfigurationRef string                              `json:"runtime_configuration_ref"`
+	RuntimeGitAccessRef     string                              `json:"runtime_git_access_ref"`
 	AuthorizationRef        string                              `json:"authorization_ref"`
 	ExpectedResourceVersion int64                               `json:"expected_resource_version"`
 	ResourceRequirement     iapiserver.InfraResourceRequirement `json:"resource_requirement"`
@@ -51,6 +52,7 @@ type runtimeStopArguments struct {
 	AgentRuntimeID          string `json:"agent_runtime_id"`
 	InfraRuntimeID          string `json:"infra_runtime_id"`
 	Action                  string `json:"action"`
+	AgentKind               string `json:"agent_kind"`
 	AuthorizationRef        string `json:"authorization_ref"`
 	ExpectedResourceVersion int64  `json:"expected_resource_version"`
 }
@@ -122,6 +124,12 @@ func ExecuteRuntimeEnsure(
 				Reference: "mcp-binding-revision://" + ref.BindingID + "/" + ref.BindingRevision,
 			})
 		}
+		if arguments.RuntimeGitAccessRef != "" {
+			command.Create.ConfigurationBindings = append(command.Create.ConfigurationBindings, iapiserver.InfraRuntimeConfigBindingInput{
+				Name: "coding-runtime-git", BindingType: iapiserver.InfraConfigBindingTypeSecretRef,
+				Reference: arguments.RuntimeGitAccessRef,
+			})
+		}
 	}
 	response, err := client.Execute(ctx, command)
 	if err != nil {
@@ -182,7 +190,7 @@ func ExecuteRuntimeStop(
 	response, err := client.Execute(ctx, &infrastructure.CommandRequest{
 		Operation: iapiserver.TaskWorkerInfrastructureOperationStop,
 		RuntimeID: arguments.InfraRuntimeID,
-		Delete:    arguments.Action == iapiserver.TaskWorkerActionDelete,
+		Delete:    arguments.Action == iapiserver.TaskWorkerActionDelete || arguments.AgentKind == iapiserver.TaskWorkerAgentKindCoding,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "execute agent runtime stop infrastructure command")
@@ -274,6 +282,13 @@ func validateRuntimeEnsureArguments(arguments runtimeEnsureArguments) error {
 	if arguments.WorkspaceSourceRef != nil && !strings.HasPrefix(*arguments.WorkspaceSourceRef, iapiserver.TaskWorkerRefPrefixAgentWorkspace) {
 		return fmt.Errorf("agent runtime ensure workspace source reference is invalid")
 	}
+	if arguments.AgentKind == iapiserver.TaskWorkerAgentKindCoding {
+		if arguments.WorkspaceType != iapiserver.TaskWorkerWorkspaceTypeStudio || arguments.RuntimeProfileID != iapiserver.TaskWorkerAgentRuntimeProfileCoding || arguments.WorkspaceSourceRef != nil || arguments.ExistingInfraRuntimeID != nil || !strings.HasPrefix(arguments.RuntimeGitAccessRef, iapiserver.AppStudioRefPrefixRuntimeGitAccess) {
+			return fmt.Errorf("coding runtime git access arguments are invalid")
+		}
+	} else if arguments.RuntimeGitAccessRef != "" {
+		return fmt.Errorf("only coding runtimes may carry git access")
+	}
 	if len(arguments.MCPBindingRefs) > 50 {
 		return fmt.Errorf("agent runtime ensure has too many MCP bindings")
 	}
@@ -305,6 +320,9 @@ func validateRuntimeStopArguments(arguments runtimeStopArguments) error {
 	}
 	if arguments.Action != iapiserver.TaskWorkerActionSuspend && arguments.Action != iapiserver.TaskWorkerActionStop && arguments.Action != iapiserver.TaskWorkerActionDelete {
 		return fmt.Errorf("agent runtime stop action %q is invalid", arguments.Action)
+	}
+	if arguments.AgentKind != iapiserver.TaskWorkerAgentKindPlatform && arguments.AgentKind != iapiserver.TaskWorkerAgentKindCoding {
+		return fmt.Errorf("agent runtime stop agent kind %q is invalid", arguments.AgentKind)
 	}
 	if !strings.HasPrefix(arguments.AuthorizationRef, iapiserver.TaskWorkerRefPrefixAgentRuntimeGrant) {
 		return fmt.Errorf("agent runtime stop authorization reference is invalid")

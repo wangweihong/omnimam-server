@@ -139,6 +139,14 @@ func (s *infrastructureStore) GetInfraRuntime(ctx context.Context, id string) (*
 	}
 	return &item, nil
 }
+
+func (s *infrastructureStore) ListInfraRuntimeConfigBindings(ctx context.Context, runtimeID string) ([]*iapiserver.InfraRuntimeConfigBinding, error) {
+	items := make([]*iapiserver.InfraRuntimeConfigBinding, 0)
+	if err := s.ds.db.WithContext(ctx).Where("runtime_id = ?", runtimeID).Order("created_at ASC, id ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 func (s *infrastructureStore) UpdateInfraRuntime(ctx context.Context, runtime *iapiserver.InfraRuntime, endpoint *iapiserver.InfraRuntimeEndpoint, outputs []*iapiserver.InfraRuntimeOutput, eventType string) (*iapiserver.InfraRuntime, error) {
 	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var previous iapiserver.InfraRuntime

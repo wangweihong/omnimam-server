@@ -23,7 +23,16 @@ import (
 const (
 	agentRuntimeIdleTimeout     = 30 * time.Minute
 	agentRuntimeMaximumLifetime = 8 * time.Hour
+	agentPromptInitial          = "initial"
+	agentPromptFollowup         = "followup"
 )
+
+func appstudioPromptKind(invocation *iapiserver.AgentInvocation) string {
+	if invocation != nil && strings.HasPrefix(invocation.IdempotencyKey, "studio-create:") {
+		return agentPromptInitial
+	}
+	return agentPromptFollowup
+}
 
 // TaskClient 是 Agent 消费的 Task Center 小接口，只允许创建和操作受控任务。
 type TaskClient interface {
@@ -35,7 +44,10 @@ type TaskClient interface {
 // WorkspaceBindingValidator 由 AppStudio 提供 Coding Agent 固定 Workspace 授权校验。
 type WorkspaceBindingValidator interface {
 	ValidateAgentWorkspaceBinding(context.Context, string, string) (*iapiserver.AgentAuthorizationSummary, error)
-	IssueAgentWorkspaceToolGrant(context.Context, string, string, string, string, string) (string, *agentgrant.WorkspaceToolClaims, error)
+}
+
+type CodingInvocationContextResolver interface {
+	ResolveCodingInvocationContext(context.Context, string, string, string) (string, string, int64, string, string, error)
 }
 
 // ModelAccessResolver 将 Agent ModelBinding 转换为不含明文凭证的 ModelAccessSpec 引用。
@@ -47,6 +59,13 @@ type ModelAccessResolver interface {
 // Agent generation without allowing Agent to read AppStudio tables.
 type WorkloadScopeResolver interface {
 	ResolveAgentWorkloadScope(context.Context, string, string) (string, int64, error)
+}
+
+// CodingRuntimeGitAccessResolver issues and revokes the opaque Runtime-scoped
+// GitLab access reference without exposing AppStudio's private source state.
+type CodingRuntimeGitAccessResolver interface {
+	IssueCodingRuntimeGitAccess(context.Context, string, string, string, string, string, int64, time.Time) (string, error)
+	RevokeRuntimeGitAccess(context.Context, string) error
 }
 
 // RuntimeDiagnosticsReader 是 Agent 对 Infrastructure 诊断能力的只读消费边界。
@@ -699,24 +718,26 @@ func (s *Service) submitInvocationTask(
 		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentModelBindingInvalid, err.Error()))
 	}
 	expectedVersion := invocation.ResourceVersion + 1
-	workspaceToolGrantRef := ""
+	studioApplicationID, baseCommitSHA, blueprintVersion, promptKind := "", "", "", ""
+	baseRevision := int64(0)
 	if invocation.Type == iapiserver.AgentInvocationTypeCoding {
-		if s.workspaces == nil {
-			return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "appstudio workspace tool is unavailable"))
+		resolver, ok := s.workspaces.(CodingInvocationContextResolver)
+		if !ok {
+			return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, "coding invocation context is unavailable"))
 		}
-		workspaceToolGrantRef, _, err = s.workspaces.IssueAgentWorkspaceToolGrant(
-			ctx, agent.OwnerUserID, agent.ID, invocation.SessionID, invocation.ID, agent.WorkspaceID,
-		)
+		studioApplicationID, _, baseRevision, baseCommitSHA, blueprintVersion, err = resolver.ResolveCodingInvocationContext(ctx, agent.OwnerUserID, agent.ID, invocation.ID)
 		if err != nil {
 			return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error()))
 		}
+		promptKind = appstudioPromptKind(invocation)
 	}
 	issuedAt, expiresAt := s.grants.Window()
 	authorizationRef, err := s.grants.Issue(iapiserver.TaskWorkerRefPrefixAgentInvocationGrant, agentgrant.InvocationClaims{
 		OwnerUserID: agent.OwnerUserID, AgentID: agent.ID, SessionID: invocation.SessionID,
 		InvocationID: invocation.ID, RuntimeBindingID: runtime.ID, InvocationType: invocation.Type,
-		ExpectedResourceVersion: expectedVersion, WorkspaceID: agent.WorkspaceID,
-		WorkspaceToolGrantRef: workspaceToolGrantRef, ModelAccessGrantRef: modelAccessRef, IssuedAt: issuedAt, ExpiresAt: expiresAt,
+		ExpectedResourceVersion: expectedVersion, StudioApplicationID: studioApplicationID, WorkspaceID: agent.WorkspaceID,
+		BaseRevision: baseRevision, BaseCommitSHA: baseCommitSHA, BlueprintVersion: blueprintVersion, PromptKind: promptKind,
+		ModelAccessGrantRef: modelAccessRef, IssuedAt: issuedAt, ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return s.failInvocationSubmission(ctx, invocation, errors.NewStatus(code.ErrAgentInvocationTaskUnavailable, err.Error()))
@@ -1141,6 +1162,21 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 	}
 	expectedVersion := runtime.ResourceVersion + 1
 	authRef := runtimeGrantAuthorizationRef(agent.ID, runtime.ID, operation, req, expectedVersion)
+	expiresAt := time.Now().UTC().Add(agentRuntimeMaximumLifetime)
+	runtimeGitAccessRef := ""
+	var runtimeGitAccessResolver CodingRuntimeGitAccessResolver
+	if agent.Kind == iapiserver.AgentKindCoding {
+		var ok bool
+		runtimeGitAccessResolver, ok = s.scopes.(CodingRuntimeGitAccessResolver)
+		if !ok || agentGeneration == nil || studioApplicationID == "" {
+			return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access resolver is unavailable")
+		}
+		var accessErr error
+		runtimeGitAccessRef, accessErr = runtimeGitAccessResolver.IssueCodingRuntimeGitAccess(ctx, agent.OwnerUserID, agent.ID, runtime.ID, studioApplicationID, agent.WorkspaceID, *agentGeneration, expiresAt)
+		if accessErr != nil || runtimeGitAccessRef == "" {
+			return nil, errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "coding runtime git access is unavailable")
+		}
+	}
 	arguments := map[string]any{
 		"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "operation": operation, "agent_kind": agent.Kind,
 		"workspace_type": agent.WorkspaceType, "workspace_id": agent.WorkspaceID, "workspace_source_ref": workspaceSource,
@@ -1155,7 +1191,9 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 			"maximum_lifetime_seconds": int(agentRuntimeMaximumLifetime / time.Second),
 		},
 	}
-	expiresAt := time.Now().UTC().Add(agentRuntimeMaximumLifetime)
+	if runtimeGitAccessRef != "" {
+		arguments["runtime_git_access_ref"] = runtimeGitAccessRef
+	}
 	grant := &iapiserver.AgentRuntimeGrant{
 		ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString(), Name: "runtime-grant-" + runtime.ID},
 		AgentID:    agent.ID, RuntimeBindingID: runtime.ID, StudioApplicationID: studioApplicationID, AgentGeneration: agentGeneration, RequestID: authRef,
@@ -1166,9 +1204,12 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 		grant.BindingRevisions = append(grant.BindingRevisions, ref["binding_id"]+"/"+ref["binding_revision"])
 	}
 	if err := s.store.CreateAgentRuntimeGrant(ctx, grant); err != nil {
+		if runtimeGitAccessRef != "" && runtimeGitAccessResolver != nil {
+			_ = runtimeGitAccessResolver.RevokeRuntimeGitAccess(context.WithoutCancel(ctx), runtimeGitAccessRef)
+		}
 		return nil, err
 	}
-	if runtime.InfraRuntimeID != "" {
+	if runtime.InfraRuntimeID != "" && agent.Kind != iapiserver.AgentKindCoding {
 		arguments["existing_infra_runtime_id"] = runtime.InfraRuntimeID
 	}
 	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
@@ -1176,19 +1217,24 @@ func (s *Service) ensureRuntimeForAgent(ctx context.Context, agent *iapiserver.A
 		Arguments: arguments, ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace, CreatedBy: agent.OwnerUserID,
 	})
 	if err != nil && (task == nil || errors.ToStatus(err).Code != code.ErrAtomicTaskIdempotencyConflict || !sameRuntimeEnsureTask(task, agent, runtime, operation, expectedVersion, arguments)) {
-		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, err)
+		return nil, s.revokeRuntimeAccessAfterFailure(ctx, authRef, runtimeGitAccessResolver, runtimeGitAccessRef, err)
 	}
 	if task == nil || !sameRuntimeEnsureTask(task, agent, runtime, operation, expectedVersion, arguments) {
 		cause := errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime ensure task identity does not match")
-		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, cause)
+		return nil, s.revokeRuntimeAccessAfterFailure(ctx, authRef, runtimeGitAccessResolver, runtimeGitAccessRef, cause)
+	}
+	if err != nil && runtimeGitAccessRef != "" {
+		if revokeErr := runtimeGitAccessResolver.RevokeRuntimeGitAccess(context.WithoutCancel(ctx), runtimeGitAccessRef); revokeErr != nil {
+			return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, stderrors.Join(err, revokeErr))
+		}
 	}
 	bound, applied, bindErr := s.store.BindAgentRuntimeTask(ctx, runtime.ID, runtime.ResourceVersion, task.ID, operation, iapiserver.AgentRuntimeStateStarting)
 	if bindErr != nil {
-		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, bindErr)
+		return nil, s.revokeRuntimeAccessAfterFailure(ctx, authRef, runtimeGitAccessResolver, runtimeGitAccessRef, bindErr)
 	}
 	if !applied {
 		cause := errors.NewStatus(code.ErrAgentRuntimeOperationFailed, "runtime lifecycle task lost its resource-version fence")
-		return nil, s.revokeRuntimeGrantAfterFailure(ctx, authRef, cause)
+		return nil, s.revokeRuntimeAccessAfterFailure(ctx, authRef, runtimeGitAccessResolver, runtimeGitAccessRef, cause)
 	}
 	agent.Status = iapiserver.AgentStatusStarting
 	if _, err := s.store.UpdateAgent(ctx, agent, agent.ResourceVersion); err != nil {
@@ -1213,9 +1259,21 @@ func sameRuntimeEnsureTask(task *iapiserver.AtomicTask, agent *iapiserver.Agent,
 		task.IdempotencyKey != fmt.Sprintf("%s:%d:0", operation, expectedVersion) {
 		return false
 	}
-	actual, actualErr := json.Marshal(task.Arguments)
-	expected, expectedErr := json.Marshal(arguments)
+	actualArguments := runtimeEnsureTaskArgumentsForComparison(task.Arguments)
+	expectedArguments := runtimeEnsureTaskArgumentsForComparison(arguments)
+	actual, actualErr := json.Marshal(actualArguments)
+	expected, expectedErr := json.Marshal(expectedArguments)
 	return actualErr == nil && expectedErr == nil && string(actual) == string(expected)
+}
+
+func runtimeEnsureTaskArgumentsForComparison(arguments map[string]any) map[string]any {
+	result := make(map[string]any, len(arguments))
+	for key, value := range arguments {
+		if key != "runtime_git_access_ref" {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (s *Service) revokeRuntimeGrantAfterFailure(ctx context.Context, authorizationRef string, cause error) error {
@@ -1223,6 +1281,15 @@ func (s *Service) revokeRuntimeGrantAfterFailure(ctx context.Context, authorizat
 		return stderrors.Join(cause, errors.Wrap(err, "revoke runtime grant after lifecycle submission failure"))
 	}
 	return cause
+}
+
+func (s *Service) revokeRuntimeAccessAfterFailure(ctx context.Context, authorizationRef string, resolver CodingRuntimeGitAccessResolver, runtimeGitAccessRef string, cause error) error {
+	if runtimeGitAccessRef != "" && resolver != nil {
+		if err := resolver.RevokeRuntimeGitAccess(context.WithoutCancel(ctx), runtimeGitAccessRef); err != nil {
+			cause = stderrors.Join(cause, errors.Wrap(err, "revoke coding runtime git access after lifecycle submission failure"))
+		}
+	}
+	return s.revokeRuntimeGrantAfterFailure(ctx, authorizationRef, cause)
 }
 
 func (s *Service) SuspendRuntime(ctx context.Context, agentID string, req *iapiserver.AgentActionRequest) (*iapiserver.AgentRuntimeBinding, error) {
@@ -1282,7 +1349,7 @@ func (s *Service) stopRuntime(ctx context.Context, agent *iapiserver.Agent, runt
 	expectedVersion := runtime.ResourceVersion + 1
 	task, err := s.tasks.CreateDomainAtomicTask(ctx, iapiserver.AgentTaskDomain, &iapiserver.AtomicTaskCreateRequest{
 		Key: "runtime-stop-" + runtime.ID, Name: "Agent runtime stop", FunctionRef: iapiserver.AgentRuntimeFunctionStop,
-		Arguments: map[string]any{"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "infra_runtime_id": runtime.InfraRuntimeID, "action": action, "reason": reason, "authorization_ref": fmt.Sprintf("agent-runtime-grant://%s/%s/%d", agent.ID, runtime.ID, expectedVersion), "expected_resource_version": expectedVersion},
+		Arguments: map[string]any{"agent_id": agent.ID, "agent_runtime_id": runtime.ID, "infra_runtime_id": runtime.InfraRuntimeID, "action": action, "reason": reason, "agent_kind": agent.Kind, "authorization_ref": fmt.Sprintf("agent-runtime-grant://%s/%s/%d", agent.ID, runtime.ID, expectedVersion), "expected_resource_version": expectedVersion},
 		ProjectID: iapiserver.DefaultTaskCenterProjectID, Namespace: iapiserver.DefaultTaskCenterNamespace,
 	})
 	if err != nil {

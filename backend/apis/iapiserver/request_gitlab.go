@@ -31,11 +31,16 @@ type GitLabServerCreateRequest struct {
 	NamespacePath string `json:"namespace_path" binding:"required,max=255"`
 	// Credential 是只写 PRIVATE-TOKEN，响应和日志不得返回。
 	Credential string `json:"credential" binding:"required,max=4096"`
+	// IsAppStudioDefault 仅允许 UNKNOWN 初始连接保持 false；READY 后通过更新接口设置默认。
+	IsAppStudioDefault bool `json:"is_appstudio_default"`
 }
 
 func (r GitLabServerCreateRequest) Validate() error {
 	if strings.TrimSpace(r.Name) == "" || strings.Trim(r.NamespacePath, "/ ") == "" || strings.TrimSpace(r.Credential) == "" {
 		return fmt.Errorf("name, namespace_path, and credential are required")
+	}
+	if r.IsAppStudioDefault {
+		return fmt.Errorf("a new unknown server cannot be the appstudio default")
 	}
 	return nil
 }
@@ -54,12 +59,14 @@ type GitLabServerUpdateRequest struct {
 	NamespacePath *string `json:"namespace_path" binding:"omitempty,min=1,max=255"`
 	// Credential 替换只写 PRIVATE-TOKEN；省略时保留真实原值。
 	Credential *string `json:"credential" binding:"omitempty,min=1,max=4096"`
+	// IsAppStudioDefault 设置或清除 AppStudio 默认连接；设置为 true 要求 Server 已 READY。
+	IsAppStudioDefault *bool `json:"is_appstudio_default"`
 	// ResourceVersion 可选地执行乐观并发控制。
 	ResourceVersion *int64 `json:"resource_version" binding:"omitempty,min=1"`
 }
 
 func (r GitLabServerUpdateRequest) Validate() error {
-	if r.Name == nil && r.Description == nil && r.APIURL == nil && r.ExternalURL == nil && r.NamespacePath == nil && r.Credential == nil && r.ResourceVersion == nil {
+	if r.Name == nil && r.Description == nil && r.APIURL == nil && r.ExternalURL == nil && r.NamespacePath == nil && r.Credential == nil && r.IsAppStudioDefault == nil && r.ResourceVersion == nil {
 		return fmt.Errorf("at least one field is required")
 	}
 	if (r.Name != nil && strings.TrimSpace(*r.Name) == "") || (r.NamespacePath != nil && strings.Trim(*r.NamespacePath, "/ ") == "") || (r.Credential != nil && strings.TrimSpace(*r.Credential) == "") {

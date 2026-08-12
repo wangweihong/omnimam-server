@@ -94,10 +94,6 @@ func installApis(
 	})
 	storeIns := store.Client()
 	if storeIns != nil {
-		if appStudio != nil {
-			g.POST(mcpprotocol.AppStudioWorkspaceToolPath, appstudioctrl.NewController(appStudio).HandleWorkspaceTool)
-			g.GET(mcpprotocol.AppStudioWorkspaceToolPath, appstudioctrl.NewController(appStudio).HandleWorkspaceTool)
-		}
 		if mcpProcessor != nil && mcpOptions != nil && mcpOptions.Enabled {
 			g.POST("/mcp", mcpctrl.New(
 				mcpProcessor,

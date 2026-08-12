@@ -112,16 +112,36 @@ type InvocationClaims struct {
 	RuntimeBindingID        string    `json:"runtime_binding_id"`
 	InvocationType          string    `json:"invocation_type"`
 	ExpectedResourceVersion int64     `json:"expected_resource_version"`
+	StudioApplicationID     string    `json:"studio_application_id,omitempty"`
 	WorkspaceID             string    `json:"workspace_id,omitempty"`
-	WorkspaceToolGrantRef   string    `json:"workspace_tool_grant_ref,omitempty"`
+	BaseRevision            int64     `json:"base_revision,omitempty"`
+	BaseCommitSHA           string    `json:"base_commit_sha,omitempty"`
+	BlueprintVersion        string    `json:"blueprint_version,omitempty"`
+	PromptKind              string    `json:"prompt_kind,omitempty"`
 	ModelAccessGrantRef     string    `json:"model_access_grant_ref"`
 	IssuedAt                time.Time `json:"issued_at"`
 	ExpiresAt               time.Time `json:"expires_at"`
 }
 
-// WorkspaceToolClaims 将 Coding Agent 的一次源码访问限制在固定 Invocation 和 StudioWorkspace 内。
-// InitialRevision 只提供启动上下文；每次写入仍由 AppStudio 按请求中的 base_revision 重新校验。
-type WorkspaceToolClaims struct {
+// RuntimeGitAccessClaims 是 Coding Runtime 的加密 Git 凭据载荷；它只能存在于短期授权引用中。
+type RuntimeGitAccessClaims struct {
+	OwnerUserID         string    `json:"owner_user_id"`
+	AgentID             string    `json:"agent_id"`
+	RuntimeID           string    `json:"runtime_id"`
+	AgentGeneration     int64     `json:"agent_generation"`
+	StudioApplicationID string    `json:"studio_application_id"`
+	WorkspaceID         string    `json:"workspace_id"`
+	GitLabProjectID     string    `json:"gitlab_project_id"`
+	CloneURL            string    `json:"clone_url"`
+	Username            string    `json:"username"`
+	Token               string    `json:"token"`
+	RemoteTokenID       int64     `json:"remote_token_id"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+}
+
+// DeprecatedWorkspaceClaims is retained only for decoding old transient values during process drain.
+type DeprecatedWorkspaceClaims struct {
 	OwnerUserID         string    `json:"owner_user_id"`
 	StudioApplicationID string    `json:"studio_application_id"`
 	WorkspaceID         string    `json:"workspace_id"`

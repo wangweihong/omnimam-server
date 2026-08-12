@@ -1,10 +1,14 @@
 package dockerruntime
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wangweihong/gotoolbox/pkg/wait"
 	"github.com/wangweihong/omnimam/backend/apis/iapiserver"
 	"github.com/wangweihong/omnimam/backend/apis/imachinery"
@@ -35,13 +41,12 @@ func (m MapProfileImages) Image(id, revision string) (string, bool) {
 }
 
 type DockerProvider struct {
-	client       *http.Client
-	runtimeHTTP  *http.Client
-	images       ProfileImageResolver
-	apiVersion   string
-	networkMode  string
-	runtimeCA    []byte
-	sourceVolume string
+	client      *http.Client
+	runtimeHTTP *http.Client
+	images      ProfileImageResolver
+	apiVersion  string
+	networkMode string
+	runtimeCA   []byte
 }
 
 type dockerContainerInspect struct {
@@ -71,18 +76,44 @@ type agentServiceProfile struct {
 const (
 	openCodeConfigInstallCommand = "umask 077; cat > /root/.config/opencode/opencode.json && chmod 600 /root/.config/opencode/opencode.json && touch /run/omnimam/start"
 	openCodeCAInstallCommand     = "umask 077; cat > /run/omnimam/mcp-ca.crt && chmod 400 /run/omnimam/mcp-ca.crt"
-	openCodeRuntimeCAPath        = "/run/omnimam/mcp-ca.crt"
-	previewContentRoot           = "/usr/share/nginx/html"
-	previewRuntimeCommand        = `set -eu
-cp -R /mnt/omnimam/source/. /usr/share/nginx/html/
+	runtimeGitCloneCommand       = `set -eu
+umask 077
+IFS= read -r clone_url
+IFS= read -r username
+IFS= read -r token
+helper='store --file=/run/omnimam/git/credentials'
+{
+  printf 'url=%s\n' "$clone_url"
+  printf 'username=%s\n' "$username"
+  printf 'password=%s\n\n' "$token"
+} | git -c credential.helper="$helper" credential approve
+git -c credential.helper="$helper" clone --branch main --single-branch "$clone_url" /workspace
+git -C /workspace config credential.helper "$helper"
+git -C /workspace config user.name 'OmniMAM Coding Runtime'
+git -C /workspace config user.email 'omnimam-runtime@localhost'
+touch /run/omnimam/git-ready`
+	openCodeRuntimeCAPath = "/run/omnimam/mcp-ca.crt"
+	previewContentRoot    = "/usr/share/nginx/html"
+	previewRuntimeCommand = `set -eu
+while [ ! -f /var/run/omnimam-source-ready ]; do sleep 0.05; done
 chmod -R a+rX,a-w /usr/share/nginx/html
 exec /docker-entrypoint.sh nginx -g 'daemon off;'`
+	buildRuntimeCommand = `set -eu
+while [ ! -f /run/omnimam/source-ready ]; do sleep 0.05; done
+cd /workspace
+export COREPACK_HOME=/tmp/corepack
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+tar -czf /output/bundle.tar.gz -C dist .`
 	maxRuntimeCABundleBytes   = 1 << 20
+	maxSourceArchiveFileBytes = 2 << 20
+	maxSourceArchiveBytes     = 64 << 20
+	maxRuntimeOutputBytes     = 128 << 20
 	dockerExecInspectInterval = 50 * time.Millisecond
 	dockerExecInspectTimeout  = 5 * time.Second
 )
 
-func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver, runtimeCAFile, sourceVolume string) (providers.RuntimeProvider, error) {
+func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolver, runtimeCAFile string) (providers.RuntimeProvider, error) {
 	if socketPath == "" {
 		socketPath = "/var/run/docker.sock"
 	}
@@ -93,12 +124,11 @@ func NewDockerProvider(socketPath, apiVersion string, images ProfileImageResolve
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socketPath)
 	}}
 	provider := &DockerProvider{
-		client:       &http.Client{Transport: transport, Timeout: 2 * time.Minute},
-		runtimeHTTP:  &http.Client{Timeout: 5 * time.Second},
-		images:       images,
-		apiVersion:   apiVersion,
-		networkMode:  "bridge",
-		sourceVolume: strings.TrimSpace(sourceVolume),
+		client:      &http.Client{Transport: transport, Timeout: 2 * time.Minute},
+		runtimeHTTP: &http.Client{Timeout: 5 * time.Second},
+		images:      images,
+		apiVersion:  apiVersion,
+		networkMode: "bridge",
 	}
 	runtimeCA, err := readRuntimeCA(runtimeCAFile)
 	if err != nil {
@@ -155,7 +185,7 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	}
 	env := make([]string, 0, len(input.Request.ConfigurationBindings))
 	for _, binding := range input.Request.ConfigurationBindings {
-		if binding.BindingType == iapiserver.InfraConfigBindingTypeMCPServerRef {
+		if binding.BindingType == iapiserver.InfraConfigBindingTypeMCPServerRef || binding.BindingType == iapiserver.InfraConfigBindingTypeSecretRef {
 			continue
 		}
 		if binding.BindingType != iapiserver.InfraConfigBindingTypePlainConfig {
@@ -187,6 +217,10 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		if err := d.configurePreviewSource(input, body, hostConfig); err != nil {
 			return nil, err
 		}
+	} else if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb {
+		if err := d.configureBuildSource(input, body, hostConfig); err != nil {
+			return nil, err
+		}
 	} else if len(input.Request.Mounts) > 0 {
 		return nil, fmt.Errorf("docker source resolver does not support mounts for profile %s", input.Profile.ID)
 	}
@@ -197,6 +231,9 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		body["Entrypoint"] = []string{"/bin/sh", "-c"}
 		body["Cmd"] = []string{serviceProfile.command}
 		hostConfig["Tmpfs"] = serviceProfile.tmpfs
+		if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAgentCoding && (input.RuntimeGitAccess == nil || input.RuntimeGitAccess.CloneURL == "" || input.RuntimeGitAccess.Username == "" || input.RuntimeGitAccess.Token == "") {
+			return nil, fmt.Errorf("coding runtime git access is required")
+		}
 	}
 	var created struct {
 		ID       string   `json:"Id"`
@@ -213,7 +250,23 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		_ = d.Delete(context.Background(), created.ID)
 		return nil, err
 	}
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb {
+		if err := d.execWithInput(ctx, created.ID, []string{"/bin/sh", "-c", "tar -xzf - -C /usr/share/nginx/html --strip-components=1 && touch /var/run/omnimam-source-ready"}, input.SourceArchive); err != nil {
+			_ = d.Delete(context.Background(), created.ID)
+			return nil, fmt.Errorf("inject preview source archive: %w", err)
+		}
+	}
+	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb {
+		if err := d.execWithInput(ctx, created.ID, []string{"/bin/sh", "-c", "tar -xzf - -C /workspace --strip-components=1 && touch /run/omnimam/source-ready"}, input.SourceArchive); err != nil {
+			_ = d.Delete(context.Background(), created.ID)
+			return nil, fmt.Errorf("inject build source archive: %w", err)
+		}
+	}
 	if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAgentCoding {
+		if err := d.injectRuntimeGitAccess(ctx, created.ID, input.RuntimeGitAccess); err != nil {
+			_ = d.Delete(context.Background(), created.ID)
+			return nil, fmt.Errorf("initialize coding Git workspace")
+		}
 		if len(d.runtimeCA) > 0 {
 			if err := d.execWithInput(ctx, created.ID, []string{"/bin/sh", "-c", openCodeCAInstallCommand}, d.runtimeCA); err != nil {
 				_ = d.Delete(context.Background(), created.ID)
@@ -233,7 +286,13 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 		if status != 0 {
 			return nil, fmt.Errorf("docker job exited with code %d", status)
 		}
-		return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusSucceeded}, nil
+		result := &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusSucceeded, OutputContents: make(map[string]providers.ProviderOutputContent)}
+		if input.Profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb {
+			if err := d.collectBuildOutputs(ctx, created.ID, input.Request.OutputDeclarations, result); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
 	}
 	if agentService {
 		result, err := d.waitForAgentService(ctx, created.ID, serviceProfile)
@@ -255,6 +314,14 @@ func (d *DockerProvider) Ensure(ctx context.Context, input providers.ProviderReq
 	return &providers.ProviderResult{ProviderRuntimeRef: created.ID, Status: iapiserver.InfraRuntimeStatusRunning, EndpointDisplayRef: iapiserver.InfraEndpointDisplayRefPrefix + input.RuntimeID}, nil
 }
 
+func (d *DockerProvider) injectRuntimeGitAccess(ctx context.Context, ref string, access *providers.RuntimeGitAccess) error {
+	if access == nil || access.CloneURL == "" || access.Username == "" || access.Token == "" || strings.ContainsAny(access.CloneURL, "\r\n") || strings.ContainsAny(access.Username, "\r\n") || strings.ContainsAny(access.Token, "\r\n") {
+		return fmt.Errorf("runtime git access is invalid")
+	}
+	input := []byte(access.CloneURL + "\n" + access.Username + "\n" + access.Token + "\n")
+	return d.execWithInput(ctx, ref, []string{"/bin/sh", "-c", runtimeGitCloneCommand}, input)
+}
+
 func (d *DockerProvider) configurePreviewSource(input providers.ProviderRequest, body, hostConfig map[string]any) error {
 	if len(input.Request.Mounts) != 1 {
 		return fmt.Errorf("static web Preview requires exactly one source revision mount")
@@ -263,25 +330,161 @@ func (d *DockerProvider) configurePreviewSource(input providers.ProviderRequest,
 	if mount.MountKind != iapiserver.InfraMountKindStudioWorkspaceRevision || !mount.ReadOnly || mount.TargetPath != iapiserver.InfraRuntimeMountTargetAppStudioStaticWebSource || mount.SourceRef != input.Request.SourceRef {
 		return fmt.Errorf("static web Preview source revision mount is invalid")
 	}
-	if d.sourceVolume == "" || strings.TrimSpace(d.sourceVolume) != d.sourceVolume || strings.ContainsAny(d.sourceVolume, `/\\`) || d.sourceVolume == "." || d.sourceVolume == ".." {
-		return fmt.Errorf("AppStudio source volume is not configured")
-	}
-	subpath, err := previewSourceSubpath(mount.SourceRef, input.Request.AuthorizationRef, input.Request.OwnerReference)
-	if err != nil {
+	if _, err := previewSourceSubpath(mount.SourceRef, input.Request.AuthorizationRef, input.Request.OwnerReference); err != nil {
 		return err
 	}
-	hostConfig["Mounts"] = []map[string]any{{
-		"Type":     "volume",
-		"Source":   d.sourceVolume,
-		"Target":   mount.TargetPath,
-		"ReadOnly": true,
-		"VolumeOptions": map[string]any{
-			"Subpath": subpath,
-		},
-	}}
-	// 每次容器启动都从受控只读 Revision 重建 tmpfs，避免 stop/start 后丢失 Preview 内容。
+	if err := validateSourceArchive(input.SourceArchive, input.SourceContentDigest); err != nil {
+		return err
+	}
 	body["Entrypoint"] = []string{"/bin/sh", "-c"}
 	body["Cmd"] = []string{previewRuntimeCommand}
+	return nil
+}
+
+func (d *DockerProvider) configureBuildSource(input providers.ProviderRequest, body, hostConfig map[string]any) error {
+	if input.Request.RuntimeMode != iapiserver.InfraRuntimeModeJob || !strings.HasPrefix(input.Request.SourceRef, iapiserver.InfraRefPrefixStudioSnapshot) {
+		return fmt.Errorf("static web Build source reference is invalid")
+	}
+	if len(input.Request.Mounts) != 0 {
+		return fmt.Errorf("static web Build does not accept source mounts")
+	}
+	if err := validateSourceArchive(input.SourceArchive, input.SourceContentDigest); err != nil {
+		return err
+	}
+	hostConfig["Tmpfs"] = map[string]string{
+		"/workspace":   "rw,nosuid,nodev,size=256m",
+		"/output":      "rw,nosuid,nodev,noexec,size=128m",
+		"/run/omnimam": "rw,nosuid,nodev,noexec,size=1m",
+		"/tmp":         "rw,nosuid,nodev,size=256m",
+		"/root/.cache": "rw,nosuid,nodev,size=256m",
+	}
+	body["Entrypoint"] = []string{"/bin/sh", "-c"}
+	body["Cmd"] = []string{buildRuntimeCommand}
+	return nil
+}
+
+func (d *DockerProvider) collectBuildOutputs(ctx context.Context, ref string, declarations []iapiserver.InfraRuntimeOutputDeclaration, result *providers.ProviderResult) error {
+	for _, declaration := range declarations {
+		if declaration.OutputKey == "" || declaration.RelativePath == "" {
+			return fmt.Errorf("build output declaration is invalid")
+		}
+		relative := path.Clean(declaration.RelativePath)
+		if relative == "." || path.IsAbs(relative) || relative != declaration.RelativePath || strings.HasPrefix(relative, "../") || strings.ContainsRune(relative, '\x00') {
+			return fmt.Errorf("build output path is unsafe")
+		}
+		data, err := d.readContainerFile(ctx, ref, "/output/"+relative)
+		if err != nil {
+			return fmt.Errorf("collect build output %q: %w", declaration.OutputKey, err)
+		}
+		sum := sha256.Sum256(data)
+		digest := "sha256:" + hex.EncodeToString(sum[:])
+		content := append([]byte(nil), data...)
+		result.Outputs = append(result.Outputs, &iapiserver.InfraRuntimeOutput{ObjectMeta: imachinery.ObjectMeta{ID: uuid.NewString()}, OutputKey: declaration.OutputKey, Status: iapiserver.InfraRuntimeOutputStatusCollected, MediaType: declaration.MediaType, SizeBytes: int64(len(content)), ContentDigest: digest})
+		result.OutputContents[declaration.OutputKey] = providers.ProviderOutputContent{MediaType: declaration.MediaType, SizeBytes: int64(len(content)), ContentDigest: digest, CollectedAt: time.Now(), Open: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(content)), nil }}
+	}
+	return nil
+}
+
+func (d *DockerProvider) readContainerFile(ctx context.Context, ref, filePath string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/"+d.apiVersion+"/containers/"+url.PathEscape(ref)+"/archive?path="+url.QueryEscape(filePath), nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := d.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("docker output archive returned %s", response.Status)
+	}
+	reader := tar.NewReader(io.LimitReader(response.Body, maxRuntimeOutputBytes+(1<<20)))
+	header, err := reader.Next()
+	if err != nil {
+		return nil, fmt.Errorf("docker output archive is invalid: %w", err)
+	}
+	if (header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA) || header.Size < 0 || header.Size > maxRuntimeOutputBytes || path.Base(header.Name) != path.Base(filePath) {
+		return nil, fmt.Errorf("docker output archive contains an invalid file")
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxRuntimeOutputBytes+1))
+	if err != nil || int64(len(data)) != header.Size {
+		return nil, fmt.Errorf("docker output archive file is truncated")
+	}
+	if _, err := reader.Next(); err != io.EOF {
+		return nil, fmt.Errorf("docker output archive contains multiple files")
+	}
+	return data, nil
+}
+
+func validateSourceArchive(data []byte, expectedDigest string) error {
+	if len(data) == 0 || len(data) > maxSourceArchiveBytes {
+		return fmt.Errorf("source archive is empty or exceeds compressed size limit")
+	}
+	gzipReader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("source archive is not valid gzip")
+	}
+	defer gzipReader.Close()
+	reader := tar.NewReader(gzipReader)
+	files := make(map[string][]byte)
+	total := int64(0)
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return fmt.Errorf("source archive tar is invalid")
+		}
+		name := strings.TrimPrefix(strings.ReplaceAll(header.Name, "\\", "/"), "./")
+		parts := strings.Split(name, "/")
+		if len(parts) < 2 {
+			if header.Typeflag == tar.TypeDir {
+				continue
+			}
+			return fmt.Errorf("source archive entry has no project root")
+		}
+		name = strings.Join(parts[1:], "/")
+		clean := path.Clean(name)
+		if clean == "." || clean != name || path.IsAbs(clean) || strings.HasPrefix(clean, "../") || strings.ContainsRune(clean, '\x00') {
+			return fmt.Errorf("source archive entry path is unsafe")
+		}
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			return fmt.Errorf("source archive contains unsupported entry type")
+		}
+		if header.Size < 0 || header.Size > maxSourceArchiveFileBytes || total+header.Size > maxSourceArchiveBytes {
+			return fmt.Errorf("source archive entry exceeds size limit")
+		}
+		if _, exists := files[clean]; exists {
+			return fmt.Errorf("source archive contains duplicate path")
+		}
+		content, readErr := io.ReadAll(io.LimitReader(reader, maxSourceArchiveFileBytes+1))
+		if readErr != nil || int64(len(content)) != header.Size {
+			return fmt.Errorf("source archive entry is truncated")
+		}
+		files[clean] = content
+		total += int64(len(content))
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("source archive contains no files")
+	}
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	manifest := sha256.New()
+	for _, name := range paths {
+		sum := sha256.Sum256(files[name])
+		_, _ = fmt.Fprintf(manifest, "%s\x00sha256:%s\x00%d\n", name, hex.EncodeToString(sum[:]), len(files[name]))
+	}
+	actualDigest := "sha256:" + hex.EncodeToString(manifest.Sum(nil))
+	if expectedDigest == "" || actualDigest != expectedDigest {
+		return fmt.Errorf("source archive digest does not match revision")
+	}
 	return nil
 }
 
@@ -606,7 +809,7 @@ func agentRuntimeServiceProfile(profileID string) (agentServiceProfile, bool) {
 			healthPath: "/global/health",
 			port:       14096,
 			command: `set -eu
-while [ ! -f /run/omnimam/start ]; do sleep 0.1; done
+while [ ! -f /run/omnimam/start ] || [ ! -f /run/omnimam/git-ready ]; do sleep 0.1; done
 printf '#!/bin/sh\nexec nc 127.0.0.1 4096\n' > /run/omnimam/forward
 chmod 500 /run/omnimam/forward
 nc -lk -s 0.0.0.0 -p 14096 -e /run/omnimam/forward &
@@ -627,6 +830,7 @@ exec opencode serve --hostname 127.0.0.1 --port 4096`,
 			tmpfs: map[string]string{
 				"/tmp":                        "rw,nosuid,nodev,noexec,size=64m",
 				"/run/omnimam":                "rw,nosuid,nodev,exec,size=1m",
+				"/workspace":                  "rw,nosuid,nodev,size=256m",
 				"/root/.cache/opencode":       "rw,nosuid,nodev,noexec,size=64m",
 				"/root/.config/opencode":      "rw,nosuid,nodev,noexec,size=32m",
 				"/root/.local/share/opencode": "rw,nosuid,nodev,noexec,size=128m",

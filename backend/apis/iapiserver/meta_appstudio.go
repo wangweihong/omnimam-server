@@ -12,6 +12,8 @@ type StudioApplication struct {
 	imachinery.ObjectMeta
 	OwnerUserID           string `json:"-" gorm:"column:owner_user_id;type:text;not null;uniqueIndex:idx_studio_applications_owner_create_key,priority:1"`
 	Status                string `json:"status" gorm:"column:status;type:text;not null"`
+	BlueprintID           string `json:"-" gorm:"column:blueprint_id;type:text;not null"`
+	BlueprintVersion      string `json:"-" gorm:"column:blueprint_version;type:text;not null"`
 	DefaultWorkspaceID    string `json:"-" gorm:"column:default_workspace_id;type:text"`
 	CurrentVersionID      string `json:"current_version_id,omitempty" gorm:"column:current_version_id;type:text"`
 	CodingAgentID         string `json:"-" gorm:"column:coding_agent_id;type:text"`
@@ -27,6 +29,7 @@ type StudioSourceRepository struct {
 	imachinery.ObjectMeta
 	StudioApplicationID string `json:"studio_application_id" gorm:"column:studio_application_id;type:text;not null"`
 	ProviderType        string `json:"provider_type" gorm:"column:provider_type;type:text;not null"`
+	GitLabProjectID     string `json:"-" gorm:"column:gitlab_project_id;type:text;not null;uniqueIndex"`
 	Status              string `json:"status" gorm:"column:status;type:text;not null"`
 	CurrentRevision     int64  `json:"current_revision" gorm:"column:current_revision;not null;default:0"`
 }
@@ -73,6 +76,7 @@ type StudioWorkspaceRevision struct {
 	imachinery.ObjectMeta
 	WorkspaceID    string `json:"-" gorm:"column:workspace_id;type:text;not null"`
 	Revision       int64  `json:"-" gorm:"column:revision;not null"`
+	CommitSHA      string `json:"commit_sha" gorm:"column:commit_sha;type:text;not null"`
 	ContentDigest  string `json:"content_digest" gorm:"column:content_digest;type:text;not null"`
 	ParentRevision *int64 `json:"parent_revision,omitempty" gorm:"column:parent_revision"`
 	CreatedBy      string `json:"created_by" gorm:"column:created_by;type:text;not null"`

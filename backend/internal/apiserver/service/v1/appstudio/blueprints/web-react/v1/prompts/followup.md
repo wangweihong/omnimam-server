@@ -1,0 +1,1 @@
+Continue the requested change in /workspace. Inspect the current Git state and existing implementation, make the smallest coherent changes, run pnpm build, then create and push exactly one ordinary commit.

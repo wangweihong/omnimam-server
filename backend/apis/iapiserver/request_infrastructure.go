@@ -109,7 +109,7 @@ const (
 	InfraRuntimeCapabilityCPU                       = "cpu"
 	InfraRuntimeCapabilityNetwork                   = "network"
 	InfraRuntimeCapabilityPersistentWorkspace       = "persistent_workspace"
-	InfraRuntimeCapabilityWorkspaceTool             = "workspace_tool"
+	InfraRuntimeCapabilityGitWorkspace              = "git_workspace"
 	InfraRuntimeCapabilityEndpoint                  = "endpoint"
 	InfraRuntimeCapabilityArtifactOutput            = "artifact_output"
 

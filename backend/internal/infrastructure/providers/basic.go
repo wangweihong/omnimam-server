@@ -13,6 +13,18 @@ type ProviderRequest struct {
 	Profile     *iapiserver.InfraRuntimeProfile
 	Request     *iapiserver.InfraCreateRuntimeRequest
 	MCPBindings []ResolvedMCPBinding
+	// SourceArchive 只在当前 Ensure 调用内存中存在，不得持久化或写入日志。
+	SourceArchive       []byte
+	SourceContentDigest string
+	// RuntimeGitAccess exists only during Coding Runtime startup and is never persisted or logged.
+	RuntimeGitAccess *RuntimeGitAccess
+}
+
+// RuntimeGitAccess is the transient Git clone credential resolved from a SECRET_REF.
+type RuntimeGitAccess struct {
+	CloneURL string
+	Username string
+	Token    string
 }
 
 // ResolvedMCPBinding is an in-memory result of the Agent authorization resolver.

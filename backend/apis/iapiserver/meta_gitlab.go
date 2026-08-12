@@ -12,7 +12,10 @@ const (
 	// GitLabServerStatusReady 表示 API、credential 和 Namespace 最近一次检测成功。
 	GitLabServerStatusReady = "READY"
 	// GitLabServerStatusError 表示最近一次连接检测失败。
-	GitLabServerStatusError = "ERROR"
+	GitLabServerStatusError     = "ERROR"
+	GitLabProjectStatusCreating = "CREATING"
+	GitLabProjectStatusReady    = "READY"
+	GitLabProjectStatusError    = "ERROR"
 )
 
 // +k8s:deepcopy-gen=true
@@ -29,6 +32,8 @@ type GitLabServer struct {
 	Credential string `json:"-" gorm:"column:credential;type:text;not null"`
 	// Status 是最近连接检测投影，只允许 UNKNOWN、READY 或 ERROR。
 	Status string `json:"status" gorm:"column:status;type:text;not null;default:'UNKNOWN';index"`
+	// IsAppStudioDefault 表示该 READY Server 是否为 AppStudio 唯一默认连接。
+	IsAppStudioDefault bool `json:"is_appstudio_default" gorm:"column:is_appstudio_default;not null;default:false"`
 	// LastCheckedAt 是最近完成连接检测的服务端时间。
 	LastCheckedAt *imachinery.Time `json:"last_checked_at,omitempty" gorm:"column:last_checked_at;type:timestamptz"`
 	// LastError 是最近检测失败的脱敏摘要，不保存 GitLab 原始响应或 credential。
@@ -54,18 +59,19 @@ func (m *GitLabServer) AfterFind(tx *gorm.DB) error    { return m.ObjectMeta.Aft
 // GitLabProject 是远端 GitLab Project 的本地投影；其他领域只能引用其 OmniMAM ID。
 type GitLabProject struct {
 	imachinery.ObjectMeta
+	Status string `json:"status" gorm:"column:status;type:text;not null;default:'CREATING'"`
 	// GitLabServerID 指向拥有远端连接和 credential 的 GitLabServer。
 	GitLabServerID string `json:"gitlab_server_id" gorm:"column:gitlab_server_id;type:text;not null;index;uniqueIndex:idx_gitlab_project_external,priority:1;uniqueIndex:idx_gitlab_project_path,priority:1"`
 	// ExternalProjectID 是 GitLab numeric project ID，仅允许在 GitLab domain 内使用。
-	ExternalProjectID int64 `json:"external_project_id" gorm:"column:external_project_id;not null;uniqueIndex:idx_gitlab_project_external,priority:2"`
+	ExternalProjectID int64 `json:"external_project_id" gorm:"column:external_project_id;default:null;uniqueIndex:idx_gitlab_project_external,priority:2"`
 	// Path 是 GitLab Namespace 内的 Project path。
 	Path string `json:"path" gorm:"column:path;type:text;not null"`
 	// PathWithNamespace 是 GitLab 返回的完整 Namespace/Project path。
 	PathWithNamespace string `json:"path_with_namespace" gorm:"column:path_with_namespace;type:text;not null;uniqueIndex:idx_gitlab_project_path,priority:2"`
 	// WebURL 是供管理员跳转的 GitLab Project 页面地址。
-	WebURL string `json:"web_url" gorm:"column:web_url;type:text;not null"`
+	WebURL string `json:"web_url" gorm:"column:web_url;type:text;not null;default:''"`
 	// HTTPURLToRepo 是 GitLab 返回的 HTTP clone URL，不包含 credential。
-	HTTPURLToRepo string `json:"http_url_to_repo" gorm:"column:http_url_to_repo;type:text;not null"`
+	HTTPURLToRepo string `json:"http_url_to_repo" gorm:"column:http_url_to_repo;type:text;not null;default:''"`
 	// SSHURLToRepo 是 GitLab 返回的 SSH clone URL。
 	SSHURLToRepo string `json:"ssh_url_to_repo" gorm:"column:ssh_url_to_repo;type:text;not null;default:''"`
 	// DefaultBranch 是 GitLab 返回的默认分支；空仓库时按合同回退为 main。
@@ -79,6 +85,9 @@ func (m *GitLabProject) BeforeCreate(tx *gorm.DB) error {
 	}
 	if m.DefaultBranch == "" {
 		m.DefaultBranch = "main"
+	}
+	if m.Status == "" {
+		m.Status = GitLabProjectStatusCreating
 	}
 	return nil
 }

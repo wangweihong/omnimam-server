@@ -51,7 +51,7 @@ func (s *Service) GetServer(ctx context.Context, id string) (*iapiserver.GitLabS
 }
 
 func (s *Service) CreateServer(ctx context.Context, req *iapiserver.GitLabServerCreateRequest) (*iapiserver.GitLabServer, error) {
-	item := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description)}, APIURL: strings.TrimRight(req.APIURL, "/"), ExternalURL: strings.TrimRight(req.ExternalURL, "/"), NamespacePath: strings.Trim(req.NamespacePath, "/ "), Credential: strings.TrimSpace(req.Credential), Status: iapiserver.GitLabServerStatusUnknown}
+	item := &iapiserver.GitLabServer{ObjectMeta: imachinery.ObjectMeta{Name: strings.TrimSpace(req.Name), Description: strings.TrimSpace(req.Description)}, APIURL: strings.TrimRight(req.APIURL, "/"), ExternalURL: strings.TrimRight(req.ExternalURL, "/"), NamespacePath: strings.Trim(req.NamespacePath, "/ "), Credential: strings.TrimSpace(req.Credential), Status: iapiserver.GitLabServerStatusUnknown, IsAppStudioDefault: false}
 	created, err := s.store.CreateGitLabServer(ctx, item)
 	if stderrors.Is(err, store.ErrGitLabServerNameConflict) {
 		return nil, errors.NewStatus(code.ErrGitLabServerNameConflict, "gitlab server name already exists")
@@ -89,8 +89,11 @@ func (s *Service) UpdateServer(ctx context.Context, id string, req *iapiserver.G
 		connectionChanged = connectionChanged || value != current.Credential
 		current.Credential = value
 	}
+	if req.IsAppStudioDefault != nil {
+		current.IsAppStudioDefault = *req.IsAppStudioDefault
+	}
 	if connectionChanged {
-		current.Status, current.LastCheckedAt, current.LastError = iapiserver.GitLabServerStatusUnknown, nil, ""
+		current.Status, current.LastCheckedAt, current.LastError, current.IsAppStudioDefault = iapiserver.GitLabServerStatusUnknown, nil, "", false
 	}
 	expectedVersion := int64(0)
 	if req.ResourceVersion != nil {
@@ -102,6 +105,8 @@ func (s *Service) UpdateServer(ctx context.Context, id string, req *iapiserver.G
 		return nil, errors.NewStatus(code.ErrGitLabServerNameConflict, "gitlab server name already exists")
 	case stderrors.Is(err, store.ErrGitLabResourceVersionConflict):
 		return nil, errors.NewStatus(code.ErrValidation, "gitlab server resource version conflict")
+	case stderrors.Is(err, store.ErrGitLabDefaultConflict):
+		return nil, errors.NewStatus(code.ErrValidation, "gitlab server must be READY before becoming the appstudio default")
 	default:
 		return updated, err
 	}
@@ -125,7 +130,7 @@ func (s *Service) TestServer(ctx context.Context, id string) (*iapiserver.GitLab
 	now := imachinery.Now()
 	server.LastCheckedAt = &now
 	if err != nil {
-		server.Status = iapiserver.GitLabServerStatusError
+		server.Status, server.IsAppStudioDefault = iapiserver.GitLabServerStatusError, false
 		server.LastError = sanitizeRemoteError(err, server.Credential)
 	} else {
 		server.Status = iapiserver.GitLabServerStatusReady
@@ -175,7 +180,7 @@ func (s *Service) CreateProject(ctx context.Context, req *iapiserver.GitLabProje
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrGitLabProjectRemoteFailed, sanitizeRemoteError(err, server.Credential))
 	}
-	remote, err := client.CreateProject(ctx, CreateProjectRequest{Name: strings.TrimSpace(req.Name), Path: req.Path, Description: strings.TrimSpace(req.Description), NamespaceID: namespace.ID})
+	remote, err := client.CreateProject(ctx, CreateProjectRequest{Name: strings.TrimSpace(req.Name), Path: req.Path, Description: strings.TrimSpace(req.Description), NamespaceID: namespace.ID, InitializeWithReadme: true, DefaultBranch: "main"})
 	if err != nil {
 		return nil, errors.NewStatus(code.ErrGitLabProjectRemoteFailed, sanitizeRemoteError(err, server.Credential))
 	}

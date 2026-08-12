@@ -119,13 +119,29 @@ END $$;
 `
 
 const gitLabConstraintsSQL = `
+ALTER TABLE gitlab_projects ALTER COLUMN external_project_id DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gitlab_servers_name ON gitlab_servers(name);
 CREATE INDEX IF NOT EXISTS idx_gitlab_servers_status_updated_at ON gitlab_servers(status, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gitlab_servers_appstudio_default ON gitlab_servers(is_appstudio_default) WHERE is_appstudio_default = TRUE;
 CREATE INDEX IF NOT EXISTS idx_gitlab_projects_server_created_at ON gitlab_projects(gitlab_server_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_source_repositories_gitlab_project ON studio_source_repositories(gitlab_project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_workspace_revisions_commit_sha ON studio_workspace_revisions(workspace_id, commit_sha);
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_gitlab_servers_status') THEN
     ALTER TABLE gitlab_servers ADD CONSTRAINT ck_gitlab_servers_status
       CHECK (status IN ('UNKNOWN', 'READY', 'ERROR'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_gitlab_servers_appstudio_default') THEN
+    ALTER TABLE gitlab_servers ADD CONSTRAINT ck_gitlab_servers_appstudio_default
+      CHECK (is_appstudio_default = FALSE OR status = 'READY');
+  END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_gitlab_projects_status') THEN
+		ALTER TABLE gitlab_projects ADD CONSTRAINT ck_gitlab_projects_status
+			CHECK (status IN ('CREATING', 'READY', 'ERROR'));
+	END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_studio_source_repositories_provider_type') THEN
+    ALTER TABLE studio_source_repositories ADD CONSTRAINT ck_studio_source_repositories_provider_type
+      CHECK (provider_type = 'GITLAB');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_gitlab_projects_server') THEN
     ALTER TABLE gitlab_projects ADD CONSTRAINT fk_gitlab_projects_server

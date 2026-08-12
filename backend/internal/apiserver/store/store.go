@@ -26,18 +26,23 @@ var (
 	ErrGitLabResourceVersionConflict = errors.New("gitlab resource version conflict")
 	// ErrGitLabServerHasProjects 表示 Server 仍有关联 Project，禁止删除。
 	ErrGitLabServerHasProjects = errors.New("gitlab server has projects")
+	// ErrGitLabDefaultConflict 表示并发设置默认 Server 未能满足唯一默认约束。
+	ErrGitLabDefaultConflict = errors.New("gitlab appstudio default conflict")
 )
 
 // GitLabStore 是独立 GitLab domain 的持久化消费边界。
 type GitLabStore interface {
 	ListGitLabServers(context.Context, *iapiserver.GitLabServerListRequest) ([]*iapiserver.GitLabServer, int64, error)
 	GetGitLabServer(context.Context, string) (*iapiserver.GitLabServer, error)
+	GetDefaultGitLabServer(context.Context) (*iapiserver.GitLabServer, error)
 	CreateGitLabServer(context.Context, *iapiserver.GitLabServer) (*iapiserver.GitLabServer, error)
 	UpdateGitLabServer(context.Context, *iapiserver.GitLabServer, int64) (*iapiserver.GitLabServer, error)
 	DeleteGitLabServer(context.Context, string) error
 	ListGitLabProjects(context.Context, *iapiserver.GitLabProjectListRequest) ([]*iapiserver.GitLabProject, int64, error)
 	GetGitLabProject(context.Context, string) (*iapiserver.GitLabProject, error)
 	CreateGitLabProject(context.Context, *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error)
+	UpdateGitLabProject(context.Context, *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error)
+	MarkGitLabProjectError(context.Context, string) (*iapiserver.GitLabProject, error)
 	DeleteGitLabProject(context.Context, string) error
 }
 
@@ -211,6 +216,7 @@ type StudioApplicationInitialization struct {
 	Repository        *iapiserver.StudioSourceRepository
 	Workspace         *iapiserver.StudioWorkspace
 	Revision          *iapiserver.StudioWorkspaceRevision
+	SourceFiles       []*iapiserver.StudioSourceFile
 	Agent             *iapiserver.Agent
 	Session           *iapiserver.AgentSession
 	WorkspaceBinding  *iapiserver.AgentWorkspaceBinding
@@ -229,6 +235,12 @@ type StudioCodingAgentReplacement struct {
 	MCPBinding       *iapiserver.AgentMCPBinding
 }
 
+type StudioSourceArchiveAccess struct {
+	GitLabProjectID string
+	CommitSHA       string
+	ContentDigest   string
+}
+
 // AppStudioStore 是 StudioApplication 源码谱系、构建、发布和 Runtime 投影的事实边界。
 type AppStudioStore interface {
 	CreateStudioApplicationInitialization(context.Context, *StudioApplicationInitialization) (bool, error)
@@ -241,6 +253,9 @@ type AppStudioStore interface {
 	ReplaceStudioCodingAgent(context.Context, string, string, *StudioCodingAgentReplacement) (*iapiserver.StudioApplication, error)
 	GetStudioWorkspaceByApplication(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
 	GetStudioWorkspace(context.Context, string, string) (*iapiserver.StudioWorkspace, error)
+	GetStudioSourceRepository(context.Context, string, string) (*iapiserver.StudioSourceRepository, error)
+	ResolveStudioPreviewSource(context.Context, string, int64, string, int64) (*StudioSourceArchiveAccess, error)
+	ResolveStudioBuildSource(context.Context, string, string, string, int64) (*StudioSourceArchiveAccess, error)
 	ListStudioSourceFiles(context.Context, string, int64, string, string) ([]*iapiserver.StudioSourceFile, error)
 	GetStudioWorkspaceRevision(context.Context, string, int64, string) (*iapiserver.StudioWorkspaceRevision, error)
 	GetStudioChangeSetByIdempotencyKey(context.Context, string, string, string) (*iapiserver.StudioChangeSet, error)
@@ -281,6 +296,7 @@ type InfrastructureStore interface {
 	CreateInfraRuntimeAggregate(context.Context, *iapiserver.InfraRuntime, []*iapiserver.InfraRuntimeMount, []*iapiserver.InfraRuntimeConfigBinding) (*iapiserver.InfraRuntime, error)
 	ListInfraRuntimes(context.Context, *iapiserver.InfraRuntimeListRequest) ([]*iapiserver.InfraRuntime, int64, error)
 	GetInfraRuntime(context.Context, string) (*iapiserver.InfraRuntime, error)
+	ListInfraRuntimeConfigBindings(context.Context, string) ([]*iapiserver.InfraRuntimeConfigBinding, error)
 	UpdateInfraRuntime(context.Context, *iapiserver.InfraRuntime, *iapiserver.InfraRuntimeEndpoint, []*iapiserver.InfraRuntimeOutput, string) (*iapiserver.InfraRuntime, error)
 	GetInfraRuntimeEndpoint(context.Context, string) (*iapiserver.InfraRuntimeEndpoint, error)
 	GetInfraRuntimeEndpointByID(context.Context, string) (*iapiserver.InfraRuntimeEndpoint, error)

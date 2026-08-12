@@ -2,7 +2,6 @@ package apiserver
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/wangweihong/gotoolbox/pkg/errors"
@@ -176,7 +175,8 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "load task center function registry")
 	}
-	gitLabService, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storeIns.GitLab(), Clients: gitlabsvc.NewHTTPClientFactory()})
+	gitLabClientFactory := gitlabsvc.NewHTTPClientFactory()
+	gitLabService, err := gitlabsvc.New(gitlabsvc.Dependencies{Store: storeIns.GitLab(), Clients: gitLabClientFactory})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct gitlab service")
 	}
@@ -204,15 +204,11 @@ func createServer(cfg *config.Config) (*server, error) {
 	if err := reconcileRegistry.Register(comfyuiadapter.NewComfyUIObjectInfoReconcileHandler(storeIns, applicationPlatformService)); err != nil {
 		return nil, errors.Wrap(err, "register ComfyUI object_info reconciler")
 	}
-	sourceDir := os.Getenv("OMNIMAM_APPSTUDIO_SOURCE_DIR")
-	if sourceDir == "" {
-		sourceDir = "data/appstudio/source"
-	}
-	sourceStore, err := appstudiosvc.NewLocalSourceContentStore(sourceDir)
+	sourceProvider, err := gitlabsvc.NewSourceProvider(storeIns.GitLab(), gitLabClientFactory)
 	if err != nil {
-		return nil, errors.Wrap(err, "construct appstudio source content store")
+		return nil, errors.Wrap(err, "construct appstudio gitlab source provider")
 	}
-	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, Sources: sourceStore, Artifacts: storeIns.AssetsV1(), Grants: grantCodec})
+	appStudioService, err := appstudiosvc.New(appstudiosvc.Dependencies{Store: storeIns.AppStudio(), Tasks: taskCenterService, SourceProvider: sourceProvider, ProjectInitializer: sourceProvider, Artifacts: storeIns.AssetsV1(), Grants: grantCodec})
 	if err != nil {
 		return nil, errors.Wrap(err, "construct appstudio service")
 	}

@@ -39,12 +39,14 @@ Compose 提供与 `scripts/install/environment.sh` 一致的本地开发默认�
 docker compose -f deployments/docker-compose.yaml down
 ```
 
-AppStudio 的不可变 Source Revision 正文保存在 `omnimam_appstudio_source` volume，容器内目录默认为
-`/var/lib/omnimam/appstudio-source`。如需覆盖路径，统一通过 `scripts/install/environment.sh` 中的
-`OMNIMAM_APPSTUDIO_SOURCE_DIR` 或部署进程环境设置；Coding Agent 不直接挂载该 volume。
-静态 Web Preview 只读挂载该 volume 中获授权的单一 Workspace Revision 子目录，volume 实际名称由
-`OMNIMAM_APPSTUDIO_SOURCE_VOLUME` 控制。该隔离依赖 Docker API v1.45+ 的 volume subpath；本地默认
-`OMNIMAM_DOCKER_API_VERSION=v1.45`，使用旧 Engine 时 Preview 会显式失败而不会回退到整卷挂载。
+AppStudio 源码正文只保存在管理员配置的默认 GitLabServer。Coding Runtime 使用限时 Project access
+在可丢弃 `/workspace` tmpfs 中 clone；Preview/Build 按固定 Revision CommitSHA 获取并校验 archive 后
+注入只读 tmpfs，不再创建或挂载 AppStudio source volume。
+
+`spec-v1.23.0` 是不迁移旧数据的清空切换。部署前停止 Compose，只删除默认本地 PostgreSQL volume
+`deployments_omnimam_postgres_data` 和旧 source volume `deployments_omnimam_appstudio_source`，保留素材、
+日志、调试和其他无关 volume，再运行 `make compose`。重建后管理员必须重新创建、检测并设置唯一默认
+GitLabServer，之后才能创建 StudioApplication。
 
 API Server、Infrastructure Server、Task Worker 与 Notification Worker 共用
 `OMNIMAM_MCP_PUBLIC_BASE_URL`。Compose 本地默认使用 Runtime 可达的 `https://apiserver:8443`，

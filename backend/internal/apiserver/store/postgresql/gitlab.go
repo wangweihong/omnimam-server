@@ -37,6 +37,14 @@ func (s *gitLabStore) GetGitLabServer(ctx context.Context, id string) (*iapiserv
 	return &item, nil
 }
 
+func (s *gitLabStore) GetDefaultGitLabServer(ctx context.Context) (*iapiserver.GitLabServer, error) {
+	var item iapiserver.GitLabServer
+	if err := s.ds.db.WithContext(ctx).Where("is_appstudio_default = ? AND status = ?", true, iapiserver.GitLabServerStatusReady).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *gitLabStore) CreateGitLabServer(ctx context.Context, item *iapiserver.GitLabServer) (*iapiserver.GitLabServer, error) {
 	// Credential 参与 INSERT 参数，关闭本次 session 的 SQL 日志以避免错误路径插值泄露 PAT。
 	if err := s.ds.db.Session(&gorm.Session{Logger: logger.Discard}).WithContext(ctx).Create(item).Error; err != nil {
@@ -65,11 +73,23 @@ func (s *gitLabStore) UpdateGitLabServer(ctx context.Context, desired *iapiserve
 		updated.NamespacePath = desired.NamespacePath
 		updated.Credential = desired.Credential
 		updated.Status = desired.Status
+		updated.IsAppStudioDefault = desired.IsAppStudioDefault
 		updated.LastCheckedAt = desired.LastCheckedAt
 		updated.LastError = desired.LastError
+		if updated.IsAppStudioDefault {
+			if updated.Status != iapiserver.GitLabServerStatusReady {
+				return store.ErrGitLabDefaultConflict
+			}
+			if err := tx.Model(&iapiserver.GitLabServer{}).Where("id <> ?", updated.ID).Update("is_appstudio_default", false).Error; err != nil {
+				return err
+			}
+		}
 		return tx.Save(&updated).Error
 	})
 	if err != nil {
+		if stderrors.Is(err, store.ErrGitLabDefaultConflict) {
+			return nil, store.ErrGitLabDefaultConflict
+		}
 		if isGitLabUniqueError(err) {
 			return nil, store.ErrGitLabServerNameConflict
 		}
@@ -126,6 +146,35 @@ func (s *gitLabStore) CreateGitLabProject(ctx context.Context, item *iapiserver.
 		return nil, err
 	}
 	return item, nil
+}
+
+func (s *gitLabStore) UpdateGitLabProject(ctx context.Context, item *iapiserver.GitLabProject) (*iapiserver.GitLabProject, error) {
+	if err := s.ds.db.WithContext(ctx).Save(item).Error; err != nil {
+		if isGitLabUniqueError(err) {
+			return nil, store.ErrGitLabProjectConflict
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+// MarkGitLabProjectError 在行锁下将未完成 reservation 置为 ERROR，避免并发重试覆盖 READY 投影。
+func (s *gitLabStore) MarkGitLabProjectError(ctx context.Context, id string) (*iapiserver.GitLabProject, error) {
+	var project iapiserver.GitLabProject
+	err := s.ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&project).Error; err != nil {
+			return err
+		}
+		if project.Status == iapiserver.GitLabProjectStatusReady {
+			return nil
+		}
+		project.Status = iapiserver.GitLabProjectStatusError
+		return tx.Save(&project).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &project, nil
 }
 
 func (s *gitLabStore) DeleteGitLabProject(ctx context.Context, id string) error {

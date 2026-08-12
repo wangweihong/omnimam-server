@@ -24,16 +24,32 @@ import (
 )
 
 type Service struct {
-	store       store.InfrastructureStore                  // 持久化存储层
-	provider    providers.RuntimeProvider                  // 运行时提供者接口
-	profiles    map[string]*iapiserver.InfraRuntimeProfile // 内存中的运行时配置模板
-	stateMu     sync.RWMutex                               // 保护 endpoints/outputs 的读写锁
-	endpoints   map[string]providers.ProviderEndpoint      // 内存中的端点缓存
-	outputs     map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
-	mcpResolver agentmcp.Resolver
+	store          store.InfrastructureStore                  // 持久化存储层
+	provider       providers.RuntimeProvider                  // 运行时提供者接口
+	profiles       map[string]*iapiserver.InfraRuntimeProfile // 内存中的运行时配置模板
+	stateMu        sync.RWMutex                               // 保护 endpoints/outputs 的读写锁
+	endpoints      map[string]providers.ProviderEndpoint      // 内存中的端点缓存
+	outputs        map[string]providers.ProviderOutputContent // 内存中的输出内容缓存
+	mcpResolver    agentmcp.Resolver
+	sourceResolver SourceArchiveResolver
+	runtimeGit     RuntimeGitAccessResolver
 }
 
-const resolvedEndpointTTL = time.Minute
+const (
+	resolvedEndpointTTL          = time.Minute
+	maxSourceArchiveRequestBytes = 32 << 20
+)
+
+type SourceArchiveResolver interface {
+	ResolveSourceArchive(context.Context, string, string) (io.ReadCloser, string, error)
+}
+
+// RuntimeGitAccessResolver resolves the opaque AppStudio SECRET_REF only while
+// a Coding Runtime is being prepared, and revokes it during teardown.
+type RuntimeGitAccessResolver interface {
+	ResolveRuntimeGitAccess(context.Context, string, string) (string, string, string, error)
+	RevokeRuntimeGitAccess(context.Context, string) error
+}
 
 func NewService(storage store.InfrastructureStore, provider providers.RuntimeProvider) (*Service, error) {
 	if storage == nil {
@@ -49,6 +65,16 @@ func NewService(storage store.InfrastructureStore, provider providers.RuntimePro
 
 // SetMCPBindingResolver injects the Agent-domain resolver without coupling Infrastructure to Agent tables.
 func (s *Service) SetMCPBindingResolver(resolver agentmcp.Resolver) { s.mcpResolver = resolver }
+
+// SetSourceArchiveResolver 注入 AppStudio CommitSHA archive 解析边界。
+func (s *Service) SetSourceArchiveResolver(resolver SourceArchiveResolver) {
+	s.sourceResolver = resolver
+}
+
+// SetRuntimeGitAccessResolver 注入 Coding Runtime 的受控 Git credential 边界。
+func (s *Service) SetRuntimeGitAccessResolver(resolver RuntimeGitAccessResolver) {
+	s.runtimeGit = resolver
+}
 
 func (s *Service) getEndpoint(id string) (providers.ProviderEndpoint, bool) {
 	s.stateMu.RLock()
@@ -82,7 +108,7 @@ func defaultProfiles() map[string]*iapiserver.InfraRuntimeProfile {
 		caps     []string
 	}{
 		{iapiserver.InfraRuntimeProfileIDAgentHermes, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityPersistentWorkspace}},
-		{iapiserver.InfraRuntimeProfileIDAgentCoding, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityWorkspaceTool}},
+		{iapiserver.InfraRuntimeProfileIDAgentCoding, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityGitWorkspace}},
 		{iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}},
 		{iapiserver.InfraRuntimeProfileIDAppStudioPreviewAPI, iapiserver.InfraRuntimeModeService, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityNetwork, iapiserver.InfraRuntimeCapabilityEndpoint}},
 		{iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb, iapiserver.InfraRuntimeModeJob, []string{iapiserver.InfraRuntimeCapabilityCPU, iapiserver.InfraRuntimeCapabilityArtifactOutput}},
@@ -303,35 +329,75 @@ func (s *Service) CreateRuntime(ctx context.Context, req *iapiserver.InfraCreate
 		_, _ = s.store.UpdateInfraRuntime(ctx, created, nil, nil, "")
 	}
 	providerRequest := providers.ProviderRequest{RuntimeID: created.ID, Profile: profile, Request: req}
-	for _, binding := range req.ConfigurationBindings {
-		if binding.BindingType != iapiserver.InfraConfigBindingTypeMCPServerRef {
-			continue
-		}
-		if s.mcpResolver == nil {
+	runtimeGitReferences := make([]string, 0, 1)
+	needsSourceArchive := (profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioPreviewWeb && len(req.Mounts) > 0) ||
+		(profile.ID == iapiserver.InfraRuntimeProfileIDAppStudioBuildWeb && strings.HasPrefix(req.SourceRef, iapiserver.InfraRefPrefixStudioSnapshot))
+	if needsSourceArchive {
+		if s.sourceResolver == nil {
 			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
-			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver is unavailable")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "source archive resolver is unavailable")
 		}
-		resolved, resolveErr := s.mcpResolver.ResolveMCPBinding(ctx, req.AuthorizationRef, req.OwnerReference, binding.Reference)
+		archive, expectedDigest, resolveErr := s.sourceResolver.ResolveSourceArchive(ctx, req.SourceRef, req.AuthorizationRef)
 		if resolveErr != nil {
 			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
-			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolution failed")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "source archive resolution failed")
 		}
-		if resolved == nil || resolved.ServerKey == "" || resolved.Endpoint == "" {
+		data, readErr := io.ReadAll(io.LimitReader(archive, maxSourceArchiveRequestBytes+1))
+		closeErr := archive.Close()
+		if readErr != nil || closeErr != nil || len(data) == 0 || len(data) > maxSourceArchiveRequestBytes {
 			markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
-			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver returned an invalid result")
+			return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "source archive is invalid or exceeds the size limit")
 		}
-		providerRequest.MCPBindings = append(providerRequest.MCPBindings, providers.ResolvedMCPBinding{
-			ServerKey: resolved.ServerKey, ServerType: resolved.ServerType, Endpoint: resolved.Endpoint,
-			Credential: resolved.Credential, AllowedTools: append([]string(nil), resolved.AllowedTools...), Configuration: resolved.Configuration,
-		})
+		providerRequest.SourceArchive, providerRequest.SourceContentDigest = data, expectedDigest
+	}
+	for _, binding := range req.ConfigurationBindings {
+		switch binding.BindingType {
+		case iapiserver.InfraConfigBindingTypeMCPServerRef:
+			if s.mcpResolver == nil {
+				markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+				s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
+				return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver is unavailable")
+			}
+			resolved, resolveErr := s.mcpResolver.ResolveMCPBinding(ctx, req.AuthorizationRef, req.OwnerReference, binding.Reference)
+			if resolveErr != nil {
+				markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+				s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
+				return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolution failed")
+			}
+			if resolved == nil || resolved.ServerKey == "" || resolved.Endpoint == "" {
+				markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+				s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
+				return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "MCP binding resolver returned an invalid result")
+			}
+			providerRequest.MCPBindings = append(providerRequest.MCPBindings, providers.ResolvedMCPBinding{
+				ServerKey: resolved.ServerKey, ServerType: resolved.ServerType, Endpoint: resolved.Endpoint,
+				Credential: resolved.Credential, AllowedTools: append([]string(nil), resolved.AllowedTools...), Configuration: resolved.Configuration,
+			})
+		case iapiserver.InfraConfigBindingTypeSecretRef:
+			if profile.ID != iapiserver.InfraRuntimeProfileIDAgentCoding || binding.Name != "coding-runtime-git" || !strings.HasPrefix(binding.Reference, iapiserver.AppStudioRefPrefixRuntimeGitAccess) || providerRequest.RuntimeGitAccess != nil || s.runtimeGit == nil {
+				markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+				s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
+				return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "runtime secret binding is invalid")
+			}
+			cloneURL, username, token, resolveErr := s.runtimeGit.ResolveRuntimeGitAccess(ctx, binding.Reference, req.OwnerReference)
+			if resolveErr != nil || cloneURL == "" || username == "" || token == "" || strings.ContainsAny(cloneURL, "\r\n") || strings.ContainsAny(username, "\r\n") || strings.ContainsAny(token, "\r\n") {
+				markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+				s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
+				return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "runtime git access is unavailable")
+			}
+			providerRequest.RuntimeGitAccess = &providers.RuntimeGitAccess{CloneURL: cloneURL, Username: username, Token: token}
+			runtimeGitReferences = append(runtimeGitReferences, binding.Reference)
+		}
 	}
 	providerResult, err := s.provider.Ensure(ctx, providerRequest)
 	if err != nil {
 		markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+		s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, err.Error())
 	}
 	if providerResult == nil {
 		markRuntimeFailed("ERR_INFRA_RUNTIME_OPERATION_FAILED")
+		s.revokeRuntimeGitAccess(ctx, runtimeGitReferences)
 		return nil, errors.NewStatus(code.ErrInfraRuntimeOperationFailed, "provider returned no runtime result")
 	}
 	created.ProviderRuntimeRef = providerResult.ProviderRuntimeRef
@@ -381,6 +447,31 @@ func (s *Service) Start(ctx context.Context, id string) (*iapiserver.InfraOperat
 	return s.result(ctx, runtime, result)
 }
 
+func (s *Service) revokeRuntimeGitAccess(ctx context.Context, references []string) {
+	if s.runtimeGit == nil {
+		return
+	}
+	for _, reference := range references {
+		if strings.HasPrefix(reference, iapiserver.AppStudioRefPrefixRuntimeGitAccess) {
+			_ = s.runtimeGit.RevokeRuntimeGitAccess(context.WithoutCancel(ctx), reference)
+		}
+	}
+}
+
+func (s *Service) revokeRuntimeGitAccessForRuntime(ctx context.Context, runtimeID string) {
+	bindings, err := s.store.ListInfraRuntimeConfigBindings(ctx, runtimeID)
+	if err != nil {
+		return
+	}
+	references := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.BindingType == iapiserver.InfraConfigBindingTypeSecretRef {
+			references = append(references, binding.Reference)
+		}
+	}
+	s.revokeRuntimeGitAccess(ctx, references)
+}
+
 // Stop 停止 Service；对 Job 按契约执行取消语义。
 func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iapiserver.InfraOperationResult, error) {
 	runtime, err := s.store.GetInfraRuntime(ctx, id)
@@ -413,6 +504,7 @@ func (s *Service) Stop(ctx context.Context, id string, deleteRuntime bool) (*iap
 	if err != nil {
 		return nil, err
 	}
+	s.revokeRuntimeGitAccessForRuntime(ctx, runtime.ID)
 	return s.result(ctx, runtime, result)
 }
 

@@ -34,12 +34,35 @@ func (s *appStudioStore) CreateStudioApplicationInitialization(ctx context.Conte
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return nil
+			var existing iapiserver.StudioApplication
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", initialization.Application.ID).First(&existing).Error; err != nil {
+				return err
+			}
+			if initialization.Revision == nil || existing.Status == iapiserver.AppStudioApplicationStatusReady {
+				return nil
+			}
+			initialization.Application.ResourceVersion = existing.ResourceVersion
+			if err := tx.Save(initialization.Application).Error; err != nil {
+				return err
+			}
+			for _, value := range []any{initialization.Repository, initialization.Workspace} {
+				if err := tx.Save(value).Error; err != nil {
+					return err
+				}
+			}
+		} else {
+			created = true
+			for _, value := range []any{initialization.Repository, initialization.Workspace} {
+				if err := tx.Create(value).Error; err != nil {
+					return err
+				}
+			}
+			if initialization.Revision == nil {
+				app := initialization.Application
+				return appendAppStudioOutbox(tx, iapiserver.AppStudioAggregateTypeApplication, app.ID, iapiserver.AppStudioEventApplicationLifecycleChanged, appStudioEventKey(iapiserver.AppStudioEventApplicationLifecycleChanged, app.ID, app.ResourceVersion), app.ResourceVersion, studioApplicationLifecyclePayload(app, nil))
+			}
 		}
-		created = true
 		for _, value := range []any{
-			initialization.Repository,
-			initialization.Workspace,
 			initialization.Revision,
 			initialization.Agent,
 			initialization.Session,
@@ -53,6 +76,11 @@ func (s *appStudioStore) CreateStudioApplicationInitialization(ctx context.Conte
 				continue
 			}
 			if err := tx.Create(value).Error; err != nil {
+				return err
+			}
+		}
+		if len(initialization.SourceFiles) > 0 {
+			if err := tx.Create(&initialization.SourceFiles).Error; err != nil {
 				return err
 			}
 		}
@@ -217,6 +245,62 @@ func (s *appStudioStore) GetStudioWorkspace(ctx context.Context, id, owner strin
 		return nil, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source not visible")
 	}
 	return &item, nil
+}
+
+func (s *appStudioStore) GetStudioSourceRepository(ctx context.Context, workspaceID, owner string) (*iapiserver.StudioSourceRepository, error) {
+	var item iapiserver.StudioSourceRepository
+	err := s.ds.db.WithContext(ctx).
+		Joins("JOIN studio_workspaces ON studio_workspaces.repository_id = studio_source_repositories.id").
+		Joins("JOIN studio_applications ON studio_applications.id = studio_workspaces.studio_application_id").
+		Where("studio_workspaces.id = ? AND studio_applications.owner_user_id = ?", workspaceID, owner).First(&item).Error
+	return &item, mapNotFound(err, code.ErrAppStudioSourceNotVisible, "studio source repository not visible")
+}
+
+func (s *appStudioStore) ResolveStudioPreviewSource(ctx context.Context, workspaceID string, revision int64, previewRuntimeID string, resourceVersion int64) (*store.StudioSourceArchiveAccess, error) {
+	var result struct {
+		GitLabProjectID string
+		CommitSHA       string
+		ContentDigest   string
+	}
+	err := s.ds.db.WithContext(ctx).Table("studio_preview_runtimes").
+		Select("studio_source_repositories.gitlab_project_id, studio_workspace_revisions.commit_sha, studio_workspace_revisions.content_digest").
+		Joins("JOIN studio_workspaces ON studio_workspaces.id = studio_preview_runtimes.workspace_id").
+		Joins("JOIN studio_source_repositories ON studio_source_repositories.id = studio_workspaces.repository_id").
+		Joins("JOIN studio_workspace_revisions ON studio_workspace_revisions.workspace_id = studio_workspaces.id AND studio_workspace_revisions.revision = studio_preview_runtimes.workspace_revision").
+		Where("studio_preview_runtimes.id = ? AND studio_preview_runtimes.workspace_id = ? AND studio_preview_runtimes.workspace_revision = ? AND studio_preview_runtimes.resource_version = ?", previewRuntimeID, workspaceID, revision, resourceVersion).
+		Take(&result).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioSourceAccessInvalid, "studio preview source authorization is invalid")
+	}
+	if result.GitLabProjectID == "" || result.CommitSHA == "" {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio preview source authorization is invalid")
+	}
+	return &store.StudioSourceArchiveAccess{GitLabProjectID: result.GitLabProjectID, CommitSHA: result.CommitSHA, ContentDigest: result.ContentDigest}, nil
+}
+
+// ResolveStudioBuildSource resolves one current Build grant to its immutable Snapshot commit.
+func (s *appStudioStore) ResolveStudioBuildSource(ctx context.Context, snapshotID, applicationID, buildID string, resourceVersion int64) (*store.StudioSourceArchiveAccess, error) {
+	var result struct {
+		GitLabProjectID string
+		CommitSHA       string
+		ContentDigest   string
+	}
+	err := s.ds.db.WithContext(ctx).Table("studio_builds").
+		Select("studio_source_repositories.gitlab_project_id, studio_workspace_revisions.commit_sha, studio_source_snapshots.content_digest").
+		Joins("JOIN studio_source_snapshots ON studio_source_snapshots.id = studio_builds.source_snapshot_id").
+		Joins("JOIN studio_workspaces ON studio_workspaces.id = studio_source_snapshots.workspace_id").
+		Joins("JOIN studio_source_repositories ON studio_source_repositories.id = studio_workspaces.repository_id").
+		Joins("JOIN studio_workspace_revisions ON studio_workspace_revisions.workspace_id = studio_source_snapshots.workspace_id AND studio_workspace_revisions.revision = studio_source_snapshots.workspace_revision").
+		Where("studio_builds.id = ? AND studio_builds.studio_application_id = ? AND studio_builds.source_snapshot_id = ? AND studio_builds.resource_version = ?", buildID, applicationID, snapshotID, resourceVersion).
+		Where("studio_source_snapshots.status = ?", iapiserver.AppStudioSnapshotStatusReady).
+		Take(&result).Error
+	if err != nil {
+		return nil, mapNotFound(err, code.ErrAppStudioSourceAccessInvalid, "studio build source authorization is invalid")
+	}
+	if result.GitLabProjectID == "" || result.CommitSHA == "" || result.ContentDigest == "" {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceAccessInvalid, "studio build source authorization is invalid")
+	}
+	return &store.StudioSourceArchiveAccess{GitLabProjectID: result.GitLabProjectID, CommitSHA: result.CommitSHA, ContentDigest: result.ContentDigest}, nil
 }
 
 func (s *appStudioStore) ListStudioSourceFiles(ctx context.Context, workspaceID string, revision int64, prefix, owner string) ([]*iapiserver.StudioSourceFile, error) {

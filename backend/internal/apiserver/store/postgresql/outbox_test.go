@@ -3,6 +3,8 @@ package postgresql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"testing"
@@ -28,6 +30,40 @@ type buildSummaryStore struct {
 	store.AppStudioStore
 	owner string
 	ids   []string
+}
+
+type noSourceProvider struct{}
+
+func (noSourceProvider) ReadFile(context.Context, string, string, string) ([]byte, error) {
+	return nil, fmt.Errorf("source read is not expected")
+}
+
+func (noSourceProvider) ListFiles(context.Context, string, string, string) ([]appstudioservice.SourceFile, error) {
+	return nil, fmt.Errorf("source list is not expected")
+}
+
+func (noSourceProvider) Commit(context.Context, string, string, string, string, []appstudioservice.SourceAction) (*appstudioservice.SourceCommit, error) {
+	return nil, fmt.Errorf("source commit is not expected")
+}
+
+func (noSourceProvider) BranchHead(context.Context, string, string) (string, error) {
+	return "", fmt.Errorf("source branch head is not expected")
+}
+
+func (noSourceProvider) Compare(context.Context, string, string, string) ([]appstudioservice.SourceCommit, error) {
+	return nil, fmt.Errorf("source compare is not expected")
+}
+
+func (noSourceProvider) Archive(context.Context, string, string) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("source archive is not expected")
+}
+
+func (noSourceProvider) CreateRuntimeGitAccess(context.Context, string, string, time.Time) (*appstudioservice.RuntimeGitAccess, error) {
+	return nil, fmt.Errorf("runtime git access is not expected")
+}
+
+func (noSourceProvider) RevokeRuntimeGitAccess(context.Context, string, int64) error {
+	return fmt.Errorf("runtime git access revocation is not expected")
 }
 
 func (s *buildSummaryStore) ResolveStudioBuildSummaries(_ context.Context, owner string, ids []string) (map[string]*iapiserver.StudioBuildProducerProjection, error) {
@@ -68,11 +104,7 @@ func TestCreateStudioSourceSnapshotRejectsEmptyRevision(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			storage := &snapshotValidationStore{files: tt.files}
-			sources, err := appstudioservice.NewLocalSourceContentStore(t.TempDir())
-			if err != nil {
-				t.Fatalf("NewLocalSourceContentStore() error = %v", err)
-			}
-			service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, Sources: sources})
+			service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, SourceProvider: noSourceProvider{}})
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
@@ -99,11 +131,7 @@ func TestCreateStudioSourceSnapshotRejectsEmptyRevision(t *testing.T) {
 
 func TestBatchStudioBuildSummariesPreservesOrderAndTrimsInvisibleItems(t *testing.T) {
 	storage := &buildSummaryStore{}
-	sources, err := appstudioservice.NewLocalSourceContentStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, Sources: sources})
+	service, err := appstudioservice.New(appstudioservice.Dependencies{Store: storage, SourceProvider: noSourceProvider{}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,24 @@
+id: web-react
+version: v1
+files:
+  - .gitignore
+  - .gitlab-ci.yml
+  - index.html
+  - package.json
+  - pnpm-workspace.yaml
+  - pnpm-lock.yaml
+  - src/App.tsx
+  - src/main.tsx
+  - src/styles.css
+  - tsconfig.json
+  - tsconfig.app.json
+  - tsconfig.node.json
+  - vite.config.ts
+prompts:
+  system: system.md
+  initial: initial.md
+  followup: followup.md
+  fix: fix.md
+validation:
+  - pnpm build
+ci_include: omnimam/appstudio-ci:/web-app.yml@main

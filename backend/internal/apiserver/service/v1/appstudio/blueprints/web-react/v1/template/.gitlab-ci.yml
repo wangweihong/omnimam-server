@@ -1,0 +1,4 @@
+include:
+  - project: omnimam/appstudio-ci
+    file: /web-app.yml
+    ref: main
