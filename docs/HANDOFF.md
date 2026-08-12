@@ -3,7 +3,7 @@
 ## Current goal and status
 
 - Goal: implement AppStudio phase 3 against released `spec-v1.23.2`: asynchronous initialization DAG, GitLab webhooks, push-to-build/artifact/preview orchestration, and the required Infrastructure/DevOps integration.
-- Status: implementation complete for code/configuration scope; authorized local cleanup and full E2E acceptance remain pending.
+- Status: implementation complete; authorized domain-only cleanup and Compose rebuild completed. Admin UI/health acceptance passed; full create-to-GitLab Pipeline/Artifact/Preview E2E is blocked by the intentionally empty GitLabServer projection.
 
 ## Work completed in this session
 
@@ -45,20 +45,25 @@
 - `go test ./backend/internal/apiserver/service/v1/appstudio`, `go test ./backend/internal/apiserver/service/v1/gitlab`, `go test ./backend/internal/taskworker`, and targeted Task Center DAG/functionRef tests passed.
 - AppStudio tests now cover invalid token rejection, duplicate Push stable DAG identity, and canonical Revision race; GitLab tests cover digest-only token authentication and tar traversal rejection.
 - Full Task Center package currently fails only `TestAssignSystemName` because an unrelated existing Chinese localization value differs; this task did not modify that module.
-- Passed: targeted Go tests, DevOps YAML/shell checks, Compose config rendering, and diff checks. Not run: destructive cleanup, image build, and full E2E.
+- Passed: targeted Go tests, DevOps YAML/shell checks, Compose config rendering, and diff checks.
+- Destructive cleanup completed with scoped predicates: 42 Studio Applications and dependent projections removed; 26 AppStudio Coding Agents and dependent sessions/invocations/bindings/grants/messages/events/outbox removed; 65 AppStudio/GitLab Task Center tasks and 118 attempts removed; 58 unrelated Task Center tasks retained; 60 AppStudio/Coding Conductor workflows and 97 tasks removed; 8,649 unrelated workflows retained; `deployments_omnimam_appstudio_source` volume removed.
+- Preservation check after restart: `studio_apps=0`, `gitlab_projects=0`, `appstudio_or_gitlab_tasks=0`, `identity_users=4`, `user_assets=3`, `remaining_tasks=58`, `target_workflows=0`, `remaining_workflows=8649`.
+- `make compose` completed successfully and rebuilt/restarted `apiserver`, `infraserver`, `taskworker`, and `notificationworker`; PostgreSQL, Redis, Conductor, API Server, Infrastructure Server, workers, GitLab, runner, registry, and frontend are running. `GET http://127.0.0.1:8080/healthz` returned `{"status":"ok"}`.
+- Browser admin acceptance passed at `http://127.0.0.1:9990` with `admin/admin123`: AppStudio projects page rendered `0` projects and `暂无 AppStudio 项目`; authenticated admin shell and AppStudio create form loaded.
 
 ## Outstanding tasks
 
-- Execute the approved local cleanup, restart Compose, and perform admin-authenticated E2E acceptance.
+- Recreate and test a READY default GitLabServer using the local GitLab bootstrap PAT, then create an AppStudio application and verify initialization DAG -> READY, Push -> unique Build/Pipeline -> Bundle Artifact -> SourceArchive Preview.
 
 ## Known issues and risks
 
-- Task Center is shared; cleanup must select only AppStudio/GitLab-owned records and their Conductor executions.
+- Task Center is shared; the completed cleanup used only AppStudio/GitLab functionRef and application coding-agent predicates. Any repeat must preserve those exact predicates.
+- Full external E2E remains unverified until a GitLabServer is configured after cleanup; do not claim Pipeline, Artifact, or Preview success from the current empty projection.
 - Existing unrelated untracked files must not be modified.
 
 ## Exact recommended next step
 
-Inspect the local deployment, identify exact owner predicates, perform authorized domain-only cleanup, and record results before restart.
+Configure a local READY GitLabServer through the authenticated admin API/UI, then run the AppStudio create and webhook/pipeline E2E while recording exact IDs and terminal projections.
 
 Next Prompt:
 
