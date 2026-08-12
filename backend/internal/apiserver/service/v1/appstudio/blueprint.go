@@ -21,7 +21,9 @@ const (
 	BlueprintPromptFix = "fix"
 )
 
-//go:embed blueprints
+// 目录模式默认忽略点文件，必须显式嵌入 Blueprint 清单要求的受控文件。
+//
+//go:embed blueprints blueprints/web-react/v1/template/.gitignore blueprints/web-react/v1/template/.gitlab-ci.yml
 var blueprintFS embed.FS
 
 // Blueprint 是随 Server 发布的只读模板、prompt 和 validation 合同。

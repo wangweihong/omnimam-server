@@ -2,68 +2,69 @@
 
 ## Current goal and status
 
-- Goal: implement AppStudio phase 3 against released `spec-v1.23.2`: asynchronous initialization DAG, GitLab webhooks, push-to-build/artifact/preview orchestration, and the required Infrastructure/DevOps integration.
-- Status: implementation complete; authorized domain-only cleanup and Compose rebuild completed. Admin UI/health acceptance passed; full create-to-GitLab Pipeline/Artifact/Preview E2E is blocked by the intentionally empty GitLabServer projection.
+- Goal: fix the local AppStudio create failure `The StudioApplication is not in a state that permits this operation.:web-react blueprint is unavailable`.
+- Status: complete. Full Compose rebuild and post-deployment acceptance passed.
 
 ## Work completed in this session
 
-- Read the phase-3 design, repository rules, backend skill, relevant Go implementation skills, and current handoff state.
-- Confirmed the current Server pin is released `spec-v1.23.2` commit `9e1bf2291dd1925e982a5dd728e05a27c334f8d9`.
-- Locked implementation boundaries: HTTP 200 creation response, hashed per-project webhook secrets, canonical Revision ancestry, SourceArchive previews, existing Release/Artifact production authority, and precise domain-only cleanup.
-- Released and pushed `spec-v1.23.2`; Server `ssot` and `SSOT_VERSION` now point to release commit `9e1bf2291dd1925e982a5dd728e05a27c334f8d9`.
-- Added the phase-3 DTO fields, webhook error codes, and a trusted AppStudio-only `CreateDomainDAGTaskGroup` path while preserving the public DAG `gitlab.pipeline.run` rejection.
-- Replaced synchronous application creation with deterministic CREATING reservation plus a stable four-node initialization DAG.
-- Added idempotent initialization handlers, GitLab Project Hook client/adapter support, and Worker registrations. Hook tokens use `crypto/rand`; only `sha256:<hex>` is persisted.
-- Added `appstudio.webhook-base-url` configuration and injected it into API Server and Task Worker GitLab adapters.
-- Added unauthenticated `POST /api/v1/appstudio/webhook`, constant-time Project token authentication, stable Push DAG submission, Pipeline Hook projection, canonical Revision-gated Snapshot/Build handlers, fixed-commit Pipeline validation, constrained Bundle download/validation, Artifact completion, and automatic SourceArchive Preview submission.
-- Fixed manual Snapshot/Build creation to populate the new immutable CommitSHA/GitRef fields.
+- Ran `make compose`; all backend images were rebuilt at `2cb63c2-amd64`, the Compose stack was recreated successfully, and persistent volumes were preserved.
+- Confirmed the running API Server binary itself contains both `blueprints/web-react/v1/template/.gitignore` and `.gitlab-ci.yml`.
+- Refreshed the authenticated AppStudio page after deployment; the create form and Coding model options load normally.
+- Reproduced and traced the failure to `LoadBlueprint("web-react", "v1")` in `CreateApplication`.
+- Confirmed `blueprint.yaml` requires `.gitignore` and `.gitlab-ci.yml`, while the directory-form `//go:embed blueprints` excluded both dotfiles.
+- Added a regression test to the existing AppStudio test file. Before the fix it failed with `read blueprint file ".gitignore": ... file does not exist`.
+- Explicitly embedded both controlled dotfiles without using `all:blueprints`, which would also include unrelated hidden generated content.
+- Built `omnimam/apiserver:2cb63c2-amd64` and recreated only the `apiserver` Compose service.
 
 ## Current in-progress work
 
-- No implementation work is in progress. Local domain-only cleanup and E2E acceptance remain.
+- None.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `ssot` gitlink, `SSOT_VERSION`, AppStudio/GitLab/Task Center APIs/services, Infrastructure provider, Compose/configuration, install environment, and `docs/HANDOFF.md`.
-- Existing unrelated untracked design documents under `docs/` remain untouched.
+- Modified: `backend/internal/apiserver/service/v1/appstudio/blueprint.go`.
+- Modified: `backend/internal/apiserver/service/v1/appstudio/webhook_test.go`.
+- Modified: `docs/HANDOFF.md`.
+- No files were added, renamed, or removed. Existing unrelated untracked documents under `docs/` remain untouched.
 
 ## Key architectural or design decisions
 
-- AppStudio submits trusted internal DAGs while the public Task Center DAG API continues to reject `gitlab.pipeline.run`.
-- GitLab webhook plaintext tokens are generated with `crypto/rand`, sent once to GitLab, and never persisted or logged; only a SHA-256 digest is stored on the GitLab project projection.
-- Push processing waits for the canonical AppStudio Revision projector before creating Snapshot/Build state.
-- Preview writes remain Task Worker to Infrastructure operations; GitLab CI only builds a constrained Bundle artifact.
+- Keep the Blueprint allowlist defined by `blueprint.yaml` and explicitly embed only its required dotfiles.
+- Do not use Go's `all:` embed prefix because the template tree contains unrelated hidden generated content such as package-manager state.
 
 ## API, schema, dependency, or configuration changes
 
-- Server API structs contain the released phase-3 fields; deepcopy/error-code generation has been refreshed. GORM AutoMigrate will add the new columns, but destructive cleanup has not run.
-- No dependency change has been made.
+- No API, schema, dependency, environment-variable, or configuration changes.
+- SSOT remains released `spec-v1.23.2` commit `9e1bf2291dd1925e982a5dd728e05a27c334f8d9`, matching `SSOT_VERSION`.
 
 ## Verification performed and remaining checks
 
-- `make gen.deepcopy` and `make gen.errcode.code` passed.
-- `go test ./backend/internal/apiserver/service/v1/appstudio`, `go test ./backend/internal/apiserver/service/v1/gitlab`, `go test ./backend/internal/taskworker`, and targeted Task Center DAG/functionRef tests passed.
-- AppStudio tests now cover invalid token rejection, duplicate Push stable DAG identity, and canonical Revision race; GitLab tests cover digest-only token authentication and tar traversal rejection.
-- Full Task Center package currently fails only `TestAssignSystemName` because an unrelated existing Chinese localization value differs; this task did not modify that module.
-- Passed: targeted Go tests, DevOps YAML/shell checks, Compose config rendering, and diff checks.
-- Destructive cleanup completed with scoped predicates: 42 Studio Applications and dependent projections removed; 26 AppStudio Coding Agents and dependent sessions/invocations/bindings/grants/messages/events/outbox removed; 65 AppStudio/GitLab Task Center tasks and 118 attempts removed; 58 unrelated Task Center tasks retained; 60 AppStudio/Coding Conductor workflows and 97 tasks removed; 8,649 unrelated workflows retained; `deployments_omnimam_appstudio_source` volume removed.
-- Preservation check after restart: `studio_apps=0`, `gitlab_projects=0`, `appstudio_or_gitlab_tasks=0`, `identity_users=4`, `user_assets=3`, `remaining_tasks=58`, `target_workflows=0`, `remaining_workflows=8649`.
-- `make compose` completed successfully and rebuilt/restarted `apiserver`, `infraserver`, `taskworker`, and `notificationworker`; PostgreSQL, Redis, Conductor, API Server, Infrastructure Server, workers, GitLab, runner, registry, and frontend are running. `GET http://127.0.0.1:8080/healthz` returned `{"status":"ok"}`.
-- Browser admin acceptance passed at `http://127.0.0.1:9990` with `admin/admin123`: AppStudio projects page rendered `0` projects and `暂无 AppStudio 项目`; authenticated admin shell and AppStudio create form loaded.
+- `make compose` passed.
+- Compose status after rebuild: PostgreSQL, Redis, Conductor, and Infrastructure Server are healthy; API Server, Task Worker, Notification Worker, and frontend are running.
+- API Server `GET http://127.0.0.1:8080/healthz` returned `{"status":"ok"}`; Infrastructure health endpoint also succeeded.
+- The deployed `/opt/omnimam/bin/apiserver` contains both required embedded Blueprint paths, verified by copying the binary to a temporary directory and inspecting its strings.
+- API Server logs since the rebuild contain no `web-react blueprint is unavailable` or `read blueprint file` failure.
+- Browser acceptance after reload passed for the authenticated AppStudio create page and model selector.
+- Confirmed the regression test fails before the production fix and passes afterward.
+- `go test ./backend/internal/apiserver/service/v1/appstudio -count=1` passed.
+- `go list` confirms both `template/.gitignore` and `template/.gitlab-ci.yml` are compiled into the AppStudio package.
+- `git diff --check` passed.
+- `make image IMAGES=apiserver` passed and produced `omnimam/apiserver:2cb63c2-amd64`.
+- Recreated only `omnimam-apiserver`; `GET http://127.0.0.1:8080/healthz` returned `{"status":"ok"}`.
+- A real UI create was not submitted because it would write persistent AppStudio/Agent/Task records and the local GitLabServer projection is currently empty. The original Blueprint loading failure is covered at the regression-test, package-build, deployed-binary, service-health, and browser-load boundaries.
 
 ## Outstanding tasks
 
-- Recreate and test a READY default GitLabServer using the local GitLab bootstrap PAT, then create an AppStudio application and verify initialization DAG -> READY, Push -> unique Build/Pipeline -> Bundle Artifact -> SourceArchive Preview.
+- Configure a local READY GitLabServer, then run the broader create-to-GitLab initialization E2E if that workflow needs acceptance beyond this bug fix.
 
 ## Known issues and risks
 
-- Task Center is shared; the completed cleanup used only AppStudio/GitLab functionRef and application coding-agent predicates. Any repeat must preserve those exact predicates.
-- Full external E2E remains unverified until a GitLabServer is configured after cleanup; do not claim Pipeline, Artifact, or Preview success from the current empty projection.
-- Existing unrelated untracked files must not be modified.
+- Full AppStudio initialization still depends on a configured READY GitLabServer; this is separate from the fixed Blueprint embedding failure.
+- `CreateApplication` still exposes the stable public error message rather than the internal `LoadBlueprint` cause. The regression test prevents this specific asset omission from recurring.
 
 ## Exact recommended next step
 
-Configure a local READY GitLabServer through the authenticated admin API/UI, then run the AppStudio create and webhook/pipeline E2E while recording exact IDs and terminal projections.
+Configure a local READY GitLabServer and create one AppStudio application to validate initialization DAG completion through READY, recording the application and task IDs.
 
 Next Prompt:
 

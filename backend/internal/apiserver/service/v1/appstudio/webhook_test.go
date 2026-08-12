@@ -119,6 +119,18 @@ func TestEnsureAutomationSnapshotWaitsForCanonicalRevision(t *testing.T) {
 	}
 }
 
+func TestLoadBlueprintIncludesRequiredDotfiles(t *testing.T) {
+	blueprint, err := LoadBlueprint(BlueprintWebReactID, BlueprintWebReactVersion)
+	if err != nil {
+		t.Fatalf("LoadBlueprint() error = %v", err)
+	}
+	for _, name := range []string{".gitignore", ".gitlab-ci.yml"} {
+		if len(blueprint.Files[name]) == 0 {
+			t.Errorf("LoadBlueprint() file %q is empty", name)
+		}
+	}
+}
+
 func pushWebhookPayload() *iapiserver.AppStudioGitLabWebhookPayload {
 	payload := &iapiserver.AppStudioGitLabWebhookPayload{Ref: "refs/heads/main", CheckoutSHA: "0123456789abcdef0123456789abcdef01234567"}
 	payload.Project.ID = 42
