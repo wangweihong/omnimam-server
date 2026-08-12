@@ -4,13 +4,26 @@
 
 ## Docker Compose 快速启动
 
-先构建后端镜像和独立 frontend 镜像：
+先构建后端镜像、独立 frontend 镜像和 Infrastructure 运行时镜像：
 
 ```bash
 make configs
 make image VERSION=latest REGISTRY_PREFIX=omnimam
 make frontend.image FRONTEND_VERSION=latest FRONTEND_REGISTRY_PREFIX=omnimam
+make infrastructure.images
 ```
+
+`infrastructure.images` 构建四个安装 Git 的受控派生镜像：
+
+- `omnimam/coding-agent:1.18.13`，基于 `ghcr.io/anomalyco/opencode:1.18.13`；
+- `omnimam/hermes-agent:v2026.8.3`，基于 `nousresearch/hermes-agent:v2026.8.3`；
+- `omnimam/appstudio-nginx:1.27-alpine`，基于 `nginx:1.27-alpine`，由 Preview/Production profiles 共用；
+- `omnimam/appstudio-node:22-alpine`，基于 `node:22-alpine`，由 Build profiles 共用。
+
+可以分别运行 `make coding-agent.image`、`make hermes-agent.image`、
+`make appstudio-nginx.image` 或 `make appstudio-node.image`。对应的 `*_BASE_IMAGE`
+和 `*_IMAGE` 变量可覆盖上游镜像和输出标签；需要刷新上游镜像时设置
+`INFRASTRUCTURE_IMAGES_PULL=1`。
 
 如果当前网络无法直接拉取 Docker Hub 的 `node` 或 `nginx` 镜像，可以覆盖 frontend base image：
 

@@ -1,12 +1,17 @@
 # ==============================================================================
 # Independent frontend image rules.
 #
-# Frontend is intentionally not wired into image.mk/IMAGES because it may move
-# to an independent project later. Define IMAGES_DIR before image.mk is loaded
-# so backend make image rules ignore build/docker/frontend.
+# Frontend and Infrastructure runtime base images have no repository Go binary.
+# Define IMAGES_DIR before image.mk is loaded so backend image rules ignore them.
 
 ifeq ($(origin IMAGES_DIR),undefined)
-IMAGES_DIR := $(filter-out $(ROOT_DIR)/build/docker/frontend,$(wildcard $(ROOT_DIR)/build/docker/*))
+IMAGES_DIR := $(filter-out \
+	$(ROOT_DIR)/build/docker/frontend \
+	$(ROOT_DIR)/build/docker/coding-agent \
+	$(ROOT_DIR)/build/docker/hermes-agent \
+	$(ROOT_DIR)/build/docker/appstudio-nginx \
+	$(ROOT_DIR)/build/docker/appstudio-node,\
+	$(wildcard $(ROOT_DIR)/build/docker/*))
 endif
 
 FRONTEND_IMAGE ?= frontend

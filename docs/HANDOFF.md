@@ -2,85 +2,72 @@
 
 ## Current goal and status
 
-- Goal: implement AppStudio GitLab Phase 2 using GitLab as the only source-content provider while preserving AppStudio Revision/ChangeSet semantics and Platform MCP.
-- Status: implementation complete for the released reservation correction. The remaining acceptance work is the local GitLab smoke test, which requires a configured READY default GitLabServer.
+- Goal: extend the OmniMAM derived-image pattern to the Hermes agent and all related default Alpine runtime images, install Git in each, and update the corresponding Infrastructure profile image defaults.
+- Status: complete and verified locally.
 
 ## Work completed in this session
 
-- Revalidated the current pin: `ssot` and `SSOT_VERSION` both point to released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab`.
-- Confirmed the approved design decisions: fixed `web-react@v1` Blueprint, existing `agent.coding@1.0` profile, Runtime-scoped project token, Worker commit-to-Revision projection, and destructive clean-data rollout without BUILT_IN migration.
-- Loaded the repository backend rules and the applicable Go design, database, security, error-handling, DI, naming, style, and testing guidance.
-- Completed the scoped SSOT S1/S2/Context draft for AppStudio GitLab Phase 2 across appstudio, agent, gitlab, infrastructure, and task-center.
-- Added the design contracts for `web-react@v1`, GitLab-only source bytes, `gitlab_project_id`, Revision `commit_sha`, unique READY default GitLabServer, Runtime Git access, archive injection, and Worker commit-to-ChangeSet synchronization.
-- Published SSOT content commit `7010953df6130caa1f59c8b19dd9feaa5e06d467`, release commit/tag `ee0cf7f7732a74d1ca36cc1e73a5541a333ed025` (`spec-v1.23.0`), pushed and verified the remote tag.
-- Updated the server `ssot` gitlink and `SSOT_VERSION` to the released `spec-v1.23.0` commit.
-- Formatted and compiled the direct API server, Task Worker, Infrastructure, Docker provider, AppStudio, GitLab and PostgreSQL store packages.
-- Removed the local `SourceContentStore` and `source_store.go`; AppStudio now requires a GitLab `SourceProvider` for creation, reads and commits.
-- Implemented deterministic GitLab Project/Starter commit recovery, including empty-project initialization and verification-only reuse of an existing remote template.
-- Implemented Worker-side single-commit synchronization: a Coding Invocation now projects only a single default-branch fast-forward commit from the frozen base CommitSHA to one idempotent ChangeSet and next Revision.
-- Wired the Infrastructure source archive resolver through AppStudio/GitLab consumer interfaces for Preview archive resolution.
-- Added Build Snapshot grant resolution to the AppStudio archive resolver; it binds Snapshot, StudioBuild, Application, resource version and the Snapshot Revision CommitSHA before an archive can be opened.
-- Wired Snapshot archive resolution into Infrastructure for the static-web Build profile. Docker now injects the validated archive into a disposable `/workspace` tmpfs behind a startup gate, runs the fixed pnpm build command, then safely collects `bundle.tar.gz` from Docker's archive API with a size limit and SHA-256 descriptor.
-- Updated the local static-web Build profile from Alpine to `node:22-alpine` so the fixed pnpm command has a Node/Corepack runtime.
-- Completed Runtime Git access wiring: GitLab Project Access Token credentials are encrypted in `appstudio-runtime-git-access://` references, scope-bind owner/Agent/Runtime/generation/Application/Workspace/Project/expiry, reach Task Worker only as `SECRET_REF`, are resolved only in Infrastructure memory, and enter Docker only through stdin into a tmpfs credential helper. Coding Runtime clones the default branch into disposable `/workspace`, gates OpenCode on clone completion, recreates instead of restarting its stopped Infra runtime, and revokes the Project token on startup failure or runtime stop/delete with expiry as fallback.
-- Published and pinned `spec-v1.23.1` at `d1b24118091e52d60fc20a3faa4cf47647f467ab`; it adds the released GitLabProject `CREATING/READY/ERROR` reservation representation.
-- Implemented the reservation path: `CreateApplication` first creates CREATING Application/Repository/Workspace rows with deterministic IDs, GitLabSourceProvider persists the matching CREATING Project projection before remote Project creation, then the existing initialization aggregate completes Revision 0/Agent/Session/Bindings and READY statuses.
-- Hardened reservation recovery: retries use the Server and deterministic path persisted in the reservation, remote/template failures move non-READY reservations to `ERROR` through a PostgreSQL row-locked transition, and a failed projection after a newly created remote Project triggers bounded best-effort deletion before retaining the failed reservation.
-- Added the release-required PostgreSQL constraint migration for nullable GitLab `external_project_id` and `CREATING|READY|ERROR` project status validation.
-- Audited Blueprint prompt routing against released `spec-v1.23.1`: `fix.md` is intentionally shipped but not routed in this phase. Worker claim validation and prompt assembly now accept only `initial` or `followup`; `fix` and unknown values fail explicitly instead of silently falling through to `followup`.
-- Hardened Blueprint/source consistency: Blueprint loading now verifies the structured `.gitlab-ci.yml` include exactly matches `ci_include`; Revision 0 and later indexes are derived from GitLab commit contents; revision loads resolve Repository/CommitSHA once, reuse one GitLab client, and validate remote bytes against the local index; nested GitLab tree reads are recursive.
-- Enforced the released single-commit/READY rules at execution boundaries: the System Prompt explicitly prohibits multiple commits, Coding Invocation synchronization rejects non-READY Workspaces, and the row-locked ChangeSet transaction repeats the READY check.
+- Started the follow-up image task and revalidated the released SSOT pin and backend implementation rules.
+- Read `skills/omnimam-server-backend/SKILL.md` and `backend/AGENTS.md`.
+- Verified `ssot` and `SSOT_VERSION` both point to released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab`.
+- Classified this as a deployment/runtime packaging change that does not alter SSOT product semantics or S1/S2 contracts, so no additional SSOT files are required.
+- Located and replaced the former direct `ghcr.io/anomalyco/opencode:1.18.13` coding-agent defaults in `scripts/install/environment.sh` and the self-contained Compose fallback.
+- Added an independent coding-agent Dockerfile and Make target; the image remains based on OpenCode `1.18.13` and installs Git through Alpine `apk`.
+- Updated the synchronized `agent.coding@1.0` defaults to `omnimam/coding-agent:1.18.13` and documented the build command.
+- Added derived Dockerfiles for Hermes, AppStudio Nginx and AppStudio Node; Hermes explicitly installs Git with Debian `apt`, while both Alpine images use `apk`.
+- Replaced the single coding image Make rule with `infrastructure.images` plus four independently callable image targets.
+- Updated all eight Infrastructure profile defaults: Hermes and Coding each use their own agent image, Preview/Production share the AppStudio Nginx image, and Build profiles share the AppStudio Node image.
 
 ## Current in-progress work
 
-- No code change is in progress. Run the local GitLab smoke test against a clean-data deployment with one READY default GitLabServer.
+- None.
 
 ## Files added, modified, renamed, or removed
 
-- Modified: `SSOT_VERSION`, AppStudio/GitLab API metadata and requests, AppStudio/GitLab services and stores (including `service/v1/gitlab/source_provider.go` reservation recovery and `store/postgresql/0_pg.go` constraints), API/worker wiring, Agent invocation flow, Infrastructure/Docker source injection, deployment configuration, and `docs/HANDOFF.md`.
-- Added: `backend/internal/apiserver/service/v1/appstudio/blueprint.go`, embedded `web-react@v1` blueprint assets, `appstudio/source_provider.go`, and `gitlab/source_provider.go`.
-- Removed: `backend/internal/apiserver/service/v1/appstudio/workspace_tool.go` and its route/controller/MCP claim references.
-- Removed: `backend/internal/apiserver/service/v1/appstudio/source_store.go`.
-- Modified in the independent `ssot` repository: `GLOBAL_CONTEXT.md`, `CONTEXT_MAP.md`, five domain Context/S1 pairs, and the scoped AppStudio/GitLab/Agent/Infrastructure/Task Center S2 schema/API/module contracts.
-- Existing unrelated untracked files under `docs/` remain untouched.
+- Added: `build/docker/coding-agent/Dockerfile`, `build/docker/hermes-agent/Dockerfile`, `build/docker/appstudio-nginx/Dockerfile`, `build/docker/appstudio-node/Dockerfile`, `scripts/make-rules/infrastructure-images.mk`.
+- Removed/replaced: `scripts/make-rules/coding-agent-image.mk` was superseded before commit by the consolidated Infrastructure image rules.
+- Modified: `Makefile`, `scripts/make-rules/frontend-image.mk`, `scripts/install/environment.sh`, `deployments/docker-compose.yaml`, `deployments/README.md`, `docs/HANDOFF.md`.
+- Existing unrelated untracked design documents under `docs/` remain untouched.
 
 ## Key architectural or design decisions
 
-- GitLab stores canonical file bytes; AppStudio retains monotonically increasing Revision and atomic ChangeSet facts, linked by `StudioWorkspaceRevision.CommitSHA`.
-- Coding Runtime uses a disposable `/workspace` Git clone. Platform MCP remains; AppStudio Workspace Tool is removed.
-- Git credentials are Runtime-scoped, project-limited, resolved from an opaque reference, injected through tmpfs, and revoked on Runtime teardown or expiry.
-- `web-react@v1` is embedded, read-only, versioned with the server, and fixed for current STATIC_WEB creation. `fix.md` ships but is not routed in this phase.
-- Existing BUILT_IN data is not migrated. Rollout deletes only the PostgreSQL and legacy AppStudio source volumes before rebuilding.
-- A GitLabProject reservation fixes its Server/path at first persistence. Later retries use those stored values even if the global default changes; non-READY reservations become `ERROR` through a row-locked transition that cannot downgrade READY, and a failed READY projection compensates a newly created remote Project within a bounded context.
+- Keep OpenCode pinned at `1.18.13`; add only Git in a derived OmniMAM image.
+- Keep Hermes pinned at `v2026.8.3`, Nginx at `1.27-alpine`, and Node at `22-alpine`; each derived image guarantees Git independently of upstream contents.
+- Reuse one Nginx-derived image for all Preview/Production profiles and one Node-derived image for all Build profiles.
+- Preserve `scripts/install/environment.sh` as the deployment environment-variable fact source and keep its Compose fallback synchronized.
+- Keep the Go Docker provider image-agnostic: its existing `ProfileImageResolver` consumes the injected profile mapping, so no hardcoded image defaults were added to backend code.
 
 ## API, schema, dependency, or configuration changes
 
-- Released SSOT changes: GitLabServer default flag; AppStudio Blueprint fields, GitLabProject reference and CommitSHA; Agent Git workspace claims; Infrastructure secret/source resolution; Task Worker commit synchronization.
-- PostgreSQL now explicitly drops the obsolete non-null constraint on `gitlab_projects.external_project_id` and enforces `CREATING|READY|ERROR` for GitLabProject status.
-- No new error code, permission, event, `.env` file, or `backend/cmd/` binary is planned.
+- No API, database schema, error code, permission, event, or Go dependency changes.
+- Configuration change: every `OMNIMAM_INFRA_PROFILE_IMAGES` entry now defaults to one of the four local `omnimam/*` derived images in both the environment fact source and Compose fallback.
 
 ## Verification performed and remaining checks
 
-- Confirmed the server submodule is at released `spec-v1.23.1` commit `d1b24118091e52d60fc20a3faa4cf47647f467ab` and `SSOT_VERSION` declares the same release.
-- Passed after Runtime Git wiring: focused `go test` for Agent, AppStudio, GitLab, Agent executor, Infrastructure, Docker provider and PostgreSQL store packages; the Docker provider suite verifies coding credential stdin injection, no Docker metadata leak, clone gate and disposable `/workspace` tmpfs.
-- Passed after the reservation correction: `make gen.deepcopy`, `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/gitlab ./backend/internal/apiserver/store/postgresql`, `go test ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker ./backend/internal/taskworker/gitlabexecutor ./backend/internal/infrastructure ./backend/internal/infrastructure/providers/dockerruntime`, Blueprint `pnpm install --frozen-lockfile && pnpm build`, `docker compose -f deployments/docker-compose.yaml config`, and `git diff --check`.
-- `make gen.deepcopy` reports its pre-existing unsupported alias warnings but exits successfully. The direct AppStudio/GitLab service packages currently contain no test files; repository rules prohibit adding arbitrary non-`pkg/` test files.
-- Passed after strict prompt routing: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker` and `git diff --check`.
-- Passed after Blueprint/source consistency fixes: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/gitlab ./backend/internal/apiserver/store/postgresql ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker`, Blueprint `pnpm install --frozen-lockfile && pnpm build`, and `git diff --check`.
+- `make infrastructure.images` passed and produced all four local images.
+- Container Git checks passed: Coding/Node use Git `2.54.0`; Hermes/Nginx use Git `2.47.3`.
+- Runtime checks passed: OpenCode `1.18.13`, Hermes Agent `v0.20.0 (2026.8.3)`, Nginx `1.27.5`, and Node `v22.23.0`.
+- Image inspection confirmed all upstream entrypoints, commands and users remain inherited.
+- `go test ./backend/internal/infrastructure/providers/dockerruntime` passed.
+- `docker compose -f deployments/docker-compose.yaml config` passed without sourcing an environment file and rendered all eight new profile defaults.
+- A `jq` assertion confirmed `scripts/install/environment.sh` exports the exact intended eight-entry mapping.
+- `make -pn` confirmed all four standalone runtime image directories remain excluded from the Go service image list.
+- `git diff --check` passed.
 
 ## Outstanding tasks
 
-- Run the local GitLab smoke test for Create, initial/follow-up Invocation, Source, Restore, Preview and Build by fixed CommitSHA.
+- This derived-image task has no remaining implementation work.
+- Pre-existing project acceptance work remains: run the local GitLab AppStudio smoke test against a clean-data deployment with one READY default GitLabServer.
 
 ## Known issues and risks
 
-- AppStudio/GitLab S2 is resolved by `spec-v1.23.1`; the server reservation/store/adapter state machine is implemented and directly compiled/tested. The unexecuted local GitLab smoke test is the remaining deployment-level risk.
-- `fix.md` cannot be enabled under the current released contract because its trigger and retry semantics are intentionally out of scope; enabling it requires a new SSOT release rather than an implementation-only branch.
-- The worktree contains unrelated untracked design documents that must not be modified or committed.
+- All four Infrastructure runtime image targets are intentionally independent of the Go service image rules because they contain no repository Go binary.
+- The four derived images exist only in the local Docker daemon until explicitly published; another deployment host must build them or override `OMNIMAM_INFRA_PROFILE_IMAGES` with published tags.
+- Existing unrelated untracked files under `docs/` must not be modified.
 
 ## Exact recommended next step
 
-Deploy against a clean local GitLab, configure/detect/set exactly one READY AppStudio default GitLabServer, then run the Create/initial-follow-up Invocation/Source/Restore/Preview/Build smoke test. Do not repeat completed reservation or Runtime Git work.
+Use the four locally built images for the AppStudio smoke test; publish or override their tags first if the Runtime Docker daemon is on another host.
 
 Next Prompt:
 
