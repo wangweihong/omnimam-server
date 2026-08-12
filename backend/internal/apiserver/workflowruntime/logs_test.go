@@ -3,6 +3,7 @@ package workflowruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +46,22 @@ func TestSanitizeTaskLogMessage(t *testing.T) {
 	long := sanitizeTaskLogMessage(strings.Repeat("界", 2000))
 	if len(long) > maxTaskLogMessageBytes || !strings.Contains(long, "界") {
 		t.Fatalf("long message bytes = %d", len(long))
+	}
+}
+
+func TestFailedAttemptLogIncludesSanitizedReason(t *testing.T) {
+	reason := "jsonschema validation failed\nAuthorization: Bearer auth-secret token=token-secret https://internal.example/path appstudio-runtime-git-access://opaque-secret " + strings.Repeat("detail", 1000)
+	entry := normalizeTaskLogEntry(failedAttemptLog(errors.New(reason)))
+	if !strings.Contains(entry.Message, "jsonschema validation failed") {
+		t.Fatalf("failure reason missing from %q", entry.Message)
+	}
+	for _, forbidden := range []string{"\n", "auth-secret", "token-secret", "internal.example", "opaque-secret"} {
+		if strings.Contains(entry.Message, forbidden) {
+			t.Fatalf("failure log %q contains %q", entry.Message, forbidden)
+		}
+	}
+	if len(entry.Message) > maxTaskLogMessageBytes || entry.Source != TaskLogSourceLifecycle || entry.Level != TaskLogLevelError || entry.EventKey != "attempt.failed" {
+		t.Fatalf("failure log is not normalized: %#v", entry)
 	}
 }
 

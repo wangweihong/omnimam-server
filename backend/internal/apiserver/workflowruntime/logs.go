@@ -30,6 +30,7 @@ var (
 	taskLogSecretPattern        = regexp.MustCompile(`(?i)\b(api[\s_-]?key|access[\s_-]?key|secret[\s_-]?key|token|secret|password|credential)\b["']?\s*[:=]\s*["']?[^\s,;}"']+["']?`)
 	taskLogBearerPattern        = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
 	taskLogURLPattern           = regexp.MustCompile(`(?i)https?://[^\s]+`)
+	taskLogSensitiveRefPattern  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*(?:access|credential|grant|secret)[a-z0-9+.-]*://[^\s,;}"']+`)
 	taskLogEventPattern         = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,127}$`)
 
 	taskLogEntriesWritten = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -107,6 +108,14 @@ func WorkerLog(eventKey, level, message string) TaskLogEntry {
 	return TaskLogEntry{Source: TaskLogSourceWorker, Level: level, EventKey: eventKey, Message: message}
 }
 
+func failedAttemptLog(err error) TaskLogEntry {
+	message := "Execution attempt failed."
+	if err != nil {
+		message += " " + err.Error()
+	}
+	return LifecycleLog("attempt.failed", TaskLogLevelError, message)
+}
+
 func encodeTaskLog(entry TaskLogEntry) (string, TaskLogEntry, error) {
 	entry = normalizeTaskLogEntry(entry)
 	payload, err := json.Marshal(taskLogEnvelope{Version: 1, Source: entry.Source, Level: entry.Level, EventKey: entry.EventKey, Message: entry.Message})
@@ -169,6 +178,7 @@ func sanitizeTaskLogMessage(message string) string {
 		return "[REDACTED]"
 	})
 	message = taskLogURLPattern.ReplaceAllString(message, "[REDACTED-URL]")
+	message = taskLogSensitiveRefPattern.ReplaceAllString(message, "[REDACTED-REFERENCE]")
 	message = strings.Join(strings.Fields(message), " ")
 	if len(message) <= maxTaskLogMessageBytes {
 		return message

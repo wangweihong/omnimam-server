@@ -2,8 +2,8 @@
 
 ## Current goal and status
 
-- Goal: implement `spec-v1.23.3` AppStudio initialization diagnostics and explicit reservation recovery.
-- Status: blocked on a released SSOT contract conflict after completing the current server-side recovery fixes and scoped verification. Runtime startup now reaches Task Center input validation, but released `agent.runtime.ensure@1.0` forbids the already-implemented `runtime_git_access_ref` argument.
+- Goal: publish `spec-v1.23.4`, version the `agent.runtime.ensure` Runtime Git access contract, expose sanitized Attempt failure reasons, then deploy and retry the existing AppStudio reservation end to end.
+- Status: in progress; root cause and implementation plan are confirmed, with SSOT release work starting before server changes.
 
 ## Work completed in this session
 
@@ -19,6 +19,12 @@
 - Final retry reached Runtime Git access; GitLab access logs proved all five project-token creates returned `201`, but GitLab 19.2 returns `user_id` rather than `username` in the token payload. The client now resolves `/users/:user_id` only when username is absent, preserving older response compatibility and revoking an unusable token if username resolution fails.
 - After Git access resolution succeeded, recovery hit a previously revoked Runtime grant because the unbound `STARTING` runtime kept the same version-derived authorization request. Coding Invocation runtime startup now supplies a deterministic request identity from invocation ID plus submission generation, so each explicit submission retry receives an independently revocable grant while already-bound runtime tasks remain protected by the existing current-task fence.
 - Final DAG `0762b5d0-c68e-5a21-b6af-f5ea64054e75` proved Project, Webhook, and idempotent Finalize succeed on attempt 1 and Invocation reaches Runtime Task submission. Task Center then rejected `runtime_git_access_ref` because the released function schema omits it under `additionalProperties: false`.
+- Published upstream `spec-v1.23.4`: content commit `0da3dd236d687643e0b34a71cc115b51f5de485f`, release commit `e3e00349604d9700caba40c3c7f68ecf5cbc22ab`, remote annotated tag peeled to the release commit.
+- The release retains `agent.runtime.ensure@1.0` unchanged and makes `@1.1` ACTIVE with conditional Coding Runtime Git access plus sanitized Attempt failure diagnostics.
+- Existing `go generate ./backend/internal/taskfunctionregistry` failed because its directive resolves `../../../..` one level above the repository; use the same generator explicitly as `go run ./backend/internal/taskfunctionregistry/internal/generate -root .` for this task. The directive itself remains unchanged as out of scope.
+- Updated the server gitlink/`SSOT_VERSION` to release commit `e3e00349604d9700caba40c3c7f68ecf5cbc22ab` and regenerated the embedded function registry/source metadata.
+- Added scoped compatibility coverage: new Coding inputs select `agent.runtime.ensure@1.1`, missing/invalid Runtime Git refs fail schema validation, and retained `1.0` resolves with its original digest.
+- Attempt failures now log the concrete error through the existing sanitizer; sensitive references are additionally redacted alongside credentials, authorization, URLs, control whitespace, and oversized messages.
 - Revoked all 5 active `omnimam-runtime-*` GitLab project access tokens left by failed browser acceptance attempts; no plaintext token was logged or persisted by this cleanup.
 - Resumed from the live checkpoint, re-read the mandatory backend skill and `backend/AGENTS.md`, and verified the working tree still pins released `spec-v1.23.3` commit `6e292e8387e35c678c8bdc94777a8d19d6e5e59c` consistently with `SSOT_VERSION`.
 - Ran `make compose` successfully; rebuilt all server binaries/images and restarted the Compose stack while preserving the existing frontend container and persistent data.
@@ -44,7 +50,7 @@
 
 ## Current in-progress work
 
-- None in this repository until the SSOT function contract is corrected and released.
+- Building the target binaries/images, restarting only API Server and Task Worker, then retrying the existing AppStudio initialization.
 
 ## Files added, modified, renamed, or removed
 
@@ -96,7 +102,7 @@
 
 ## Exact recommended next step
 
-Return to `omnimam-spec`, correct and release the `agent.runtime.ensure` Runtime Git access contract, then update this repository's `ssot` pin and embedded registry before rebuilding and retrying the same application through the frontend.
+Build `apiserver` and `taskworker`, deploy only those services, then retry application `27287fac-38f8-53fe-899d-6bfbbd66e977` with the approved idempotency key.
 
 Next Prompt:
 

@@ -125,6 +125,89 @@ schemas:
             workspace_type: {const: studio}
             workspace_source_ref: {type: 'null'}
 
+  agent_runtime_ensure_input_v1_1:
+    type: object
+    additionalProperties: false
+    required:
+      - agent_id
+      - agent_runtime_id
+      - operation
+      - agent_kind
+      - workspace_type
+      - workspace_id
+      - workspace_source_ref
+      - runtime_profile_id
+      - runtime_profile_revision
+      - model_access_grant_ref
+      - runtime_configuration_ref
+      - authorization_ref
+      - expected_resource_version
+    properties:
+      agent_id: {type: string, minLength: 1}
+      agent_runtime_id: {type: string, minLength: 1}
+      existing_infra_runtime_id: {type: [string, 'null'], minLength: 1}
+      operation: {type: string, enum: [START, RECOVER]}
+      agent_kind: {type: string, enum: [platform, coding]}
+      workspace_type: {type: string, enum: [agent, studio]}
+      workspace_id: {type: string, minLength: 1}
+      workspace_source_ref: {type: [string, 'null'], pattern: '^agent-workspace://'}
+      runtime_profile_id: {type: string, enum: [agent.hermes, agent.coding]}
+      runtime_profile_revision: {type: string, minLength: 1}
+      model_access_grant_ref: {type: string, pattern: '^agent-model-access-grant://'}
+      runtime_configuration_ref: {type: string, pattern: '^agent-runtime-config://'}
+      runtime_git_access_ref: {type: string, pattern: '^appstudio-runtime-git-access://'}
+      authorization_ref: {type: string, pattern: '^agent-runtime-grant://'}
+      expected_resource_version: {type: integer, minimum: 0}
+      resource_requirement:
+        type: object
+        additionalProperties: false
+        properties:
+          cpu_cores: {type: number, minimum: 0}
+          memory_mb: {type: integer, minimum: 0}
+          disk_mb: {type: integer, minimum: 0}
+          gpu_count: {type: integer, minimum: 0}
+          gpu_memory_mb: {type: integer, minimum: 0}
+      lifecycle_policy:
+        type: object
+        additionalProperties: false
+        properties:
+          restart_policy: {type: string, enum: [NEVER, ON_FAILURE, ALWAYS]}
+          idle_timeout_seconds: {type: integer, minimum: 0}
+          maximum_lifetime_seconds: {type: integer, minimum: 1}
+      skill_package_refs:
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [skill_id, skill_version, source_ref]
+          properties:
+            skill_id: {type: string, minLength: 1}
+            skill_version: {type: string, minLength: 1}
+            source_ref: {type: string, pattern: '^skill-package://'}
+      mcp_binding_refs:
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [binding_id, binding_revision]
+          properties:
+            binding_id: {type: string, minLength: 1}
+            binding_revision: {type: string, minLength: 1}
+    allOf:
+      - if: {properties: {agent_kind: {const: platform}}}
+        then:
+          properties:
+            workspace_type: {const: agent}
+            workspace_source_ref: {type: string, pattern: '^agent-workspace://'}
+      - if: {properties: {agent_kind: {const: coding}}}
+        then:
+          required: [runtime_git_access_ref]
+          properties:
+            workspace_type: {const: studio}
+            workspace_source_ref: {type: 'null'}
+
   agent_runtime_stop_input:
     type: object
     additionalProperties: false
@@ -413,12 +496,66 @@ functions:
   - function_ref: agent.runtime.ensure
     contract_version: "1.0"
     contract_digest: sha256:5fff8cdcec364fea4c8d833b6c625b43c4e93c6b65bb46fb170f9d951eb8a4ec
-    status: ACTIVE
+    status: RETAINED
     owning_domain: agent
     handler: task-center.infra-adapter
     execution_mode: SERVICE
     required_capabilities: [infra.runtime.service, infra.runtime.health, secret.reference.resolve, model.access.resolve]
     input_schema_ref: '#/schemas/agent_runtime_ensure_input'
+    output_schema_ref: '#/schemas/runtime_ready_output'
+    task_idempotency:
+      scope_template: 'agent-runtime:{arguments.agent_runtime_id}'
+      key_template: '{arguments.operation}:{arguments.expected_resource_version}:{retry_generation}'
+      manual_retry_uses_new_key: true
+    retry_policy:
+      max_attempts: 3
+      backoff: EXPONENTIAL
+      initial_delay_seconds: 5
+      max_delay_seconds: 60
+      retryable_error_codes: [ERR_INFRA_RUNTIME_OPERATION_FAILED, ERR_INFRA_NO_ELIGIBLE_NODE, ERR_INFRA_RESOURCE_INSUFFICIENT, ERR_INFRA_SECRET_RESOLUTION_FAILED, ERR_INFRA_ENDPOINT_ALLOCATION_FAILED]
+    cancel_policy: {mode: COOPERATIVE_THEN_INFRA_STOP, grace_period_seconds: 30, terminal_result: CANCELED}
+    timeout_policy: {startup_timeout_seconds: 300, per_attempt_timeout_seconds: 600, overall_timeout_seconds: 1800}
+    infra_adapter:
+      operation: ENSURE_RUNTIME
+      runtime_mode: SERVICE
+      requesting_service: task-center
+      request_id_template: '{atomic_task_id}:{attempt_no}'
+      owner_domain: agent
+      owner_reference_path: arguments.agent_runtime_id
+      authorization_ref_path: arguments.authorization_ref
+      existing_runtime_id_path: arguments.existing_infra_runtime_id
+      runtime_profile_id_path: arguments.runtime_profile_id
+      runtime_profile_revision_path: arguments.runtime_profile_revision
+      source_ref_path: arguments.workspace_source_ref
+      source_policy: AGENT_KIND_CONDITIONAL
+      constants: {provider_type: docker, endpoint_visibility: INTERNAL}
+    result_projection:
+      consumer_domain: agent
+      aggregate_type: AgentRuntime
+      aggregate_id_path: arguments.agent_runtime_id
+      update_mode: SOURCE_DOMAIN_CONSUMES_TASK_RESULT
+      field_mappings:
+        - {from: result.infra_runtime_id, to: infra_runtime_id}
+        - {from: result.endpoint_ref, to: endpoint_ref}
+        - {from: result.health_status, to: health_status}
+        - {from: result.runtime_status, to: state, transform: RUNNING_TO_READY}
+    security:
+      allowed_callers: [agent]
+      forbidden_argument_fields: [image, command, docker_args, host_path, secret, credential, endpoint, provider_payload, environment_variables]
+      forbidden_output_fields: [container_id, provider_runtime_ref, host_port, host_path, private_address, secret, provider_response, raw_logs]
+    x-s1-refs:
+      user_stories: [US-TASK-026, US-AGENT-001, US-INFRA-001]
+      business_rules: [BR-TASK-147, BR-TASK-148, BR-TASK-151, BR-TASK-152, BR-TASK-153, R-AGENT-003, R-AGENT-004, R-AGENT-010, R-AGENT-018, R-INFRA-016]
+
+  - function_ref: agent.runtime.ensure
+    contract_version: "1.1"
+    contract_digest: sha256:48bb42c3793a3a4e3138d4b2108756addca8c751423d445f3264343b0a8d2d47
+    status: ACTIVE
+    owning_domain: agent
+    handler: task-center.infra-adapter
+    execution_mode: SERVICE
+    required_capabilities: [infra.runtime.service, infra.runtime.health, secret.reference.resolve, model.access.resolve]
+    input_schema_ref: '#/schemas/agent_runtime_ensure_input_v1_1'
     output_schema_ref: '#/schemas/runtime_ready_output'
     task_idempotency:
       scope_template: 'agent-runtime:{arguments.agent_runtime_id}'

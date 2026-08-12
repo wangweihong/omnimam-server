@@ -272,6 +272,60 @@ func appStudioProductionReconcileTestArguments(existing any) map[string]any {
 	}
 }
 
+func agentRuntimeEnsureTestArguments() map[string]any {
+	return map[string]any{
+		iapiserver.TaskWorkerKeyAgentID:                 "agent-1",
+		iapiserver.TaskWorkerKeyAgentRuntimeID:          "runtime-1",
+		iapiserver.TaskWorkerKeyOperation:               iapiserver.TaskWorkerAgentRuntimeOperationStart,
+		iapiserver.TaskWorkerKeyAgentKind:               iapiserver.TaskWorkerAgentKindCoding,
+		iapiserver.TaskWorkerKeyWorkspaceType:           iapiserver.TaskWorkerWorkspaceTypeStudio,
+		iapiserver.TaskWorkerKeyWorkspaceID:             "workspace-1",
+		iapiserver.TaskWorkerKeyWorkspaceSourceRef:      nil,
+		iapiserver.TaskWorkerKeyRuntimeProfileID:        iapiserver.TaskWorkerAgentRuntimeProfileCoding,
+		iapiserver.TaskWorkerKeyRuntimeProfileRevision:  "profile-rev-1",
+		iapiserver.TaskWorkerKeyModelAccessGrantRef:     iapiserver.TaskWorkerRefPrefixAgentModelAccessGrant + "grant-1",
+		iapiserver.TaskWorkerKeyRuntimeConfigurationRef: iapiserver.TaskWorkerRefPrefixAgentRuntimeConfig + "agent-1",
+		"runtime_git_access_ref":                        iapiserver.AppStudioRefPrefixRuntimeGitAccess + "grant-1",
+		iapiserver.TaskWorkerKeyAuthorizationRef:        iapiserver.TaskWorkerRefPrefixAgentRuntimeGrant + "grant-1",
+		iapiserver.TaskWorkerKeyExpectedResourceVersion: 1,
+		iapiserver.TaskWorkerKeyResourceRequirement:     map[string]any{"cpu_cores": 1, "memory_mb": 512},
+		iapiserver.TaskWorkerKeyLifecyclePolicy:         map[string]any{iapiserver.TaskWorkerKeyRestartPolicy: iapiserver.TaskWorkerAgentRuntimeRestartPolicyOnFailure},
+	}
+}
+
+func TestAgentRuntimeEnsureContractVersionsRuntimeGitAccess(t *testing.T) {
+	registry, err := taskfunctionregistry.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := agentRuntimeEnsureTestArguments()
+	active, err := registry.Active(iapiserver.TaskWorkerFunctionAgentRuntimeEnsure, iapiserver.TaskWorkerOwnerDomainAgent, arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ContractVersion != "1.1" || active.ContractDigest != "sha256:48bb42c3793a3a4e3138d4b2108756addca8c751423d445f3264343b0a8d2d47" {
+		t.Fatalf("active contract = %s %s", active.ContractVersion, active.ContractDigest)
+	}
+	if _, err := registry.Resolve(iapiserver.TaskWorkerFunctionAgentRuntimeEnsure, "1.0", "sha256:5fff8cdcec364fea4c8d833b6c625b43c4e93c6b65bb46fb170f9d951eb8a4ec"); err != nil {
+		t.Fatalf("resolve retained contract: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing", mutate: func(value map[string]any) { delete(value, "runtime_git_access_ref") }},
+		{name: "invalid", mutate: func(value map[string]any) { value["runtime_git_access_ref"] = "secret://invalid" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := agentRuntimeEnsureTestArguments()
+			test.mutate(value)
+			if _, err := registry.Active(iapiserver.TaskWorkerFunctionAgentRuntimeEnsure, iapiserver.TaskWorkerOwnerDomainAgent, value); err == nil || !strings.Contains(err.Error(), taskfunctionregistry.ErrInputInvalid.Error()) {
+				t.Fatalf("error = %v, want input validation failure", err)
+			}
+		})
+	}
+}
+
 type recordingRepresentationTaskCreator struct {
 	request *iapiserver.DAGTaskGroupCreateRequest
 	err     error

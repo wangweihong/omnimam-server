@@ -1,6 +1,6 @@
 repo: github.com/wangweihong/omnimam-spec
-commit: 6e292e8387e35c678c8bdc94777a8d19d6e5e59c
-contract_version: spec-v1.23.3
+commit: e3e00349604d9700caba40c3c7f68ecf5cbc22ab
+contract_version: spec-v1.23.4
 updated_at: 2026-08-12
 status: released
-note: Released AppStudio four-stage initialization diagnostics, structured GitLab failures, explicit idempotent reservation retry, and current-DAG owner fencing contracts.
+note: Released agent.runtime.ensure@1.1 Runtime Git access contract and sanitized Attempt failure diagnostics.

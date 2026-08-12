@@ -302,7 +302,7 @@ func (r *ConductorRuntime) RegisterHandler(functionRef string, concurrency int, 
 					ReasonForIncompletion: err.Error(), OutputData: output,
 				}, nil
 			}
-			logger.Log(ctx, LifecycleLog("attempt.failed", TaskLogLevelError, "Execution attempt failed."))
+			logger.Log(ctx, failedAttemptLog(err))
 			return nil, err
 		}
 		if err := prepareDynamicForkOutput(output, input, r.isRegisteredTask); err != nil {
