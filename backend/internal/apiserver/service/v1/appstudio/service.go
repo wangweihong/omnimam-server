@@ -143,6 +143,9 @@ func (s *Service) SynchronizeCodingInvocation(ctx context.Context, owner, applic
 	if err != nil || workspace == nil || workspace.ID != workspaceID {
 		return nil, fmt.Errorf("coding invocation workspace fence is invalid")
 	}
+	if workspace.Status != iapiserver.AppStudioWorkspaceStatusReady {
+		return nil, fmt.Errorf("coding invocation workspace is not ready")
+	}
 	key := "coding-invocation:" + invocationID
 	existing, existingErr := s.store.GetStudioChangeSetByIdempotencyKey(ctx, workspaceID, key, owner)
 	if existingErr == nil {
@@ -182,16 +185,9 @@ func (s *Service) SynchronizeCodingInvocation(ctx context.Context, owner, applic
 	if err != nil {
 		return nil, err
 	}
-	targetFiles := make(map[string][]byte, len(remoteFiles))
-	for _, file := range remoteFiles {
-		filePath, pathErr := cleanSourcePath(file.Path)
-		if pathErr != nil || filePath != file.Path || file.SizeBytes != int64(len(file.Content)) {
-			return nil, fmt.Errorf("coding invocation remote source file is invalid")
-		}
-		if _, exists := targetFiles[filePath]; exists {
-			return nil, fmt.Errorf("coding invocation remote source contains duplicate files")
-		}
-		targetFiles[filePath] = append([]byte(nil), file.Content...)
+	targetFiles, err := sourceFileContents(remoteFiles)
+	if err != nil {
+		return nil, err
 	}
 	targetRevision := baseRevision + 1
 	digest, rows := revisionRows(workspaceID, targetRevision, targetFiles)
@@ -377,7 +373,7 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	for path, content := range blueprint.Files {
 		starterFiles[path] = append([]byte(nil), content...)
 	}
-	starterDigest, starterRows := revisionRows(workspaceID, 0, starterFiles)
+	starterDigest, _ := revisionRows(workspaceID, 0, starterFiles)
 	repository := &iapiserver.StudioSourceRepository{ObjectMeta: imachinery.ObjectMeta{ID: repoID, Name: req.Name + " source"}, StudioApplicationID: appID, ProviderType: iapiserver.AppStudioSourceProviderGitLab, GitLabProjectID: gitLabProjectID, Status: iapiserver.AppStudioRepositoryStatusCreating}
 	workspace := &iapiserver.StudioWorkspace{ObjectMeta: imachinery.ObjectMeta{ID: workspaceID, Name: iapiserver.AppStudioDefaultWorkspaceName}, StudioApplicationID: appID, RepositoryID: repoID, Status: iapiserver.AppStudioWorkspaceStatusCreating, CurrentRevisionDigest: starterDigest}
 	revision := &iapiserver.StudioWorkspaceRevision{ObjectMeta: imachinery.ObjectMeta{ID: stableStudioInitializationID(owner, req.IdempotencyKey, "revision-0")}, WorkspaceID: workspaceID, Revision: 0, ContentDigest: starterDigest, CreatedBy: owner}
@@ -392,8 +388,23 @@ func (s *Service) CreateApplication(ctx context.Context, req *iapiserver.StudioA
 	if initErr != nil || initialized == nil || initialized.GitLabProjectID == "" || initialized.CommitSHA == "" {
 		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio gitlab project initialization failed")
 	}
+	committedFiles, listErr := s.sourceProvider.ListFiles(ctx, initialized.GitLabProjectID, initialized.CommitSHA, "")
+	if listErr != nil {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit is unavailable")
+	}
+	starterFiles, err = sourceFileContents(committedFiles)
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit is invalid")
+	}
+	committedDigest, starterRows := revisionRows(workspaceID, 0, starterFiles)
+	if committedDigest != starterDigest {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "appstudio starter commit conflicts with blueprint")
+	}
+	starterDigest = committedDigest
 	repository.GitLabProjectID = initialized.GitLabProjectID
 	revision.CommitSHA = initialized.CommitSHA
+	revision.ContentDigest = starterDigest
+	workspace.CurrentRevisionDigest = starterDigest
 	app.Status, repository.Status, workspace.Status = iapiserver.AppStudioApplicationStatusReady, iapiserver.AppStudioRepositoryStatusReady, iapiserver.AppStudioWorkspaceStatusReady
 	modelInput := &iapiserver.AgentModelBindingInput{SourceType: req.CodingModelSelection.SourceType, SourceRef: req.CodingModelSelection.SourceRef, Purpose: iapiserver.AgentModelBindingPurposeCoding}
 	authorization := &iapiserver.AgentAuthorizationSummary{Source: iapiserver.AppStudioTaskDomain, ValidatedAt: imachinery.Now()}
@@ -1263,13 +1274,44 @@ func (s *Service) loadRevision(ctx context.Context, workspaceID string, revision
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string][]byte, len(rows))
+	repository, err := s.store.GetStudioSourceRepository(ctx, workspaceID, owner)
+	if err != nil {
+		return nil, err
+	}
+	version, err := s.store.GetStudioWorkspaceRevision(ctx, workspaceID, revision, owner)
+	if err != nil || repository.GitLabProjectID == "" || version.CommitSHA == "" {
+		return nil, errStudioSourceRevisionEmpty
+	}
+	remoteFiles, err := s.sourceProvider.ListFiles(ctx, repository.GitLabProjectID, version.CommitSHA, "")
+	if err != nil {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source content is unavailable")
+	}
+	result, err := sourceFileContents(remoteFiles)
+	if err != nil || len(result) != len(rows) {
+		return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source index does not match gitlab revision")
+	}
 	for _, row := range rows {
-		content, readErr := s.readSourceFile(ctx, workspaceID, revision, row.Path, owner)
-		if readErr != nil {
-			return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source content is unavailable")
+		content, exists := result[row.Path]
+		digest := sha256.Sum256(content)
+		if !exists || row.SizeBytes != int64(len(content)) || row.ContentDigest != "sha256:"+hex.EncodeToString(digest[:]) {
+			return nil, errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "source index does not match gitlab revision")
 		}
-		result[row.Path] = content
+	}
+	return result, nil
+}
+
+func sourceFileContents(files []SourceFile) (map[string][]byte, error) {
+	result := make(map[string][]byte, len(files))
+	for _, file := range files {
+		filePath, pathErr := cleanSourcePath(file.Path)
+		digest := sha256.Sum256(file.Content)
+		if pathErr != nil || filePath != file.Path || file.SizeBytes != int64(len(file.Content)) || file.ContentDigest != "sha256:"+hex.EncodeToString(digest[:]) {
+			return nil, fmt.Errorf("remote source file is invalid")
+		}
+		if _, exists := result[filePath]; exists {
+			return nil, fmt.Errorf("remote source contains duplicate files")
+		}
+		result[filePath] = append([]byte(nil), file.Content...)
 	}
 	return result, nil
 }

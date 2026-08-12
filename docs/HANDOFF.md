@@ -27,6 +27,9 @@
 - Implemented the reservation path: `CreateApplication` first creates CREATING Application/Repository/Workspace rows with deterministic IDs, GitLabSourceProvider persists the matching CREATING Project projection before remote Project creation, then the existing initialization aggregate completes Revision 0/Agent/Session/Bindings and READY statuses.
 - Hardened reservation recovery: retries use the Server and deterministic path persisted in the reservation, remote/template failures move non-READY reservations to `ERROR` through a PostgreSQL row-locked transition, and a failed projection after a newly created remote Project triggers bounded best-effort deletion before retaining the failed reservation.
 - Added the release-required PostgreSQL constraint migration for nullable GitLab `external_project_id` and `CREATING|READY|ERROR` project status validation.
+- Audited Blueprint prompt routing against released `spec-v1.23.1`: `fix.md` is intentionally shipped but not routed in this phase. Worker claim validation and prompt assembly now accept only `initial` or `followup`; `fix` and unknown values fail explicitly instead of silently falling through to `followup`.
+- Hardened Blueprint/source consistency: Blueprint loading now verifies the structured `.gitlab-ci.yml` include exactly matches `ci_include`; Revision 0 and later indexes are derived from GitLab commit contents; revision loads resolve Repository/CommitSHA once, reuse one GitLab client, and validate remote bytes against the local index; nested GitLab tree reads are recursive.
+- Enforced the released single-commit/READY rules at execution boundaries: the System Prompt explicitly prohibits multiple commits, Coding Invocation synchronization rejects non-READY Workspaces, and the row-locked ChangeSet transaction repeats the READY check.
 
 ## Current in-progress work
 
@@ -62,6 +65,8 @@
 - Passed after Runtime Git wiring: focused `go test` for Agent, AppStudio, GitLab, Agent executor, Infrastructure, Docker provider and PostgreSQL store packages; the Docker provider suite verifies coding credential stdin injection, no Docker metadata leak, clone gate and disposable `/workspace` tmpfs.
 - Passed after the reservation correction: `make gen.deepcopy`, `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/gitlab ./backend/internal/apiserver/store/postgresql`, `go test ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker ./backend/internal/taskworker/gitlabexecutor ./backend/internal/infrastructure ./backend/internal/infrastructure/providers/dockerruntime`, Blueprint `pnpm install --frozen-lockfile && pnpm build`, `docker compose -f deployments/docker-compose.yaml config`, and `git diff --check`.
 - `make gen.deepcopy` reports its pre-existing unsupported alias warnings but exits successfully. The direct AppStudio/GitLab service packages currently contain no test files; repository rules prohibit adding arbitrary non-`pkg/` test files.
+- Passed after strict prompt routing: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker` and `git diff --check`.
+- Passed after Blueprint/source consistency fixes: `go test ./backend/internal/apiserver/service/v1/appstudio ./backend/internal/apiserver/service/v1/gitlab ./backend/internal/apiserver/store/postgresql ./backend/internal/apiserver/service/v1/agent ./backend/internal/taskworker/agentexecutor ./backend/internal/taskworker`, Blueprint `pnpm install --frozen-lockfile && pnpm build`, and `git diff --check`.
 
 ## Outstanding tasks
 
@@ -70,6 +75,7 @@
 ## Known issues and risks
 
 - AppStudio/GitLab S2 is resolved by `spec-v1.23.1`; the server reservation/store/adapter state machine is implemented and directly compiled/tested. The unexecuted local GitLab smoke test is the remaining deployment-level risk.
+- `fix.md` cannot be enabled under the current released contract because its trigger and retry semantics are intentionally out of scope; enabling it requires a new SSOT release rather than an implementation-only branch.
 - The worktree contains unrelated untracked design documents that must not be modified or committed.
 
 ## Exact recommended next step

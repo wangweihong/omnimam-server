@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +17,8 @@ const (
 	BlueprintPromptSystem    = "system"
 	BlueprintPromptInitial   = "initial"
 	BlueprintPromptFollowup  = "followup"
-	BlueprintPromptFix       = "fix"
+	// BlueprintPromptFix 随 Blueprint 发布供后续阶段使用；spec-v1.23.1 明确禁止当前阶段路由。
+	BlueprintPromptFix = "fix"
 )
 
 //go:embed blueprints
@@ -83,7 +85,29 @@ func LoadBlueprint(id, version string) (*Blueprint, error) {
 	if prompts[BlueprintPromptSystem] == "" || prompts[BlueprintPromptInitial] == "" || prompts[BlueprintPromptFollowup] == "" || prompts[BlueprintPromptFix] == "" || len(manifest.Validation) == 0 {
 		return nil, fmt.Errorf("blueprint prompt or validation contract is incomplete")
 	}
+	if err := validateBlueprintCIInclude(manifest.CIInclude, files[".gitlab-ci.yml"]); err != nil {
+		return nil, err
+	}
 	return &Blueprint{ID: manifest.ID, Version: manifest.Version, Files: files, Prompts: prompts, Validation: append([]string(nil), manifest.Validation...), CIInclude: manifest.CIInclude}, nil
+}
+
+func validateBlueprintCIInclude(expected string, data []byte) error {
+	var config struct {
+		Include []struct {
+			Project string `yaml:"project"`
+			File    string `yaml:"file"`
+			Ref     string `yaml:"ref"`
+		} `yaml:"include"`
+	}
+	if expected == "" || len(data) == 0 || yaml.Unmarshal(data, &config) != nil || len(config.Include) != 1 {
+		return fmt.Errorf("blueprint CI include contract is invalid")
+	}
+	include := config.Include[0]
+	actual := include.Project + ":" + include.File + "@" + include.Ref
+	if strings.TrimSpace(include.Project) == "" || strings.TrimSpace(include.File) == "" || strings.TrimSpace(include.Ref) == "" || actual != expected {
+		return fmt.Errorf("blueprint CI include does not match its manifest")
+	}
+	return nil
 }
 
 // TemplatePaths 返回稳定排序的模板文件名，便于 Starter commit 和测试确定性。

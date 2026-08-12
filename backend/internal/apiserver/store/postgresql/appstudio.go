@@ -361,6 +361,9 @@ func (s *appStudioStore) ApplyStudioChangeSet(ctx context.Context, owner string,
 		if workspace.CurrentRevision != changeSet.BaseRevision {
 			return errors.NewStatus(code.ErrAppStudioSourceRevisionConflict, "source base revision conflicts")
 		}
+		if workspace.Status != iapiserver.AppStudioWorkspaceStatusReady {
+			return errors.NewStatus(code.ErrAppStudioSourceChangeRejected, "studio source is not ready")
+		}
 		if err := tx.Create(changeSet).Error; err != nil {
 			return err
 		}

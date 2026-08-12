@@ -1,12 +1,15 @@
 package gitlab
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +19,13 @@ import (
 	appstudio "github.com/wangweihong/omnimam/backend/internal/apiserver/service/v1/appstudio"
 	"github.com/wangweihong/omnimam/backend/internal/apiserver/store"
 	"gorm.io/gorm"
+)
+
+const (
+	maxRepositoryArchiveBytes     = 32 << 20
+	maxRepositoryArchiveFileBytes = 2 << 20
+	maxRepositoryContentBytes     = 64 << 20
+	maxRepositoryFileCount        = 10000
 )
 
 // SourceProvider 是 GitLab domain 提供给 AppStudio 的 Repository adapter。
@@ -194,22 +204,66 @@ func (p *SourceProvider) ListFiles(ctx context.Context, projectID, commitSHA, pr
 	if err != nil {
 		return nil, err
 	}
-	entries, err := client.ListRepositoryTree(ctx, project.ExternalProjectID, commitSHA, prefix)
+	archive, err := client.GetRepositoryArchive(ctx, project.ExternalProjectID, commitSHA)
 	if err != nil {
 		return nil, err
 	}
-	files := make([]appstudio.SourceFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Type != "blob" {
+	defer archive.Close()
+	gzipReader, err := gzip.NewReader(io.LimitReader(archive, maxRepositoryArchiveBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab repository archive is invalid")
+	}
+	defer gzipReader.Close()
+	tree := tar.NewReader(gzipReader)
+	files := make([]appstudio.SourceFile, 0)
+	total := int64(0)
+	seen := make(map[string]struct{})
+	for {
+		header, nextErr := tree.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return nil, fmt.Errorf("gitlab repository archive is truncated")
+		}
+		name := strings.TrimPrefix(strings.ReplaceAll(header.Name, "\\", "/"), "./")
+		parts := strings.Split(name, "/")
+		if len(parts) < 2 {
+			if header.Typeflag == tar.TypeDir {
+				continue
+			}
+			return nil, fmt.Errorf("gitlab repository archive entry has no project root")
+		}
+		filePath := strings.Join(parts[1:], "/")
+		clean := path.Clean(filePath)
+		if clean == "." || clean != filePath || path.IsAbs(clean) || strings.HasPrefix(clean, "../") || strings.ContainsRune(clean, '\x00') {
+			return nil, fmt.Errorf("gitlab repository archive path is unsafe")
+		}
+		if header.Typeflag == tar.TypeDir {
 			continue
 		}
-		content, err := p.ReadFile(ctx, projectID, commitSHA, entry.Path)
-		if err != nil {
-			return nil, err
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			return nil, fmt.Errorf("gitlab repository archive contains unsupported entry type")
 		}
+		if prefix != "" && !strings.HasPrefix(clean, prefix) {
+			continue
+		}
+		if header.Size < 0 || header.Size > maxRepositoryArchiveFileBytes || total+header.Size > maxRepositoryContentBytes || len(files) >= maxRepositoryFileCount {
+			return nil, fmt.Errorf("gitlab repository archive exceeds source limits")
+		}
+		if _, exists := seen[clean]; exists {
+			return nil, fmt.Errorf("gitlab repository archive contains duplicate path")
+		}
+		content, readErr := io.ReadAll(io.LimitReader(tree, maxRepositoryArchiveFileBytes+1))
+		if readErr != nil || int64(len(content)) != header.Size {
+			return nil, fmt.Errorf("gitlab repository archive entry is truncated")
+		}
+		seen[clean] = struct{}{}
+		total += int64(len(content))
 		digest := sha256.Sum256(content)
-		files = append(files, appstudio.SourceFile{Path: entry.Path, Content: content, ContentDigest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(content))})
+		files = append(files, appstudio.SourceFile{Path: clean, Content: content, ContentDigest: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(content))})
 	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
 }
 

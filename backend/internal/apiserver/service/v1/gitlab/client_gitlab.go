@@ -140,15 +140,59 @@ func (c *httpClient) ListPipelineJobs(ctx context.Context, projectID, pipelineID
 }
 
 func (c *httpClient) ListRepositoryTree(ctx context.Context, projectID int64, ref, path string) ([]RepositoryTreeEntry, error) {
-	result := make([]RepositoryTreeEntry, 0)
-	query := url.Values{"ref": []string{ref}, "per_page": []string{"100"}}
+	query := url.Values{"ref": []string{ref}, "per_page": []string{"100"}, "recursive": []string{"true"}}
 	if path != "" {
 		query.Set("path", path)
 	}
-	if err := c.do(ctx, http.MethodGet, projectPath(projectID)+"/repository/tree?"+query.Encode(), nil, &result); err != nil {
-		return nil, err
+	result := make([]RepositoryTreeEntry, 0)
+	seenPages := make(map[string]struct{})
+	for page := "1"; page != ""; {
+		pageNumber, parseErr := strconv.Atoi(page)
+		if parseErr != nil || pageNumber < 1 || pageNumber > 1000 {
+			return nil, fmt.Errorf("gitlab repository tree pagination is invalid")
+		}
+		if _, exists := seenPages[page]; exists {
+			return nil, fmt.Errorf("gitlab repository tree pagination did not advance")
+		}
+		seenPages[page] = struct{}{}
+		query.Set("page", page)
+		var entries []RepositoryTreeEntry
+		nextPage, err := c.doPage(ctx, projectPath(projectID)+"/repository/tree?"+query.Encode(), &entries)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entries...)
+		page = nextPage
 	}
 	return result, nil
+}
+
+func (c *httpClient) doPage(ctx context.Context, path string, output any) (string, error) {
+	builder := httpcli.NewHttpRequestBuilder().WithEndpoint(c.baseURL).WithPath(path).WithMethod(http.MethodGet).
+		AddHeaderParam("PRIVATE-TOKEN", c.token).AddHeaderParam("Accept", "application/json")
+	response, err := c.client.Invoke(ctx, builder.Build(), nil, nil)
+	if err != nil {
+		return "", fmt.Errorf("gitlab %s request failed: %w", operationName(http.MethodGet, path), err)
+	}
+	if response == nil || response.Response == nil {
+		return "", fmt.Errorf("gitlab %s returned no response", operationName(http.MethodGet, path))
+	}
+	defer response.Response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Response.Body, gitLabMaxResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read gitlab %s response: %w", operationName(http.MethodGet, path), err)
+	}
+	if len(data) > gitLabMaxResponseBytes {
+		return "", fmt.Errorf("gitlab %s response exceeds size limit", operationName(http.MethodGet, path))
+	}
+	status := response.GetStatusCode()
+	if status < 200 || status >= 300 {
+		return "", &RemoteError{StatusCode: status, Operation: operationName(http.MethodGet, path), Message: gitLabErrorMessage(data)}
+	}
+	if len(data) == 0 || json.Unmarshal(data, output) != nil {
+		return "", fmt.Errorf("decode gitlab %s response", operationName(http.MethodGet, path))
+	}
+	return strings.TrimSpace(response.Response.Header.Get("X-Next-Page")), nil
 }
 
 func (c *httpClient) GetRepositoryFile(ctx context.Context, projectID int64, ref, path string) (*RepositoryFile, error) {

@@ -666,6 +666,9 @@ func (e *InvocationExecutor) prepare(
 	if arguments.InvocationType == iapiserver.AgentInvocationTypeCoding && (claims.StudioApplicationID == "" || claims.WorkspaceID == "" || claims.BaseCommitSHA == "" || claims.BlueprintVersion == "" || claims.PromptKind == "") {
 		return nil, nil, fmt.Errorf("coding invocation source context is incomplete")
 	}
+	if arguments.InvocationType == iapiserver.AgentInvocationTypeCoding && claims.PromptKind != appstudiosvc.BlueprintPromptInitial && claims.PromptKind != appstudiosvc.BlueprintPromptFollowup {
+		return nil, nil, fmt.Errorf("coding invocation prompt kind is unsupported")
+	}
 	execution := &invocationExecution{arguments: arguments, claims: claims, sequence: arguments.EventSequenceAfter}
 	if execution.agent, err = e.store.GetAgent(ctx, arguments.AgentID, claims.OwnerUserID); err != nil {
 		return nil, nil, fmt.Errorf("load agent invocation agent: %w", err)
@@ -928,11 +931,15 @@ func (e *InvocationExecutor) findOpenCodeResponse(ctx context.Context, baseURL, 
 }
 
 func (e *InvocationExecutor) promptOpenCode(ctx context.Context, execution *invocationExecution, providerID, sessionID, messageID string) (*openCodeMessage, error) {
+	prompt, err := invocationPrompt(execution)
+	if err != nil {
+		return nil, err
+	}
 	var response openCodeMessage
-	err := invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/message", map[string]any{
+	err = invokeOpenCode(ctx, execution.endpointBase, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/message", map[string]any{
 		"messageID": messageID,
 		"model":     map[string]any{"providerID": providerID, "modelID": execution.model.RemoteModel},
-		"parts":     []map[string]any{{"type": "text", "text": invocationPrompt(execution)}},
+		"parts":     []map[string]any{{"type": "text", "text": prompt}},
 	}, &response)
 	if err != nil {
 		return nil, fmt.Errorf("execute agent invocation runtime message: %w", err)
@@ -946,21 +953,27 @@ func (e *InvocationExecutor) promptOpenCode(ctx context.Context, execution *invo
 	return &response, nil
 }
 
-func invocationPrompt(execution *invocationExecution) string {
+func invocationPrompt(execution *invocationExecution) (string, error) {
 	if execution == nil || execution.message == nil {
-		return ""
+		return "", fmt.Errorf("agent invocation prompt context is incomplete")
+	}
+	if execution.arguments.InvocationType != iapiserver.AgentInvocationTypeCoding {
+		return execution.message.Content, nil
 	}
 	blueprint, err := appstudiosvc.LoadBlueprint(appstudiosvc.BlueprintWebReactID, execution.claims.BlueprintVersion)
 	if err != nil {
-		return execution.message.Content
+		return "", fmt.Errorf("load coding invocation blueprint: %w", err)
 	}
 	prompt := blueprint.Prompts[appstudiosvc.BlueprintPromptSystem]
-	if execution.claims.PromptKind == appstudiosvc.BlueprintPromptInitial {
+	switch execution.claims.PromptKind {
+	case appstudiosvc.BlueprintPromptInitial:
 		prompt += "\n\n" + blueprint.Prompts[appstudiosvc.BlueprintPromptInitial]
-	} else {
+	case appstudiosvc.BlueprintPromptFollowup:
 		prompt += "\n\n" + blueprint.Prompts[appstudiosvc.BlueprintPromptFollowup]
+	default:
+		return "", fmt.Errorf("coding invocation prompt kind is unsupported")
 	}
-	return prompt + "\n\nUser request:\n" + execution.message.Content
+	return prompt + "\n\nUser request:\n" + execution.message.Content, nil
 }
 
 func (e *InvocationExecutor) canceledResult(ctx context.Context, execution *invocationExecution, contract *taskfunctionregistry.Contract, sessionID string, cause error) (map[string]any, error) {
